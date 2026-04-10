@@ -163,6 +163,8 @@ Basic, Negotiation, Task, Compliment, Gratitude Journal, Exercise, Love Letter, 
 - `focuslock-bridge.sh` -- ADB bridge enforcement (homelab)
 - `web/index.html` -- Lion's Share web UI
 - `web/signup.html` -- Self-service mesh signup
+- `web/cost.html` -- Cost and trust transparency page
+- `web/qrcode.min.js` -- QR code library for signup
 
 ### Desktop
 - `focuslock-desktop.py` -- Linux collar (GTK4 + vault mode)

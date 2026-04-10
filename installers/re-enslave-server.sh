@@ -66,10 +66,10 @@ done
 if [ -f "$ICONS/$SERVER_ICON" ]; then
     DEPLOY_PAIRS+=("$ICONS/$SERVER_ICON|/opt/focuslock/$SERVER_ICON")
 fi
-# Web UI (the relay's HTML controller + signup page)
-for html in index.html signup.html; do
-    if [ -f "$LS/web/$html" ]; then
-        DEPLOY_PAIRS+=("$LS/web/$html|/opt/focuslock/web/$html")
+# Web UI (relay HTML pages + JS assets)
+for wf in index.html signup.html cost.html qrcode.min.js; do
+    if [ -f "$LS/web/$wf" ]; then
+        DEPLOY_PAIRS+=("$LS/web/$wf|/opt/focuslock/web/$wf")
     fi
 done
 # Shared Python modules

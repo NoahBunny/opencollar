@@ -42,12 +42,12 @@ class ADBBridge:
                 pass
 
     def put_str(self, key, value):
-        """Write a string settings value (shell-quoted for spaces)."""
+        """Write a string settings value (safe — no shell interpolation)."""
         for dev in self.devices:
             try:
                 subprocess.run(
-                    ["adb", "-s", dev, "shell",
-                     f"settings put global {key} '{value}'"],
+                    ["adb", "-s", dev, "shell", "settings", "put", "global",
+                     key, str(value)],
                     capture_output=True, timeout=10)
             except Exception:
                 pass

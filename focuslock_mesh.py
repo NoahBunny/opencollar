@@ -39,14 +39,15 @@ except ImportError:
 
 def canonical_json(orders: dict) -> bytes:
     """Deterministic JSON for consistent hashing — sorted keys, no whitespace."""
-    return json.dumps(orders, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return json.dumps(orders, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=True).encode("utf-8")
 
 
 def verify_signature(orders: dict, signature_b64: str, pubkey_pem: str) -> bool:
     """Verify RSA-SHA256 signature on an orders document."""
     if not HAS_CRYPTO:
-        print("[mesh] WARNING: cryptography library unavailable, skipping signature verification")
-        return True
+        print("[mesh] WARNING: cryptography library unavailable — rejecting signed orders")
+        return False
     if not pubkey_pem or not signature_b64:
         return False
     try:
@@ -183,7 +184,7 @@ class OrdersDocument:
         """Apply a remote orders document if it has a higher version.
         Returns True if applied, False if rejected."""
         remote_version = doc.get("version", 0)
-        if remote_version <= self.version:
+        if not isinstance(remote_version, int) or remote_version <= self.version:
             return False
 
         remote_orders = doc.get("orders", {})

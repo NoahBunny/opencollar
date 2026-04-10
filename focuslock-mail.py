@@ -20,7 +20,9 @@ from email.mime.base import MIMEBase
 from email import encoders
 from datetime import datetime
 import base64
+import hmac
 import random
+import secrets
 import socket
 import sys
 
@@ -676,7 +678,7 @@ class MeshAccountStore:
             auth_token = base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")
             invite_code = self._gen_invite_code()
             if not pin:
-                pin = str(random.randint(1000, 9999))
+                pin = str(secrets.randbelow(9000) + 1000)
             account = {
                 "mesh_id": mesh_id,
                 "lion_pubkey": lion_pubkey,
@@ -721,11 +723,16 @@ class MeshAccountStore:
 
     def validate_auth(self, mesh_id, auth_token):
         account = self.meshes.get(mesh_id)
-        return account and account.get("auth_token") == auth_token
+        if not account:
+            return False
+        expected = account.get("auth_token", "")
+        return hmac.compare_digest(expected, auth_token)
 
     def validate_pin(self, mesh_id, pin):
         account = self.meshes.get(mesh_id)
-        return account and str(account.get("pin", "")) == str(pin)
+        if not account:
+            return False
+        return hmac.compare_digest(str(account.get("pin", "")), str(pin))
 
     def update_node(self, mesh_id, node_id, **fields):
         with self.lock:
@@ -773,9 +780,9 @@ class MeshAccountStore:
         return None
 
     def _gen_invite_code(self):
-        w1 = random.choice(_INVITE_WORDS)
-        num = random.randint(10, 99)
-        w2 = random.choice(_INVITE_WORDS)
+        w1 = secrets.choice(_INVITE_WORDS)
+        num = secrets.randbelow(90) + 10
+        w2 = secrets.choice(_INVITE_WORDS)
         return f"{w1}-{num}-{w2}"
 
 
@@ -1134,14 +1141,26 @@ def _vault_resolve_mesh(mesh_id):
 
 
 class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
+    MAX_BODY_BYTES = 1_048_576  # 1 MB
+
     def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (ValueError, TypeError):
+            self.send_response(400)
+            self.end_headers()
+            return
+        if length > self.MAX_BODY_BYTES:
+            self.send_response(413)
+            self.end_headers()
+            return
         body = self.rfile.read(length).decode() if length > 0 else ""
 
         try:
             data = json.loads(body) if body else {}
-        except:
-            data = {}
+        except (json.JSONDecodeError, ValueError):
+            self.respond(400, {"error": "invalid JSON"})
+            return
 
         if self.path == "/webhook/compliment":
             text = data.get("text", "")
@@ -1293,7 +1312,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(503, {"error": "admin_token not configured"})
                 return
             token = data.get("admin_token", "")
-            if not token or token != ADMIN_TOKEN:
+            if not token or not hmac.compare_digest(token, ADMIN_TOKEN):
                 self.respond(403, {"error": "invalid admin_token"})
                 return
             req_mesh_id = data.get("mesh_id", "")
@@ -1573,7 +1592,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             code = data.get("code", "").upper().strip()
             if not code:
                 chars = string.ascii_uppercase + string.digits
-                code = "".join(random.choice(chars) for _ in range(6))
+                code = "".join(secrets.choice(chars) for _ in range(6))
             expires_min = data.get("expires_minutes", 60)
             # Build config payload
             local_addrs = mesh.get_local_addresses()
@@ -1614,19 +1633,19 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     json.dump(registry, f, indent=2)
                 os.rename(tmp, DESKTOP_REGISTRY_FILE)
                 # Push desktop info to phone so Lion's Share can see it
-                # Format: hostname:name:online;hostname:name:online  (pipe/quotes break in ADB shell)
-                import subprocess
+                # Format: hostname:name:online;hostname:name:online
+                import re as _re
                 parts = []
                 for k, v in registry.items():
-                    name = v.get("name", k).replace(";", "").replace(":", "").replace("'", "")
+                    safe_k = _re.sub(r'[^a-zA-Z0-9._-]', '', k)
+                    name = _re.sub(r'[^a-zA-Z0-9._\- ]', '', v.get("name", k))
                     online = "1" if (time.time() - v.get("last_seen_ts", 0)) < 60 else "0"
-                    parts.append(f"{k}:{name}:{online}")
+                    parts.append(f"{safe_k}:{name}:{online}")
                 desktop_summary = ";".join(parts)
-                # Use 'shell "command"' form to avoid metachar interpretation
                 for dev in adb.devices:
                     subprocess.run(
-                        ['adb', '-s', dev, 'shell',
-                         f'settings put global focus_lock_desktops "{desktop_summary}"'],
+                        ['adb', '-s', dev, 'shell', 'settings', 'put', 'global',
+                         'focus_lock_desktops', desktop_summary],
                         timeout=10, capture_output=True
                     )
             except Exception as e:
@@ -1713,7 +1732,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if not ADMIN_TOKEN:
                 self.respond(503, {"error": "admin_token not configured"})
                 return
-            if not token or token != ADMIN_TOKEN:
+            if not token or not hmac.compare_digest(token, ADMIN_TOKEN):
                 self.respond(403, {"error": "invalid admin_token"})
                 return
             req_mesh_id = params.get("mesh_id", [""])[0]
@@ -1807,7 +1826,8 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 else:
                     self.respond(404, {"error": "no controller registered yet"})
             except Exception as e:
-                self.respond(500, {"error": str(e)})
+                print(f"[{now()}] /controller error: {e}")
+                self.respond(500, {"error": "internal error"})
 
         elif self.path == "/standing-orders":
             # Serve CLAUDE.md for desktop collar memory sync
@@ -1823,7 +1843,8 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 else:
                     self.respond(404, {"error": "no standing orders found"})
             except Exception as e:
-                self.respond(500, {"error": str(e)})
+                print(f"[{now()}] /standing-orders error: {e}")
+                self.respond(500, {"error": "internal error"})
 
         elif self.path == "/settings":
             # Serve settings.json (enforcement hooks) for sync
@@ -1839,7 +1860,8 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 else:
                     self.respond(404, {"error": "no settings found"})
             except Exception as e:
-                self.respond(500, {"error": str(e)})
+                print(f"[{now()}] /settings error: {e}")
+                self.respond(500, {"error": "internal error"})
 
         elif self.path == "/pubkey":
             # Serve Lion's RSA public key for mesh signature verification
@@ -1883,7 +1905,8 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         os.remove(pair_file)
                         self.respond(410, {"error": "pairing code expired"})
                 except Exception as e:
-                    self.respond(500, {"error": str(e)})
+                    print(f"[{now()}] /api/pair/{code} error: {e}")
+                    self.respond(500, {"error": "internal error"})
             else:
                 self.respond(404, {"error": "invalid pairing code"})
 
