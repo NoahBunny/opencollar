@@ -7,33 +7,43 @@ Consensual remote device restriction ecosystem. Lion controls, Bunny obeys, Coll
 - **The Collar** (`com.focuslock`) — invisible app on Bunny's phone (HTTP server, device admin, payment listener, SMS, Lovense, camera, geofence)
 - **Bunny Tasker** (`com.bunnytasker`) — visible companion on Bunny's phone (stats, subscriptions, self-lock, messaging, QR pairing)
 - **Lion's Share** (`com.focusctl`) — controller app on Lion's phone (lock/unlock, timer, paywall, photo tasks, Lovense, geofence, inbox)
-- **Desktop Collar** — Windows (`FocusLock-Paired.exe`) and Linux (`focuslock-desktop.py`) system tray enforcement
+- **Desktop Collar** — Windows (`FocusLock-Paired.exe`) and Linux (`focuslock-desktop.py`) system tray enforcement, vault mode
 - **Bridge** (optional homelab) — ADB enforcement, mail service, Ollama LLM eval, subscription tracking
-- **P2P Mesh** — RSA-signed orders gossip-replicated across all nodes, works without homelab
+- **Vault Mesh** — E2E encrypted (AES-256-GCM + RSA-OAEP), RSA-signed orders, zero-knowledge relay
+- **Legacy plaintext endpoints removed** — server only speaks vault
 
 ## Key Files
 
-### Android (no Gradle — aapt2/javac/d8/apksigner)
-- `focuslock.apk` — The Collar
-- `bunnytasker.apk` — Bunny Tasker
-- `focusctl.apk` — Lion's Share
+### Android (`android/` — no Gradle — aapt2/javac/d8/apksigner)
+- `android/slave/` — The Collar
+- `android/companion/` — Bunny Tasker
+- `android/controller/` — Lion's Share
 
 ### Desktop
-- `focuslock-desktop-win.py` — Windows collar (pystray tray icon, mesh node, session lock)
-- `focuslock-desktop.py` — Linux collar (GTK4 + loginctl)
+- `focuslock-desktop-win.py` — Windows collar (pystray, vault mode, session lock)
+- `focuslock-desktop.py` — Linux collar (GTK4, vault mode, loginctl)
 - `focuslock_mesh.py` — Shared mesh protocol
 - `focuslock_ntfy.py` — ntfy push notifications (zero-knowledge wake-up signals)
 - `watchdog-win.pyw` — Windows process watchdog
 - `build-win.py` — PyInstaller build script for Windows exes
 
 ### Server
-- `focuslock-bridge.sh` — ADB bridge
-- `focuslock-mail.py` — Mail + webhook + LLM
+- `focuslock-mail.py` — Vault relay + webhook + mail + LLM
+- `focuslock-bridge.sh` — ADB bridge (homelab)
 - `web/index.html` — Lion's Share web UI
+- `web/signup.html` — Self-service mesh creation
+
+### Shared (`shared/`)
+- `focuslock_vault.py` — Python VaultCrypto (encrypt/decrypt/sign/verify)
+- `focuslock_config.py` — Config loader
+- `focuslock_sync.py` — Mesh sync helpers
+- `banks.json` — Payment detection keywords (145+ banks)
 
 ### Installers
 - `installers/install-desktop-collar.sh` — Linux first-time install
-- `installers/re-enslave-all.sh` — Update all Linux desktops via SSH
+- `installers/re-enslave-server.sh` — Server update (hash-diff, git commit transparency)
+- `installers/re-enslave-desktops.sh` — Desktop collar update
+- `installers/re-enslave-phones.sh` — Phone APK sideload
 - `installers/homelab-setup.sh` — Homelab server setup
 
 ## Build
@@ -63,12 +73,16 @@ python build-win.py --skip-sign  # Skip code signing
 
 ## Config
 
-Runtime config: `%APPDATA%\focuslock\config.json`
-- `pin` — mesh PIN
-- `homelab_url` — homelab endpoint
+Runtime config: `~/.config/focuslock/config.json` (Linux) or `%APPDATA%\focuslock\config.json` (Windows)
+- `mesh_id` — mesh identifier (base64url)
+- `mesh_url` — relay server URL
+- `vault_mode` — `true` to enable E2E encrypted vault poll (desktop collars)
+- `homelab_url` — homelab endpoint (optional, for ADB bridge features)
 - `phone_addresses` — LAN IPs for direct phone communication
 - `mesh_port` — default 8435
-- `mesh_url` — mesh sync URL (used for standing orders fetch during install)
+- `operator_mesh_id` — (server only) scopes admin API to this mesh
+- `admin_token` — (server only) admin API auth
+- `ntfy_enabled`, `ntfy_server`, `ntfy_topic` — push notifications
 
 ## Mesh Protocol
 
