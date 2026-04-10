@@ -151,9 +151,13 @@ class MeshOrdersRegistry:
         return self.docs[mesh_id]
 
 _orders_registry = MeshOrdersRegistry()
-# Register the operator's mesh in the registry so lookups work uniformly
-if OPERATOR_MESH_ID:
-    _orders_registry.docs[OPERATOR_MESH_ID] = mesh_orders
+# OPERATOR_MESH_ID is defined later (after config load) —
+# _init_orders_registry() is called from there to register the operator's mesh.
+
+def _init_orders_registry():
+    """Register the operator's mesh in the registry (called after config load)."""
+    if OPERATOR_MESH_ID:
+        _orders_registry.docs[OPERATOR_MESH_ID] = mesh_orders
 
 def _resolve_orders(mesh_id=None):
     """Get OrdersDocument for mesh_id, or the operator's global orders."""
@@ -791,6 +795,7 @@ VAULT_RETENTION_DAYS = _cfg.get("vault_retention_days", 7)
 # API returns metadata only — never plaintext orders.
 ADMIN_TOKEN = _cfg.get("admin_token", "") or os.environ.get("FOCUSLOCK_ADMIN_TOKEN", "")
 OPERATOR_MESH_ID = _cfg.get("operator_mesh_id", "") or os.environ.get("FOCUSLOCK_OPERATOR_MESH_ID", "")
+_init_orders_registry()  # Now that OPERATOR_MESH_ID is known, register operator's mesh
 
 
 def _safe_mesh_id(mesh_id):
