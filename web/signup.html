@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright (C) 2024-2026 The FocusLock Contributors -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0a0a14">
+<title>Create a Mesh &mdash; FocusLock</title>
+<style>
+:root {
+  --bg: #0a0a14;
+  --card: #0e0e1a;
+  --gold: #DAA520;
+  --gold-bright: #FFD700;
+  --text: #e0e0e0;
+  --muted: #555;
+  --radius: 10px;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; justify-content: center; padding: 2rem 1rem; }
+.wrap { max-width: 480px; width: 100%; }
+h1 { color: var(--gold); font-size: 1.5rem; margin-bottom: 0.5rem; }
+p.sub { color: var(--muted); font-size: 0.85rem; margin-bottom: 1.5rem; }
+.card { background: var(--card); border-radius: var(--radius); padding: 1.5rem; margin-bottom: 1rem; }
+label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.3rem; }
+textarea { width: 100%; background: #111118; border: 1px solid #222; border-radius: 6px; color: var(--text); padding: 0.6rem; font-family: monospace; font-size: 0.8rem; resize: vertical; min-height: 80px; }
+textarea:focus { outline: none; border-color: var(--gold); }
+button { width: 100%; padding: 0.8rem; background: linear-gradient(135deg, var(--gold), #8B6914); color: #000; font-weight: bold; font-size: 1rem; border: none; border-radius: 6px; cursor: pointer; margin-top: 1rem; }
+button:hover { background: linear-gradient(135deg, var(--gold-bright), var(--gold)); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.result { display: none; }
+.result.show { display: block; }
+.field { margin-bottom: 0.8rem; }
+.field .val { font-family: monospace; font-size: 1.1rem; color: var(--gold-bright); word-break: break-all; user-select: all; }
+.field .val.invite { font-size: 1.4rem; letter-spacing: 0.1em; text-align: center; display: block; padding: 0.5rem; background: #111118; border-radius: 6px; }
+.note { font-size: 0.75rem; color: var(--muted); margin-top: 1rem; line-height: 1.4; }
+.err { color: #e44; font-size: 0.85rem; margin-top: 0.5rem; display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Create a Mesh</h1>
+  <p class="sub">Set up a new Lion&ndash;Bunny mesh on this relay. You'll get an invite code to share with your Bunny.</p>
+
+  <div class="card" id="formCard">
+    <div class="field">
+      <label for="pubkey">Your Lion public key (RSA PEM)</label>
+      <textarea id="pubkey" placeholder="-----BEGIN PUBLIC KEY-----&#10;MIIBIjAN...&#10;-----END PUBLIC KEY-----"></textarea>
+    </div>
+    <p class="note">Paste the RSA public key from Lion's Share &rarr; Advanced &rarr; Export Key. This key signs your orders &mdash; the relay never sees your private key.</p>
+    <div class="err" id="err"></div>
+    <button id="createBtn" onclick="createMesh()">Create Mesh</button>
+  </div>
+
+  <div class="card result" id="resultCard">
+    <div class="field">
+      <label>Invite Code (tell your Bunny)</label>
+      <span class="val invite" id="rInvite"></span>
+    </div>
+    <div class="field">
+      <label>Mesh ID</label>
+      <span class="val" id="rMeshId"></span>
+    </div>
+    <div class="field">
+      <label>Auth Token (save this &mdash; shown once)</label>
+      <span class="val" id="rAuth"></span>
+    </div>
+    <div class="field">
+      <label>PIN</label>
+      <span class="val" id="rPin"></span>
+    </div>
+    <p class="note">The invite code expires in 24 hours and can only be used once. Your Bunny enters it in Bunny Tasker &rarr; Join Mesh along with this relay's URL.</p>
+  </div>
+</div>
+
+<script>
+async function createMesh() {
+  const btn = document.getElementById('createBtn');
+  const err = document.getElementById('err');
+  const pubkey = document.getElementById('pubkey').value.trim();
+  err.style.display = 'none';
+
+  if (!pubkey) {
+    err.textContent = 'Public key is required.';
+    err.style.display = 'block';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Creating...';
+
+  try {
+    const resp = await fetch('/api/mesh/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lion_pubkey: pubkey })
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      throw new Error(data.error || `HTTP ${resp.status}`);
+    }
+    document.getElementById('rInvite').textContent = data.invite_code;
+    document.getElementById('rMeshId').textContent = data.mesh_id;
+    document.getElementById('rAuth').textContent = data.auth_token;
+    document.getElementById('rPin').textContent = data.pin;
+    document.getElementById('formCard').style.display = 'none';
+    document.getElementById('resultCard').classList.add('show');
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Create Mesh';
+  }
+}
+</script>
+</body>
+</html>

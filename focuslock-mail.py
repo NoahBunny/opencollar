@@ -122,6 +122,46 @@ if _ts_map:
 mesh_orders = mesh.OrdersDocument(persist_path=MESH_ORDERS_FILE)
 mesh_peers = mesh.PeerRegistry(persist_path=MESH_PEERS_FILE)
 
+# ── Per-Mesh Orders Registry (multi-tenant isolation) ──
+
+class MeshOrdersRegistry:
+    """Maps mesh_id -> OrdersDocument.  The operator's mesh uses the
+    global ``mesh_orders`` singleton for backwards compatibility; every
+    other mesh gets its own OrdersDocument persisted under base_dir."""
+
+    def __init__(self, base_dir="/run/focuslock/mesh-orders"):
+        self.base_dir = base_dir
+        self.docs = {}  # mesh_id -> OrdersDocument
+        os.makedirs(base_dir, exist_ok=True)
+        self._load_all()
+
+    def _load_all(self):
+        import glob as globmod
+        for f in globmod.glob(os.path.join(self.base_dir, "*.json")):
+            mid = os.path.splitext(os.path.basename(f))[0]
+            self.docs[mid] = mesh.OrdersDocument(persist_path=f)
+
+    def get(self, mesh_id):
+        return self.docs.get(mesh_id)
+
+    def get_or_create(self, mesh_id):
+        if mesh_id not in self.docs:
+            path = os.path.join(self.base_dir, f"{mesh_id}.json")
+            self.docs[mesh_id] = mesh.OrdersDocument(persist_path=path)
+        return self.docs[mesh_id]
+
+_orders_registry = MeshOrdersRegistry()
+# Register the operator's mesh in the registry so lookups work uniformly
+if OPERATOR_MESH_ID:
+    _orders_registry.docs[OPERATOR_MESH_ID] = mesh_orders
+
+def _resolve_orders(mesh_id=None):
+    """Get OrdersDocument for mesh_id, or the operator's global orders."""
+    if not mesh_id or mesh_id == OPERATOR_MESH_ID:
+        return mesh_orders
+    doc = _orders_registry.get(mesh_id)
+    return doc if doc else mesh_orders
+
 # ── ntfy Push Notifications ──
 
 try:
@@ -570,13 +610,23 @@ _INVITE_WORDS = [
 
 class MeshAccountStore:
     """Manages mesh accounts for account-based pairing.
-    MVP: one mesh per server, backed by the global OrdersDocument."""
+    Per-mesh orders are stored in MeshOrdersRegistry (see above)."""
+
+    # Signup rate limiting: max_creates per window_s per IP
+    RATE_LIMIT_MAX = 3
+    RATE_LIMIT_WINDOW_S = 3600  # 1 hour
+    # Invite code TTL (seconds)
+    INVITE_TTL_S = 86400  # 24 hours
+    # Per-mesh quotas
+    DEFAULT_MAX_BLOBS_PER_DAY = 5000
+    DEFAULT_MAX_TOTAL_BYTES_MB = 100
 
     def __init__(self, persist_dir="/run/focuslock/meshes"):
         self.persist_dir = persist_dir
         os.makedirs(persist_dir, exist_ok=True)
         self.lock = threading.Lock()
         self.meshes = {}  # mesh_id -> account dict
+        self._create_rate = {}  # ip -> [timestamp, ...]
         self._load_all()
 
     def _load_all(self):
@@ -600,8 +650,24 @@ class MeshAccountStore:
             json.dump(account, f, indent=2)
         os.replace(tmp, path)
 
-    def create(self, lion_pubkey, pin=""):
+    def check_rate_limit(self, client_ip):
+        """Return True if the IP is within rate limits, False if exceeded."""
+        now_t = time.time()
+        cutoff = now_t - self.RATE_LIMIT_WINDOW_S
+        timestamps = self._create_rate.get(client_ip, [])
+        timestamps = [t for t in timestamps if t > cutoff]
+        self._create_rate[client_ip] = timestamps
+        return len(timestamps) < self.RATE_LIMIT_MAX
+
+    def _record_create(self, client_ip):
+        ts = self._create_rate.get(client_ip, [])
+        ts.append(time.time())
+        self._create_rate[client_ip] = ts
+
+    def create(self, lion_pubkey, pin="", client_ip=""):
         with self.lock:
+            if client_ip:
+                self._record_create(client_ip)
             mesh_id = base64.urlsafe_b64encode(os.urandom(9)).decode().rstrip("=")
             auth_token = base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")
             invite_code = self._gen_invite_code()
@@ -612,13 +678,14 @@ class MeshAccountStore:
                 "lion_pubkey": lion_pubkey,
                 "auth_token": auth_token,
                 "invite_code": invite_code,
+                "invite_expires_at": int(time.time()) + self.INVITE_TTL_S,
+                "invite_consumed": False,
                 "pin": pin,
                 "created_at": int(time.time()),
                 "nodes": {},
-                # Phase D: when true, /api/mesh/{id}/{status,sync,order} return
-                # 410 Gone. Existing meshes default false; flip per-mesh after the
-                # E2E test confirms the vault path is reliable.
                 "vault_only": False,
+                "max_blobs_per_day": self.DEFAULT_MAX_BLOBS_PER_DAY,
+                "max_total_bytes_mb": self.DEFAULT_MAX_TOTAL_BYTES_MB,
             }
             self.meshes[mesh_id] = account
             self._save(mesh_id)
@@ -629,6 +696,14 @@ class MeshAccountStore:
             account = self._find_by_invite(invite_code)
             if not account:
                 return None, "invalid invite code"
+            # Check expiry
+            expires = account.get("invite_expires_at", 0)
+            if expires and time.time() > expires:
+                return None, "invite code expired"
+            # Check one-time use
+            if account.get("invite_consumed"):
+                return None, "invite code already used"
+            account["invite_consumed"] = True
             account["nodes"][node_id] = {
                 "type": node_type,
                 "joined_at": int(time.time()),
@@ -768,6 +843,22 @@ class VaultStore:
     def current_version(self, mesh_id):
         versions = self._list_blob_versions(mesh_id)
         return versions[-1] if versions else 0
+
+    def total_bytes(self, mesh_id):
+        """Total bytes of all stored blobs for this mesh."""
+        d = self._mesh_dir(mesh_id)
+        if not d:
+            return 0
+        blobs_dir = os.path.join(d, "blobs")
+        if not os.path.exists(blobs_dir):
+            return 0
+        total = 0
+        for fname in os.listdir(blobs_dir):
+            try:
+                total += os.path.getsize(os.path.join(blobs_dir, fname))
+            except OSError:
+                pass
+        return total
 
     def append(self, mesh_id, blob):
         """Append a blob. Returns (version, error). Blob version must be > current."""
@@ -1161,17 +1252,18 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
 
         # ── Mesh Endpoints ──
         elif self.path == "/mesh/sync":
-            if not mesh.validate_pin(data, mesh_orders):
+            _mid = _mesh_accounts.find_mesh_id_by_pin(data.get("pin", ""))
+            _morders = _resolve_orders(_mid)
+            if not mesh.validate_pin(data, _morders):
                 self.respond(403, {"error": "invalid pin"})
                 return
-            _mid = _mesh_accounts.find_mesh_id_by_pin(data.get("pin", ""))
             if _mid and _mesh_accounts.is_vault_only(_mid):
                 self.respond(410, {"error": "vault_only mesh — use /vault/{mesh_id}/since/{v} for reads and /vault/{mesh_id}/append for writes"})
                 return
             result = mesh.handle_mesh_sync(
                 data, MESH_NODE_ID, MESH_NODE_TYPE,
                 mesh.get_local_addresses(), MESH_PORT,
-                mesh_orders, mesh_peers, mesh_local_status(),
+                _morders, mesh_peers, mesh_local_status(),
                 get_lion_pubkey(), on_mesh_orders_applied,
             )
             # Check for pending pairing for this node
@@ -1183,15 +1275,16 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             self.respond(200, result)
 
         elif self.path == "/mesh/order":
-            if not mesh.validate_pin(data, mesh_orders):
+            _mid = _mesh_accounts.find_mesh_id_by_pin(data.get("pin", ""))
+            _morders = _resolve_orders(_mid)
+            if not mesh.validate_pin(data, _morders):
                 self.respond(403, {"error": "invalid pin"})
                 return
-            _mid = _mesh_accounts.find_mesh_id_by_pin(data.get("pin", ""))
             if _mid and _mesh_accounts.is_vault_only(_mid):
                 self.respond(410, {"error": "vault_only mesh — POST Lion-signed blobs to /vault/{mesh_id}/append"})
                 return
             result = mesh.handle_mesh_order(
-                data, mesh_orders, mesh_peers, MESH_NODE_ID,
+                data, _morders, mesh_peers, MESH_NODE_ID,
                 apply_fn=mesh_apply_order,
                 lion_pubkey=get_lion_pubkey(),
                 on_orders_applied=on_mesh_orders_applied,
@@ -1230,22 +1323,23 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if not lion_pubkey:
                 self.respond(400, {"error": "lion_pubkey required"})
                 return
-            # Use existing PIN from orders if available
-            existing_pin = str(mesh_orders.get("pin", ""))
-            if existing_pin in ("", "null", "None", "0"):
-                existing_pin = ""
-            account = _mesh_accounts.create(lion_pubkey, pin=existing_pin)
-            # Store lion_pubkey for signature verification
+            client_ip = self.client_address[0] if self.client_address else ""
+            if not _mesh_accounts.check_rate_limit(client_ip):
+                self.respond(429, {"error": "rate limit exceeded — max 3 meshes per hour"})
+                return
+            account = _mesh_accounts.create(lion_pubkey, client_ip=client_ip)
+            new_mesh_id = account["mesh_id"]
+            # Create a per-mesh OrdersDocument (isolated from operator's mesh)
+            new_orders = _orders_registry.get_or_create(new_mesh_id)
+            new_orders.set("pin", account["pin"])
+            new_orders.bump_version()
+            # If this is the first mesh and no operator mesh exists, adopt it
             global _lion_pubkey
             if lion_pubkey and not _lion_pubkey:
                 _lion_pubkey = lion_pubkey
-            # Sync PIN into orders document so old-style endpoints still work
-            mesh_orders.set("pin", account["pin"])
-            mesh_orders.bump_version()
-            ntfy_fn(mesh_orders.version)
-            print(f"[{now()}] Mesh created: {account['mesh_id']} invite={account['invite_code']}")
+            print(f"[{now()}] Mesh created: {new_mesh_id} invite={account['invite_code']}")
             self.respond(200, {
-                "mesh_id": account["mesh_id"],
+                "mesh_id": new_mesh_id,
                 "invite_code": account["invite_code"],
                 "auth_token": account["auth_token"],
                 "pin": account["pin"],
@@ -1294,8 +1388,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if _mesh_accounts.is_vault_only(mesh_id):
                 self.respond(410, {"error": "vault_only mesh — POST Lion-signed blobs to /vault/{mesh_id}/append"})
                 return
+            _morders = _resolve_orders(mesh_id)
             result = mesh.handle_mesh_order(
-                data, mesh_orders, mesh_peers, MESH_NODE_ID,
+                data, _morders, mesh_peers, MESH_NODE_ID,
                 apply_fn=mesh_apply_order,
                 lion_pubkey=get_lion_pubkey(),
                 on_orders_applied=on_mesh_orders_applied,
@@ -1313,10 +1408,11 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if _mesh_accounts.is_vault_only(mesh_id):
                 self.respond(410, {"error": "vault_only mesh — use /vault/{mesh_id}/since/{v} for reads and /vault/{mesh_id}/append for writes"})
                 return
+            _morders = _resolve_orders(mesh_id)
             result = mesh.handle_mesh_sync(
                 data, MESH_NODE_ID, MESH_NODE_TYPE,
                 mesh.get_local_addresses(), MESH_PORT,
-                mesh_orders, mesh_peers, mesh_local_status(),
+                _morders, mesh_peers, mesh_local_status(),
                 get_lion_pubkey(), on_mesh_orders_applied,
             )
             # Update node last_seen in account
@@ -1360,6 +1456,13 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 if blob.get("mesh_id") != mesh_id:
                     self.respond(400, {"error": "blob.mesh_id mismatch"})
                     return
+                # Per-mesh quota check (skip for operator's mesh)
+                if mesh_id != OPERATOR_MESH_ID:
+                    max_bytes = account.get("max_total_bytes_mb", 100) * 1024 * 1024
+                    store_size = _vault_store.total_bytes(mesh_id)
+                    if store_size >= max_bytes:
+                        self.respond(429, {"error": f"vault quota exceeded ({max_bytes // (1024*1024)}MB)"})
+                        return
                 if not lion_pubkey:
                     self.respond(403, {"error": "no lion_pubkey on file for this mesh"})
                     return
@@ -1639,15 +1742,16 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             parsed = urllib.parse.urlparse(self.path)
             params = urllib.parse.parse_qs(parsed.query)
             pin = params.get("pin", [""])[0]
-            if pin != str(mesh_orders.get("pin", "")):
+            _mid = _mesh_accounts.find_mesh_id_by_pin(pin)
+            _morders = _resolve_orders(_mid)
+            if pin != str(_morders.get("pin", "")):
                 self.respond(403, {"error": "invalid pin"})
                 return
-            _mid = _mesh_accounts.find_mesh_id_by_pin(pin)
             if _mid and _mesh_accounts.is_vault_only(_mid):
                 self.respond(410, {"error": "vault_only mesh — use /vault/{mesh_id}/since/{v}"})
                 return
             self.respond(200, mesh.handle_mesh_status(
-                mesh_orders, mesh_peers, MESH_NODE_ID, mesh_local_status()))
+                _morders, mesh_peers, MESH_NODE_ID, mesh_local_status()))
             return
 
         elif self.path.startswith("/api/mesh/"):
@@ -1670,9 +1774,10 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 if _mesh_accounts.is_vault_only(mesh_id):
                     self.respond(410, {"error": "vault_only mesh — use /vault/{mesh_id}/since/{v}"})
                     return
+                _morders = _resolve_orders(mesh_id)
                 account = _mesh_accounts.get(mesh_id)
                 status = mesh.handle_mesh_status(
-                    mesh_orders, mesh_peers, MESH_NODE_ID, mesh_local_status())
+                    _morders, mesh_peers, MESH_NODE_ID, mesh_local_status())
                 if account:
                     status["mesh_id"] = mesh_id
                     status["invite_code"] = account.get("invite_code", "")
@@ -1699,15 +1804,17 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             req_mesh_id = params.get("mesh_id", [""])[0]
             if req_mesh_id and req_mesh_id != OPERATOR_MESH_ID and _mesh_accounts.is_vault_only(req_mesh_id):
                 # Vault-only non-operator mesh: metadata only, no plaintext orders
+                _morders = _resolve_orders(req_mesh_id)
                 self.respond(200, {
-                    "orders_version": mesh_orders.version,
+                    "orders_version": _morders.version,
                     "vault_only": True,
                     "uptime_s": int(time.time() - SERVICE_START_TIME),
                     "nodes": len(mesh_peers.peers),
                 })
                 return
+            _morders = _resolve_orders(req_mesh_id) if req_mesh_id else mesh_orders
             self.respond(200, mesh.handle_mesh_status(
-                mesh_orders, mesh_peers, MESH_NODE_ID, mesh_local_status()))
+                _morders, mesh_peers, MESH_NODE_ID, mesh_local_status()))
             return
 
         # ── Vault GET endpoints (zero-knowledge mesh) ──
@@ -1774,6 +1881,10 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         elif self.path.startswith("/desktop-status"):
             # Return lock state for desktop collar — reads from mesh orders (no ADB needed)
             # Supports ?hostname=X for per-device lock checks
+            # Vault-only meshes should use the vault poll instead.
+            if OPERATOR_MESH_ID and _mesh_accounts.is_vault_only(OPERATOR_MESH_ID):
+                self.respond(410, {"error": "vault_only — desktop collars should poll /vault/{mesh_id}/since/{v}"})
+                return
             try:
                 import urllib.parse
                 parsed = urllib.parse.urlparse(self.path)
@@ -1929,16 +2040,17 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             else:
                 self.respond(404, {"error": "no memory dir", "checked": mem_dir})
 
-        elif self.path in ("/", "/index.html"):
-            # Serve web UI
+        elif self.path in ("/", "/index.html", "/signup", "/signup.html"):
+            # Serve web UI (index or signup)
             web_dir = "/opt/focuslock/web"
-            index = os.path.join(web_dir, "index.html")
-            if os.path.exists(index):
+            fname = "signup.html" if self.path.startswith("/signup") else "index.html"
+            page = os.path.join(web_dir, fname)
+            if os.path.exists(page):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
-                with open(index, "rb") as f:
+                with open(page, "rb") as f:
                     self.wfile.write(f.read())
             else:
                 self.respond(404, {"error": "web UI not deployed"})

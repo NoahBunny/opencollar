@@ -66,10 +66,12 @@ done
 if [ -f "$ICONS/$SERVER_ICON" ]; then
     DEPLOY_PAIRS+=("$ICONS/$SERVER_ICON|/opt/focuslock/$SERVER_ICON")
 fi
-# Web UI (the relay's HTML controller)
-if [ -f "$LS/web/index.html" ]; then
-    DEPLOY_PAIRS+=("$LS/web/index.html|/opt/focuslock/web/index.html")
-fi
+# Web UI (the relay's HTML controller + signup page)
+for html in index.html signup.html; do
+    if [ -f "$LS/web/$html" ]; then
+        DEPLOY_PAIRS+=("$LS/web/$html|/opt/focuslock/web/$html")
+    fi
+done
 # Shared Python modules
 for src in "$LS"/shared/focuslock_*.py; do
     [ -f "$src" ] || continue
@@ -144,10 +146,18 @@ if [ "${#PUSH_LIST[@]}" -gt 0 ]; then
     ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" "rm -rf $TMPDIR_REMOTE"
 fi
 
-# Ensure runtime dirs exist (vault store + meshes)
+# Ensure runtime dirs exist (vault store + meshes + per-mesh orders)
 ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
-    'sudo mkdir -p /run/focuslock/meshes /run/focuslock/vaults && sudo chmod 755 /run/focuslock/meshes /run/focuslock/vaults' || \
+    'sudo mkdir -p /run/focuslock/meshes /run/focuslock/vaults /run/focuslock/mesh-orders && sudo chmod 755 /run/focuslock/meshes /run/focuslock/vaults /run/focuslock/mesh-orders' || \
     warn "Could not create /run/focuslock dirs"
+
+# Write git commit hash for /version transparency (P3)
+GIT_COMMIT=$(git -C "$LS" rev-parse HEAD 2>/dev/null || echo "")
+if [ -n "$GIT_COMMIT" ]; then
+    echo "$GIT_COMMIT" | ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
+        "sudo tee /opt/focuslock/.git_commit > /dev/null"
+    log "  git commit: $GIT_COMMIT"
+fi
 
 # Restart service if focuslock-mail.py changed (or --force-restart)
 if [ "$NEEDS_RESTART" = 1 ] || [ "$FORCE_RESTART" = 1 ]; then
