@@ -1,6 +1,6 @@
-<\!DOCTYPE html>
-<\!-- SPDX-License-Identifier: GPL-3.0-or-later -->
-<\!-- Copyright (C) 2024-2026 The FocusLock Contributors -->
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright (C) 2024-2026 The FocusLock Contributors -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -807,9 +807,15 @@ label {
        onerror="this.style.display='none'">
   <div class="login-title">Lion's Share</div>
   <div class="login-subtitle">Controller Authentication</div>
+  <div id="qrLoginSection" style="margin:1.5rem 0;text-align:center">
+    <div id="qrCanvas" style="display:inline-block;background:#fff;padding:12px;border-radius:8px"></div>
+    <div style="color:var(--text-muted);font-size:0.8rem;margin-top:0.5rem">Scan with phone camera to log in</div>
+    <div id="qrStatus" style="color:var(--gold);font-size:0.8rem;margin-top:0.3rem"></div>
+  </div>
+  <div style="color:var(--text-muted);font-size:0.75rem;margin-bottom:0.8rem">— or enter token manually —</div>
   <div class="pin-field">
-    <input type="password" id="pinInput" placeholder="PIN" maxlength="8"
-           inputmode="numeric" autocomplete="off">
+    <input type="password" id="pinInput" placeholder="Token" maxlength="64"
+           autocomplete="off">
     <button class="btn btn-primary" id="pinSubmit">Enter</button>
   </div>
   <div class="login-error" id="loginError"></div>
@@ -826,6 +832,7 @@ label {
       <h1>Lion's Share</h1>
       <div class="subtitle" id="headerSubtitle">Controller</div>
     </div>
+    <button id="btnLogout" style="background:none;border:1px solid #555;color:#aaa;font-size:0.7rem;padding:4px 10px;border-radius:4px;cursor:pointer;margin-left:auto">Logout</button>
   </div>
 
   <!-- Tab Bar -->
@@ -1006,6 +1013,25 @@ label {
       </div>
     </div>
 
+    <!-- Scheduling -->
+    <div class="card">
+      <div class="card-title">Scheduling</div>
+      <div class="input-group" style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+        <label style="min-width:70px">Bedtime</label>
+        <input type="number" id="bedtimeLockHour" min="0" max="23" placeholder="Lock hr" style="width:5rem">
+        <span style="color:var(--text-muted)">to</span>
+        <input type="number" id="bedtimeUnlockHour" min="0" max="23" placeholder="Wake hr" style="width:5rem">
+        <button class="btn btn-primary" id="btnSetBedtime">Set</button>
+        <button class="btn" id="btnClearBedtime">Clear</button>
+      </div>
+      <div class="input-group" style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-top:0.5rem">
+        <label style="min-width:70px">Screen Time</label>
+        <input type="number" id="screenTimeQuota" min="0" placeholder="Minutes/day" style="width:7rem">
+        <button class="btn btn-primary" id="btnSetScreenTime">Set</button>
+        <button class="btn" id="btnClearScreenTime">Clear</button>
+      </div>
+    </div>
+
     <!-- Power Tools -->
     <div class="card">
       <div class="card-title">Power Tools</div>
@@ -1087,6 +1113,7 @@ label {
 <!-- ════════════════════════════════════════════ TOAST ════════════════════════════════════════════ -->
 <div class="toast" id="toast"></div>
 
+<script src="/qrcode.min.js"></script>
 <script>
 /* ════════════════════════════════════════════════════════════════════════════════════════════════
    Lion's Share — Web Controller
@@ -1103,6 +1130,9 @@ label {
   let meshPollId = null;
   let timerRemainingMs = 0;
   let lastStatusTimestamp = 0;
+  let MODE = sessionStorage.getItem('ls_mode') || 'lan';
+  let qrSessionId = null;
+  let qrPollId = null;
 
   // ── DOM refs ──
   const $ = (sel, ctx) => (ctx || document).querySelector(sel);
@@ -1117,6 +1147,7 @@ label {
 
   // ── Helpers ──
   function api(method, path, body) {
+    if (MODE === 'relay') return apiRelay(method, path, body);
     const sep = path.includes('?') ? '&' : '?';
     const url = `${path}${sep}pin=${encodeURIComponent(PIN)}`;
     const opts = { method, headers: {} };
@@ -1128,6 +1159,37 @@ label {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json().catch(() => ({}));
     });
+  }
+
+  // LAN-only actions that cannot work through the admin API relay
+  const LAN_ONLY = new Set(['/api/toy', '/api/play-audio', '/api/speak',
+    '/api/get-location', '/api/enable-settings']);
+
+  function apiRelay(method, path, body) {
+    if (LAN_ONLY.has(path)) {
+      toast('Requires LAN access', true);
+      return Promise.reject(new Error('Requires LAN access'));
+    }
+    if (method === 'GET' && (path === '/api/status' || path === '/mesh/status')) {
+      return fetch(`/admin/status?admin_token=${encodeURIComponent(PIN)}`)
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); });
+    }
+    // POST actions → /admin/order
+    // For /mesh/order calls, action is in body.action with body.params
+    // For /api/* calls, action is the path suffix and body IS the params
+    let action, params;
+    if (path === '/mesh/order' && body && body.action) {
+      action = body.action;
+      params = body.params || {};
+    } else {
+      action = path.replace('/api/', '');
+      params = body || {};
+    }
+    return fetch('/admin/order', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ admin_token: PIN, action, params }),
+    }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); });
   }
 
   function toast(msg, isError) {
@@ -1210,30 +1272,176 @@ label {
     $('#modalOverlay').classList.remove('show');
   }
 
-  // ── Auth ──
-  function tryLogin(pin) {
-    PIN = pin;
-    api('GET', '/api/status')
+  // ── Logout ──
+  function doLogout() {
+    if (statusPollId) clearInterval(statusPollId);
+    if (meshPollId) clearInterval(meshPollId);
+    if (qrPollId) clearInterval(qrPollId);
+    if (timerInterval) clearInterval(timerInterval);
+    PIN = '';
+    MODE = 'lan';
+    status = {};
+    meshData = { orders: {}, nodes: {} };
+    sessionStorage.removeItem('ls_pin');
+    sessionStorage.removeItem('ls_mode');
+    appShell.classList.add('hidden');
+    loginScreen.classList.remove('hidden');
+    loginError.textContent = '';
+    pinInput.value = '';
+    startQrSession();
+  }
+
+  // ── QR Code Session Auth ──
+  function startQrSession() {
+    fetch('/admin/web-session', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}' })
+      .then(r => r.json())
       .then(data => {
-        sessionStorage.setItem('ls_pin', pin);
-        loginScreen.classList.add('hidden');
-        appShell.classList.remove('hidden');
-        status = data;
-        renderStatus();
-        startPolling();
+        if (!data.session_id) return;
+        qrSessionId = data.session_id;
+        // Render QR code using qrcode-generator 1.4.4
+        const container = document.getElementById('qrCanvas');
+        container.innerHTML = '';
+        try {
+          const qr = qrcode(0, 'M');
+          qr.addData(data.qr_url);
+          qr.make();
+          const img = document.createElement('img');
+          img.src = qr.createDataURL(5, 4);
+          img.style.cssText = 'width:180px;height:180px;image-rendering:pixelated';
+          container.appendChild(img);
+        } catch (e) {
+          container.innerHTML = '<div style="color:var(--text-muted);font-size:0.8rem">QR unavailable</div>';
+        }
+        // Start polling for approval
+        if (qrPollId) clearInterval(qrPollId);
+        const statusEl = document.getElementById('qrStatus');
+        qrPollId = setInterval(() => {
+          fetch(`/admin/web-session/${qrSessionId}`)
+            .then(r => r.json())
+            .then(d => {
+              if (d.approved && d.admin_token) {
+                clearInterval(qrPollId);
+                qrPollId = null;
+                statusEl.textContent = 'Approved!';
+                PIN = d.admin_token;
+                MODE = 'relay';
+                enterApp(d.admin_token, null);
+                // Fetch initial status after login
+                pollStatus();
+              }
+            })
+            .catch(() => {
+              // Session expired — create a new one
+              clearInterval(qrPollId);
+              qrPollId = null;
+              statusEl.textContent = 'Session expired — refreshing...';
+              setTimeout(startQrSession, 1000);
+            });
+        }, 5000);
       })
       .catch(() => {
-        loginError.textContent = 'Invalid PIN or server unreachable';
-        PIN = '';
+        // Server unreachable or no web-session endpoint — hide QR section
+        const section = document.getElementById('qrLoginSection');
+        if (section) section.style.display = 'none';
       });
   }
 
+  // ── Auth ──
+  function tryLogin(pin) {
+    PIN = pin;
+    MODE = 'lan';
+    // Try LAN first (direct to slave), then relay (admin API)
+    fetch(`/api/status?pin=${encodeURIComponent(pin)}`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(data => {
+        MODE = 'lan';
+        enterApp(pin, data);
+      })
+      .catch(() => {
+        // LAN failed — try relay (admin_token)
+        fetch(`/admin/status?admin_token=${encodeURIComponent(pin)}`)
+          .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+          .then(data => {
+            MODE = 'relay';
+            enterApp(pin, normalizeRelayStatus(data));
+          })
+          .catch(() => {
+            loginError.textContent = 'Invalid PIN/token or server unreachable';
+            PIN = '';
+          });
+      });
+  }
+
+  function enterApp(pin, data) {
+    if (qrPollId) { clearInterval(qrPollId); qrPollId = null; }
+    sessionStorage.setItem('ls_pin', pin);
+    sessionStorage.setItem('ls_mode', MODE);
+    loginScreen.classList.add('hidden');
+    appShell.classList.remove('hidden');
+    if (data) { status = data; renderStatus(); }
+    startPolling();
+    if (MODE === 'relay') applyRelayRestrictions();
+  }
+
+  function normalizeRelayStatus(adminData) {
+    // Map /admin/status (handle_mesh_status) fields to slave /api/status format
+    const o = adminData.orders || {};
+    return {
+      locked: adminData.locked || o.lock_active == 1,
+      message: o.message || '',
+      task: o.task_text || '',
+      timer_remaining_ms: adminData.timer_remaining_ms || 0,
+      escapes: adminData.escapes || o.escapes || 0,
+      paywall: adminData.paywall || String(o.paywall || '0'),
+      compliment: o.compliment || '',
+      task_reps: adminData.task_reps || o.task_reps || 0,
+      task_done: adminData.task_done || o.task_done || 0,
+      mode: o.mode || '',
+      offer: adminData.offer || o.offer || '',
+      offer_status: adminData.offer_status || o.offer_status || '',
+      vibrate: o.vibrate == 1, penalty: o.penalty == 1,
+      shame: o.shame == 1, dim: o.dim == 1, mute: o.mute == 1,
+      sub_tier: adminData.sub_tier || o.sub_tier || '',
+      sub_due: o.sub_due || 0,
+      free_unlocks: o.free_unlocks || 0,
+      geofence_active: !!(o.geofence_lat),
+      desktop_locked: o.desktop_active == 1,
+      fine_active: o.fine_active || 0,
+      fine_amount: o.fine_amount || 0,
+      entrapped: o.entrapped == 1,
+      _nodes: adminData.nodes || {},
+      _orders: o,
+    };
+  }
+
+  function applyRelayRestrictions() {
+    // Grey out LAN-only buttons with tooltip
+    const ids = ['btnPlayAudio', 'btnSpeak', 'btnConfineHome'];
+    ids.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) { el.disabled = true; el.title = 'Requires LAN access'; el.style.opacity = '0.4'; }
+    });
+    // Lovense section buttons
+    $$('#lovenseSection button').forEach(el => {
+      el.disabled = true; el.title = 'Requires LAN access'; el.style.opacity = '0.4';
+    });
+    // Show relay mode indicator
+    const badge = document.createElement('span');
+    badge.textContent = 'RELAY';
+    badge.style.cssText = 'background:#b8860b;color:#000;padding:2px 8px;border-radius:4px;font-size:0.7rem;font-weight:700;margin-left:8px;';
+    const header = $('h1') || $('header');
+    if (header) header.appendChild(badge);
+  }
+
+  $('#btnLogout').addEventListener('click', doLogout);
   pinSubmit.addEventListener('click', () => tryLogin(pinInput.value));
   pinInput.addEventListener('keydown', e => { if (e.key === 'Enter') tryLogin(pinInput.value); });
 
-  // ── Auto-login ──
+  // ── Auto-login or QR session ──
   if (PIN) {
     tryLogin(PIN);
+  } else {
+    startQrSession();
   }
 
   // ── Tabs ──
@@ -1383,6 +1591,18 @@ label {
 
   // ── Polling ──
   function pollStatus() {
+    if (MODE === 'relay') {
+      fetch(`/admin/status?admin_token=${encodeURIComponent(PIN)}`)
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+        .then(data => {
+          const norm = normalizeRelayStatus(data);
+          status = norm;
+          meshData = { orders: data.orders || {}, nodes: data.nodes || {} };
+          renderStatus();
+          renderMesh();
+        }).catch(() => {});
+      return;
+    }
     api('GET', '/api/status').then(data => {
       status = data;
       renderStatus();
@@ -1390,6 +1610,7 @@ label {
   }
 
   function pollMesh() {
+    if (MODE === 'relay') return; // Handled by pollStatus in relay mode
     api('GET', '/mesh/status').then(data => {
       meshData = data;
       renderMesh();
@@ -1700,6 +1921,35 @@ label {
     const endpoint = isPinned ? '/api/pin-message' : '/api/message';
     api('POST', endpoint, { message: text })
       .then(() => { toast(isPinned ? 'Pinned message sent' : 'Message sent'); $('#msgText').value = ''; })
+      .catch(e => toast(`Failed: ${e.message}`, true));
+  });
+
+  // ── Scheduling Controls ──
+  $('#btnSetBedtime').addEventListener('click', () => {
+    const lh = parseInt($('#bedtimeLockHour').value);
+    const uh = parseInt($('#bedtimeUnlockHour').value);
+    if (isNaN(lh) || isNaN(uh) || lh < 0 || lh > 23 || uh < 0 || uh > 23) {
+      toast('Enter valid hours (0-23)', true); return;
+    }
+    api('POST', '/api/set-bedtime', { lock_hour: lh, unlock_hour: uh })
+      .then(() => toast(`Bedtime set: ${lh}:00 - ${uh}:00`))
+      .catch(e => toast(`Failed: ${e.message}`, true));
+  });
+  $('#btnClearBedtime').addEventListener('click', () => {
+    api('POST', '/api/clear-bedtime', {})
+      .then(() => toast('Bedtime cleared'))
+      .catch(e => toast(`Failed: ${e.message}`, true));
+  });
+  $('#btnSetScreenTime').addEventListener('click', () => {
+    const qt = parseInt($('#screenTimeQuota').value);
+    if (isNaN(qt) || qt < 1) { toast('Enter quota in minutes', true); return; }
+    api('POST', '/api/set-screen-time', { quota_minutes: qt })
+      .then(() => toast(`Screen time: ${qt} min/day`))
+      .catch(e => toast(`Failed: ${e.message}`, true));
+  });
+  $('#btnClearScreenTime').addEventListener('click', () => {
+    api('POST', '/api/clear-screen-time', {})
+      .then(() => toast('Screen time limit cleared'))
       .catch(e => toast(`Failed: ${e.message}`, true));
   });
 

@@ -43,6 +43,7 @@ done
 [ -f "$PROJECT_DIR/shared/focuslock_config.py" ] && cp "$PROJECT_DIR/shared/focuslock_config.py" /opt/focuslock/
 # Copy icon
 [ -f "$PROJECT_DIR/icons/collar-icon.png" ] && cp "$PROJECT_DIR/icons/collar-icon.png" /opt/focuslock/
+[ -f "$PROJECT_DIR/icons/collar-icon-gold.png" ] && cp "$PROJECT_DIR/icons/collar-icon-gold.png" /opt/focuslock/
 # Copy Lion's Share public key
 [ -f "$PROJECT_DIR/lion_pubkey.pem" ] && cp "$PROJECT_DIR/lion_pubkey.pem" /opt/focuslock/
 # Copy web UI

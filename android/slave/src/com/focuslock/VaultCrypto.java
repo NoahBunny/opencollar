@@ -96,15 +96,19 @@ public class VaultCrypto {
         return blob;
     }
 
-    /** Sign canonical_json(blob_minus_signature) with the slave's privkey. */
+    /** Sign canonical_json(blob_minus_signature) with the slave's privkey (base64 DER). */
     public static String signBlob(Map<String, Object> blob, String privKeyB64) throws Exception {
-        TreeMap<String, Object> signed = new TreeMap<>(blob);
-        signed.remove("signature");
-        byte[] data = canonicalJson(signed);
-
         byte[] privDer = Base64.decode(stripPemHeaders(privKeyB64), Base64.DEFAULT);
         PrivateKey pk = KeyFactory.getInstance("RSA")
             .generatePrivate(new PKCS8EncodedKeySpec(privDer));
+        return signBlob(blob, pk);
+    }
+
+    /** Sign canonical_json(blob_minus_signature) with a PrivateKey object (KeyStore-backed). */
+    public static String signBlob(Map<String, Object> blob, PrivateKey pk) throws Exception {
+        TreeMap<String, Object> signed = new TreeMap<>(blob);
+        signed.remove("signature");
+        byte[] data = canonicalJson(signed);
 
         Signature sig = Signature.getInstance("SHA256withRSA");
         sig.initSign(pk);
@@ -147,13 +151,21 @@ public class VaultCrypto {
         }
     }
 
-    /**
-     * Decrypt a vault blob's body using the slave's RSA privkey.
-     * Returns the decrypted orders JSON string, or null on failure.
-     *
-     * Expected blob structure: { slots: { slotId: {encrypted_key, iv} }, ciphertext }
-     */
+    /** Decrypt using a base64-DER private key string (legacy path). */
     public static String decryptOrders(Map<String, Object> blob, String myPrivKeyB64, byte[] myPubKeyDer) {
+        try {
+            byte[] privDer = Base64.decode(stripPemHeaders(myPrivKeyB64), Base64.DEFAULT);
+            PrivateKey pk = KeyFactory.getInstance("RSA")
+                .generatePrivate(new PKCS8EncodedKeySpec(privDer));
+            return decryptOrders(blob, pk, myPubKeyDer);
+        } catch (Exception e) {
+            android.util.Log.w("VaultCrypto", "decrypt (legacy) failed: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /** Decrypt using a PrivateKey object (KeyStore-backed). */
+    public static String decryptOrders(Map<String, Object> blob, PrivateKey pk, byte[] myPubKeyDer) {
         try {
             String mySlotId = sha256Hex(myPubKeyDer).substring(0, 12);
             Object slotsObj = blob.get("slots");
@@ -169,10 +181,6 @@ public class VaultCrypto {
             String ivB64 = (String) slot.get("iv");
             String ctB64 = (String) blob.get("ciphertext");
             if (ekB64 == null || ivB64 == null || ctB64 == null) return null;
-
-            byte[] privDer = Base64.decode(stripPemHeaders(myPrivKeyB64), Base64.DEFAULT);
-            PrivateKey pk = KeyFactory.getInstance("RSA")
-                .generatePrivate(new PKCS8EncodedKeySpec(privDer));
 
             Cipher rsa = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");
             rsa.init(Cipher.DECRYPT_MODE, pk, new OAEPParameterSpec(

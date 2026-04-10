@@ -23,6 +23,7 @@ import base64
 import hmac
 import random
 import secrets
+import subprocess
 import socket
 import sys
 
@@ -37,6 +38,11 @@ import focuslock_mesh as mesh
 # See docs/VAULT-DESIGN.md "Trust model" and the roadmap P3 entry.
 __version__ = "phase-d.1"
 SERVICE_START_TIME = time.time()
+
+# ── Web Session Auth (QR code login for Lion's Share web UI) ──
+# Ephemeral sessions: phone scans QR → approves session → web auto-logs in.
+_web_sessions = {}  # session_id -> {secret, approved, created_at, admin_token}
+_WEB_SESSION_TTL = 300  # 5 minutes
 
 
 def _compute_source_sha256():
@@ -243,6 +249,49 @@ def mesh_local_status():
         "services": ["mail", "bridge", "mesh"],
     }
 
+def _admin_order_to_vault_blob(action, params, mesh_id=None):
+    """Write an admin order as a Lion-signed vault RPC blob so vault-mode slaves pick it up.
+    Uses the Lion's private key on disk and encrypts for all registered vault nodes."""
+    try:
+        from focuslock_vault import encrypt_body
+    except ImportError:
+        try:
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "shared"))
+            from focuslock_vault import encrypt_body
+        except ImportError:
+            print(f"[admin] vault blob write skipped: focuslock_vault not available")
+            return
+    mid = mesh_id or OPERATOR_MESH_ID
+    if not mid:
+        return
+    # Load Lion's private key
+    lion_priv_path = os.path.expanduser("~/.config/focuslock/lion_privkey.pem")
+    if not os.path.exists(lion_priv_path):
+        lion_priv_path = "/opt/focuslock/.config/focuslock/lion_privkey.pem"
+    if not os.path.exists(lion_priv_path):
+        print(f"[admin] vault blob write skipped: no lion_privkey.pem")
+        return
+    with open(lion_priv_path) as f:
+        lion_priv_pem = f.read().strip()
+    # Get registered nodes (recipients for encryption)
+    nodes = _vault_store.get_nodes(mid)
+    if not nodes:
+        print(f"[admin] vault blob write skipped: no registered vault nodes")
+        return
+    recipients = [(n.get("node_id", ""), n.get("node_pubkey", "")) for n in nodes if n.get("node_pubkey")]
+    if not recipients:
+        return
+    # Build RPC body (same format as Lion's Share apiVault)
+    body = {"action": action, "params": params or {}}
+    version = _vault_store.current_version(mid) + 1
+    created_at = int(time.time() * 1000)
+    blob = encrypt_body(mid, version, created_at, body, recipients, lion_priv_pem)
+    ver, err = _vault_store.append(mid, blob)
+    if err:
+        print(f"[admin] vault blob append error: {err}")
+    else:
+        print(f"[admin] vault blob written: v{ver} action={action}")
+
 def on_mesh_orders_applied(orders_dict):
     """Called when mesh gossip applies new orders.
     Do NOT write back to phone via ADB — the phone is its own source of truth
@@ -306,6 +355,17 @@ def mesh_apply_order(action, params, orders):
         orders.set("curfew_lon", params.get("lon", ""))
     elif action == "clear-curfew":
         orders.set("curfew_enabled", 0)
+    elif action == "set-bedtime":
+        orders.set("bedtime_enabled", 1)
+        orders.set("bedtime_lock_hour", int(params.get("lock_hour", -1)))
+        orders.set("bedtime_unlock_hour", int(params.get("unlock_hour", -1)))
+    elif action == "clear-bedtime":
+        orders.set("bedtime_enabled", 0)
+    elif action == "set-screen-time":
+        orders.set("screen_time_quota_minutes", int(params.get("quota_minutes", 0)))
+        orders.set("screen_time_reset_hour", int(params.get("reset_hour", 0)))
+    elif action == "clear-screen-time":
+        orders.set("screen_time_quota_minutes", 0)
     elif action == "add-paywall":
         current = orders.get("paywall", "0")
         try:
@@ -728,12 +788,6 @@ class MeshAccountStore:
         expected = account.get("auth_token", "")
         return hmac.compare_digest(expected, auth_token)
 
-    def validate_pin(self, mesh_id, pin):
-        account = self.meshes.get(mesh_id)
-        if not account:
-            return False
-        return hmac.compare_digest(str(account.get("pin", "")), str(pin))
-
     def update_node(self, mesh_id, node_id, **fields):
         with self.lock:
             account = self.meshes.get(mesh_id)
@@ -746,16 +800,6 @@ class MeshAccountStore:
         endpoints return 410 Gone. Lion's Share and slaves must use /vault/*."""
         account = self.meshes.get(mesh_id)
         return bool(account and account.get("vault_only", False))
-
-    def find_mesh_id_by_pin(self, pin):
-        """Look up mesh_id by PIN (for legacy endpoints that don't carry mesh_id).
-        Returns the first matching mesh_id, or None."""
-        pin_str = str(pin)
-        with self.lock:
-            for mid, account in self.meshes.items():
-                if str(account.get("pin", "")) == pin_str:
-                    return mid
-        return None
 
     def list_mesh_ids(self):
         """Snapshot of all known mesh_ids. Used by /version for the
@@ -1298,12 +1342,6 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             send_evidence(f"{reason}: ${amount} penalty applied. New paywall: ${pw}", "desktop penalty")
             self.respond(200, {"ok": True, "new_paywall": pw})
 
-        # ── Legacy /mesh/sync and /mesh/order removed (Phase 4D) ──
-        # All nodes must use /vault/{mesh_id}/append for writes and
-        # /vault/{mesh_id}/since/{v} for reads. PIN-based endpoints are gone.
-        elif self.path in ("/mesh/sync", "/mesh/order"):
-            self.respond(410, {"error": "legacy plaintext mesh endpoints removed — use /vault/{mesh_id}/*"})
-
         # ── Admin API (enforcement infrastructure) ──
         # Without mesh_id: operates on operator's mesh (backwards compat).
         # With mesh_id on a vault_only mesh that isn't the operator's: refused.
@@ -1327,6 +1365,14 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 on_orders_applied=on_mesh_orders_applied,
                 ntfy_fn=ntfy_fn,
             )
+            # Also write as vault blob so vault-mode slaves pick it up
+            action = data.get("action", "")
+            params = data.get("params", {})
+            if action:
+                try:
+                    _admin_order_to_vault_blob(action, params, req_mesh_id or OPERATOR_MESH_ID)
+                except Exception as e:
+                    print(f"[admin] vault blob write failed: {e}")
             self.respond(200, result)
 
         # ── Account-Based Mesh API ──
@@ -1385,11 +1431,6 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 "lion_pubkey": account.get("lion_pubkey", ""),
                 "pin": account["pin"],
             })
-
-        # ── Legacy /api/mesh/{id}/order and /api/mesh/{id}/sync removed (Phase 4D) ──
-        elif self.path.startswith("/api/mesh/") and (
-                self.path.endswith("/order") or self.path.endswith("/sync")):
-            self.respond(410, {"error": "legacy plaintext mesh endpoints removed — use /vault/{mesh_id}/*"})
 
         # ── Vault endpoints (zero-knowledge mesh) ──
         # See docs/VAULT-DESIGN.md.
@@ -1506,6 +1547,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
 
             elif action == "register-node-request":
                 # Slave-initiated, unsigned. Goes into pending queue for Lion approval.
+                # Auto-approves if node_id matches an already-approved node (key rotation).
                 node_id = data.get("node_id", "")
                 node_type = data.get("node_type", "unknown")
                 node_pubkey = data.get("node_pubkey", "")
@@ -1515,6 +1557,21 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 if _vault_store.is_rejected(mesh_id, node_pubkey):
                     print(f"[{now()}] Vault register-node-request DENIED (rejected): mesh={mesh_id} node={node_id}")
                     self.respond(403, {"error": "node rejected"})
+                    return
+                # P5: Auto-approve if node_id already exists in active nodes (key rotation)
+                active_nodes = _vault_store.get_nodes(mesh_id)
+                existing = [n for n in active_nodes if n.get("node_id") == node_id]
+                if existing:
+                    # Key rotation: replace old pubkey, auto-approve
+                    _vault_store.add_node(mesh_id, {
+                        "node_id": node_id,
+                        "node_type": node_type,
+                        "node_pubkey": node_pubkey,
+                        "approved_at": int(time.time()),
+                        "rotated_from": existing[0].get("node_pubkey", "")[:24],
+                    })
+                    print(f"[{now()}] Vault register-node-request AUTO-APPROVED (key rotation): mesh={mesh_id} node={node_id}")
+                    self.respond(200, {"ok": True, "status": "approved"})
                     return
                 _vault_store.add_pending_node(mesh_id, {
                     "node_id": node_id,
@@ -1585,8 +1642,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
 
         elif self.path == "/api/pair/create":
             # Lion's Share creates a pairing code for desktop enrollment
-            if not mesh.validate_pin(data, mesh_orders):
-                self.respond(403, {"error": "invalid pin"})
+            token = data.get("admin_token", "") or data.get("auth_token", "")
+            if not ADMIN_TOKEN or not token or not hmac.compare_digest(token, ADMIN_TOKEN):
+                self.respond(403, {"error": "invalid admin_token"})
                 return
             import string
             code = data.get("code", "").upper().strip()
@@ -1612,6 +1670,60 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             print(f"[{now()}] Pairing code created: {code} (expires {expires_min}min)")
             self.respond(200, {"ok": True, "code": code, "url": pair_url,
                                "expires_minutes": expires_min})
+
+        elif self.path in ("/api/web-session", "/admin/web-session"):
+            action = data.get("action", "create")
+            if action == "create":
+                # Create ephemeral web session for QR code login
+                now_ts = time.time()
+                expired = [k for k, v in _web_sessions.items() if now_ts - v["created_at"] > _WEB_SESSION_TTL]
+                for k in expired:
+                    del _web_sessions[k]
+                session_id = secrets.token_urlsafe(16)
+                _web_sessions[session_id] = {
+                    "approved": False,
+                    "created_at": now_ts,
+                }
+                scheme = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
+                host = self.headers.get("Host", "focus.wildhome.ca")
+                qr_url = f"{scheme}://{host}/web-login?s={session_id}"
+                self.respond(200, {"session_id": session_id, "qr_url": qr_url})
+            elif action == "approve":
+                # Lion's Share app signs the session_id with Lion's RSA private key
+                session_id = data.get("session_id", "")
+                signature = data.get("signature", "")
+                session = _web_sessions.get(session_id)
+                if not session or time.time() - session["created_at"] > _WEB_SESSION_TTL:
+                    self.respond(404, {"error": "session expired or not found"})
+                    return
+                if session["approved"]:
+                    self.respond(200, {"ok": True, "status": "already_approved"})
+                    return
+                # Verify Lion's RSA signature on the session_id
+                lion_pub = get_lion_pubkey()
+                if not lion_pub:
+                    # Try mesh account lion_pubkey for operator mesh
+                    if OPERATOR_MESH_ID:
+                        acct = _mesh_accounts.meshes.get(OPERATOR_MESH_ID)
+                        if acct:
+                            lion_pub = acct.get("lion_pubkey", "")
+                if not lion_pub:
+                    self.respond(500, {"error": "no lion pubkey configured"})
+                    return
+                try:
+                    verified = mesh.verify_signature(
+                        {"session_id": session_id}, signature, lion_pub)
+                except Exception:
+                    verified = False
+                if not verified:
+                    print(f"[{now()}] Web session approve DENIED (bad signature): {session_id[:8]}...")
+                    self.respond(403, {"error": "invalid signature — must be signed by Lion's private key"})
+                    return
+                session["approved"] = True
+                print(f"[{now()}] Web session approved (signature verified): {session_id[:8]}...")
+                self.respond(200, {"ok": True, "status": "approved"})
+            else:
+                self.respond(400, {"error": "unknown action"})
 
         elif self.path == "/webhook/desktop-heartbeat":
             hostname = data.get("hostname", "unknown")
@@ -1710,15 +1822,46 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             })
             return
 
-        # ── Legacy /mesh/status and /api/mesh/{id}/status removed (Phase 4D) ──
-        elif self.path.startswith("/mesh/status"):
-            self.respond(410, {"error": "legacy plaintext mesh endpoints removed — use /vault/{mesh_id}/*"})
+        # ── Web Session QR Login ──
+        elif self.path.startswith("/api/web-session/") or self.path.startswith("/admin/web-session/"):
+            # Poll session status: GET /api/web-session/<session_id>
+            session_id = self.path.split("/")[-1]
+            session = _web_sessions.get(session_id)
+            if not session or time.time() - session["created_at"] > _WEB_SESSION_TTL:
+                self.respond(404, {"error": "session expired or not found"})
+                return
+            if session["approved"]:
+                self.respond(200, {"approved": True, "admin_token": ADMIN_TOKEN})
+                # One-time use: delete after successful retrieval
+                del _web_sessions[session_id]
+            else:
+                self.respond(200, {"approved": False})
             return
 
-        elif self.path.startswith("/api/mesh/"):
-            # Only /api/mesh/create and /api/mesh/join survive (handled above in POST).
-            # /api/mesh/{id}/status is gone.
-            self.respond(410, {"error": "legacy plaintext mesh endpoints removed — use /vault/{mesh_id}/*"})
+        elif self.path.startswith("/web-login"):
+            # Info page shown when QR URL is opened in a browser.
+            # This does NOT approve the session — approval requires Lion's RSA signature
+            # via POST /admin/web-session {action: "approve", session_id, signature}.
+            import urllib.parse
+            parsed = urllib.parse.urlparse(self.path)
+            params = urllib.parse.parse_qs(parsed.query)
+            session_id = params.get("s", [""])[0]
+            session = _web_sessions.get(session_id)
+            if not session or time.time() - session["created_at"] > _WEB_SESSION_TTL:
+                msg = b"<h2>Session expired</h2><p>Refresh the web UI for a new QR code.</p>"
+            elif session["approved"]:
+                msg = b"<h2>Already approved</h2><p>You can close this tab.</p>"
+            else:
+                msg = (b"<h2>Use Lion's Share to approve</h2>"
+                       b"<p>Open the <b>Lion's Share</b> app and tap <b>Web Remote</b> in the Advanced tab, "
+                       b"then scan this QR code.</p>"
+                       b"<p style='margin-top:1rem;font-size:0.85rem;color:#888'>Only the Lion's private key can approve web sessions.</p>")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(
+                b"<html><body style='background:#0a0a14;color:#b8860b;font-family:sans-serif;text-align:center;padding:4rem'>"
+                + msg + b"</body></html>")
             return
 
         # ── Admin GET endpoints (enforcement) ──
@@ -1811,10 +1954,6 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             else:
                 self.respond(404, {"error": f"unknown vault action: {action}"})
             return
-
-        # ── /desktop-status removed (Phase 4D) — desktop collars use vault poll ──
-        elif self.path.startswith("/desktop-status"):
-            self.respond(410, {"error": "removed — desktop collars should poll /vault/{mesh_id}/since/{v}"})
 
         elif self.path == "/controller":
             # Return Lion's Share controller's last known address

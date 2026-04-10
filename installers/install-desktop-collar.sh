@@ -78,6 +78,7 @@ sudo cp "$PROJECT_DIR/focuslock_mesh.py" /opt/focuslock/
 sudo cp "$PROJECT_DIR/focuslock-tray.py" /opt/focuslock/ 2>/dev/null || true
 sudo cp "$PROJECT_DIR/icons/collar-icon.png" /opt/focuslock/ 2>/dev/null || \
     sudo cp "$PROJECT_DIR/collar-icon.png" /opt/focuslock/ 2>/dev/null || true
+sudo cp "$PROJECT_DIR/icons/collar-icon-gold.png" /opt/focuslock/ 2>/dev/null || true
 sudo chmod 755 /opt/focuslock/focuslock-desktop.py /opt/focuslock/focuslock-tray.py 2>/dev/null
 
 # Install crown tray icons

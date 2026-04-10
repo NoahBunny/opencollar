@@ -257,6 +257,7 @@ class CollarState:
     countdown_lock_at = 0       # epoch ms — 0 means no countdown
     countdown_message = ""
     countdown_last_warn = 0     # epoch ms of last warning beep
+    _bedtime_locked = False
 
 state = CollarState()
 
@@ -602,7 +603,11 @@ def generate_lock_wallpaper():
         )
 
     # Icon overlay
-    icon_path = os.path.join(CONFIG_DIR, "collar-icon.png")
+    icon_path = os.path.join(CONFIG_DIR, "collar-icon-gold.png")
+    if not os.path.exists(icon_path):
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "collar-icon-gold.png")
+    if not os.path.exists(icon_path):
+        icon_path = os.path.join(CONFIG_DIR, "collar-icon.png")
     if not os.path.exists(icon_path):
         icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "collar-icon.png")
     if os.path.exists(icon_path):
@@ -761,7 +766,8 @@ def poll_status():
     snap = {}
     for k in ["desktop_active", "desktop_locked_devices", "desktop_message",
               "paywall", "message", "pinned_message", "sub_tier", "lock_active",
-              "unlock_at", "countdown_lock_at", "countdown_message"]:
+              "unlock_at", "countdown_lock_at", "countdown_message",
+              "bedtime_enabled", "bedtime_lock_hour", "bedtime_unlock_hour"]:
         snap[k] = mesh_orders.get(k, "")
 
     hostname = MESH_NODE_ID
@@ -791,6 +797,30 @@ def poll_status():
     countdown_at = int(snap.get("countdown_lock_at") or 0)
     countdown_msg = str(snap.get("countdown_message") or "")
     _handle_countdown(countdown_at, countdown_msg)
+
+    # Bedtime enforcement — auto-lock/unlock by hour
+    try:
+        bedtime_en = int(snap.get("bedtime_enabled") or 0)
+        if bedtime_en == 1:
+            lock_h = int(snap.get("bedtime_lock_hour") or -1)
+            unlock_h = int(snap.get("bedtime_unlock_hour") or -1)
+            cur_h = datetime.datetime.now().hour
+            if lock_h >= 0 and unlock_h >= 0:
+                in_bed = (cur_h >= lock_h or cur_h < unlock_h) if lock_h > unlock_h else (cur_h >= lock_h and cur_h < unlock_h)
+                if in_bed and not desktop_locked:
+                    mesh_orders.set("desktop_active", 1)
+                    mesh_orders.set("desktop_message", "Bedtime. Go to sleep.")
+                    desktop_locked = True
+                    state._bedtime_locked = True
+                    print(f"[collar] BEDTIME: Auto-locked at hour {cur_h}")
+                elif not in_bed and desktop_locked and getattr(state, '_bedtime_locked', False):
+                    mesh_orders.set("desktop_active", 0)
+                    mesh_orders.set("desktop_message", "")
+                    desktop_locked = False
+                    state._bedtime_locked = False
+                    print(f"[collar] BEDTIME: Auto-unlocked at hour {cur_h}")
+    except Exception as e:
+        print(f"[collar] Bedtime check error: {e}")
 
     was_locked = state.locked
     state.locked = desktop_locked

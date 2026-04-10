@@ -79,13 +79,13 @@ deploy_local() {
 
     # Icons (lion + crown set)
     [ "$DRY_RUN" = 1 ] || mkdir -p ~/.config/focuslock/icons ~/.local/share/focuslock
-    for icon in "$SERVER_ICON" crown-gold.png crown-gray.png; do
+    for icon in "$SERVER_ICON" collar-icon-gold.png crown-gold.png crown-gray.png; do
         src="$ICONS/$icon"
         [ -f "$src" ] || continue
         log "  icons/$icon"
         if [ "$DRY_RUN" != 1 ]; then
             cp "$src" ~/.config/focuslock/icons/ 2>/dev/null || true
-            if [ "$icon" = "$SERVER_ICON" ]; then
+            if [ "$icon" = "$SERVER_ICON" ] || [ "$icon" = "collar-icon-gold.png" ]; then
                 cp "$src" ~/.local/share/focuslock/ 2>/dev/null || true
                 sudo cp "$src" /opt/focuslock/ 2>/dev/null || true
             fi

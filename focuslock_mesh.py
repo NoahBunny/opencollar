@@ -129,6 +129,13 @@ ORDER_KEYS = {
     "curfew_radius_m": 100,
     "curfew_lat": "",
     "curfew_lon": "",
+    # Bedtime enforcement (separate from curfew — curfew=geofence, bedtime=lock)
+    "bedtime_enabled": 0,
+    "bedtime_lock_hour": -1,    # hour of day (0-23), -1 = not set
+    "bedtime_unlock_hour": -1,  # auto-unlock hour
+    # Screen time leash
+    "screen_time_quota_minutes": 0,  # 0 = disabled
+    "screen_time_reset_hour": 0,     # hour of day to reset counter (default midnight)
 }
 
 

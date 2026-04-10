@@ -15,15 +15,18 @@ import java.util.regex.Pattern;
  * Receives SMS and processes "sit-boy" commands from the controller number.
  *
  * Formats:
- *   sit-boy           → indefinite lock
- *   sit-boy 15        → 15 min lock
- *   sit-boy $20       → lock + $20 paywall
- *   sit-boy 15 $20    → 15 min + $20 paywall
+ *   sit-boy              → indefinite lock (phone + desktops)
+ *   sit-boy 15           → 15 min lock
+ *   sit-boy $20          → lock + $20 paywall
+ *   sit-boy 15 $20       → 15 min + $20 paywall
+ *   sit-boy desktop      → lock desktops only (no phone lock)
+ *   sit-boy pc 15 $20    → lock desktops only, 15 min, $20 paywall
  */
 public class SmsReceiver extends BroadcastReceiver {
     private static final String TAG = "FocusLock";
     private static final Pattern CMD_PATTERN =
-        Pattern.compile("sit-boy(?:\\s+(\\d+))?(?:\\s+\\$?(\\d+))?", Pattern.CASE_INSENSITIVE);
+        Pattern.compile("sit-boy(?:\\s+(desktop|pc))?(?:\\s+(\\d+))?(?:\\s+\\$?(\\d+))?",
+            Pattern.CASE_INSENSITIVE);
 
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -60,29 +63,40 @@ public class SmsReceiver extends BroadcastReceiver {
             Matcher m = CMD_PATTERN.matcher(body.trim());
             if (!m.find()) continue;
 
-            Log.i(TAG, "sit-boy command from " + sender + ": " + body);
+            Log.w(TAG, "sit-boy command from " + sender + ": " + body);
 
-            String minsStr = m.group(1);
-            String amountStr = m.group(2);
+            String targetStr = m.group(1);
+            String minsStr = m.group(2);
+            String amountStr = m.group(3);
+            boolean desktopOnly = targetStr != null &&
+                (targetStr.equalsIgnoreCase("desktop") || targetStr.equalsIgnoreCase("pc"));
             long mins = 0;
             String paywall = "0";
             if (minsStr != null) mins = Long.parseLong(minsStr);
             if (amountStr != null) paywall = amountStr;
 
-            // Set lock flags
-            Settings.Global.putInt(context.getContentResolver(), "focus_lock_active", 1);
-            Settings.Global.putString(context.getContentResolver(), "focus_lock_message",
-                "Sit, boy. (SMS from your controller)");
-            Settings.Global.putInt(context.getContentResolver(), "focus_lock_escapes", 0);
-            Settings.Global.putString(context.getContentResolver(), "focus_lock_mode", "basic");
-            Settings.Global.putInt(context.getContentResolver(), "focus_lock_shame", 1);
-            Settings.Global.putLong(context.getContentResolver(), "focus_lock_locked_at",
-                System.currentTimeMillis());
+            if (desktopOnly) {
+                // Desktop-only lock — set desktop_active, skip phone lock
+                Settings.Global.putInt(context.getContentResolver(),
+                    "focus_lock_desktop_active", 1);
+                Settings.Global.putString(context.getContentResolver(),
+                    "focus_lock_desktop_message", "Sit, boy. (SMS)");
+            } else {
+                // Full lock — phone + desktops
+                Settings.Global.putInt(context.getContentResolver(), "focus_lock_active", 1);
+                Settings.Global.putString(context.getContentResolver(), "focus_lock_message",
+                    "Sit, boy. (SMS from your controller)");
+                Settings.Global.putInt(context.getContentResolver(), "focus_lock_escapes", 0);
+                Settings.Global.putString(context.getContentResolver(), "focus_lock_mode", "basic");
+                Settings.Global.putInt(context.getContentResolver(), "focus_lock_shame", 1);
+                Settings.Global.putLong(context.getContentResolver(), "focus_lock_locked_at",
+                    System.currentTimeMillis());
+            }
 
             if (mins > 0) {
                 Settings.Global.putLong(context.getContentResolver(), "focus_lock_unlock_at",
                     System.currentTimeMillis() + mins * 60000);
-            } else {
+            } else if (!desktopOnly) {
                 Settings.Global.putLong(context.getContentResolver(), "focus_lock_unlock_at", 0);
             }
 
@@ -91,14 +105,18 @@ public class SmsReceiver extends BroadcastReceiver {
                 Settings.Global.putString(context.getContentResolver(), "focus_lock_paywall_original", paywall);
             }
 
-            // Launch FocusActivity
-            Intent launch = new Intent(context, FocusActivity.class);
-            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            context.startActivity(launch);
+            if (!desktopOnly) {
+                // Launch FocusActivity for phone lock
+                Intent launch = new Intent(context, FocusActivity.class);
+                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                context.startActivity(launch);
+            }
 
-            // Ensure ControlService is running
+            // Ensure ControlService is running (triggers mesh bump for desktop propagation)
             try {
-                context.startForegroundService(new Intent(context, ControlService.class));
+                Intent svc = new Intent(context, ControlService.class);
+                svc.putExtra("mesh_bump", true);
+                context.startForegroundService(svc);
             } catch (Exception e) {}
 
             abortBroadcast(); // prevent SMS from reaching default app

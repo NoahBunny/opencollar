@@ -197,6 +197,7 @@ public class MainActivity extends Activity {
         findViewById(getId("btn_confine_home")).setOnClickListener(v -> doConfineHome());
         findViewById(getId("btn_pin_message")).setOnClickListener(v -> doPinMessage());
         findViewById(getId("btn_force_sub")).setOnClickListener(v -> doForceSub());
+        try { findViewById(getId("btn_web_remote")).setOnClickListener(v -> doWebRemoteScan()); } catch (Exception e) {}
         try { findViewById(getId("btn_vault_nodes")).setOnClickListener(v -> doVaultNodes()); } catch (Exception e) {}
         findViewById(getId("btn_start_fine")).setOnClickListener(v -> doStartFine());
         findViewById(getId("btn_stop_fine")).setOnClickListener(v -> doStopFine());
@@ -847,6 +848,98 @@ public class MainActivity extends Activity {
     // requests, then either Approves (signs a register-node payload) or Denies
     // (signs a reject-node-request payload). Approved nodes appear in /nodes
     // and become recipients of subsequent slave-signed runtime blobs.
+
+    // ── Web Remote: scan QR code to approve a web session ──
+    private static final int QR_SCAN_REQUEST = 9001;
+
+    private void doWebRemoteScan() {
+        // Try launching a QR scanner via Intent (ZXing Barcode Scanner, Google Lens, etc.)
+        try {
+            android.content.Intent scanIntent = new android.content.Intent("com.google.zxing.client.android.SCAN");
+            scanIntent.putExtra("SCAN_MODE", "QR_CODE_MODE");
+            startActivityForResult(scanIntent, QR_SCAN_REQUEST);
+            return;
+        } catch (Exception e) {
+            // No ZXing-compatible scanner installed
+        }
+        // Fallback: prompt user to use their camera app
+        new AlertDialog.Builder(this)
+            .setTitle("Scan Web QR Code")
+            .setMessage("Open your camera app and point it at the QR code on the Lion's Share web page.\n\n"
+                + "Your camera will detect the QR code and offer to open the link. Tap it to approve the web session.\n\n"
+                + "Or install a QR scanner app (e.g., \"QR & Barcode Scanner\") for in-app scanning.")
+            .setPositiveButton("Open Camera", (d, w) -> {
+                try {
+                    android.content.Intent cam = new android.content.Intent(android.provider.MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA);
+                    startActivity(cam);
+                } catch (Exception e) { setStatus("Camera not available"); }
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == QR_SCAN_REQUEST && resultCode == RESULT_OK && data != null) {
+            String scannedUrl = data.getStringExtra("SCAN_RESULT");
+            if (scannedUrl != null && scannedUrl.contains("/web-login")) {
+                // Extract session_id from URL query param "s"
+                String sessionId = "";
+                try {
+                    android.net.Uri uri = android.net.Uri.parse(scannedUrl);
+                    sessionId = uri.getQueryParameter("s");
+                } catch (Exception e) {}
+                if (sessionId == null || sessionId.isEmpty()) {
+                    setStatus("Invalid QR code (no session ID)");
+                    return;
+                }
+                // Sign session_id with Lion's RSA private key and POST approval
+                String lionPriv = prefs.getString("lion_privkey", "");
+                if (lionPriv.isEmpty()) {
+                    setStatus("No Lion private key — re-pair first");
+                    return;
+                }
+                final String sid = sessionId;
+                setStatus("Signing session approval...");
+                executor.submit(() -> {
+                    try {
+                        // Sign {"session_id": "<sid>"} with Lion's privkey
+                        java.util.TreeMap<String, Object> payload = new java.util.TreeMap<>();
+                        payload.put("session_id", sid);
+                        String signature = VaultCrypto.signBlob(payload, lionPriv);
+                        // POST to relay server
+                        String relayUrl = meshUrl.isEmpty() ? scannedUrl.replaceAll("/web-login.*", "") : meshUrl;
+                        String body = "{\"action\":\"approve\",\"session_id\":\"" + sid
+                            + "\",\"signature\":\"" + signature + "\"}";
+                        HttpURLConnection conn = (HttpURLConnection)
+                            new URL(relayUrl + "/admin/web-session").openConnection();
+                        conn.setRequestMethod("POST");
+                        conn.setDoOutput(true);
+                        conn.setConnectTimeout(10000);
+                        conn.setReadTimeout(10000);
+                        conn.setRequestProperty("Content-Type", "application/json");
+                        conn.getOutputStream().write(body.getBytes("UTF-8"));
+                        int code = conn.getResponseCode();
+                        conn.disconnect();
+                        runOnUiThread(() -> {
+                            if (code == 200) {
+                                setStatus("Web session approved!");
+                            } else if (code == 403) {
+                                setStatus("Signature rejected — wrong key?");
+                            } else {
+                                setStatus("Approval failed (HTTP " + code + ")");
+                            }
+                        });
+                    } catch (Exception e) {
+                        runOnUiThread(() -> setStatus("Approval failed: " + e.getMessage()));
+                    }
+                });
+            } else {
+                setStatus("Not a Lion's Share QR code");
+            }
+        }
+    }
 
     private void doVaultNodes() {
         if (meshUrl.isEmpty() || meshId.isEmpty()) {

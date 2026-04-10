@@ -57,6 +57,9 @@ public class ControlService extends Service {
     // SHA256 of the last successfully-pushed runtime body. Skip the next push
     // if the body hasn't changed — RSA encryption per recipient is expensive.
     private volatile String lastRuntimeBodyHash = "";
+    // Cached vault keypair — avoids KeyStore IPC on every tick
+    private volatile byte[] cachedNodePubDer = null;
+    private volatile java.security.PrivateKey cachedNodePrivKey = null;
     private static final String[] MESH_ORDER_KEYS = {
         "lock_active", "desktop_active", "desktop_locked_devices", "message", "desktop_message",
         "task_text", "task_orig", "task_randcaps", "task_reps", "task_done", "mode",
@@ -74,12 +77,14 @@ public class ControlService extends Service {
         "body_check_active", "body_check_area", "body_check_interval_h",
         "body_check_last", "body_check_streak", "body_check_last_result", "body_check_baseline",
         "countdown_lock_at", "countdown_message",
+        "bedtime_enabled", "bedtime_lock_hour", "bedtime_unlock_hour",
+        "screen_time_quota_minutes", "screen_time_reset_hour",
     };
 
     @Override
     public void onCreate() {
         super.onCreate();
-        Log.i(TAG, "ControlService.onCreate — starting HTTP server + jail watcher");
+        Log.w(TAG, "ControlService.onCreate — starting HTTP server + jail watcher");
 
         NotificationChannel ch = new NotificationChannel(
             "control", "The Collar", NotificationManager.IMPORTANCE_LOW);
@@ -125,7 +130,7 @@ public class ControlService extends Service {
         // The jail watcher will also pick it up after the boot grace period.
         int active = Settings.Global.getInt(getContentResolver(), "focus_lock_active", 0);
         if (active == 1) {
-            Log.i(TAG, "Lock was active before reboot — bridge will re-engage jail via ADB");
+            Log.w(TAG, "Lock was active before reboot — bridge will re-engage jail via ADB");
         }
 
         // Failsafe: schedule repeating alarm to restart this service every 5 minutes
@@ -142,7 +147,7 @@ public class ControlService extends Service {
             Log.e(TAG, "Failed to schedule failsafe alarm", e);
         }
 
-        Log.i(TAG, "ControlService fully initialized");
+        Log.w(TAG, "ControlService fully initialized");
     }
 
     /** Poll lock flag + self-check servers every 2s. */
@@ -164,7 +169,7 @@ public class ControlService extends Service {
                         if (elapsed < 30000) {
                             Log.i(TAG, "Lock flag detected but still in boot grace period (" + elapsed + "ms) — bridge will handle");
                         } else {
-                            Log.i(TAG, "Lock flag detected, activating jail");
+                            Log.w(TAG, "Lock flag detected, activating jail");
                             enforceEscapeHatches();
                             launchFocus();
                             wasLocked = true;
@@ -183,7 +188,7 @@ public class ControlService extends Service {
                         long remainingMs = countdownAt - nowMs;
                         if (remainingMs <= 0) {
                             // Countdown expired — engage the lock
-                            Log.i(TAG, "Countdown expired — locking");
+                            Log.w(TAG, "Countdown expired — locking");
                             String cdMsg = gstr("focus_lock_countdown_message");
                             Settings.Global.putString(getContentResolver(), "focus_lock_message",
                                 cdMsg.isEmpty() ? "Countdown reached zero." : cdMsg);
@@ -342,14 +347,52 @@ public class ControlService extends Service {
                                         Settings.Global.putString(getContentResolver(), "focus_lock_geofence_lat", cLat);
                                         Settings.Global.putString(getContentResolver(), "focus_lock_geofence_lon", cLon);
                                         Settings.Global.putString(getContentResolver(), "focus_lock_geofence_radius_m", cRad);
-                                        Log.i(TAG, "CURFEW: Geofence set at " + cLat + "," + cLon + " r=" + cRad);
+                                        Log.w(TAG, "CURFEW: Geofence set at " + cLat + "," + cLon + " r=" + cRad);
                                     }
                                 } else if (!inCurfew && !fenceLatNow.isEmpty()) {
                                     // Curfew over — release geofence
                                     Settings.Global.putString(getContentResolver(), "focus_lock_geofence_lat", "");
                                     Settings.Global.putString(getContentResolver(), "focus_lock_geofence_lon", "");
                                     Settings.Global.putString(getContentResolver(), "focus_lock_geofence_radius_m", "");
-                                    Log.i(TAG, "CURFEW: Geofence released");
+                                    Log.w(TAG, "CURFEW: Geofence released");
+                                }
+                            }
+                        } catch (Exception e) {}
+
+                        // Bedtime enforcement — auto-lock/unlock by hour (separate from curfew)
+                        try {
+                            int bedtimeEnabled = Settings.Global.getInt(getContentResolver(), "focus_lock_bedtime_enabled", 0);
+                            if (bedtimeEnabled == 1) {
+                                int lockHour = Settings.Global.getInt(getContentResolver(), "focus_lock_bedtime_lock_hour", -1);
+                                int unlockHour = Settings.Global.getInt(getContentResolver(), "focus_lock_bedtime_unlock_hour", -1);
+                                int currentHour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY);
+                                boolean inBedtime;
+                                if (lockHour <= unlockHour) {
+                                    inBedtime = currentHour >= lockHour && currentHour < unlockHour;
+                                } else {
+                                    inBedtime = currentHour >= lockHour || currentHour < unlockHour;
+                                }
+                                int lockActive = Settings.Global.getInt(getContentResolver(), "focus_lock_active", 0);
+                                int bedtimeLocked = Settings.Global.getInt(getContentResolver(), "focus_lock_bedtime_locked", 0);
+                                if (inBedtime && lockActive == 0) {
+                                    // Bedtime — auto-lock
+                                    Settings.Global.putInt(getContentResolver(), "focus_lock_active", 1);
+                                    Settings.Global.putString(getContentResolver(), "focus_lock_message", "Bedtime. Go to sleep.");
+                                    Settings.Global.putString(getContentResolver(), "focus_lock_mode", "basic");
+                                    Settings.Global.putInt(getContentResolver(), "focus_lock_bedtime_locked", 1);
+                                    Settings.Global.putLong(getContentResolver(), "focus_lock_locked_at", System.currentTimeMillis());
+                                    Settings.Global.putLong(getContentResolver(), "focus_lock_unlock_at", 0);
+                                    Log.w(TAG, "BEDTIME: Auto-locked at hour " + currentHour);
+                                    launchFocus();
+                                } else if (!inBedtime && lockActive == 1 && bedtimeLocked == 1) {
+                                    // Wake time — auto-unlock (only if it was a bedtime lock)
+                                    Settings.Global.putInt(getContentResolver(), "focus_lock_active", 0);
+                                    Settings.Global.putInt(getContentResolver(), "focus_lock_bedtime_locked", 0);
+                                    Settings.Global.putString(getContentResolver(), "focus_lock_message", "Good morning.");
+                                    Log.w(TAG, "BEDTIME: Auto-unlocked at hour " + currentHour);
+                                } else if (!inBedtime && bedtimeLocked == 1) {
+                                    // Clear stale bedtime flag
+                                    Settings.Global.putInt(getContentResolver(), "focus_lock_bedtime_locked", 0);
                                 }
                             }
                         } catch (Exception e) {}
@@ -379,6 +422,55 @@ public class ControlService extends Service {
                                     Log.i(TAG, "Subscription auto-charge: $" + amount + " (" + subTier + ")");
                                     // Notify homelab
                                     reportSubscriptionCharge(subTier, amount);
+                                }
+                            }
+                        } catch (Exception e) {}
+
+                        // Screen time leash — track cumulative unlocked minutes, auto-lock on quota
+                        try {
+                            int quota = Settings.Global.getInt(getContentResolver(), "focus_lock_screen_time_quota_minutes", 0);
+                            if (quota > 0) {
+                                int stActive = Settings.Global.getInt(getContentResolver(), "focus_lock_active", 0);
+                                int resetHour = Settings.Global.getInt(getContentResolver(), "focus_lock_screen_time_reset_hour", 0);
+                                int currentHour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY);
+                                String resetDate = gstr("focus_lock_screen_time_reset_date");
+                                String today = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                                    .format(new java.util.Date());
+
+                                // Reset at configured hour (or midnight) on date change
+                                if (!today.equals(resetDate) && currentHour >= resetHour) {
+                                    Settings.Global.putInt(getContentResolver(), "focus_lock_screen_time_used_today", 0);
+                                    Settings.Global.putString(getContentResolver(), "focus_lock_screen_time_reset_date", today);
+                                }
+
+                                if (stActive == 0) {
+                                    // Phone is unlocked — accumulate time
+                                    long lastCheck = Settings.Global.getLong(getContentResolver(), "focus_lock_screen_time_last_check", 0);
+                                    long now = System.currentTimeMillis();
+                                    if (lastCheck > 0) {
+                                        int elapsed = (int) ((now - lastCheck) / 60000);
+                                        if (elapsed > 0) {
+                                            int used = Settings.Global.getInt(getContentResolver(), "focus_lock_screen_time_used_today", 0);
+                                            used += elapsed;
+                                            Settings.Global.putInt(getContentResolver(), "focus_lock_screen_time_used_today", used);
+                                            if (used >= quota) {
+                                                // Quota exceeded — auto-lock
+                                                Settings.Global.putInt(getContentResolver(), "focus_lock_active", 1);
+                                                Settings.Global.putString(getContentResolver(), "focus_lock_message",
+                                                    "Screen time quota exceeded (" + quota + " min)");
+                                                Settings.Global.putString(getContentResolver(), "focus_lock_mode", "basic");
+                                                Settings.Global.putLong(getContentResolver(), "focus_lock_locked_at", now);
+                                                Settings.Global.putLong(getContentResolver(), "focus_lock_unlock_at", 0);
+                                                Log.w(TAG, "SCREEN TIME: Quota exceeded (" + used + "/" + quota + " min) — locked");
+                                                launchFocus();
+                                            }
+                                        }
+                                    }
+                                    Settings.Global.putLong(getContentResolver(), "focus_lock_screen_time_last_check", now);
+                                } else {
+                                    // Locked — don't count time, but keep last_check fresh for next unlock
+                                    Settings.Global.putLong(getContentResolver(), "focus_lock_screen_time_last_check",
+                                        System.currentTimeMillis());
                                 }
                             }
                         } catch (Exception e) {}
@@ -697,6 +789,11 @@ public class ControlService extends Service {
             + ",\"adb_wifi_port\":" + getAdbWifiPort()
             + ",\"tailscale_up\":" + isTailscaleUp()
             + ",\"entrapped\":" + (Settings.Global.getInt(getContentResolver(), "focus_lock_entrapped", 0) == 1)
+            + ",\"screen_time_quota_minutes\":" + Settings.Global.getInt(getContentResolver(), "focus_lock_screen_time_quota_minutes", 0)
+            + ",\"screen_time_used_today\":" + Settings.Global.getInt(getContentResolver(), "focus_lock_screen_time_used_today", 0)
+            + ",\"bedtime_enabled\":" + (Settings.Global.getInt(getContentResolver(), "focus_lock_bedtime_enabled", 0) == 1)
+            + ",\"bedtime_lock_hour\":" + Settings.Global.getInt(getContentResolver(), "focus_lock_bedtime_lock_hour", -1)
+            + ",\"bedtime_unlock_hour\":" + Settings.Global.getInt(getContentResolver(), "focus_lock_bedtime_unlock_hour", -1)
             + "}";
     }
 
@@ -2016,6 +2113,23 @@ public class ControlService extends Service {
         });
         gossipThread.setDaemon(true);
         gossipThread.start();
+
+        // ── ntfy Push Subscriber (latency optimization — triggers immediate vault sync) ──
+        String ntfyServer = gstr("focus_lock_ntfy_server");
+        String ntfyTopic = gstr("focus_lock_ntfy_topic");
+        if (ntfyTopic.isEmpty()) {
+            String mid = gstr("focus_lock_mesh_id");
+            if (!mid.isEmpty()) ntfyTopic = "fl-" + mid;
+        }
+        if (!ntfyTopic.isEmpty()) {
+            if (ntfyServer.isEmpty()) ntfyServer = "https://ntfy.sh";
+            final String fServer = ntfyServer;
+            final String fTopic = ntfyTopic;
+            Thread ntfyThread = new Thread(() -> ntfySubscribeLoop(fServer, fTopic));
+            ntfyThread.setDaemon(true);
+            ntfyThread.start();
+            Log.w(TAG, "ntfy subscriber started: " + ntfyServer + "/" + ntfyTopic);
+        }
     }
 
     // Mesh key -> actual Settings.Global key (for keys that don't follow "focus_lock_" + meshKey)
@@ -2030,7 +2144,9 @@ public class ControlService extends Service {
         "curfew_enabled", "curfew_confine_hour", "curfew_release_hour", "curfew_radius_m",
         "notif_email_evidence", "notif_email_escape", "notif_email_breach",
         "fine_active", "fine_amount", "fine_interval_m",
-        "body_check_active", "body_check_interval_h", "body_check_streak"
+        "body_check_active", "body_check_interval_h", "body_check_streak",
+        "bedtime_enabled", "bedtime_lock_hour", "bedtime_unlock_hour",
+        "screen_time_quota_minutes", "screen_time_reset_hour"
     ));
     private static final java.util.Set<String> LONG_KEYS = new java.util.HashSet<>(java.util.Arrays.asList(
         "unlock_at", "locked_at", "offer_time", "sub_due", "sub_total_owed", "free_unlock_reset",
@@ -2114,7 +2230,7 @@ public class ControlService extends Service {
                         else if (body.charAt(i) == '}') { depth--; if (depth == 0) { braceEnd = i; break; } }
                     }
                     String ordersJson = body.substring(braceStart, braceEnd + 1);
-                    Log.i(TAG, "Mesh: applying orders v" + remoteVersion + " from " + remoteId);
+                    Log.w(TAG, "Mesh: applying orders v" + remoteVersion + " from " + remoteId);
                     applyOrdersFromMesh(ordersJson);
                     meshVersion.set(remoteVersion);
                     Settings.Global.putLong(getContentResolver(), "focus_lock_mesh_version", meshVersion.get());
@@ -2275,6 +2391,34 @@ public class ControlService extends Service {
                 result = "{\"ok\":true,\"action\":\"curfew_cleared\"}";
                 break;
             }
+            case "set-bedtime": {
+                Settings.Global.putInt(getContentResolver(), "focus_lock_bedtime_enabled", 1);
+                String lh = jval(body, "lock_hour");
+                String uh = jval(body, "unlock_hour");
+                if (lh != null) Settings.Global.putInt(getContentResolver(), "focus_lock_bedtime_lock_hour", Integer.parseInt(lh));
+                if (uh != null) Settings.Global.putInt(getContentResolver(), "focus_lock_bedtime_unlock_hour", Integer.parseInt(uh));
+                result = "{\"ok\":true,\"action\":\"bedtime_set\"}";
+                break;
+            }
+            case "clear-bedtime": {
+                Settings.Global.putInt(getContentResolver(), "focus_lock_bedtime_enabled", 0);
+                Settings.Global.putInt(getContentResolver(), "focus_lock_bedtime_locked", 0);
+                result = "{\"ok\":true,\"action\":\"bedtime_cleared\"}";
+                break;
+            }
+            case "set-screen-time": {
+                String qt = jval(body, "quota_minutes");
+                String rh = jval(body, "reset_hour");
+                if (qt != null) Settings.Global.putInt(getContentResolver(), "focus_lock_screen_time_quota_minutes", Integer.parseInt(qt));
+                if (rh != null) Settings.Global.putInt(getContentResolver(), "focus_lock_screen_time_reset_hour", Integer.parseInt(rh));
+                result = "{\"ok\":true,\"action\":\"screen_time_set\"}";
+                break;
+            }
+            case "clear-screen-time": {
+                Settings.Global.putInt(getContentResolver(), "focus_lock_screen_time_quota_minutes", 0);
+                result = "{\"ok\":true,\"action\":\"screen_time_cleared\"}";
+                break;
+            }
             case "start-fine": {
                 String amt = jval(body, "amount");
                 String intv = jval(body, "interval");
@@ -2415,13 +2559,71 @@ public class ControlService extends Service {
             + ",\"timestamp\":" + System.currentTimeMillis() + "}";
     }
 
+    private static final String KEYSTORE_ALIAS = "focuslock_vault_key";
+
     /**
      * Ensure the slave has an RSA-2048 keypair for vault decryption.
-     * Generated lazily on first use, persisted to Settings.Global as
-     * focus_lock_node_pubkey / focus_lock_node_privkey (base64 of DER).
-     * Returns the pubkey DER bytes, or null on failure.
+     * Prefers AndroidKeyStore (non-extractable, hardware-backed on Pixel).
+     * Falls back to legacy Settings.Global key during migration.
+     * Returns the pubkey DER bytes (cached after first call), or null on failure.
      */
     private byte[] ensureNodeKeypair() {
+        if (cachedNodePubDer != null) return cachedNodePubDer;
+        try {
+            // 1. Check if AndroidKeyStore key exists
+            java.security.KeyStore ks = java.security.KeyStore.getInstance("AndroidKeyStore");
+            ks.load(null);
+            if (ks.containsAlias(KEYSTORE_ALIAS)) {
+                java.security.cert.Certificate cert = ks.getCertificate(KEYSTORE_ALIAS);
+                byte[] pubDer = cert.getPublicKey().getEncoded();
+                String pub = android.util.Base64.encodeToString(pubDer, android.util.Base64.NO_WRAP);
+                Settings.Global.putString(getContentResolver(), "focus_lock_node_pubkey", pub);
+                cachedNodePubDer = pubDer;
+                cachedNodePrivKey = (java.security.PrivateKey) ks.getKey(KEYSTORE_ALIAS, null);
+                return pubDer;
+            }
+
+            // 2. Generate new key in AndroidKeyStore
+            android.security.keystore.KeyGenParameterSpec spec =
+                new android.security.keystore.KeyGenParameterSpec.Builder(
+                    KEYSTORE_ALIAS,
+                    android.security.keystore.KeyProperties.PURPOSE_DECRYPT
+                    | android.security.keystore.KeyProperties.PURPOSE_SIGN)
+                .setKeySize(2048)
+                .setDigests(android.security.keystore.KeyProperties.DIGEST_SHA256)
+                .setEncryptionPaddings(android.security.keystore.KeyProperties.ENCRYPTION_PADDING_RSA_OAEP)
+                .setSignaturePaddings(android.security.keystore.KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
+                .build();
+            KeyPairGenerator kpg = KeyPairGenerator.getInstance(
+                android.security.keystore.KeyProperties.KEY_ALGORITHM_RSA, "AndroidKeyStore");
+            kpg.initialize(spec);
+            java.security.KeyPair kp = kpg.generateKeyPair();
+            byte[] pubDer = kp.getPublic().getEncoded();
+            String pub = android.util.Base64.encodeToString(pubDer, android.util.Base64.NO_WRAP);
+            Settings.Global.putString(getContentResolver(), "focus_lock_node_pubkey", pub);
+
+            // 3. If there was a legacy Settings.Global key, this is a migration.
+            //    Keep the old privkey until the new key is registered and approved.
+            //    Flag that we need to re-register with the new pubkey.
+            String oldPriv = gstr("focus_lock_node_privkey");
+            if (!oldPriv.isEmpty()) {
+                Settings.Global.putString(getContentResolver(), "focus_lock_node_privkey_legacy", oldPriv);
+                Settings.Global.putString(getContentResolver(), "focus_lock_node_privkey", "");
+                Log.w(TAG, "KeyStore migration: new key generated, legacy key preserved for transition");
+            }
+
+            Log.w(TAG, "Generated KeyStore vault keypair (slot=" + VaultCrypto.slotIdForPubkey(pubDer) + ")");
+            cachedNodePubDer = pubDer;
+            cachedNodePrivKey = kp.getPrivate();
+            return pubDer;
+        } catch (Exception e) {
+            Log.e(TAG, "ensureNodeKeypair (KeyStore) failed, falling back to legacy", e);
+            return ensureNodeKeypairLegacy();
+        }
+    }
+
+    /** Legacy key generation (software-backed, extractable). Used as fallback. */
+    private byte[] ensureNodeKeypairLegacy() {
         try {
             String pubB64 = gstr("focus_lock_node_pubkey");
             String privB64 = gstr("focus_lock_node_privkey");
@@ -2430,19 +2632,50 @@ public class ControlService extends Service {
             }
             KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
             kpg.initialize(2048);
-            KeyPair kp = kpg.generateKeyPair();
+            java.security.KeyPair kp = kpg.generateKeyPair();
             byte[] pubDer = kp.getPublic().getEncoded();
             byte[] privDer = kp.getPrivate().getEncoded();
             String pub = android.util.Base64.encodeToString(pubDer, android.util.Base64.NO_WRAP);
             String priv = android.util.Base64.encodeToString(privDer, android.util.Base64.NO_WRAP);
             Settings.Global.putString(getContentResolver(), "focus_lock_node_pubkey", pub);
             Settings.Global.putString(getContentResolver(), "focus_lock_node_privkey", priv);
-            Log.i(TAG, "Generated vault node keypair (slot=" + VaultCrypto.slotIdForPubkey(pubDer) + ")");
+            Log.w(TAG, "Generated legacy vault keypair (slot=" + VaultCrypto.slotIdForPubkey(pubDer) + ")");
             return pubDer;
         } catch (Exception e) {
-            Log.e(TAG, "ensureNodeKeypair failed", e);
+            Log.e(TAG, "ensureNodeKeypairLegacy failed", e);
             return null;
         }
+    }
+
+    /**
+     * Get the PrivateKey for vault operations. Tries KeyStore first, falls
+     * back to legacy Settings.Global key during migration.
+     */
+    private java.security.PrivateKey getNodePrivateKey() {
+        if (cachedNodePrivKey != null) return cachedNodePrivKey;
+        try {
+            java.security.KeyStore ks = java.security.KeyStore.getInstance("AndroidKeyStore");
+            ks.load(null);
+            if (ks.containsAlias(KEYSTORE_ALIAS)) {
+                cachedNodePrivKey = (java.security.PrivateKey) ks.getKey(KEYSTORE_ALIAS, null);
+                return cachedNodePrivKey;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "KeyStore getKey failed: " + e);
+        }
+        // Fallback to legacy key or migration key
+        String privB64 = gstr("focus_lock_node_privkey");
+        if (privB64.isEmpty()) privB64 = gstr("focus_lock_node_privkey_legacy");
+        if (!privB64.isEmpty()) {
+            try {
+                byte[] privDer = android.util.Base64.decode(privB64, android.util.Base64.DEFAULT);
+                return java.security.KeyFactory.getInstance("RSA")
+                    .generatePrivate(new java.security.spec.PKCS8EncodedKeySpec(privDer));
+            } catch (Exception e) {
+                Log.e(TAG, "Legacy privkey decode failed", e);
+            }
+        }
+        return null;
     }
 
     /**
@@ -2462,7 +2695,8 @@ public class ControlService extends Service {
 
             byte[] myPubDer = ensureNodeKeypair();
             if (myPubDer == null) return;
-            String myPrivB64 = gstr("focus_lock_node_privkey");
+            java.security.PrivateKey myPrivKey = getNodePrivateKey();
+            if (myPrivKey == null) { Log.e(TAG, "vault: no private key available"); return; }
             String mySlotId = VaultCrypto.slotIdForPubkey(myPubDer);
 
             // 1. Fetch blobs since current version
@@ -2538,7 +2772,7 @@ public class ControlService extends Service {
                     continue;
                 }
 
-                String orders = VaultCrypto.decryptOrders(blob, myPrivB64, myPubDer);
+                String orders = VaultCrypto.decryptOrders(blob, myPrivKey, myPubDer);
                 if (orders == null) {
                     Log.w(TAG, "vault: decrypt failed for v" + ver);
                     skipped++;
@@ -2561,7 +2795,7 @@ public class ControlService extends Service {
                             // Not JSON object — treat as legacy state snapshot
                         }
                         if (isRpc) {
-                            Log.i(TAG, "vault: dispatching v" + ver + " RPC blob (" + orders.length() + " bytes)");
+                            Log.w(TAG, "vault: dispatching v" + ver + " RPC blob (" + orders.length() + " bytes)");
                             try {
                                 String result = handleMeshOrder(orders);
                                 Log.i(TAG, "vault: RPC result: " + (result == null ? "null" : result));
@@ -2569,7 +2803,7 @@ public class ControlService extends Service {
                                 Log.w(TAG, "vault: RPC dispatch failed: " + e.getMessage());
                             }
                         } else {
-                            Log.i(TAG, "vault: applying v" + ver + " (orders=" + orders.length() + " bytes)");
+                            Log.w(TAG, "vault: applying v" + ver + " (orders=" + orders.length() + " bytes)");
                             applyOrdersFromMesh(orders);
                         }
                         meshVersion.set(ver);
@@ -2586,7 +2820,7 @@ public class ControlService extends Service {
                 vaultRegisterIfNeeded(meshUrl, meshId, mySlotId, myPubDer);
             }
             if (applied > 0 || skipped > 0) {
-                Log.i(TAG, "vault: sync done (applied=" + applied + " skipped=" + skipped
+                Log.w(TAG, "vault: sync done (applied=" + applied + " skipped=" + skipped
                     + " current=" + meshVersion.get() + ")");
             }
         } catch (Exception e) {
@@ -2611,7 +2845,7 @@ public class ControlService extends Service {
                 + ",\"node_pubkey\":\"" + pubB64 + "\"}";
             String resp = vaultHttpPost(meshUrl + "/vault/" + meshId + "/register-node-request", body);
             if (resp != null) {
-                Log.i(TAG, "vault: posted register-node-request (slot=" + mySlotId + ")");
+                Log.w(TAG, "vault: posted register-node-request (slot=" + mySlotId + ")");
                 Settings.Global.putString(getContentResolver(),
                     "focus_lock_vault_last_register_req", String.valueOf(now));
             }
@@ -2769,6 +3003,18 @@ public class ControlService extends Service {
         body.put("desktops", gstr("focus_lock_desktops"));
         body.put("entrapped",
             Settings.Global.getInt(getContentResolver(), "focus_lock_entrapped", 0) == 1);
+        // Screen time leash
+        body.put("screen_time_quota_minutes",
+            (long) Settings.Global.getInt(getContentResolver(), "focus_lock_screen_time_quota_minutes", 0));
+        body.put("screen_time_used_today",
+            (long) Settings.Global.getInt(getContentResolver(), "focus_lock_screen_time_used_today", 0));
+        // Bedtime
+        body.put("bedtime_enabled",
+            Settings.Global.getInt(getContentResolver(), "focus_lock_bedtime_enabled", 0) == 1);
+        body.put("bedtime_lock_hour",
+            (long) Settings.Global.getInt(getContentResolver(), "focus_lock_bedtime_lock_hour", -1));
+        body.put("bedtime_unlock_hour",
+            (long) Settings.Global.getInt(getContentResolver(), "focus_lock_bedtime_unlock_hour", -1));
         body.put("orders_version", meshVersion.get());
         // Nodes registry — controller's doUnlockDevice() and refreshInbox() consume this.
         java.util.TreeMap<String, Object> nodes = new java.util.TreeMap<>();
@@ -2904,8 +3150,8 @@ public class ControlService extends Service {
             // Need our own pubkey + privkey to sign and to find our slot.
             byte[] myPubDer = ensureNodeKeypair();
             if (myPubDer == null) return;
-            String myPrivB64 = gstr("focus_lock_node_privkey");
-            if (myPrivB64.isEmpty()) return;
+            java.security.PrivateKey myPrivKey = getNodePrivateKey();
+            if (myPrivKey == null) { Log.e(TAG, "vault push: no private key"); return; }
             String mySlotId = VaultCrypto.slotIdForPubkey(myPubDer);
 
             // Fetch the recipient list from the server. We can only push if
@@ -2951,7 +3197,7 @@ public class ControlService extends Service {
                 long createdAt = System.currentTimeMillis();
                 java.util.Map<String, Object> blob =
                     VaultCrypto.encryptBody(meshId, version, createdAt, body, recipients);
-                String signature = VaultCrypto.signBlob(blob, myPrivB64);
+                String signature = VaultCrypto.signBlob(blob, myPrivKey);
                 blob.put("signature", signature);
                 String blobJson = new String(VaultCrypto.canonicalJson(blob));
 
@@ -2960,7 +3206,7 @@ public class ControlService extends Service {
                 int code = resp[0];
                 if (code == 200) {
                     lastRuntimeBodyHash = hash;
-                    Log.i(TAG, "vault: runtime push v" + version
+                    Log.w(TAG, "vault: runtime push v" + version
                         + " (" + recipients.size() + " slots, " + blobJson.length() + " bytes)");
                     return;
                 }
@@ -3052,7 +3298,7 @@ public class ControlService extends Service {
                     // hitting /api/mesh/{id}/sync for the rest of this session.
                     if (respCode == 410 && isServerPeer) {
                         if (!vaultOnlyDetected) {
-                            Log.i(TAG, "Mesh gossip: server reports vault_only — suppressing plaintext gossip");
+                            Log.w(TAG, "Mesh gossip: server reports vault_only — suppressing plaintext gossip");
                             vaultOnlyDetected = true;
                         }
                         conn.disconnect();
@@ -3086,7 +3332,7 @@ public class ControlService extends Service {
                                                 else if (respBody.charAt(i) == '}') { depth--; if (depth == 0) { braceEnd = i; break; } }
                                             }
                                             String ordersJson = respBody.substring(braceStart, braceEnd + 1);
-                                            Log.i(TAG, "Mesh gossip: applying v" + remVer + " from " + peerId);
+                                            Log.w(TAG, "Mesh gossip: applying v" + remVer + " from " + peerId);
                                             applyOrdersFromMesh(ordersJson);
                                             meshVersion.set(remVer);
                                             Settings.Global.putLong(getContentResolver(), "focus_lock_mesh_version", meshVersion.get());
@@ -3285,11 +3531,69 @@ public class ControlService extends Service {
         meshPushToPeers();
     }
 
+    // ── ntfy Push Subscriber ──
+    // Port of focuslock_ntfy.py NtfySubscribeThread. HTTP long-poll on ntfy topic.
+    // Wake-up triggers immediate vaultSync(). Gossip remains the consistency layer.
+    private void ntfySubscribeLoop(String server, String topic) {
+        String since = String.valueOf(System.currentTimeMillis() / 1000 - 60);
+        int backoff = 1;
+        while (running) {
+            java.net.HttpURLConnection conn = null;
+            try {
+                String url = server + "/" + topic + "/json?since=" + since;
+                conn = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+                conn.setRequestMethod("GET");
+                conn.setReadTimeout(90_000);
+                conn.setConnectTimeout(10_000);
+                java.io.BufferedReader reader = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(conn.getInputStream(), "UTF-8"));
+                String line;
+                while (running && (line = reader.readLine()) != null) {
+                    line = line.trim();
+                    if (line.isEmpty()) continue;
+                    try {
+                        org.json.JSONObject msg = new org.json.JSONObject(line);
+                        String msgId = msg.optString("id", "");
+                        if (!msgId.isEmpty()) since = msgId;
+                        String event = msg.optString("event", "");
+                        if ("open".equals(event) || "keepalive".equals(event)) continue;
+                        String body = msg.optString("message", "");
+                        if (!body.isEmpty()) {
+                            try {
+                                org.json.JSONObject data = new org.json.JSONObject(body);
+                                int ver = data.optInt("v", -1);
+                                if (ver >= 0) {
+                                    Log.w(TAG, "ntfy: wake-up v" + ver);
+                                    try { vaultSync(); } catch (Exception e) {
+                                        Log.w(TAG, "ntfy: vaultSync error: " + e);
+                                    }
+                                }
+                            } catch (Exception ignored) {}
+                        }
+                    } catch (Exception ignored) {}
+                }
+                reader.close();
+                backoff = 1;
+            } catch (Exception e) {
+                Log.i(TAG, "ntfy: subscribe error: " + e);
+                try { Thread.sleep(backoff * 1000L); } catch (InterruptedException ie) { break; }
+                backoff = Math.min(backoff * 2, 60);
+            } finally {
+                if (conn != null) try { conn.disconnect(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
     @Override public void onDestroy() {
         running = false;
         try { if (serverSocket != null) serverSocket.close(); } catch (Exception e) {}
         super.onDestroy();
     }
     @Override public IBinder onBind(Intent i) { return null; }
-    @Override public int onStartCommand(Intent i, int f, int id) { return START_STICKY; }
+    @Override public int onStartCommand(Intent i, int f, int id) {
+        if (i != null && i.getBooleanExtra("mesh_bump", false)) {
+            meshBumpAndPush();
+        }
+        return START_STICKY;
+    }
 }
