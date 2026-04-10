@@ -1,0 +1,40 @@
+# FocusLock re-enslave config — copy to ~/.config/focuslock/re-enslave.config and edit.
+# This file is sourced by the bash sub-scripts AND parsed by the watcher python script,
+# so keep it to plain bash assignments (no functions, no logic).
+# shellcheck shell=bash
+
+# ── Phone targets ──
+# One entry per phone, format: "name:adb_address:role"
+#   name        — short identifier (used for --phone NAME and the watcher state file)
+#   adb_address — host or host:port reachable from this machine via ADB Wi-Fi
+#                 (typically the LAN IP + the dynamic adb-tls port)
+#   role        — bunny | lion | both
+#                 bunny → installs the Collar (com.focuslock) + Bunny Tasker
+#                 lion  → installs Lion's Share (com.focusctl)
+#                 both  → installs all three (rare; for testing on one device)
+#
+# ADB-over-Wi-Fi notes:
+#   - The port is randomized by Android each time wireless debugging is toggled.
+#     Use `adb devices` from a phone you've previously paired to find it, or
+#     run `adb mdns services` to discover via mDNS.
+#   - On the same LAN this is just <ip>:<port>. Tailscale users can use the
+#     Tailscale IP + the same port — works as long as the phone has the
+#     Tailscale app running with subnet routing or as an exit node.
+PHONE_TARGETS=(
+    # "bunny-phone:192.0.2.42:33583:bunny"
+    # "lion-phone:192.0.2.43:35155:lion"
+)
+
+# ── Homelab SSH target (optional — re-enslave-server.sh uses this) ──
+# Either a hostname/IP that ssh can reach with passwordless sudo, or leave
+# empty and set FOCUSLOCK_HOMELAB_HOST to a Tailscale node name.
+# FOCUSLOCK_HOMELAB_SSH=homelab.example.com
+# FOCUSLOCK_HOMELAB_HOST=homelab
+
+# ── Mesh URL (REQUIRED) ──
+# Set to your relay's HTTPS endpoint. Used by the paywall check at the start
+# of every re-enslave-*.sh and by the post-deploy verification step.
+# FOCUSLOCK_MESH_URL=https://focus.example.com
+
+# ── Remote deploy user (optional — defaults to $USER) ──
+# DEPLOY_USER=ops

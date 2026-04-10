@@ -1,0 +1,1755 @@
+<\!DOCTYPE html>
+<\!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<\!-- Copyright (C) 2024-2026 The FocusLock Contributors -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0a0a14">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Lion's Share</title>
+<style>
+:root {
+  --bg-primary: #0a0a14;
+  --bg-card: #0e0e1a;
+  --bg-input: #111118;
+  --gold: #DAA520;
+  --gold-bright: #FFD700;
+  --gold-dark: #8B6914;
+  --gold-dim: #cc9900;
+  --text-primary: #e0e0e0;
+  --text-muted: #555;
+  --tab-active-bg: #2a2510;
+  --divider: #1a1a28;
+  --btn-danger: #2a0a0a;
+  --radius: 10px;
+  --radius-sm: 6px;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-primary); }
+::-webkit-scrollbar-thumb { background: var(--gold-dark); border-radius: 3px; }
+
+/* ── Layout ── */
+.app {
+  max-width: 600px;
+  margin: 0 auto;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Login Screen ── */
+.login-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 2rem;
+  gap: 1.5rem;
+}
+
+.login-logo {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  border: 2px solid var(--gold);
+  object-fit: cover;
+}
+
+.login-title {
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: var(--gold-bright);
+  letter-spacing: 0.05em;
+}
+
+.login-subtitle {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin-top: -0.8rem;
+}
+
+.pin-field {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.pin-field input {
+  width: 180px;
+  padding: 0.75rem 1rem;
+  background: var(--bg-input);
+  border: 1px solid var(--gold-dark);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-size: 1.2rem;
+  text-align: center;
+  letter-spacing: 0.3em;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.pin-field input:focus {
+  border-color: var(--gold);
+}
+
+.pin-field input::placeholder {
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+}
+
+.login-error {
+  color: #e74c3c;
+  font-size: 0.85rem;
+  min-height: 1.2em;
+}
+
+/* ── Header ── */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem 1rem 0.5rem;
+  border-bottom: 1px solid var(--divider);
+}
+
+.header-logo {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1.5px solid var(--gold-dark);
+  object-fit: cover;
+}
+
+.header-text h1 {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--gold-bright);
+  line-height: 1.2;
+}
+
+.header-text .subtitle {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+/* ── Tab Bar ── */
+.tab-bar {
+  display: flex;
+  border-bottom: 1px solid var(--divider);
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: var(--bg-primary);
+}
+
+.tab-btn {
+  flex: 1;
+  padding: 0.7rem 0;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  position: relative;
+  transition: color 0.2s, background 0.2s;
+}
+
+.tab-btn:hover {
+  color: var(--gold-dim);
+  background: rgba(218, 165, 32, 0.04);
+}
+
+.tab-btn.active {
+  color: var(--gold);
+  background: var(--tab-active-bg);
+}
+
+.tab-btn.active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 15%;
+  width: 70%;
+  height: 2px;
+  background: var(--gold);
+  border-radius: 1px 1px 0 0;
+}
+
+/* ── Tab Content ── */
+.tab-content {
+  display: none;
+  padding: 1rem;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.tab-content.active {
+  display: block;
+}
+
+/* ── Cards ── */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--divider);
+  border-radius: var(--radius);
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.card-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--gold-dim);
+  margin-bottom: 0.6rem;
+}
+
+/* ── Status Card ── */
+.status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #444;
+  transition: background 0.3s;
+}
+
+.status-dot.locked { background: #e74c3c; }
+.status-dot.unlocked { background: #2ecc71; }
+
+.status-label {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.status-timer {
+  font-family: 'Courier New', monospace;
+  font-size: 1.1rem;
+  color: var(--gold-bright);
+  font-weight: 700;
+}
+
+.status-meta {
+  display: flex;
+  gap: 1rem;
+  margin-top: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  flex-wrap: wrap;
+}
+
+.status-meta span {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.tier-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.tier-bronze { background: #8B4513; color: #fff; }
+.tier-silver { background: #A0A0A0; color: #000; }
+.tier-gold { background: #DAA520; color: #000; }
+
+/* ── Device Pills ── */
+.device-pills {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.device-pill {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.7rem;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border: 1px solid var(--divider);
+  background: var(--bg-card);
+}
+
+.device-pill .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.device-pill .dot.online { background: #2ecc71; }
+.device-pill .dot.offline { background: #555; }
+.device-pill .dot.locked { background: #e74c3c; }
+
+/* ── Inputs ── */
+input, textarea, select {
+  background: var(--bg-input);
+  border: 1px solid var(--divider);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 0.6rem 0.75rem;
+  font-size: 0.88rem;
+  width: 100%;
+  outline: none;
+  transition: border-color 0.2s;
+  font-family: inherit;
+}
+
+input:focus, textarea:focus, select:focus {
+  border-color: var(--gold-dark);
+}
+
+select {
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23DAA520' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  padding-right: 2rem;
+}
+
+select option {
+  background: var(--bg-input);
+  color: var(--text-primary);
+}
+
+textarea {
+  resize: vertical;
+  min-height: 70px;
+}
+
+label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-bottom: 0.3rem;
+  font-weight: 600;
+}
+
+.input-group {
+  margin-bottom: 0.75rem;
+}
+
+.input-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.input-row > * {
+  flex: 1;
+}
+
+/* ── Buttons ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.65rem 1rem;
+  border: 1px solid var(--divider);
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  transition: all 0.15s;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.btn:hover {
+  border-color: var(--gold-dark);
+  background: rgba(218, 165, 32, 0.08);
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--gold-dark), var(--gold));
+  color: #000;
+  border-color: var(--gold);
+  font-weight: 700;
+}
+
+.btn-primary:hover {
+  background: linear-gradient(135deg, var(--gold), var(--gold-bright));
+  border-color: var(--gold-bright);
+}
+
+.btn-danger {
+  background: var(--btn-danger);
+  border-color: #4a1a1a;
+  color: #e74c3c;
+}
+
+.btn-danger:hover {
+  background: #3a1010;
+  border-color: #5a2a2a;
+}
+
+.btn-sm {
+  padding: 0.4rem 0.65rem;
+  font-size: 0.78rem;
+}
+
+.btn-full {
+  width: 100%;
+}
+
+.btn-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.btn-row .btn {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── Quick Lock ── */
+.quick-locks {
+  display: flex;
+  gap: 0.4rem;
+  margin-bottom: 1rem;
+}
+
+.quick-locks .btn {
+  flex: 1;
+  font-size: 0.8rem;
+  padding: 0.5rem;
+  border-color: var(--gold-dark);
+  color: var(--gold);
+}
+
+.quick-locks .btn:hover {
+  background: var(--tab-active-bg);
+}
+
+/* ── Paywall / Balance ── */
+.balance-display {
+  text-align: center;
+  padding: 0.5rem 0;
+}
+
+.balance-amount {
+  font-size: 2.2rem;
+  font-weight: 700;
+  color: var(--gold-bright);
+  font-family: 'Courier New', monospace;
+}
+
+.balance-label {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.balance-buttons {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.balance-buttons .btn {
+  flex: 1;
+  min-width: 50px;
+  font-size: 0.82rem;
+  color: var(--gold);
+  border-color: var(--gold-dark);
+}
+
+.balance-custom {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+
+.balance-custom input {
+  flex: 1;
+}
+
+/* ── Toggle Buttons ── */
+.toggle-row {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+
+.toggle-btn {
+  padding: 0.45rem 0.7rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--divider);
+  background: var(--bg-input);
+  color: var(--text-muted);
+  transition: all 0.15s;
+  user-select: none;
+}
+
+.toggle-btn:hover {
+  border-color: var(--gold-dark);
+  color: var(--text-primary);
+}
+
+.toggle-btn.active {
+  background: var(--tab-active-bg);
+  border-color: var(--gold);
+  color: var(--gold);
+}
+
+/* ── Power Tools Grid ── */
+.power-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.power-grid .btn {
+  width: 100%;
+  font-size: 0.8rem;
+  padding: 0.6rem 0.5rem;
+}
+
+/* ── Offer Section ── */
+.offer-card {
+  border-color: var(--gold-dark);
+  background: rgba(218, 165, 32, 0.05);
+}
+
+.offer-text {
+  font-size: 0.9rem;
+  margin-bottom: 0.75rem;
+  line-height: 1.4;
+  color: var(--gold);
+}
+
+/* ── Mesh Device Cards ── */
+.mesh-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem;
+  margin-bottom: 0.5rem;
+  background: var(--bg-card);
+  border: 1px solid var(--divider);
+  border-radius: var(--radius-sm);
+}
+
+.mesh-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.mesh-icon {
+  font-size: 1.2rem;
+}
+
+.mesh-name {
+  font-weight: 600;
+  font-size: 0.88rem;
+}
+
+.mesh-type {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.mesh-status-badges {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.mesh-badge {
+  padding: 0.2rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.mesh-badge.online { background: #143a1e; color: #2ecc71; }
+.mesh-badge.offline { background: #1a1a1a; color: #555; }
+.mesh-badge.locked { background: #2a0a0a; color: #e74c3c; }
+.mesh-badge.unlocked { background: #0a2a0a; color: #2ecc71; }
+
+/* ── Subscription ── */
+.sub-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.sub-owed {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--gold-bright);
+}
+
+/* ── Modal ── */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.modal-overlay.show {
+  display: flex;
+}
+
+.modal-card {
+  background: var(--bg-card);
+  border: 1px solid var(--gold-dark);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  width: 100%;
+  max-width: 400px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.modal-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--gold);
+  margin-bottom: 0.75rem;
+}
+
+.modal-body {
+  margin-bottom: 1rem;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.modal-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+/* ── Lovense ── */
+.lovense-section {
+  display: none;
+}
+
+.lovense-section.visible {
+  display: block;
+}
+
+.lovense-buttons {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.lovense-buttons .btn {
+  flex: 1;
+}
+
+/* ── Toast ── */
+.toast {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%) translateY(100px);
+  background: var(--bg-card);
+  border: 1px solid var(--gold-dark);
+  border-radius: var(--radius);
+  padding: 0.65rem 1.2rem;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  z-index: 2000;
+  transition: transform 0.3s ease;
+  pointer-events: none;
+  max-width: 90%;
+  text-align: center;
+}
+
+.toast.show {
+  transform: translateX(-50%) translateY(0);
+}
+
+.toast.error {
+  border-color: #e74c3c;
+  color: #e74c3c;
+}
+
+/* ── Misc ── */
+.section-divider {
+  height: 1px;
+  background: var(--divider);
+  margin: 1rem 0;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.tooltip-wrap {
+  position: relative;
+}
+
+.tooltip-wrap[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1a1a28;
+  border: 1px solid var(--gold-dark);
+  color: var(--text-primary);
+  padding: 0.3rem 0.6rem;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  white-space: nowrap;
+  z-index: 100;
+  pointer-events: none;
+}
+
+.loading-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--divider);
+  border-top-color: var(--gold);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.pulse {
+  animation: pulse 2s ease-in-out infinite;
+}
+
+/* ── Responsive ── */
+@media (max-width: 400px) {
+  .power-grid {
+    grid-template-columns: 1fr;
+  }
+  .balance-buttons .btn {
+    min-width: 40px;
+    font-size: 0.75rem;
+    padding: 0.4rem 0.3rem;
+  }
+}
+</style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════ LOGIN ════════════════════════════════════════════ -->
+<div id="loginScreen" class="login-screen">
+  <img src="/collar-icon.png" alt="Lion's Share" class="login-logo"
+       onerror="this.style.display='none'">
+  <div class="login-title">Lion's Share</div>
+  <div class="login-subtitle">Controller Authentication</div>
+  <div class="pin-field">
+    <input type="password" id="pinInput" placeholder="PIN" maxlength="8"
+           inputmode="numeric" autocomplete="off">
+    <button class="btn btn-primary" id="pinSubmit">Enter</button>
+  </div>
+  <div class="login-error" id="loginError"></div>
+</div>
+
+<!-- ════════════════════════════════════════════ APP ════════════════════════════════════════════ -->
+<div id="appShell" class="app hidden">
+
+  <!-- Header -->
+  <div class="header">
+    <img src="/collar-icon.png" alt="" class="header-logo"
+         onerror="this.style.display='none'">
+    <div class="header-text">
+      <h1>Lion's Share</h1>
+      <div class="subtitle" id="headerSubtitle">Controller</div>
+    </div>
+  </div>
+
+  <!-- Tab Bar -->
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="control">Control</button>
+    <button class="tab-btn" data-tab="advanced">Advanced</button>
+    <button class="tab-btn" data-tab="inbox">Inbox</button>
+  </div>
+
+  <!-- ──────────────── TAB 1: CONTROL ──────────────── -->
+  <div id="tab-control" class="tab-content active">
+
+    <!-- Status -->
+    <div class="card" id="statusCard">
+      <div class="card-title">Status</div>
+      <div class="status-row">
+        <div class="status-indicator">
+          <div class="status-dot" id="statusDot"></div>
+          <span class="status-label" id="statusLabel">--</span>
+          <span class="tier-badge hidden" id="tierBadge"></span>
+        </div>
+        <div class="status-timer" id="statusTimer"></div>
+      </div>
+      <div class="status-meta" id="statusMeta"></div>
+    </div>
+
+    <!-- Device Pills -->
+    <div class="device-pills" id="devicePills"></div>
+
+    <!-- Lock Section -->
+    <div class="card">
+      <div class="card-title">Lock</div>
+      <div class="input-group">
+        <label for="lockMsg">Lock Message</label>
+        <input type="text" id="lockMsg" placeholder="Message shown on lock screen...">
+      </div>
+      <div class="input-row" style="margin-bottom:0.75rem">
+        <div>
+          <label for="lockTimer">Timer (min)</label>
+          <input type="number" id="lockTimer" placeholder="0" min="0">
+        </div>
+        <div>
+          <label for="lockPaywall">Paywall ($)</label>
+          <input type="number" id="lockPaywall" placeholder="0" min="0" step="0.01">
+        </div>
+        <div>
+          <label for="lockMode">Mode</label>
+          <select id="lockMode">
+            <option value="">Basic</option>
+            <option value="negotiation">Negotiation</option>
+            <option value="task">Task</option>
+            <option value="compliment">Compliment</option>
+            <option value="quiz">Quiz</option>
+            <option value="gratitude">Gratitude</option>
+            <option value="exercise">Exercise</option>
+            <option value="love_letter">Love Letter</option>
+            <option value="random">Random</option>
+          </select>
+        </div>
+      </div>
+      <button class="btn btn-primary btn-full" id="btnLockAll">Lock All Devices</button>
+    </div>
+
+    <!-- Quick Lock -->
+    <div class="quick-locks">
+      <button class="btn" data-quick="15">15m</button>
+      <button class="btn" data-quick="30">30m</button>
+      <button class="btn" data-quick="60">1h</button>
+      <button class="btn" data-quick="120">2h</button>
+    </div>
+
+    <!-- Bunny Balance -->
+    <div class="card">
+      <div class="card-title">Bunny Balance</div>
+      <div class="balance-display">
+        <div class="balance-amount" id="paywallAmount">$0.00</div>
+        <div class="balance-label">Paywall Owed (CAD)</div>
+      </div>
+      <div class="balance-buttons">
+        <button class="btn" data-add="1">+$1</button>
+        <button class="btn" data-add="5">+$5</button>
+        <button class="btn" data-add="10">+$10</button>
+        <button class="btn" data-add="25">+$25</button>
+        <button class="btn" data-add="50">+$50</button>
+      </div>
+      <div class="balance-custom">
+        <input type="number" id="customPaywall" placeholder="Custom $" min="0" step="0.01">
+        <button class="btn" id="btnAddCustom">Add</button>
+      </div>
+    </div>
+
+    <!-- Unlock Row -->
+    <div class="btn-row" style="margin-bottom:1rem">
+      <button class="btn" id="btnUnlockAll">Unlock All</button>
+      <button class="btn" id="btnReleaseDevice">Release Device</button>
+    </div>
+
+    <!-- Offer Section (conditional) -->
+    <div class="card offer-card hidden" id="offerSection">
+      <div class="card-title">Pending Offer</div>
+      <div class="offer-text" id="offerText"></div>
+      <div class="input-group">
+        <input type="text" id="counterOffer" placeholder="Counter-offer (optional)...">
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btnAcceptOffer">Accept</button>
+        <button class="btn btn-danger" id="btnDeclineOffer">Decline</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ──────────────── TAB 2: ADVANCED ──────────────── -->
+  <div id="tab-advanced" class="tab-content">
+
+    <!-- Mode Selector -->
+    <div class="card">
+      <div class="card-title">Lock Mode</div>
+      <div class="input-group">
+        <select id="advMode">
+          <option value="">Basic Lock</option>
+          <option value="negotiation">Negotiation</option>
+          <option value="task">Task</option>
+          <option value="compliment">Compliment</option>
+          <option value="quiz">Quiz</option>
+          <option value="gratitude">Gratitude Journal</option>
+          <option value="exercise">Exercise</option>
+          <option value="love_letter">Love Letter</option>
+          <option value="random">Random</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Modifier Toggles -->
+    <div class="card">
+      <div class="card-title">Modifiers</div>
+      <div class="toggle-row">
+        <button class="toggle-btn" data-mod="shame">Taunt</button>
+        <button class="toggle-btn" data-mod="penalty">+5m/esc</button>
+        <button class="toggle-btn" data-mod="vibrate">Vibrate</button>
+        <button class="toggle-btn" data-mod="dim">Dim</button>
+        <button class="toggle-btn" data-mod="mute">Mute</button>
+      </div>
+    </div>
+
+    <!-- Writing Task -->
+    <div class="card">
+      <div class="card-title">Writing Task</div>
+      <div class="input-group">
+        <label for="taskText">Task Prompt</label>
+        <textarea id="taskText" placeholder="Write about why you love me..."></textarea>
+      </div>
+      <div class="input-row" style="margin-bottom:0.75rem">
+        <div>
+          <label for="taskReps">Reps</label>
+          <input type="number" id="taskReps" placeholder="1" min="1" value="1">
+        </div>
+        <div>
+          <label for="taskCompliment">Compliment</label>
+          <input type="text" id="taskCompliment" placeholder="Good boy...">
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem">
+        <button class="toggle-btn" id="taskRandomize">Randomize</button>
+      </div>
+      <button class="btn btn-primary btn-full" id="btnTaskLock">Task + Lock</button>
+    </div>
+
+    <!-- Good Boy (Lovense) -->
+    <div class="lovense-section" id="lovenseSection">
+      <div class="card">
+        <div class="card-title">Good Boy</div>
+        <div class="lovense-buttons">
+          <button class="btn" data-toy="pulse">Pulse</button>
+          <button class="btn btn-primary" data-toy="reward">Reward</button>
+          <button class="btn btn-danger" data-toy="punish">Punish</button>
+          <button class="btn" data-toy="stop">Stop</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Power Tools -->
+    <div class="card">
+      <div class="card-title">Power Tools</div>
+      <div class="power-grid">
+        <button class="btn tooltip-wrap" id="btnClearPaywall" data-tooltip="Reset paywall to $0">Clear Paywall</button>
+        <button class="btn tooltip-wrap" id="btnGamble" data-tooltip="Double the paywall or clear it">Double or Nothing</button>
+        <button class="btn tooltip-wrap" id="btnPlayAudio" data-tooltip="Play audio URL on phone">Play Audio</button>
+        <button class="btn tooltip-wrap" id="btnSpeak" data-tooltip="Text-to-speech on phone">Speak</button>
+        <button class="btn tooltip-wrap" id="btnGeofence" data-tooltip="Set geofence boundary">Set Geofence</button>
+        <button class="btn tooltip-wrap" id="btnConfineHome" data-tooltip="Lock to current location + 100m">Confine Home</button>
+        <button class="btn tooltip-wrap" id="btnPinMessage" data-tooltip="Pin a persistent notification">Pin Message</button>
+        <button class="btn tooltip-wrap" id="btnSubscription" data-tooltip="Set subscription tier">Subscription</button>
+        <button class="btn btn-danger tooltip-wrap" id="btnEntrap" data-tooltip="Scramble PIN, no escape">Entrap</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ──────────────── TAB 3: INBOX ──────────────── -->
+  <div id="tab-inbox" class="tab-content">
+
+    <!-- Lion-Only Pinned Message (auth challenges, private notes) -->
+    <div class="card" id="lionPinnedCard" style="display:none;border:1px solid var(--gold)">
+      <div class="card-title" style="color:var(--gold)">Lion-Only Pinned</div>
+      <div id="lionPinnedText" style="font-size:1.1rem;font-weight:600;color:var(--gold)"></div>
+      <button class="btn btn-full" style="margin-top:0.5rem;background:var(--bg-card)" onclick="api('POST','/mesh/order',{action:'pin-lion-message',params:{message:''}}).then(()=>{document.getElementById('lionPinnedCard').style.display='none'})">Clear</button>
+    </div>
+
+    <!-- Collared Devices -->
+    <div class="card">
+      <div class="card-title">Collared Devices</div>
+      <div id="meshDevices">
+        <div style="color:var(--text-muted);font-size:0.85rem;">Loading devices...</div>
+      </div>
+    </div>
+
+    <!-- Message -->
+    <div class="card">
+      <div class="card-title">Message</div>
+      <div class="input-group">
+        <textarea id="msgText" placeholder="Send a message to bunny..."></textarea>
+      </div>
+      <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem">
+        <button class="toggle-btn" id="msgPin">Pin as notification</button>
+      </div>
+      <button class="btn btn-primary btn-full" id="btnSendMsg">Send</button>
+    </div>
+
+    <!-- Subscription Status -->
+    <div class="card">
+      <div class="card-title">Subscription Status</div>
+      <div class="sub-info">
+        <div>
+          <div style="font-size:0.85rem;color:var(--text-muted)">Current Tier</div>
+          <div style="font-size:1rem;font-weight:600" id="subTierDisplay">None</div>
+        </div>
+        <div>
+          <div style="font-size:0.85rem;color:var(--text-muted)">Due Date</div>
+          <div style="font-size:1rem;font-weight:600" id="subDueDisplay">--</div>
+        </div>
+        <div>
+          <div style="font-size:0.85rem;color:var(--text-muted)">Free Unlocks</div>
+          <div style="font-size:1rem;font-weight:600" id="subUnlocksDisplay">0</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ════════════════════════════════════════════ MODAL ════════════════════════════════════════════ -->
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal-card">
+    <div class="modal-title" id="modalTitle"></div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-actions" id="modalActions"></div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════ TOAST ════════════════════════════════════════════ -->
+<div class="toast" id="toast"></div>
+
+<script>
+/* ════════════════════════════════════════════════════════════════════════════════════════════════
+   Lion's Share — Web Controller
+   ════════════════════════════════════════════════════════════════════════════════════════════════ */
+(function () {
+  'use strict';
+
+  // ── State ──
+  let PIN = sessionStorage.getItem('ls_pin') || '';
+  let status = {};
+  let meshData = { orders: {}, nodes: {} };
+  let timerInterval = null;
+  let statusPollId = null;
+  let meshPollId = null;
+  let timerRemainingMs = 0;
+  let lastStatusTimestamp = 0;
+
+  // ── DOM refs ──
+  const $ = (sel, ctx) => (ctx || document).querySelector(sel);
+  const $$ = (sel, ctx) => [...(ctx || document).querySelectorAll(sel)];
+
+  const loginScreen = $('#loginScreen');
+  const appShell = $('#appShell');
+  const pinInput = $('#pinInput');
+  const pinSubmit = $('#pinSubmit');
+  const loginError = $('#loginError');
+  const toastEl = $('#toast');
+
+  // ── Helpers ──
+  function api(method, path, body) {
+    const sep = path.includes('?') ? '&' : '?';
+    const url = `${path}${sep}pin=${encodeURIComponent(PIN)}`;
+    const opts = { method, headers: {} };
+    if (body && method !== 'GET') {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify({ pin: PIN, ...body });
+    }
+    return fetch(url, opts).then(r => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json().catch(() => ({}));
+    });
+  }
+
+  function toast(msg, isError) {
+    toastEl.textContent = msg;
+    toastEl.classList.toggle('error', !!isError);
+    toastEl.classList.add('show');
+    setTimeout(() => toastEl.classList.remove('show'), 2600);
+  }
+
+  function formatTimer(ms) {
+    if (!ms || ms <= 0) return '';
+    const totalSec = Math.ceil(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    if (h > 0) return `${h}h ${m}m ${s}s`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+  }
+
+  function formatMoney(val) {
+    const n = parseFloat(val) || 0;
+    return `$${n.toFixed(2)}`;
+  }
+
+  // ── Modal System ──
+  function showModal(title, bodyHtml, actions) {
+    $('#modalTitle').textContent = title;
+    $('#modalBody').innerHTML = bodyHtml;
+    const actionsEl = $('#modalActions');
+    actionsEl.innerHTML = '';
+    actions.forEach(a => {
+      const btn = document.createElement('button');
+      btn.className = `btn ${a.cls || ''}`;
+      btn.textContent = a.label;
+      btn.onclick = () => { hideModal(); if (a.fn) a.fn(); };
+      actionsEl.appendChild(btn);
+    });
+    $('#modalOverlay').classList.add('show');
+  }
+
+  function showPromptModal(title, placeholder, confirmLabel, onConfirm) {
+    $('#modalTitle').textContent = title;
+    $('#modalBody').innerHTML = `<input type="text" id="modalInput" placeholder="${placeholder}" style="margin-top:0.5rem">`;
+    const actionsEl = $('#modalActions');
+    actionsEl.innerHTML = '';
+    [
+      { label: 'Cancel', cls: '', fn: null },
+      { label: confirmLabel, cls: 'btn-primary', fn: () => onConfirm($('#modalInput').value) }
+    ].forEach(a => {
+      const btn = document.createElement('button');
+      btn.className = `btn ${a.cls}`;
+      btn.textContent = a.label;
+      btn.onclick = () => { hideModal(); if (a.fn) a.fn(); };
+      actionsEl.appendChild(btn);
+    });
+    $('#modalOverlay').classList.add('show');
+    setTimeout(() => { const inp = $('#modalInput'); if (inp) inp.focus(); }, 100);
+  }
+
+  function showFormModal(title, fieldsHtml, confirmLabel, onConfirm) {
+    $('#modalTitle').textContent = title;
+    $('#modalBody').innerHTML = fieldsHtml;
+    const actionsEl = $('#modalActions');
+    actionsEl.innerHTML = '';
+    [
+      { label: 'Cancel', cls: '', fn: null },
+      { label: confirmLabel, cls: 'btn-primary', fn: onConfirm }
+    ].forEach(a => {
+      const btn = document.createElement('button');
+      btn.className = `btn ${a.cls}`;
+      btn.textContent = a.label;
+      btn.onclick = () => { hideModal(); if (a.fn) a.fn(); };
+      actionsEl.appendChild(btn);
+    });
+    $('#modalOverlay').classList.add('show');
+  }
+
+  function hideModal() {
+    $('#modalOverlay').classList.remove('show');
+  }
+
+  // ── Auth ──
+  function tryLogin(pin) {
+    PIN = pin;
+    api('GET', '/api/status')
+      .then(data => {
+        sessionStorage.setItem('ls_pin', pin);
+        loginScreen.classList.add('hidden');
+        appShell.classList.remove('hidden');
+        status = data;
+        renderStatus();
+        startPolling();
+      })
+      .catch(() => {
+        loginError.textContent = 'Invalid PIN or server unreachable';
+        PIN = '';
+      });
+  }
+
+  pinSubmit.addEventListener('click', () => tryLogin(pinInput.value));
+  pinInput.addEventListener('keydown', e => { if (e.key === 'Enter') tryLogin(pinInput.value); });
+
+  // ── Auto-login ──
+  if (PIN) {
+    tryLogin(PIN);
+  }
+
+  // ── Tabs ──
+  $$('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      $$('.tab-btn').forEach(b => b.classList.remove('active'));
+      $$('.tab-content').forEach(t => t.classList.remove('active'));
+      btn.classList.add('active');
+      $(`#tab-${btn.dataset.tab}`).classList.add('active');
+    });
+  });
+
+  // ── Status Rendering ──
+  function renderStatus() {
+    const dot = $('#statusDot');
+    const label = $('#statusLabel');
+    const timer = $('#statusTimer');
+    const meta = $('#statusMeta');
+    const badge = $('#tierBadge');
+
+    // Locked state
+    const isLocked = status.locked;
+    dot.className = `status-dot ${isLocked ? 'locked' : 'unlocked'}`;
+    label.textContent = isLocked ? 'Locked' : 'Unlocked';
+
+    // Timer
+    timerRemainingMs = parseInt(status.timer_remaining_ms) || 0;
+    lastStatusTimestamp = Date.now();
+    timer.textContent = formatTimer(timerRemainingMs);
+
+    // Tier badge
+    const tier = (status.sub_tier || '').toLowerCase();
+    if (tier && tier !== 'none') {
+      badge.className = `tier-badge tier-${tier}`;
+      badge.textContent = tier.charAt(0).toUpperCase() + tier.slice(1);
+      badge.classList.remove('hidden');
+    } else {
+      badge.classList.add('hidden');
+    }
+
+    // Meta info
+    let parts = [];
+    if (status.escapes !== undefined) parts.push(`<span>Escapes: ${status.escapes}</span>`);
+    if (status.mode) parts.push(`<span>Mode: ${status.mode}</span>`);
+    if (status.message) parts.push(`<span>Msg: ${status.message}</span>`);
+    if (status.last_unlock_source) parts.push(`<span>Last unlock: ${status.last_unlock_source}</span>`);
+    meta.innerHTML = parts.join('');
+
+    // Paywall
+    const pw = parseFloat(status.paywall) || 0;
+    $('#paywallAmount').textContent = formatMoney(pw);
+
+    // Offer section
+    const offerCard = $('#offerSection');
+    if (status.offer_status === 'pending' && status.offer) {
+      offerCard.classList.remove('hidden');
+      $('#offerText').textContent = status.offer;
+    } else {
+      offerCard.classList.add('hidden');
+    }
+
+    // Lovense
+    const lovSec = $('#lovenseSection');
+    if (status.lovense_available) {
+      lovSec.classList.add('visible');
+    } else {
+      lovSec.classList.remove('visible');
+    }
+
+    // Subscription
+    $('#subTierDisplay').textContent = status.sub_tier || 'None';
+    $('#subDueDisplay').textContent = status.sub_due || '--';
+    $('#subUnlocksDisplay').textContent = status.free_unlocks ?? 0;
+  }
+
+  function renderMesh() {
+    const container = $('#meshDevices');
+    const pills = $('#devicePills');
+    const nodes = meshData.nodes || {};
+
+    // Lion-only pinned message
+    const lionPinned = (meshData.orders || {}).lion_pinned_message || '';
+    const lionCard = $('#lionPinnedCard');
+    if (lionPinned) {
+      $('#lionPinnedText').textContent = lionPinned;
+      lionCard.style.display = '';
+    } else {
+      lionCard.style.display = 'none';
+    }
+    const keys = Object.keys(nodes);
+
+    // Device pills (Tab 1)
+    if (keys.length > 0) {
+      pills.innerHTML = keys.map(k => {
+        const n = nodes[k];
+        const online = n.online !== false;
+        const locked = n.locked;
+        const dotClass = locked ? 'locked' : (online ? 'online' : 'offline');
+        const icon = (n.type === 'phone' || k.toLowerCase().includes('phone')) ? '\u{1F4F1}' : '\u{1F4BB}';
+        return `<div class="device-pill">${icon} <span class="dot ${dotClass}"></span> ${n.hostname || k}</div>`;
+      }).join('');
+    } else {
+      pills.innerHTML = `<div class="device-pill">\u{1F4F1} <span class="dot ${status.locked ? 'locked' : 'online'}"></span> Phone</div>`;
+    }
+
+    // Mesh device cards (Tab 3)
+    if (keys.length > 0) {
+      container.innerHTML = keys.map(k => {
+        const n = nodes[k];
+        const online = n.online !== false;
+        const locked = n.locked;
+        const icon = (n.type === 'phone' || k.toLowerCase().includes('phone')) ? '\u{1F4F1}' : '\u{1F4BB}';
+        return `
+          <div class="mesh-card">
+            <div class="mesh-info">
+              <span class="mesh-icon">${icon}</span>
+              <div>
+                <div class="mesh-name">${n.hostname || k}</div>
+                <div class="mesh-type">${n.type || 'device'}</div>
+              </div>
+            </div>
+            <div class="mesh-status-badges">
+              <span class="mesh-badge ${online ? 'online' : 'offline'}">${online ? 'Online' : 'Offline'}</span>
+              ${locked !== undefined ? `<span class="mesh-badge ${locked ? 'locked' : 'unlocked'}">${locked ? 'Locked' : 'Free'}</span>` : ''}
+            </div>
+          </div>`;
+      }).join('');
+    } else {
+      container.innerHTML = `<div style="color:var(--text-muted);font-size:0.85rem;">No mesh devices found</div>`;
+    }
+  }
+
+  // ── Timer Tick ──
+  function startTimerTick() {
+    if (timerInterval) clearInterval(timerInterval);
+    timerInterval = setInterval(() => {
+      if (timerRemainingMs > 0) {
+        const elapsed = Date.now() - lastStatusTimestamp;
+        const remaining = timerRemainingMs - elapsed;
+        $('#statusTimer').textContent = formatTimer(Math.max(0, remaining));
+        if (remaining <= 0) {
+          $('#statusTimer').textContent = '';
+        }
+      }
+    }, 1000);
+  }
+
+  // ── Polling ──
+  function pollStatus() {
+    api('GET', '/api/status').then(data => {
+      status = data;
+      renderStatus();
+    }).catch(() => {});
+  }
+
+  function pollMesh() {
+    api('GET', '/mesh/status').then(data => {
+      meshData = data;
+      renderMesh();
+    }).catch(() => {});
+  }
+
+  function startPolling() {
+    pollStatus();
+    pollMesh();
+    startTimerTick();
+    if (statusPollId) clearInterval(statusPollId);
+    if (meshPollId) clearInterval(meshPollId);
+    statusPollId = setInterval(pollStatus, 3000);
+    meshPollId = setInterval(pollMesh, 10000);
+  }
+
+  // ── Lock ──
+  function doLock(overrides) {
+    const mods = getModifiers();
+    const body = {
+      message: $('#lockMsg').value || undefined,
+      timer: parseInt($('#lockTimer').value) || undefined,
+      paywall: parseFloat($('#lockPaywall').value) || undefined,
+      mode: $('#lockMode').value || undefined,
+      ...mods,
+      ...overrides
+    };
+    // Clean undefined
+    Object.keys(body).forEach(k => body[k] === undefined && delete body[k]);
+    api('POST', '/api/lock', body)
+      .then(() => { toast('Locked'); pollStatus(); })
+      .catch(e => toast(`Lock failed: ${e.message}`, true));
+  }
+
+  $('#btnLockAll').addEventListener('click', () => doLock({}));
+
+  // Quick locks
+  $$('[data-quick]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      doLock({ timer: parseInt(btn.dataset.quick), message: undefined, paywall: undefined });
+    });
+  });
+
+  // ── Unlock ──
+  $('#btnUnlockAll').addEventListener('click', () => {
+    api('POST', '/api/unlock', {})
+      .then(() => { toast('Unlocked all devices'); pollStatus(); })
+      .catch(e => toast(`Unlock failed: ${e.message}`, true));
+  });
+
+  $('#btnReleaseDevice').addEventListener('click', () => {
+    const nodes = meshData.nodes || {};
+    const keys = Object.keys(nodes);
+    if (keys.length === 0) {
+      toast('No devices in mesh', true);
+      return;
+    }
+    const btns = keys.map(k => `<button class="btn btn-full" style="margin-bottom:0.4rem" onclick="document.dispatchEvent(new CustomEvent('release-device',{detail:'${k}'}))">${nodes[k].hostname || k}</button>`).join('');
+    showFormModal('Release Device', btns, 'Cancel', () => {});
+    const handler = (e) => {
+      hideModal();
+      document.removeEventListener('release-device', handler);
+      // Use unlock endpoint (the server handles per-device via mesh)
+      api('POST', '/api/unlock', { device: e.detail })
+        .then(() => { toast(`Released ${e.detail}`); pollStatus(); pollMesh(); })
+        .catch(err => toast(`Failed: ${err.message}`, true));
+    };
+    document.addEventListener('release-device', handler);
+  });
+
+  // ── Paywall ──
+  $$('[data-add]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const amt = parseFloat(btn.dataset.add);
+      api('POST', '/api/add-paywall', { amount: amt })
+        .then(() => { toast(`+$${amt} added`); pollStatus(); })
+        .catch(e => toast(`Failed: ${e.message}`, true));
+    });
+  });
+
+  $('#btnAddCustom').addEventListener('click', () => {
+    const amt = parseFloat($('#customPaywall').value);
+    if (!amt || amt <= 0) { toast('Enter a valid amount', true); return; }
+    api('POST', '/api/add-paywall', { amount: amt })
+      .then(() => { toast(`+$${amt.toFixed(2)} added`); $('#customPaywall').value = ''; pollStatus(); })
+      .catch(e => toast(`Failed: ${e.message}`, true));
+  });
+
+  // ── Offers ──
+  $('#btnAcceptOffer').addEventListener('click', () => {
+    const counter = $('#counterOffer').value || undefined;
+    api('POST', '/api/offer-respond', { action: status.offer, response: 'accept' })
+      .then(() => { toast('Offer accepted'); pollStatus(); })
+      .catch(e => toast(`Failed: ${e.message}`, true));
+  });
+
+  $('#btnDeclineOffer').addEventListener('click', () => {
+    api('POST', '/api/offer-respond', { action: status.offer, response: 'decline' })
+      .then(() => { toast('Offer declined'); pollStatus(); })
+      .catch(e => toast(`Failed: ${e.message}`, true));
+  });
+
+  // ── Modifiers ──
+  function getModifiers() {
+    const mods = {};
+    $$('.toggle-btn[data-mod]').forEach(btn => {
+      if (btn.classList.contains('active')) {
+        mods[btn.dataset.mod] = true;
+      }
+    });
+    return mods;
+  }
+
+  $$('.toggle-btn[data-mod]').forEach(btn => {
+    btn.addEventListener('click', () => btn.classList.toggle('active'));
+  });
+
+  // Toggles that aren't modifiers
+  $('#taskRandomize').addEventListener('click', function() { this.classList.toggle('active'); });
+  $('#msgPin').addEventListener('click', function() { this.classList.toggle('active'); });
+
+  // ── Task + Lock ──
+  $('#btnTaskLock').addEventListener('click', () => {
+    const text = $('#taskText').value;
+    if (!text.trim()) { toast('Enter a task prompt', true); return; }
+    const reps = parseInt($('#taskReps').value) || 1;
+    const randomize = $('#taskRandomize').classList.contains('active');
+    const compliment = $('#taskCompliment').value || undefined;
+    const mode = $('#advMode').value || 'task';
+    const mods = getModifiers();
+
+    // Send task first, then lock
+    api('POST', '/api/task', { text, reps, randomize })
+      .then(() => {
+        return api('POST', '/api/lock', { mode, compliment, ...mods });
+      })
+      .then(() => { toast('Task assigned & locked'); pollStatus(); })
+      .catch(e => toast(`Failed: ${e.message}`, true));
+  });
+
+  // ── Lovense / Good Boy ──
+  $$('[data-toy]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const action = btn.dataset.toy;
+      const toyBody = { action };
+      if (action === 'pulse') { toyBody.level = 10; toyBody.duration = 5; }
+      else if (action === 'reward') { toyBody.level = 15; toyBody.duration = 10; }
+      else if (action === 'punish') { toyBody.level = 20; toyBody.duration = 3; }
+      else if (action === 'stop') { toyBody.level = 0; toyBody.duration = 0; }
+      api('POST', '/api/toy', toyBody)
+        .then(() => toast(`Toy: ${action}`))
+        .catch(e => toast(`Toy failed: ${e.message}`, true));
+    });
+  });
+
+  // ── Power Tools ──
+  $('#btnClearPaywall').addEventListener('click', () => {
+    showModal('Clear Paywall', 'Reset the paywall to $0.00?<br>This cannot be undone.', [
+      { label: 'Cancel' },
+      { label: 'Clear', cls: 'btn-danger', fn: () => {
+        api('POST', '/api/clear-paywall', {})
+          .then(() => { toast('Paywall cleared'); pollStatus(); })
+          .catch(e => toast(`Failed: ${e.message}`, true));
+      }}
+    ]);
+  });
+
+  $('#btnGamble').addEventListener('click', () => {
+    const current = parseFloat(status.paywall) || 0;
+    showModal('Double or Nothing',
+      `Current paywall: <strong>${formatMoney(current)}</strong><br><br>Coin flip: <strong>Heads</strong> = paywall cleared, <strong>Tails</strong> = paywall doubled to ${formatMoney(current * 2)}.<br><br>Feeling lucky?`,
+      [
+        { label: 'Cancel' },
+        { label: 'Gamble', cls: 'btn-primary', fn: () => {
+          api('POST', '/api/gamble', {})
+            .then(data => {
+              const msg = data.result === 'win' ? 'Bunny wins! Paywall cleared.' : `Bunny loses! Paywall doubled.`;
+              toast(msg);
+              pollStatus();
+            })
+            .catch(e => toast(`Failed: ${e.message}`, true));
+        }}
+      ]);
+  });
+
+  $('#btnPlayAudio').addEventListener('click', () => {
+    showPromptModal('Play Audio', 'Audio URL...', 'Play', (url) => {
+      if (!url) return;
+      api('POST', '/api/play-audio', { url })
+        .then(() => toast('Playing audio'))
+        .catch(e => toast(`Failed: ${e.message}`, true));
+    });
+  });
+
+  $('#btnSpeak').addEventListener('click', () => {
+    showPromptModal('Speak', 'Text to speak...', 'Speak', (text) => {
+      if (!text) return;
+      api('POST', '/api/speak', { text })
+        .then(() => toast('Speaking'))
+        .catch(e => toast(`Failed: ${e.message}`, true));
+    });
+  });
+
+  $('#btnGeofence').addEventListener('click', () => {
+    // First get current location
+    api('POST', '/api/get-location', {})
+      .then(data => {
+        const lat = data.lat || data.latitude || '';
+        const lon = data.lon || data.lng || data.longitude || '';
+        showFormModal('Set Geofence',
+          `<div class="input-group"><label>Latitude</label><input type="number" id="gfLat" step="any" value="${lat}"></div>
+           <div class="input-group"><label>Longitude</label><input type="number" id="gfLon" step="any" value="${lon}"></div>
+           <div class="input-group"><label>Radius (meters)</label><input type="number" id="gfRadius" value="100" min="10"></div>`,
+          'Set Fence',
+          () => {
+            const fLat = parseFloat($('#gfLat').value);
+            const fLon = parseFloat($('#gfLon').value);
+            const fRad = parseInt($('#gfRadius').value) || 100;
+            if (isNaN(fLat) || isNaN(fLon)) { toast('Invalid coordinates', true); return; }
+            api('POST', '/api/set-geofence', { lat: fLat, lon: fLon, radius: fRad })
+              .then(() => toast(`Geofence set: ${fRad}m radius`))
+              .catch(e => toast(`Failed: ${e.message}`, true));
+          });
+      })
+      .catch(() => {
+        // Fallback: show empty form
+        showFormModal('Set Geofence',
+          `<div class="input-group"><label>Latitude</label><input type="number" id="gfLat" step="any"></div>
+           <div class="input-group"><label>Longitude</label><input type="number" id="gfLon" step="any"></div>
+           <div class="input-group"><label>Radius (meters)</label><input type="number" id="gfRadius" value="100" min="10"></div>`,
+          'Set Fence',
+          () => {
+            const fLat = parseFloat($('#gfLat').value);
+            const fLon = parseFloat($('#gfLon').value);
+            const fRad = parseInt($('#gfRadius').value) || 100;
+            if (isNaN(fLat) || isNaN(fLon)) { toast('Invalid coordinates', true); return; }
+            api('POST', '/api/set-geofence', { lat: fLat, lon: fLon, radius: fRad })
+              .then(() => toast(`Geofence set: ${fRad}m radius`))
+              .catch(e => toast(`Failed: ${e.message}`, true));
+          });
+      });
+  });
+
+  $('#btnConfineHome').addEventListener('click', () => {
+    showModal('Confine Home', 'Get bunny\'s current location and set a 100m geofence around it?', [
+      { label: 'Cancel' },
+      { label: 'Confine', cls: 'btn-primary', fn: () => {
+        api('POST', '/api/get-location', {})
+          .then(data => {
+            const lat = data.lat || data.latitude;
+            const lon = data.lon || data.lng || data.longitude;
+            if (!lat || !lon) throw new Error('Location unavailable');
+            return api('POST', '/api/set-geofence', { lat, lon, radius: 100 });
+          })
+          .then(() => toast('Confined to home (100m)'))
+          .catch(e => toast(`Failed: ${e.message}`, true));
+      }}
+    ]);
+  });
+
+  $('#btnPinMessage').addEventListener('click', () => {
+    showPromptModal('Pin Message', 'Notification message...', 'Pin', (message) => {
+      if (!message) return;
+      api('POST', '/api/pin-message', { message })
+        .then(() => toast('Message pinned'))
+        .catch(e => toast(`Failed: ${e.message}`, true));
+    });
+  });
+
+  $('#btnSubscription').addEventListener('click', () => {
+    showFormModal('Set Subscription',
+      `<div style="display:flex;flex-direction:column;gap:0.5rem">
+        <button class="btn btn-full" style="background:#8B4513;border-color:#8B4513;color:#fff" onclick="document.dispatchEvent(new CustomEvent('set-sub',{detail:'bronze'}))">Bronze — $25/week</button>
+        <button class="btn btn-full" style="background:#A0A0A0;border-color:#A0A0A0;color:#000" onclick="document.dispatchEvent(new CustomEvent('set-sub',{detail:'silver'}))">Silver — $35/week</button>
+        <button class="btn btn-full" style="background:#DAA520;border-color:#DAA520;color:#000" onclick="document.dispatchEvent(new CustomEvent('set-sub',{detail:'gold'}))">Gold — $50/week</button>
+       </div>`,
+      'Cancel',
+      () => {});
+    const handler = (e) => {
+      hideModal();
+      document.removeEventListener('set-sub', handler);
+      api('POST', '/api/subscribe', { tier: e.detail })
+        .then(() => { toast(`Subscription set: ${e.detail}`); pollStatus(); })
+        .catch(err => toast(`Failed: ${err.message}`, true));
+    };
+    document.addEventListener('set-sub', handler);
+  });
+
+  $('#btnEntrap').addEventListener('click', () => {
+    showModal('Entrap',
+      '<strong style="color:#e74c3c">WARNING:</strong> This will scramble the phone PIN. The only way out is the controller. Are you absolutely sure?',
+      [
+        { label: 'Cancel' },
+        { label: 'Entrap', cls: 'btn-danger', fn: () => {
+          api('POST', '/api/entrap', {})
+            .then(() => toast('Entrapment activated'))
+            .catch(e => toast(`Failed: ${e.message}`, true));
+        }}
+      ]);
+  });
+
+  // ── Message ──
+  $('#btnSendMsg').addEventListener('click', () => {
+    const text = $('#msgText').value;
+    if (!text.trim()) { toast('Enter a message', true); return; }
+    const isPinned = $('#msgPin').classList.contains('active');
+
+    const endpoint = isPinned ? '/api/pin-message' : '/api/message';
+    api('POST', endpoint, { message: text })
+      .then(() => { toast(isPinned ? 'Pinned message sent' : 'Message sent'); $('#msgText').value = ''; })
+      .catch(e => toast(`Failed: ${e.message}`, true));
+  });
+
+  // ── Keyboard Shortcuts ──
+  document.addEventListener('keydown', (e) => {
+    // Only when app is visible and no modal open
+    if (appShell.classList.contains('hidden')) return;
+
+    if (e.key === 'Escape') {
+      hideModal();
+      return;
+    }
+
+    // Ctrl shortcuts
+    if (e.ctrlKey || e.metaKey) {
+      if (e.key === 'l' || e.key === 'L') {
+        e.preventDefault();
+        doLock({});
+        return;
+      }
+      if (e.key === 'u' || e.key === 'U') {
+        e.preventDefault();
+        api('POST', '/api/unlock', {})
+          .then(() => { toast('Unlocked'); pollStatus(); })
+          .catch(err => toast(`Failed: ${err.message}`, true));
+        return;
+      }
+    }
+
+    // Tab switching with number keys (only if not in an input)
+    const tag = document.activeElement?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+    const tabMap = { '1': 'control', '2': 'advanced', '3': 'inbox' };
+    if (tabMap[e.key]) {
+      e.preventDefault();
+      const tabName = tabMap[e.key];
+      $$('.tab-btn').forEach(b => b.classList.remove('active'));
+      $$('.tab-content').forEach(t => t.classList.remove('active'));
+      $(`.tab-btn[data-tab="${tabName}"]`).classList.add('active');
+      $(`#tab-${tabName}`).classList.add('active');
+    }
+  });
+
+  // ── Modal overlay click-to-close ──
+  $('#modalOverlay').addEventListener('click', (e) => {
+    if (e.target === $('#modalOverlay')) hideModal();
+  });
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,59 @@
+# Config (contains secrets)
+config.json
+config.env
+*.env
+!config.example.json
+!config.env.example
+
+# Build artifacts
+dist/
+build/
+*.exe
+*.apk
+*.idsig
+*.spec
+_build_config.py
+
+# Android build artifacts + signing
+android/*/bin/
+android/*/gen/
+android/*/obj/
+*.keystore
+debug.keystore
+
+# Keys and pairing
+keys/
+pairing-codes/
+lion_pubkey.pem
+*.pem
+
+# IDE / editor
+.claude/
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Personal / deployment
+*.ab
+trusted_peers.json
+orders.json
+peers.json
+
+# Session-specific coordination docs (not for distribution)
+SESSION-HANDOFF-*.md
+RESTART-PROMPT.md
+docs/ACCOUNT-MESH-DESIGN.md
+
+# Backups + enforcement state (personal, not for distribution)
+*.bak
+*.bak-*
+*.bak.*
+enforcement-memory/
+memory/

@@ -1,0 +1,15 @@
+[Unit]
+Description=FocusLock ADB Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+ExecStart=/opt/focuslock/focuslock-bridge.sh
+Restart=always
+RestartSec=5
+EnvironmentFile=/opt/focuslock/config.env
+
+[Install]
+WantedBy=multi-user.target

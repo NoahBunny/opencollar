@@ -1,0 +1,53 @@
+{
+  "_comment": "FocusLock configuration — copy to config.json and edit",
+
+  "pin": "CHANGE_ME",
+
+  "mesh_url": "",
+  "homelab_url": "",
+  "phone_addresses": [],
+
+  "mesh_port": 8435,
+  "phone_port": 8432,
+  "homelab_port": 8434,
+
+  "poll_interval": 5,
+  "gossip_interval": 10,
+
+  "_admin_comment": "operator_mesh_id identifies YOUR mesh for the admin API. Requests to /admin/status and /admin/order without mesh_id operate on this mesh. For other vault_only meshes, the admin API returns metadata only — never plaintext orders.",
+  "operator_mesh_id": "",
+
+  "_vault_comment": "Zero-knowledge vault — see docs/VAULT-DESIGN.md. Server stores opaque encrypted blobs and verifies Lion signatures but cannot read order contents. Set vault_mode_allowed:false to disable the /vault/* endpoints entirely. retention_days bounds disk use; clients should sync at least this often.",
+  "vault_mode_allowed": true,
+  "vault_retention_days": 7,
+
+  "_ntfy_comment": "Push notifications — instant order delivery via ntfy.sh (or self-hosted). Topic auto-derived from mesh_id if empty. Payload is just a version number — zero-knowledge by construction.",
+  "ntfy_enabled": false,
+  "ntfy_server": "https://ntfy.sh",
+  "ntfy_topic": "",
+
+  "mail": {
+    "imap_host": "",
+    "smtp_host": "",
+    "user": "",
+    "pass": "",
+    "partner_email": ""
+  },
+
+  "warren_whitelist": [],
+  "tailscale_node_map": {},
+
+  "banking": {
+    "app_packages": [],
+    "payment_url": "",
+    "currency_symbols": ["$"],
+    "min_payment": 0.01,
+    "max_payment": 10000,
+    "payment_keywords": [
+      "transfer", "deposit", "deposited", "received",
+      "sent you money", "payment", "credit", "incoming",
+      "e-transfer", "etransfer", "autodeposit", "direct deposit",
+      "virement", "déposé", "reçu"
+    ]
+  }
+}

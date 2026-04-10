@@ -1,0 +1,294 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#1a1a2e"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:paddingLeft="32dp"
+    android:paddingRight="32dp"
+    android:paddingBottom="32dp"
+    android:paddingTop="64dp"
+    android:fitsSystemWindows="true"
+    android:clickable="true"
+    android:focusable="true">
+
+    <TextView
+        android:id="@+id/focus_message"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="No phone for now."
+        android:textColor="#e0e0e0"
+        android:textSize="28sp"
+        android:fontFamily="@font/lexend"
+        android:letterSpacing="0.02"
+        android:gravity="center"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:id="@+id/paywall_display"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="#44cc44"
+        android:textSize="48sp"
+        android:fontFamily="@font/lexend"
+        android:gravity="center"
+        android:visibility="gone"
+        android:layout_marginBottom="4dp" />
+
+    <TextView
+        android:id="@+id/paywall_label"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="to unlock"
+        android:textColor="#66aa66"
+        android:textSize="14sp"
+        android:fontFamily="@font/lexend"
+        android:gravity="center"
+        android:visibility="gone"
+        android:layout_marginBottom="12dp" />
+
+    <Button
+        android:id="@+id/paywall_banking"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Open Banking App"
+        android:textSize="14sp"
+        android:textColor="#ff8800"
+        android:backgroundTint="#2a2010"
+        android:padding="14dp"
+        android:visibility="gone"
+        android:layout_marginBottom="8dp" />
+
+    <Button
+        android:id="@+id/btn_bunny_tasker"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Bunny Tasker"
+        android:textSize="13sp"
+        android:textColor="#aa88cc"
+        android:backgroundTint="#1a1028"
+        android:padding="12dp"
+        android:layout_marginBottom="24dp" />
+
+    <Button
+        android:id="@+id/btn_factory_reset"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="FACTORY RESET (last resort)"
+        android:textSize="12sp"
+        android:textColor="#ff4444"
+        android:backgroundTint="#2d1b1b"
+        android:padding="14dp"
+        android:visibility="gone"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:id="@+id/shame_display"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="#ff6666"
+        android:textSize="13sp"
+        android:fontFamily="@font/lexend"
+        android:gravity="center"
+        android:visibility="gone"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:id="@+id/task_prompt"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="#888888"
+        android:textSize="14sp"
+        android:fontFamily="@font/lexend"
+        android:gravity="center"
+        android:visibility="gone"
+        android:layout_marginBottom="8dp" />
+
+    <TextView
+        android:id="@+id/task_target"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="#aaaaaa"
+        android:textSize="16sp"
+        android:fontFamily="@font/lexend"
+        android:gravity="center"
+        android:visibility="gone"
+        android:background="#222233"
+        android:padding="16dp"
+        android:layout_marginBottom="16dp" />
+
+    <EditText
+        android:id="@+id/task_input"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Type the text above exactly..."
+        android:textColor="#e0e0e0"
+        android:textColorHint="#555555"
+        android:textSize="16sp"
+        android:fontFamily="@font/lexend"
+        android:background="#1e1e34"
+        android:padding="16dp"
+        android:visibility="gone"
+        android:inputType="textMultiLine|textNoSuggestions"
+        android:importantForAutofill="no"
+        android:privateImeOptions="nm" />
+
+    <Button
+        android:id="@+id/offer_submit"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Submit Offer"
+        android:textSize="14sp"
+        android:textColor="#ffffff"
+        android:backgroundTint="#4466cc"
+        android:padding="14dp"
+        android:visibility="gone"
+        android:layout_marginTop="8dp"
+        android:layout_marginBottom="16dp" />
+
+    <EditText
+        android:id="@+id/compliment_input"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Type the compliment..."
+        android:textColor="#e0e0e0"
+        android:textColorHint="#555555"
+        android:textSize="16sp"
+        android:fontFamily="@font/lexend"
+        android:background="#1e1e34"
+        android:padding="16dp"
+        android:visibility="gone"
+        android:inputType="textMultiLine|textNoSuggestions"
+        android:importantForAutofill="no" />
+
+    <!-- Gratitude journal -->
+    <EditText
+        android:id="@+id/gratitude_1"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="1. I'm grateful for..."
+        android:textColor="#e0e0e0"
+        android:textColorHint="#555"
+        android:textSize="14sp"
+        android:background="#1e1e34"
+        android:padding="14dp"
+        android:visibility="gone"
+        android:inputType="text"
+        android:layout_marginBottom="6dp" />
+
+    <EditText
+        android:id="@+id/gratitude_2"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="2. I'm grateful for..."
+        android:textColor="#e0e0e0"
+        android:textColorHint="#555"
+        android:textSize="14sp"
+        android:background="#1e1e34"
+        android:padding="14dp"
+        android:visibility="gone"
+        android:inputType="text"
+        android:layout_marginBottom="6dp" />
+
+    <EditText
+        android:id="@+id/gratitude_3"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="3. I'm grateful for..."
+        android:textColor="#e0e0e0"
+        android:textColorHint="#555"
+        android:textSize="14sp"
+        android:background="#1e1e34"
+        android:padding="14dp"
+        android:visibility="gone"
+        android:inputType="text"
+        android:layout_marginBottom="8dp" />
+
+    <Button
+        android:id="@+id/gratitude_submit"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Submit Gratitude"
+        android:textSize="14sp"
+        android:textColor="#fff"
+        android:backgroundTint="#4466cc"
+        android:padding="14dp"
+        android:visibility="gone"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Love letter / exercise word counter -->
+    <TextView
+        android:id="@+id/word_counter"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="0 words"
+        android:textColor="#666"
+        android:textSize="12sp"
+        android:gravity="end"
+        android:visibility="gone"
+        android:layout_marginBottom="4dp" />
+
+    <EditText
+        android:id="@+id/freeform_input"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Write here..."
+        android:textColor="#e0e0e0"
+        android:textColorHint="#555"
+        android:textSize="14sp"
+        android:background="#1e1e34"
+        android:padding="14dp"
+        android:visibility="gone"
+        android:inputType="textMultiLine"
+        android:minLines="4"
+        android:gravity="top" />
+
+    <!-- Exercise timer -->
+    <TextView
+        android:id="@+id/exercise_timer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textColor="#44cc44"
+        android:textSize="36sp"
+        android:gravity="center"
+        android:fontFamily="@font/lexend"
+        android:visibility="gone"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Photo task -->
+    <Button
+        android:id="@+id/btn_take_photo"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Take Photo as Proof"
+        android:textSize="14sp"
+        android:textColor="#ffffff"
+        android:backgroundTint="#4466cc"
+        android:padding="14dp"
+        android:visibility="gone"
+        android:layout_marginBottom="8dp" />
+
+    <TextView
+        android:id="@+id/photo_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="#cc6666"
+        android:textSize="13sp"
+        android:gravity="center"
+        android:visibility="gone"
+        android:layout_marginBottom="16dp" />
+
+    <Button
+        android:id="@+id/exercise_done"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Done"
+        android:textSize="14sp"
+        android:textColor="#fff"
+        android:backgroundTint="#44aa44"
+        android:padding="14dp"
+        android:visibility="gone" />
+
+</LinearLayout>

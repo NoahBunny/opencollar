@@ -1,0 +1,15 @@
+[Unit]
+Description=FocusLock Mail + Webhook Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+ExecStart=/usr/bin/python3 -u /opt/focuslock/focuslock-mail.py
+Restart=always
+RestartSec=5
+EnvironmentFile=/opt/focuslock/config.env
+
+[Install]
+WantedBy=multi-user.target

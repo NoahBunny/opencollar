@@ -1,0 +1,14 @@
+[Unit]
+Description=FocusLock re-enslave watcher timer (every 5 min)
+Documentation=https://github.com/anthropics/claude-code
+
+[Timer]
+# Fire 30s after the user session starts so we don't race the network being up
+OnBootSec=30s
+OnUnitActiveSec=5min
+# Skip a tick if the system was asleep — we'll catch up on the next wake
+Persistent=true
+Unit=re-enslave-watcher.service
+
+[Install]
+WantedBy=timers.target

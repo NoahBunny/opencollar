@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="20dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Mesh Setup"
+        android:textSize="18sp"
+        android:textColor="#ffffff"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Hidden fields kept for layout ID compat -->
+    <EditText
+        android:id="@+id/setup_tailscale_ip"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:visibility="gone" />
+
+    <EditText
+        android:id="@+id/setup_lan_ip"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:visibility="gone" />
+
+    <EditText
+        android:id="@+id/setup_pair_code"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:visibility="gone" />
+
+    <EditText
+        android:id="@+id/setup_https_url"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:visibility="gone" />
+
+    <EditText
+        android:id="@+id/setup_mesh_url"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Server URL (e.g. https://your-mesh.example.com)"
+        android:textSize="14sp"
+        android:inputType="textUri"
+        android:layout_marginBottom="12dp" />
+
+    <!-- Hidden compat fields -->
+    <EditText
+        android:id="@+id/setup_debug_port"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:visibility="gone" />
+
+    <EditText
+        android:id="@+id/setup_pair_port"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:visibility="gone" />
+
+    <CheckBox
+        android:id="@+id/setup_vault_mode"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Vault mode (experimental — encrypts orders end-to-end)"
+        android:textSize="13sp"
+        android:textColor="#cccccc"
+        android:layout_marginTop="8dp"
+        android:layout_marginBottom="4dp" />
+
+    <TextView
+        android:id="@+id/setup_result"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textSize="13sp"
+        android:textColor="#88ff88" />
+
+</LinearLayout>

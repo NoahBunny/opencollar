@@ -1,0 +1,342 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0a0a14"
+    android:orientation="vertical">
+
+    <!-- Header -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingLeft="20dp"
+        android:paddingRight="20dp"
+        android:paddingTop="36dp"
+        android:paddingBottom="4dp">
+
+        <ImageView
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:src="@mipmap/ic_launcher"
+            android:layout_marginRight="8dp"
+            android:scaleType="fitCenter" />
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:text="Lion's Share"
+            android:textColor="#c0c0c0"
+            android:textSize="18sp"
+            android:letterSpacing="0.03"
+            android:singleLine="true" />
+
+        <Spinner android:id="@+id/phone_spinner" android:layout_width="wrap_content" android:layout_height="32dp" android:backgroundTint="#333" android:layout_marginRight="6dp" />
+
+        <Button android:id="@+id/btn_app_pin" android:layout_width="wrap_content" android:layout_height="32dp" android:text="PIN" android:textSize="10sp" android:backgroundTint="#1a1a08" android:textColor="#c8a84e" android:paddingLeft="8dp" android:paddingRight="8dp" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
+        <Button android:id="@+id/btn_setup" android:layout_width="wrap_content" android:layout_height="32dp" android:text="Setup" android:textSize="10sp" android:backgroundTint="#151520" android:textColor="#555" android:paddingLeft="12dp" android:paddingRight="12dp" android:minWidth="0dp" android:minHeight="0dp" />
+    </LinearLayout>
+
+    <!-- Tab bar (3 tabs) -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingLeft="20dp"
+        android:paddingRight="20dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="4dp">
+
+        <Button android:id="@+id/tab_simple" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="Control" android:textSize="13sp" android:backgroundTint="#2a2510" android:textColor="#DAA520" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
+        <Button android:id="@+id/tab_advanced" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="Advanced" android:textSize="13sp" android:backgroundTint="#111118" android:textColor="#555" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
+        <Button android:id="@+id/tab_inbox" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="Inbox" android:textSize="13sp" android:backgroundTint="#111118" android:textColor="#555" android:minWidth="0dp" android:minHeight="0dp" />
+    </LinearLayout>
+
+    <!-- Status card with tier badge -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginLeft="20dp"
+        android:layout_marginRight="20dp"
+        android:layout_marginTop="6dp"
+        android:layout_marginBottom="10dp">
+
+        <View
+            android:id="@+id/status_bar"
+            android:layout_width="3dp"
+            android:layout_height="match_parent"
+            android:background="#DAA520" />
+
+        <TextView
+            android:id="@+id/status"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:text="..."
+            android:textColor="#999"
+            android:textSize="12sp"
+            android:background="#0e0e1a"
+            android:paddingLeft="12dp"
+            android:paddingRight="8dp"
+            android:paddingTop="10dp"
+            android:paddingBottom="10dp" />
+
+        <TextView
+            android:id="@+id/tier_badge"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:text=""
+            android:textColor="#111"
+            android:textSize="10sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.1"
+            android:background="#0e0e1a"
+            android:paddingLeft="10dp"
+            android:paddingRight="10dp"
+            android:visibility="gone" />
+    </LinearLayout>
+
+    <!-- ═══ CONTROL PAGE (was Simple) ═══ -->
+    <ScrollView
+        android:id="@+id/page_simple"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:paddingLeft="20dp" android:paddingRight="20dp" android:paddingBottom="20dp">
+
+            <EditText android:id="@+id/message_input" android:layout_width="match_parent" android:layout_height="50dp" android:hint="Lock message" android:textColor="#e0e0e0" android:textColorHint="#3a3a4a" android:textSize="14sp" android:background="#111118" android:paddingLeft="16dp" android:paddingRight="16dp" android:inputType="text" android:singleLine="true" android:layout_marginBottom="6dp" />
+
+            <EditText android:id="@+id/timer_input" android:layout_width="match_parent" android:layout_height="50dp" android:hint="Timer (minutes)" android:textColor="#e0e0e0" android:textColorHint="#3a3a4a" android:textSize="14sp" android:background="#111118" android:paddingLeft="16dp" android:paddingRight="16dp" android:inputType="number" android:layout_marginBottom="6dp" />
+
+            <!-- Bunny Balance -->
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0e1a" android:padding="14dp" android:layout_marginBottom="12dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\uD83D\uDCB0  BUNNY BALANCE" android:textColor="#DAA520" android:textSize="10sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
+                <TextView android:id="@+id/balance_display" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="$0" android:textColor="#FFD700" android:textSize="32sp" android:textStyle="bold" android:textAlignment="center" android:layout_marginBottom="10dp" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+                    <Button android:id="@+id/btn_clear_balance" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="Clear" android:textSize="12sp" android:backgroundTint="#1a2a1a" android:textColor="#44cc44" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
+                    <EditText android:id="@+id/balance_set_input" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:hint="Set $" android:textColor="#DAA520" android:textColorHint="#664400" android:textSize="13sp" android:textAlignment="center" android:background="#111118" android:inputType="numberDecimal" android:layout_marginRight="4dp" />
+                    <Button android:id="@+id/btn_set_balance" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="Set" android:textSize="12sp" android:backgroundTint="#2a2510" android:textColor="#DAA520" android:minWidth="0dp" android:minHeight="0dp" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- Quick add $ with compact paywall field -->
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="16dp">
+                <Button android:id="@+id/btn_add_1" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="+$1" android:textSize="12sp" android:backgroundTint="#1a1a2e" android:textColor="#cc9900" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                <Button android:id="@+id/btn_add_5" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="+$5" android:textSize="12sp" android:backgroundTint="#1a1a2e" android:textColor="#cc9900" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                <Button android:id="@+id/btn_add_10" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="+$10" android:textSize="12sp" android:backgroundTint="#1a1a2e" android:textColor="#cc9900" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                <Button android:id="@+id/btn_add_25" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="+$25" android:textSize="12sp" android:backgroundTint="#1a1a2e" android:textColor="#cc9900" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                <Button android:id="@+id/btn_add_50" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="+$50" android:textSize="12sp" android:backgroundTint="#2a1a0a" android:textColor="#ff6600" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                <EditText android:id="@+id/paywall_amount" android:layout_width="0dp" android:layout_weight="1.2" android:layout_height="36dp" android:hint="$" android:textColor="#cc9900" android:textColorHint="#664400" android:textSize="13sp" android:textAlignment="center" android:background="#1a1a2e" android:inputType="numberDecimal" android:minWidth="0dp" />
+            </LinearLayout>
+
+            <!-- Lock -->
+            <Button android:id="@+id/btn_lock" android:layout_width="match_parent" android:layout_height="54dp" android:text="Lock all devices" android:textSize="16sp" android:backgroundTint="#8B6914" android:textColor="#fff" android:layout_marginBottom="6dp" />
+
+            <!-- Quick locks -->
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="6dp">
+                <Button android:id="@+id/btn_lock_15" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="15m" android:textSize="13sp" android:backgroundTint="#6b5010" android:textColor="#FFD700" android:layout_marginRight="3dp" />
+                <Button android:id="@+id/btn_lock_30" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="30m" android:textSize="13sp" android:backgroundTint="#6b5010" android:textColor="#FFD700" android:layout_marginRight="3dp" />
+                <Button android:id="@+id/btn_lock_60" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="1hr" android:textSize="13sp" android:backgroundTint="#6b5010" android:textColor="#FFD700" android:layout_marginRight="3dp" />
+                <Button android:id="@+id/btn_lock_120" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="2hr" android:textSize="13sp" android:backgroundTint="#6b5010" android:textColor="#FFD700" />
+            </LinearLayout>
+
+            <!-- Unlock row: Unlock All + Release Device -->
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="20dp">
+                <Button android:id="@+id/btn_unlock" android:layout_width="0dp" android:layout_weight="1" android:layout_height="54dp" android:text="Unlock All" android:textSize="16sp" android:backgroundTint="#2a2510" android:textColor="#DAA520" android:layout_marginRight="4dp" />
+                <Button android:id="@+id/btn_unlock_device" android:layout_width="0dp" android:layout_weight="1" android:layout_height="54dp" android:text="Release Device..." android:textSize="14sp" android:backgroundTint="#1a1a10" android:textColor="#b8960f" />
+            </LinearLayout>
+
+            <!-- Body Check -->
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0e1a" android:padding="14dp" android:layout_marginBottom="12dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\uD83E\uDE7A  BODY CHECK" android:textColor="#DAA520" android:textSize="10sp" android:letterSpacing="0.15" android:layout_marginBottom="6dp" />
+                <TextView android:id="@+id/body_check_status" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Not active" android:textColor="#888" android:textSize="12sp" android:layout_marginBottom="8dp" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">
+                    <Button android:id="@+id/btn_body_check_start" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="Start" android:textSize="11sp" android:backgroundTint="#2a2510" android:textColor="#DAA520" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
+                    <Button android:id="@+id/btn_body_check_now" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="Check now" android:textSize="11sp" android:backgroundTint="#2a2510" android:textColor="#DAA520" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
+                    <Button android:id="@+id/btn_body_check_baseline" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="Set baseline" android:textSize="11sp" android:backgroundTint="#1a1a2a" android:textColor="#8888cc" android:minWidth="0dp" android:minHeight="0dp" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- Offer response -->
+            <LinearLayout android:id="@+id/offer_section" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone" android:background="#0e0e1a" android:padding="14dp" android:layout_marginBottom="16dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="OFFER RECEIVED" android:textColor="#DAA520" android:textSize="10sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
+                <TextView android:id="@+id/offer_text" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="#e0e0e0" android:textSize="16sp" android:layout_marginBottom="12dp" />
+                <EditText android:id="@+id/offer_counter" android:layout_width="match_parent" android:layout_height="44dp" android:hint="Counter-offer (optional)" android:textColor="#e0e0e0" android:textColorHint="#3a3a4a" android:textSize="13sp" android:background="#151520" android:paddingLeft="12dp" android:paddingRight="12dp" android:inputType="text" android:layout_marginBottom="8dp" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+                    <Button android:id="@+id/btn_offer_accept" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Accept" android:textSize="14sp" android:backgroundTint="#228833" android:textColor="#fff" android:layout_marginRight="4dp" />
+                    <Button android:id="@+id/btn_offer_decline" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Decline" android:textSize="14sp" android:backgroundTint="#991111" android:textColor="#fff" />
+                </LinearLayout>
+            </LinearLayout>
+
+        </LinearLayout>
+    </ScrollView>
+
+    <!-- ═══ ADVANCED PAGE ═══ -->
+    <ScrollView
+        android:id="@+id/page_advanced"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true"
+        android:visibility="gone">
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:paddingLeft="20dp" android:paddingRight="20dp" android:paddingBottom="20dp">
+
+            <!-- ── \uD83C\uDFAD MODE ── -->
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\uD83C\uDFAD  MODE" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="6dp" android:layout_marginTop="4dp" />
+            <Spinner android:id="@+id/mode_spinner" android:layout_width="match_parent" android:layout_height="44dp" android:backgroundTint="#333" android:layout_marginBottom="12dp" />
+
+            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />
+
+            <!-- ── \u26A1 MODIFIERS ── -->
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\u26A1  MODIFIERS" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="6dp" />
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">
+                <ToggleButton android:id="@+id/toggle_shame" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:textOn="Taunt" android:textOff="Taunt" android:textSize="12sp" android:textColor="#555" android:backgroundTint="#111118" android:layout_marginRight="3dp" />
+                <ToggleButton android:id="@+id/toggle_penalty" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:textOn="+5m/esc" android:textOff="+5m/esc" android:textSize="12sp" android:textColor="#555" android:backgroundTint="#111118" android:layout_marginRight="3dp" />
+                <ToggleButton android:id="@+id/toggle_vibrate" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:textOn="Vibrate" android:textOff="Vibrate" android:textSize="12sp" android:textColor="#555" android:backgroundTint="#111118" />
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="12dp">
+                <ToggleButton android:id="@+id/toggle_dim" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:textOn="Dim" android:textOff="Dim" android:textSize="12sp" android:textColor="#555" android:backgroundTint="#111118" android:layout_marginRight="3dp" />
+                <ToggleButton android:id="@+id/toggle_mute" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:textOn="Mute" android:textOff="Mute" android:textSize="12sp" android:textColor="#555" android:backgroundTint="#111118" android:layout_marginRight="3dp" />
+                <View android:layout_width="0dp" android:layout_weight="1" android:layout_height="1dp" />
+            </LinearLayout>
+
+            <EditText android:id="@+id/compliment_prompt" android:layout_width="match_parent" android:layout_height="50dp" android:hint="Compliment to type to unlock" android:textColor="#e0e0e0" android:textColorHint="#3a3a4a" android:textSize="14sp" android:background="#111118" android:paddingLeft="16dp" android:paddingRight="16dp" android:inputType="text" android:layout_marginBottom="12dp" />
+
+            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />
+
+            <!-- ── \uD83D\uDC30 GOOD BOY (Lovense) ── -->
+            <LinearLayout android:id="@+id/toy_section" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
+
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\uD83D\uDC30  GOOD BOY" android:textColor="#ff88cc" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="6dp" />
+
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="12dp">
+                    <Button android:id="@+id/btn_toy_pulse" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Pulse" android:textSize="12sp" android:backgroundTint="#2a1a2a" android:textColor="#ff88cc" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                    <Button android:id="@+id/btn_toy_reward" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Reward" android:textSize="12sp" android:backgroundTint="#1a2a1a" android:textColor="#88ff88" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                    <Button android:id="@+id/btn_toy_punish" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Punish" android:textSize="12sp" android:backgroundTint="#2a1a1a" android:textColor="#ff6666" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                    <Button android:id="@+id/btn_toy_stop" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Stop" android:textSize="12sp" android:backgroundTint="#1a1a1a" android:textColor="#888" android:minWidth="0dp" android:minHeight="0dp" />
+                </LinearLayout>
+
+                <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />
+            </LinearLayout>
+
+            <!-- ── \u270D\uFE0F WRITING TASK ── -->
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\u270D\uFE0F  WRITING TASK" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
+
+            <EditText android:id="@+id/task_input" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Text to type to unlock" android:textColor="#e0e0e0" android:textColorHint="#3a3a4a" android:textSize="14sp" android:background="#111118" android:paddingLeft="16dp" android:paddingRight="16dp" android:paddingTop="14dp" android:paddingBottom="14dp" android:layout_marginBottom="6dp" android:inputType="textMultiLine" android:minLines="2" android:gravity="top" />
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="12dp">
+                <EditText android:id="@+id/task_reps" android:layout_width="0dp" android:layout_weight="1" android:layout_height="44dp" android:hint="Reps" android:textColor="#e0e0e0" android:textColorHint="#3a3a4a" android:textSize="14sp" android:background="#111118" android:paddingLeft="16dp" android:inputType="number" android:layout_marginRight="4dp" />
+                <ToggleButton android:id="@+id/task_randomize" android:layout_width="0dp" android:layout_weight="1" android:layout_height="44dp" android:textOn="Random caps" android:textOff="Random caps" android:textSize="12sp" android:textColor="#555" android:backgroundTint="#111118" android:layout_marginRight="4dp" />
+                <Button android:id="@+id/btn_task" android:layout_width="0dp" android:layout_weight="1" android:layout_height="44dp" android:text="Task+Lock" android:textSize="13sp" android:backgroundTint="#2244aa" android:textColor="#fff" android:minWidth="0dp" android:minHeight="0dp" />
+            </LinearLayout>
+
+            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />
+
+            <!-- ── \uD83D\uDD27 POWER TOOLS ── -->
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\uD83D\uDD27  POWER TOOLS" android:textColor="#cc9900" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
+
+            <!-- Row 1: Clear Paywall | Double or Nothing -->
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">
+                <Button android:id="@+id/btn_clear_paywall" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Clear Paywall" android:textSize="12sp" android:backgroundTint="#1a2a1a" android:textColor="#44cc44" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                <Button android:id="@+id/btn_gamble" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Double or Nothing" android:textSize="12sp" android:backgroundTint="#2a2a0a" android:textColor="#cccc44" android:minWidth="0dp" android:minHeight="0dp" />
+            </LinearLayout>
+
+            <!-- Row 2: Play Audio | Speak -->
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">
+                <Button android:id="@+id/btn_play_audio" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Play Audio" android:textSize="12sp" android:backgroundTint="#1a1a2a" android:textColor="#6688cc" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                <Button android:id="@+id/btn_speak" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Speak" android:textSize="12sp" android:backgroundTint="#1a1a2a" android:textColor="#88aaee" android:minWidth="0dp" android:minHeight="0dp" />
+            </LinearLayout>
+
+            <!-- Row 3: Set Geofence | Confine Home -->
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">
+                <Button android:id="@+id/btn_set_geofence" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Set Geofence" android:textSize="12sp" android:backgroundTint="#2a1a1a" android:textColor="#cc8844" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                <Button android:id="@+id/btn_confine_home" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Confine Home" android:textSize="12sp" android:backgroundTint="#2a1a1a" android:textColor="#cc8844" android:minWidth="0dp" android:minHeight="0dp" />
+            </LinearLayout>
+
+            <!-- Row 4: Pin Message | Subscription -->
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">
+                <Button android:id="@+id/btn_pin_message" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Pin Message" android:textSize="12sp" android:backgroundTint="#1a1a2a" android:textColor="#aa88cc" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                <Button android:id="@+id/btn_force_sub" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Subscription" android:textSize="12sp" android:backgroundTint="#1a1a08" android:textColor="#ccaa44" android:minWidth="0dp" android:minHeight="0dp" />
+            </LinearLayout>
+
+            <!-- Row 5: Vault Nodes (Phase B/C approval queue) -->
+            <Button android:id="@+id/btn_vault_nodes" android:layout_width="match_parent" android:layout_height="42dp" android:text="\uD83D\uDD12 Vault Nodes" android:textSize="12sp" android:backgroundTint="#0a1a1a" android:textColor="#66cccc" android:minWidth="0dp" android:minHeight="0dp" android:layout_marginBottom="4dp" />
+
+            <!-- Fine control -->
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="8dp" android:layout_marginBottom="4dp">
+                <Button android:id="@+id/btn_start_fine" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="\uD83D\uDCB8 Start Fine" android:textSize="11sp" android:backgroundTint="#1a1608" android:textColor="#ee8833" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                <Button android:id="@+id/btn_stop_fine" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Stop Fine" android:textSize="11sp" android:backgroundTint="#1a1608" android:textColor="#c8a84e" android:minWidth="0dp" android:minHeight="0dp" />
+            </LinearLayout>
+            <TextView android:id="@+id/fine_status" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="#ee8833" android:textSize="10sp" android:visibility="gone" android:layout_marginBottom="4dp" />
+
+            <!-- Entrap (standalone) -->
+            <Button android:id="@+id/btn_entrap_adv" android:layout_width="match_parent" android:layout_height="42dp" android:text="\uD83E\uDEA4  Entrap" android:textSize="13sp" android:backgroundTint="#2a0a0a" android:textColor="#cc4444" android:minWidth="0dp" android:minHeight="0dp" android:layout_marginTop="8dp" />
+
+            <!-- Release Forever -->
+            <Button android:id="@+id/btn_release_forever" android:layout_width="match_parent" android:layout_height="54dp" android:text="RELEASE FOREVER" android:textSize="14sp" android:backgroundTint="#330000" android:textColor="#cc2222" android:minWidth="0dp" android:minHeight="0dp" android:layout_marginTop="24dp" />
+
+        </LinearLayout>
+    </ScrollView>
+
+    <!-- ═══ INBOX PAGE ═══ -->
+    <ScrollView
+        android:id="@+id/page_inbox"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true"
+        android:visibility="gone">
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:paddingLeft="20dp" android:paddingRight="20dp" android:paddingBottom="20dp">
+
+            <!-- ── Devices ── -->
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\uD83D\uDCF1  COLLARED DEVICES" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" android:layout_marginTop="4dp" />
+
+            <!-- Device cards container (populated programmatically) -->
+            <LinearLayout android:id="@+id/device_cards_container" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginBottom="12dp" />
+
+            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />
+
+            <!-- ── Message ── -->
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\u2709  MESSAGE" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
+
+            <EditText android:id="@+id/inbox_message_input" android:layout_width="match_parent" android:layout_height="80dp" android:hint="Message to bunny..." android:textColor="#e0e0e0" android:textColorHint="#3a3a4a" android:textSize="14sp" android:background="#111118" android:paddingLeft="16dp" android:paddingRight="16dp" android:paddingTop="12dp" android:inputType="textMultiLine" android:gravity="top" android:layout_marginBottom="6dp" />
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">
+                <ToggleButton android:id="@+id/toggle_pin_notif" android:layout_width="0dp" android:layout_weight="1" android:layout_height="38dp" android:textOn="Pin" android:textOff="Pin" android:textSize="10sp" android:textColor="#555" android:backgroundTint="#111118" android:layout_marginRight="4dp" />
+                <ToggleButton android:id="@+id/toggle_mandatory" android:layout_width="0dp" android:layout_weight="1" android:layout_height="38dp" android:textOn="Must reply" android:textOff="Must reply" android:textSize="10sp" android:textColor="#cc4444" android:backgroundTint="#1a0808" android:layout_marginRight="4dp" />
+                <Button android:id="@+id/btn_schedule_message" android:layout_width="0dp" android:layout_weight="1" android:layout_height="38dp" android:text="Schedule" android:textSize="10sp" android:backgroundTint="#1a180a" android:textColor="#aa8844" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
+                <Button android:id="@+id/btn_send_message" android:layout_width="0dp" android:layout_weight="1" android:layout_height="38dp" android:text="Send" android:textSize="13sp" android:backgroundTint="#2244aa" android:textColor="#fff" android:minWidth="0dp" android:minHeight="0dp" />
+            </LinearLayout>
+            <TextView android:id="@+id/schedule_label" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" android:textColor="#aa8844" android:textSize="10sp" android:visibility="gone" android:layout_marginBottom="4dp" />
+
+            <!-- ── Message Thread ── -->
+            <LinearLayout android:id="@+id/lion_message_thread" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginBottom="12dp" />
+
+            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />
+
+            <!-- ── Subscription ── -->
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\uD83D\uDCB3  SUBSCRIPTION" android:textColor="#cc9900" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
+
+            <TextView android:id="@+id/sub_status_text" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="No subscription active" android:textColor="#888" android:textSize="13sp" android:background="#0e0e1a" android:padding="12dp" />
+
+            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginTop="12dp" android:layout_marginBottom="12dp" />
+
+            <!-- ── Payment History ── -->
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="&#x1F4B0;  PAYMENT HISTORY" android:textColor="#cc9900" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
+
+            <LinearLayout android:id="@+id/lion_payment_history" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginBottom="12dp" />
+
+        </LinearLayout>
+    </ScrollView>
+
+</LinearLayout>
