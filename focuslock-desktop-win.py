@@ -56,6 +56,16 @@ from focuslock_sync import try_sync as _shared_try_sync, \
     direct_sync_poll as _shared_direct_sync_poll, \
     relay_to_phones as _shared_relay_to_phones
 
+# Vault crypto for E2E encrypted mesh (Phase D desktop support)
+try:
+    from focuslock_vault import (
+        decrypt_body as vault_decrypt, verify_signature as vault_verify,
+        slot_id_for_pubkey as vault_slot_id, generate_keypair as vault_keygen,
+    )
+    VAULT_CRYPTO_OK = True
+except ImportError:
+    VAULT_CRYPTO_OK = False
+
 try:
     from focuslock_config import load_config
 except ImportError:
@@ -124,6 +134,112 @@ def get_lion_pubkey():
         except:
             pass
     return _lion_pubkey
+
+
+# ── Vault Mode (Phase D desktop support) ──
+
+VAULT_MODE = _cfg.get("vault_mode", False) and VAULT_CRYPTO_OK and bool(MESH_ID)
+_vault_last_version = 0
+_vault_node_registered = False
+
+VAULT_PRIVKEY_FILE = os.path.join(CONFIG_DIR, "node_privkey.pem")
+VAULT_PUBKEY_FILE = os.path.join(CONFIG_DIR, "node_pubkey.pem")
+_vault_privkey_pem = ""
+_vault_pubkey_der = b""
+
+def _vault_init_keypair():
+    """Load or generate RSA keypair for vault mode."""
+    global _vault_privkey_pem, _vault_pubkey_der
+    if os.path.exists(VAULT_PRIVKEY_FILE) and os.path.exists(VAULT_PUBKEY_FILE):
+        with open(VAULT_PRIVKEY_FILE) as f:
+            _vault_privkey_pem = f.read()
+        from cryptography.hazmat.primitives import serialization
+        pk = serialization.load_pem_private_key(_vault_privkey_pem.encode(), password=None)
+        _vault_pubkey_der = pk.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        print(f"[vault] Loaded keypair (slot={vault_slot_id(_vault_pubkey_der)})")
+    else:
+        priv, pub, der = vault_keygen()
+        with open(VAULT_PRIVKEY_FILE, "w") as f:
+            f.write(priv)
+        with open(VAULT_PUBKEY_FILE, "w") as f:
+            f.write(pub)
+        _vault_privkey_pem = priv
+        _vault_pubkey_der = der
+        print(f"[vault] Generated new keypair (slot={vault_slot_id(der)})")
+
+def _vault_register_node():
+    """Register this desktop as a vault recipient if not already."""
+    global _vault_node_registered
+    if _vault_node_registered or not MESH_URL:
+        return
+    import base64
+    pubkey_b64 = base64.b64encode(_vault_pubkey_der).decode()
+    payload = json.dumps({
+        "node_id": MESH_NODE_ID,
+        "node_type": "desktop",
+        "node_pubkey": pubkey_b64,
+    }).encode()
+    try:
+        req = urllib.request.Request(
+            f"{MESH_URL}/vault/{MESH_ID}/register-node",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read())
+            if result.get("ok") or result.get("status") in ("approved", "pending"):
+                _vault_node_registered = True
+                print(f"[vault] Node registered: {result}")
+    except Exception as e:
+        print(f"[vault] Register error (will retry): {e}")
+
+def _vault_poll():
+    """Fetch and decrypt vault blobs since last known version."""
+    global _vault_last_version
+    if not MESH_URL or not _vault_privkey_pem:
+        return
+    _vault_register_node()
+    try:
+        url = f"{MESH_URL}/vault/{MESH_ID}/since/{_vault_last_version}"
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        blobs = data.get("blobs", [])
+        if not blobs:
+            return
+        lion_pub = get_lion_pubkey()
+        for blob in blobs:
+            v = blob.get("version", 0)
+            if v <= _vault_last_version:
+                continue
+            if lion_pub and not vault_verify(blob, lion_pub):
+                print(f"[vault] Signature verification FAILED for v{v} — skipping")
+                continue
+            plaintext = vault_decrypt(blob, _vault_privkey_pem, _vault_pubkey_der)
+            if plaintext is None:
+                continue
+            body = json.loads(plaintext)
+            if "action" in body:
+                mesh_apply_order(body["action"], body.get("params", {}), mesh_orders)
+                mesh_orders.bump_version()
+            else:
+                for k, val in body.items():
+                    if k in mesh.ORDER_KEYS:
+                        mesh_orders.set(k, val)
+                if body:
+                    mesh_orders.bump_version()
+            _vault_last_version = v
+            print(f"[vault] Applied v{v} ({len(body)} fields)")
+        on_mesh_orders_applied(dict(mesh_orders.orders))
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            print(f"[vault] Poll error: HTTP {e.code}")
+    except Exception as e:
+        print(f"[vault] Poll error: {e}")
 
 
 # ── State ──
@@ -1333,6 +1449,11 @@ def main():
     # Seed mesh peers from config
     _seed_configured_peers()
 
+    # Initialize vault keypair if vault mode enabled
+    if VAULT_MODE:
+        _vault_init_keypair()
+        print(f"[collar] Vault mode enabled for mesh {MESH_ID}")
+
     # Save original wallpaper
     if not os.path.exists(ORIGINAL_WALLPAPER_FILE):
         try:
@@ -1379,7 +1500,10 @@ def main():
         def _ntfy_wake(version):
             print(f"[ntfy] Wake-up v{version} — triggering immediate sync")
             try:
-                direct_sync_poll()
+                if VAULT_MODE:
+                    _vault_poll()
+                else:
+                    direct_sync_poll()
             except Exception:
                 pass
 
@@ -1388,15 +1512,27 @@ def main():
         ntfy_sub.start()
         print(f"[ntfy] Subscribed to {_ntfy_server}/{_ntfy_topic}")
 
-    # Start direct sync fallback loop
-    def _direct_sync_loop():
-        while True:
-            try:
-                direct_sync_poll()
-            except:
-                pass
-            time.sleep(POLL_INTERVAL)
-    threading.Thread(target=_direct_sync_loop, daemon=True).start()
+    if VAULT_MODE:
+        # Vault poll replaces plaintext direct sync for server communication
+        def _vault_poll_loop():
+            while True:
+                try:
+                    _vault_poll()
+                except:
+                    pass
+                time.sleep(POLL_INTERVAL)
+        threading.Thread(target=_vault_poll_loop, daemon=True).start()
+        print("[collar] Vault poll started (replaces plaintext sync to server)")
+    else:
+        # Start direct sync fallback loop
+        def _direct_sync_loop():
+            while True:
+                try:
+                    direct_sync_poll()
+                except:
+                    pass
+                time.sleep(POLL_INTERVAL)
+        threading.Thread(target=_direct_sync_loop, daemon=True).start()
 
     # Start poll status loop
     def _poll_loop():

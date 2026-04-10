@@ -1255,47 +1255,11 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             send_evidence(f"{reason}: ${amount} penalty applied. New paywall: ${pw}", "desktop penalty")
             self.respond(200, {"ok": True, "new_paywall": pw})
 
-        # ── Mesh Endpoints ──
-        elif self.path == "/mesh/sync":
-            _mid = _mesh_accounts.find_mesh_id_by_pin(data.get("pin", ""))
-            _morders = _resolve_orders(_mid)
-            if not mesh.validate_pin(data, _morders):
-                self.respond(403, {"error": "invalid pin"})
-                return
-            if _mid and _mesh_accounts.is_vault_only(_mid):
-                self.respond(410, {"error": "vault_only mesh — use /vault/{mesh_id}/since/{v} for reads and /vault/{mesh_id}/append for writes"})
-                return
-            result = mesh.handle_mesh_sync(
-                data, MESH_NODE_ID, MESH_NODE_TYPE,
-                mesh.get_local_addresses(), MESH_PORT,
-                _morders, mesh_peers, mesh_local_status(),
-                get_lion_pubkey(), on_mesh_orders_applied,
-            )
-            # Check for pending pairing for this node
-            remote_node_id = data.get("node_id", "")
-            pending = _pairing_registry.get_pending_pairing(remote_node_id)
-            if pending and pending.get("lion_pubkey"):
-                result["pairing"] = {"lion_pubkey": pending["lion_pubkey"]}
-                _pairing_registry.mark_delivered(remote_node_id)
-            self.respond(200, result)
-
-        elif self.path == "/mesh/order":
-            _mid = _mesh_accounts.find_mesh_id_by_pin(data.get("pin", ""))
-            _morders = _resolve_orders(_mid)
-            if not mesh.validate_pin(data, _morders):
-                self.respond(403, {"error": "invalid pin"})
-                return
-            if _mid and _mesh_accounts.is_vault_only(_mid):
-                self.respond(410, {"error": "vault_only mesh — POST Lion-signed blobs to /vault/{mesh_id}/append"})
-                return
-            result = mesh.handle_mesh_order(
-                data, _morders, mesh_peers, MESH_NODE_ID,
-                apply_fn=mesh_apply_order,
-                lion_pubkey=get_lion_pubkey(),
-                on_orders_applied=on_mesh_orders_applied,
-                ntfy_fn=ntfy_fn,
-            )
-            self.respond(200, result)
+        # ── Legacy /mesh/sync and /mesh/order removed (Phase 4D) ──
+        # All nodes must use /vault/{mesh_id}/append for writes and
+        # /vault/{mesh_id}/since/{v} for reads. PIN-based endpoints are gone.
+        elif self.path in ("/mesh/sync", "/mesh/order"):
+            self.respond(410, {"error": "legacy plaintext mesh endpoints removed — use /vault/{mesh_id}/*"})
 
         # ── Admin API (enforcement infrastructure) ──
         # Without mesh_id: operates on operator's mesh (backwards compat).
@@ -1379,53 +1343,10 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 "pin": account["pin"],
             })
 
-        elif self.path.startswith("/api/mesh/") and self.path.endswith("/order"):
-            # /api/mesh/{mesh_id}/order — Lion sends order with auth token
-            parts = self.path.strip("/").split("/")
-            mesh_id = parts[2] if len(parts) >= 4 else ""
-            auth_header = self.headers.get("Authorization", "")
-            auth_token = (auth_header.replace("Bearer ", "")
-                          if auth_header.startswith("Bearer ")
-                          else data.get("auth_token", ""))
-            if not _mesh_accounts.validate_auth(mesh_id, auth_token):
-                self.respond(403, {"error": "invalid auth"})
-                return
-            if _mesh_accounts.is_vault_only(mesh_id):
-                self.respond(410, {"error": "vault_only mesh — POST Lion-signed blobs to /vault/{mesh_id}/append"})
-                return
-            _morders = _resolve_orders(mesh_id)
-            result = mesh.handle_mesh_order(
-                data, _morders, mesh_peers, MESH_NODE_ID,
-                apply_fn=mesh_apply_order,
-                lion_pubkey=get_lion_pubkey(),
-                on_orders_applied=on_mesh_orders_applied,
-                ntfy_fn=ntfy_fn,
-            )
-            self.respond(200, result)
-
-        elif self.path.startswith("/api/mesh/") and self.path.endswith("/sync"):
-            # /api/mesh/{mesh_id}/sync — Node syncs with PIN
-            parts = self.path.strip("/").split("/")
-            mesh_id = parts[2] if len(parts) >= 4 else ""
-            if not _mesh_accounts.validate_pin(mesh_id, data.get("pin", "")):
-                self.respond(403, {"error": "invalid pin"})
-                return
-            if _mesh_accounts.is_vault_only(mesh_id):
-                self.respond(410, {"error": "vault_only mesh — use /vault/{mesh_id}/since/{v} for reads and /vault/{mesh_id}/append for writes"})
-                return
-            _morders = _resolve_orders(mesh_id)
-            result = mesh.handle_mesh_sync(
-                data, MESH_NODE_ID, MESH_NODE_TYPE,
-                mesh.get_local_addresses(), MESH_PORT,
-                _morders, mesh_peers, mesh_local_status(),
-                get_lion_pubkey(), on_mesh_orders_applied,
-            )
-            # Update node last_seen in account
-            remote_id = data.get("node_id", "")
-            if remote_id:
-                _mesh_accounts.update_node(mesh_id, remote_id,
-                                           last_seen=int(time.time()))
-            self.respond(200, result)
+        # ── Legacy /api/mesh/{id}/order and /api/mesh/{id}/sync removed (Phase 4D) ──
+        elif self.path.startswith("/api/mesh/") and (
+                self.path.endswith("/order") or self.path.endswith("/sync")):
+            self.respond(410, {"error": "legacy plaintext mesh endpoints removed — use /vault/{mesh_id}/*"})
 
         # ── Vault endpoints (zero-knowledge mesh) ──
         # See docs/VAULT-DESIGN.md.
@@ -1741,55 +1662,15 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             })
             return
 
+        # ── Legacy /mesh/status and /api/mesh/{id}/status removed (Phase 4D) ──
         elif self.path.startswith("/mesh/status"):
-            # PIN required — check query param ?pin=
-            import urllib.parse
-            parsed = urllib.parse.urlparse(self.path)
-            params = urllib.parse.parse_qs(parsed.query)
-            pin = params.get("pin", [""])[0]
-            _mid = _mesh_accounts.find_mesh_id_by_pin(pin)
-            _morders = _resolve_orders(_mid)
-            if pin != str(_morders.get("pin", "")):
-                self.respond(403, {"error": "invalid pin"})
-                return
-            if _mid and _mesh_accounts.is_vault_only(_mid):
-                self.respond(410, {"error": "vault_only mesh — use /vault/{mesh_id}/since/{v}"})
-                return
-            self.respond(200, mesh.handle_mesh_status(
-                _morders, mesh_peers, MESH_NODE_ID, mesh_local_status()))
+            self.respond(410, {"error": "legacy plaintext mesh endpoints removed — use /vault/{mesh_id}/*"})
             return
 
         elif self.path.startswith("/api/mesh/"):
-            # /api/mesh/{mesh_id}/status — Lion checks status with auth token
-            import urllib.parse
-            parsed = urllib.parse.urlparse(self.path)
-            parts = parsed.path.strip("/").split("/")
-            # ["api", "mesh", mesh_id, "status"]
-            if len(parts) >= 4 and parts[3] == "status":
-                mesh_id = parts[2]
-                qparams = urllib.parse.parse_qs(parsed.query)
-                auth_token = qparams.get("auth_token", [""])[0]
-                if not auth_token:
-                    auth_header = self.headers.get("Authorization", "")
-                    if auth_header.startswith("Bearer "):
-                        auth_token = auth_header[7:]
-                if not _mesh_accounts.validate_auth(mesh_id, auth_token):
-                    self.respond(403, {"error": "invalid auth"})
-                    return
-                if _mesh_accounts.is_vault_only(mesh_id):
-                    self.respond(410, {"error": "vault_only mesh — use /vault/{mesh_id}/since/{v}"})
-                    return
-                _morders = _resolve_orders(mesh_id)
-                account = _mesh_accounts.get(mesh_id)
-                status = mesh.handle_mesh_status(
-                    _morders, mesh_peers, MESH_NODE_ID, mesh_local_status())
-                if account:
-                    status["mesh_id"] = mesh_id
-                    status["invite_code"] = account.get("invite_code", "")
-                    status["account_nodes"] = account.get("nodes", {})
-                self.respond(200, status)
-            else:
-                self.respond(404, {"error": "not found"})
+            # Only /api/mesh/create and /api/mesh/join survive (handled above in POST).
+            # /api/mesh/{id}/status is gone.
+            self.respond(410, {"error": "legacy plaintext mesh endpoints removed — use /vault/{mesh_id}/*"})
             return
 
         # ── Admin GET endpoints (enforcement) ──
@@ -1883,43 +1764,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(404, {"error": f"unknown vault action: {action}"})
             return
 
+        # ── /desktop-status removed (Phase 4D) — desktop collars use vault poll ──
         elif self.path.startswith("/desktop-status"):
-            # Return lock state for desktop collar — reads from mesh orders (no ADB needed)
-            # Supports ?hostname=X for per-device lock checks
-            # Vault-only meshes should use the vault poll instead.
-            if OPERATOR_MESH_ID and _mesh_accounts.is_vault_only(OPERATOR_MESH_ID):
-                self.respond(410, {"error": "vault_only — desktop collars should poll /vault/{mesh_id}/since/{v}"})
-                return
-            try:
-                import urllib.parse
-                parsed = urllib.parse.urlparse(self.path)
-                params = urllib.parse.parse_qs(parsed.query)
-                hostname = params.get("hostname", [""])[0]
-
-                def mget(k, default=""):
-                    v = mesh_orders.get(k, default)
-                    return "" if v == "null" or v is None else str(v)
-
-                phone_locked = adb.get("focus_lock_active") == "1"
-                desktop_locked_global = mget("desktop_active") == "1"
-                desktop_devices = mget("desktop_locked_devices")
-                device_locked = hostname and hostname in desktop_devices.split(",")
-                desktop_locked = desktop_locked_global or device_locked
-                desktop_msg = mget("desktop_message")
-
-                self.respond(200, {
-                    "locked": desktop_locked,
-                    "phone_locked": phone_locked,
-                    "desktop_locked": desktop_locked,
-                    "device_locked": device_locked,
-                    "paywall": mget("paywall", "0"),
-                    "message": desktop_msg if desktop_locked and desktop_msg else mget("message"),
-                    "sub_tier": mget("sub_tier"),
-                    "pinned": mget("pinned_message"),
-                })
-            except Exception as e:
-                print(f"[{now()}] Desktop status error: {e}")
-                self.respond(500, {"error": str(e)})
+            self.respond(410, {"error": "removed — desktop collars should poll /vault/{mesh_id}/since/{v}"})
 
         elif self.path == "/controller":
             # Return Lion's Share controller's last known address
