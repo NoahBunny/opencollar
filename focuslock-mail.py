@@ -1043,6 +1043,30 @@ class VaultStore:
 
 _vault_store = VaultStore()
 
+# In-memory daily blob counter per mesh — resets on date change.
+# Key: (mesh_id, "YYYYMMDD"), Value: count.
+_daily_blob_counts: dict = {}
+_daily_blob_lock = threading.Lock()
+
+
+def _daily_blob_count(mesh_id: str) -> int:
+    """Return today's blob count for a mesh, pruning stale dates."""
+    today = time.strftime("%Y%m%d")
+    with _daily_blob_lock:
+        # Prune old dates (max 1 stale key per mesh)
+        stale = [k for k in _daily_blob_counts if k[0] == mesh_id and k[1] != today]
+        for k in stale:
+            del _daily_blob_counts[k]
+        return _daily_blob_counts.get((mesh_id, today), 0)
+
+
+def _daily_blob_increment(mesh_id: str):
+    """Increment today's blob count for a mesh."""
+    today = time.strftime("%Y%m%d")
+    with _daily_blob_lock:
+        key = (mesh_id, today)
+        _daily_blob_counts[key] = _daily_blob_counts.get(key, 0) + 1
+
 
 def _load_lion_pubkey_obj(key_str):
     """Load Lion pubkey from PEM or bare-base64-DER format.
@@ -1389,6 +1413,10 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     if store_size >= max_bytes:
                         self.respond(429, {"error": f"vault quota exceeded ({max_bytes // (1024*1024)}MB)"})
                         return
+                    max_daily = account.get("max_blobs_per_day", 5000)
+                    if _daily_blob_count(mesh_id) >= max_daily:
+                        self.respond(429, {"error": f"daily blob limit reached ({max_daily}/day)"})
+                        return
                 if not lion_pubkey:
                     self.respond(403, {"error": "no lion_pubkey on file for this mesh"})
                     return
@@ -1402,6 +1430,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 if err:
                     self.respond(409, {"error": err, "current_version": version})
                     return
+                _daily_blob_increment(mesh_id)
                 print(f"[{now()}] Vault append: mesh={mesh_id} v={version} "
                       f"writer={writer_role}:{writer_id} "
                       f"slots={len(blob.get('slots', {}))} ct_bytes={len(blob.get('ciphertext', ''))}")
@@ -1892,10 +1921,15 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             else:
                 self.respond(404, {"error": "no memory dir", "checked": mem_dir})
 
-        elif self.path in ("/", "/index.html", "/signup", "/signup.html"):
-            # Serve web UI (index or signup)
+        elif self.path in ("/", "/index.html", "/signup", "/signup.html", "/cost", "/cost.html"):
+            # Serve web UI (index, signup, or cost)
             web_dir = "/opt/focuslock/web"
-            fname = "signup.html" if self.path.startswith("/signup") else "index.html"
+            if self.path.startswith("/signup"):
+                fname = "signup.html"
+            elif self.path.startswith("/cost"):
+                fname = "cost.html"
+            else:
+                fname = "index.html"
             page = os.path.join(web_dir, fname)
             if os.path.exists(page):
                 self.send_response(200)
@@ -1906,6 +1940,19 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     self.wfile.write(f.read())
             else:
                 self.respond(404, {"error": "web UI not deployed"})
+
+        elif self.path == "/qrcode.min.js":
+            web_dir = "/opt/focuslock/web"
+            js_path = os.path.join(web_dir, "qrcode.min.js")
+            if os.path.exists(js_path):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/javascript; charset=utf-8")
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
+                with open(js_path, "rb") as f:
+                    self.wfile.write(f.read())
+            else:
+                self.respond(404, {"error": "qrcode.min.js not deployed"})
 
         elif self.path == "/manifest.json":
             self.send_response(200)

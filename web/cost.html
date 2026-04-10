@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright (C) 2024-2026 The FocusLock Contributors -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0a0a14">
+<title>Cost of Running &mdash; FocusLock Relay</title>
+<style>
+:root {
+  --bg: #0a0a14;
+  --card: #0e0e1a;
+  --gold: #DAA520;
+  --gold-bright: #FFD700;
+  --text: #e0e0e0;
+  --muted: #777;
+  --radius: 10px;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; justify-content: center; padding: 2rem 1rem; }
+.wrap { max-width: 560px; width: 100%; }
+h1 { color: var(--gold); font-size: 1.5rem; margin-bottom: 0.3rem; }
+h2 { color: var(--gold); font-size: 1.1rem; margin-bottom: 0.5rem; }
+p.sub { color: var(--muted); font-size: 0.85rem; margin-bottom: 1.5rem; }
+.card { background: var(--card); border-radius: var(--radius); padding: 1.2rem 1.5rem; margin-bottom: 1rem; }
+.row { display: flex; justify-content: space-between; padding: 0.4rem 0; border-bottom: 1px solid #1a1a2a; }
+.row:last-child { border-bottom: none; }
+.row .label { color: var(--muted); font-size: 0.85rem; }
+.row .val { font-family: monospace; color: var(--gold-bright); font-size: 0.95rem; }
+p { font-size: 0.85rem; line-height: 1.6; color: var(--text); margin-bottom: 0.8rem; }
+p:last-child { margin-bottom: 0; }
+a { color: var(--gold); text-decoration: none; }
+a:hover { color: var(--gold-bright); text-decoration: underline; }
+.zero { font-size: 2rem; color: var(--gold-bright); text-align: center; padding: 0.5rem 0; }
+.note { font-size: 0.75rem; color: var(--muted); line-height: 1.5; margin-top: 1rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Cost of Running</h1>
+  <p class="sub">What it costs to operate this relay, in full transparency.</p>
+
+  <div class="card">
+    <h2>Monthly Server Cost</h2>
+    <div class="zero">$0</div>
+    <p>This relay runs on homelab hardware. The only ongoing cost is electricity, which is negligible (a single-board computer drawing ~15W).</p>
+  </div>
+
+  <div class="card">
+    <h2>Resource Usage</h2>
+    <div class="row"><span class="label">Storage per mesh</span><span class="val">~1 KB/blob</span></div>
+    <div class="row"><span class="label">Default quota</span><span class="val">100 MB / mesh</span></div>
+    <div class="row"><span class="label">That's roughly</span><span class="val">~100,000 blobs</span></div>
+    <div class="row"><span class="label">Daily blob limit</span><span class="val">5,000 / day</span></div>
+    <div class="row"><span class="label">Bandwidth per blob</span><span class="val">&lt; 2 KB</span></div>
+    <div class="row"><span class="label">Retention</span><span class="val">Version-gated</span></div>
+    <p class="note">Vault blobs are opaque ciphertext. A typical mesh generates ~100 blobs/day (one every ~15 seconds during active use). At that rate, 100 MB lasts over two years.</p>
+  </div>
+
+  <div class="card">
+    <h2>What You're Trusting</h2>
+    <p>The relay stores <strong>encrypted blobs only</strong>. It verifies RSA signatures (to prevent tampering) but <strong>cannot read</strong> any order content &mdash; lock commands, paywall amounts, messages, coordinates, or anything else.</p>
+    <p>The relay source is public and auditable. The <code>/version</code> endpoint returns a SHA-256 hash of the running code and a git commit. You can verify at any time that what's deployed matches what's published.</p>
+    <p>Full cryptographic design: <a href="https://github.com/NoahBunny/openleash/blob/main/docs/VAULT-DESIGN.md">VAULT-DESIGN.md</a></p>
+  </div>
+
+  <div class="card">
+    <h2>Why It's Free</h2>
+    <p>There's nothing to monetize. The relay sees ciphertext, not content. There are no ads, no analytics, no accounts beyond the mesh registration. The operator pays for hardware and electricity because the project exists to be useful, not profitable.</p>
+    <p>If the relay ever goes offline, your mesh keeps working &mdash; devices gossip directly over LAN and Tailscale. You can also <a href="https://github.com/NoahBunny/openleash#self-hosted-homelab-optional-adds-features">self-host</a> the relay on your own hardware.</p>
+  </div>
+
+  <div class="card">
+    <h2>Self-Host Instead</h2>
+    <p>Don't trust this relay? Run your own. The server is a single Python file with one dependency (<code>cryptography</code>). Runs on any Linux box, Raspberry Pi, or $5/mo VPS.</p>
+    <p><code>bash installers/homelab-setup.sh</code></p>
+    <p>Your Lion's Share app connects to your own relay instead. Same encryption, same protocol, your hardware.</p>
+  </div>
+</div>
+</body>
+</html>

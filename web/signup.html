@@ -36,6 +36,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .field .val.invite { font-size: 1.4rem; letter-spacing: 0.1em; text-align: center; display: block; padding: 0.5rem; background: #111118; border-radius: 6px; }
 .note { font-size: 0.75rem; color: var(--muted); margin-top: 1rem; line-height: 1.4; }
 .err { color: #e44; font-size: 0.85rem; margin-top: 0.5rem; display: none; }
+.qr-wrap { text-align: center; margin: 1rem 0 0.5rem; }
+.qr-wrap canvas { border: 2px solid var(--gold); border-radius: 6px; }
 </style>
 </head>
 <body>
@@ -70,11 +72,33 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
       <label>PIN</label>
       <span class="val" id="rPin"></span>
     </div>
-    <p class="note">The invite code expires in 24 hours and can only be used once. Your Bunny enters it in Bunny Tasker &rarr; Join Mesh along with this relay's URL.</p>
+    <div class="qr-wrap" id="qrWrap"></div>
+    <p class="note">The invite code expires in 24 hours and can only be used once. Your Bunny enters it in Bunny Tasker &rarr; Join Mesh along with this relay's URL. Or scan the QR code above.</p>
   </div>
 </div>
 
+<script src="/qrcode.min.js"></script>
 <script>
+function renderQR(text) {
+  if (typeof qrcode !== 'function') return;
+  var qr = qrcode(0, 'M');
+  qr.addData(text);
+  qr.make();
+  var size = qr.getModuleCount();
+  var scale = Math.max(4, Math.floor(200 / size));
+  var canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size * scale + scale * 2;
+  var ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#111118';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#DAA520';
+  for (var r = 0; r < size; r++)
+    for (var c = 0; c < size; c++)
+      if (qr.isDark(r, c))
+        ctx.fillRect((c + 1) * scale, (r + 1) * scale, scale, scale);
+  document.getElementById('qrWrap').appendChild(canvas);
+}
+
 async function createMesh() {
   const btn = document.getElementById('createBtn');
   const err = document.getElementById('err');
@@ -106,6 +130,9 @@ async function createMesh() {
     document.getElementById('rPin').textContent = data.pin;
     document.getElementById('formCard').style.display = 'none';
     document.getElementById('resultCard').classList.add('show');
+
+    var relay = location.protocol + '//' + location.host;
+    renderQR(JSON.stringify({relay: relay, invite: data.invite_code}));
   } catch (e) {
     err.textContent = e.message;
     err.style.display = 'block';
