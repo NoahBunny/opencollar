@@ -37,6 +37,27 @@ public class ControlService extends Service {
 
     private static final String TAG = "FocusLock";
     private static final int PORT = 8432;
+
+    /**
+     * Launchers + Settings we try to disable on lock so the home button and
+     * the escape-hatch app can't break out. NOTE: {@code Runtime.exec("pm
+     * disable-user …")} runs as the slave's app UID, NOT shell, so these
+     * commands typically fail silently on most phones. We still issue them
+     * because (a) on rooted / device-owner devices they do work, and (b) it
+     * documents intent. The REAL fix for the home button is
+     * {@code RoleManager.ROLE_HOME} — see landmine #3 in
+     * project_collar_landmines.md and the deferred follow-up task.
+     *
+     * Jace and Livv's phones both run Fossify Launcher
+     * ({@code org.fossify.home}), which was missing from this list prior to
+     * slave v56 — hence the home-button enforcement gap Livv observed.
+     */
+    private static final String[] ESCAPE_HATCH_PACKAGES = {
+        "com.android.launcher3",
+        "com.google.android.apps.nexuslauncher",
+        "org.fossify.home",
+        "com.android.settings",
+    };
     private ServerSocket serverSocket;
     private boolean running = false;
     private android.speech.tts.TextToSpeech tts;
@@ -926,9 +947,9 @@ public class ControlService extends Service {
         // Disable escape hatches: status bar (notification shade), launcher (home button), settings
         try {
             Runtime.getRuntime().exec(new String[]{"cmd", "statusbar", "disable-for-setup", "true"});
-            Runtime.getRuntime().exec(new String[]{"pm", "disable-user", "--user", "0", "com.android.launcher3"});
-            Runtime.getRuntime().exec(new String[]{"pm", "disable-user", "--user", "0", "com.google.android.apps.nexuslauncher"});
-            Runtime.getRuntime().exec(new String[]{"pm", "disable-user", "--user", "0", "com.android.settings"});
+            for (String pkg : ESCAPE_HATCH_PACKAGES) {
+                Runtime.getRuntime().exec(new String[]{"pm", "disable-user", "--user", "0", pkg});
+            }
         } catch (Exception e) { Log.w(TAG, "Escape hatch lockdown failed", e); }
         launchFocus();
         lovenseLockPulse(); // Start Lovense pulsing during lock
@@ -955,12 +976,14 @@ public class ControlService extends Service {
         Settings.Global.putInt(getContentResolver(), "focus_lock_dim", 0);
         Settings.Global.putInt(getContentResolver(), "focus_lock_mute", 0);
         Settings.Global.putInt(getContentResolver(), "focus_lock_vibrate", 0);
-        // Try to restore statusbar + launcher via shell (best effort — bridge also does this)
+        // Try to restore statusbar + launcher via shell (best effort — bridge also does this).
+        // Same UID caveat applies as in ESCAPE_HATCH_PACKAGES — these exec
+        // calls are no-ops under a regular app UID.
         try {
             Runtime.getRuntime().exec(new String[]{"cmd", "statusbar", "disable-for-setup", "false"});
-            Runtime.getRuntime().exec(new String[]{"pm", "enable", "--user", "0", "com.android.launcher3"});
-            Runtime.getRuntime().exec(new String[]{"pm", "enable", "--user", "0", "com.google.android.apps.nexuslauncher"});
-            Runtime.getRuntime().exec(new String[]{"pm", "enable", "--user", "0", "com.android.settings"});
+            for (String pkg : ESCAPE_HATCH_PACKAGES) {
+                Runtime.getRuntime().exec(new String[]{"pm", "enable", "--user", "0", pkg});
+            }
             Runtime.getRuntime().exec(new String[]{"input", "keyevent", "KEYCODE_HOME"});
         } catch (Exception e) {}
         // Re-enable camera double-press shortcut
@@ -1765,11 +1788,11 @@ public class ControlService extends Service {
         try {
             // Disable notification shade (pull-down)
             Runtime.getRuntime().exec(new String[]{"cmd", "statusbar", "disable-for-setup", "true"});
-            // Disable all launchers (home button goes nowhere)
-            Runtime.getRuntime().exec(new String[]{"pm", "disable-user", "--user", "0", "com.android.launcher3"});
-            Runtime.getRuntime().exec(new String[]{"pm", "disable-user", "--user", "0", "com.google.android.apps.nexuslauncher"});
-            // Disable Settings (can't toggle permissions or disable admin)
-            Runtime.getRuntime().exec(new String[]{"pm", "disable-user", "--user", "0", "com.android.settings"});
+            // Disable all launchers (home button goes nowhere) + Settings
+            // Package list is shared with doLock() — see ESCAPE_HATCH_PACKAGES.
+            for (String pkg : ESCAPE_HATCH_PACKAGES) {
+                Runtime.getRuntime().exec(new String[]{"pm", "disable-user", "--user", "0", pkg});
+            }
         } catch (Exception e) {}
     }
 
