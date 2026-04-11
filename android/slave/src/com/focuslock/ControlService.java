@@ -2591,43 +2591,94 @@ public class ControlService extends Service {
 
     /**
      * Ensure the slave has an RSA-2048 keypair for vault decryption.
-     * Prefers AndroidKeyStore (non-extractable, hardware-backed on Pixel).
-     * Falls back to legacy Settings.Global key during migration.
-     * Returns the pubkey DER bytes (cached after first call), or null on failure.
+     *
+     * v57 preference order:
+     *   1. If a software key already exists in Settings.Global (from v55/v56
+     *      upgrade path), keep using it. The slot_id is stable, so the
+     *      existing server-side node registration still applies.
+     *   2. Otherwise, if a KeyStore-backed key exists under KEYSTORE_ALIAS,
+     *      use it (fresh-install path that already ran once).
+     *   3. Otherwise, generate a fresh hardware-backed keypair in the
+     *      AndroidKeyStore with PURPOSE_DECRYPT | PURPOSE_SIGN and BOTH
+     *      SHA-256 and SHA-1 declared in setDigests() — the latter is
+     *      required because the KeyStore's OAEP provider internally uses
+     *      MGF1-SHA1 regardless of what OAEPParameterSpec says. VaultCrypto
+     *      encrypts with MGF1-SHA1 as of v57 so this works end-to-end.
+     *
+     * Pre-v57 (v55/v56 hotfix) bypassed KeyStore entirely because the key
+     * was generated with setDigests(SHA256) only and decrypt failed with
+     * "Keystore operation failed". See landmine #1 in
+     * project_collar_landmines.md.
      */
     private byte[] ensureNodeKeypair() {
         if (cachedNodePubDer != null) return cachedNodePubDer;
-        // HOTFIX 2026-04-11: bypass AndroidKeyStore due to an OAEP MGF1 digest
-        // mismatch. The KeyGenParameterSpec below declared only SHA-256 as the
-        // digest, but Android's AndroidKeyStore OAEP implementation uses
-        // MGF1-SHA1 internally regardless — so Cipher.init with
-        // OAEPParameterSpec(MGF1-SHA256) fails at decrypt time with
-        // "Keystore operation failed", breaking every lock / message delivery.
-        // TODO: properly fix by (a) declaring setDigests(SHA256, SHA1) AND
-        // switching VaultCrypto.decryptOrders to OAEPParameterSpec with
-        // MGF1-SHA1, or (b) splitting: hardware key for SIGN only, software
-        // key for DECRYPT. For now, always use the software-key path stored
-        // in Settings.Global. Delete any stale KeyStore alias to avoid the
-        // branch in getNodePrivateKey() picking up a dead entry.
+
+        // 1. Preserve existing software key from v55/v56 upgrade path.
+        String existingPub = gstr("focus_lock_node_pubkey");
+        String existingPriv = gstr("focus_lock_node_privkey");
+        if (!existingPub.isEmpty() && !existingPriv.isEmpty()) {
+            try {
+                byte[] pubDer = android.util.Base64.decode(existingPub, android.util.Base64.DEFAULT);
+                cachedNodePubDer = pubDer;
+                Log.w(TAG, "Using existing software vault key (slot="
+                    + VaultCrypto.slotIdForPubkey(pubDer) + ")");
+                return pubDer;
+            } catch (Exception e) {
+                Log.w(TAG, "Existing software pubkey decode failed, regenerating", e);
+            }
+        }
+
         try {
+            // 2. Check if AndroidKeyStore key exists (fresh-install path that
+            //    already completed generation on a prior boot).
             java.security.KeyStore ks = java.security.KeyStore.getInstance("AndroidKeyStore");
             ks.load(null);
             if (ks.containsAlias(KEYSTORE_ALIAS)) {
-                ks.deleteEntry(KEYSTORE_ALIAS);
-                Log.w(TAG, "HOTFIX: deleted stale AndroidKeyStore alias " + KEYSTORE_ALIAS);
+                java.security.cert.Certificate cert = ks.getCertificate(KEYSTORE_ALIAS);
+                byte[] pubDer = cert.getPublicKey().getEncoded();
+                String pub = android.util.Base64.encodeToString(pubDer, android.util.Base64.NO_WRAP);
+                Settings.Global.putString(getContentResolver(), "focus_lock_node_pubkey", pub);
+                cachedNodePubDer = pubDer;
+                cachedNodePrivKey = (java.security.PrivateKey) ks.getKey(KEYSTORE_ALIAS, null);
+                Log.w(TAG, "Using AndroidKeyStore vault key (slot="
+                    + VaultCrypto.slotIdForPubkey(pubDer) + ")");
+                return pubDer;
             }
-            // Also clear any legacy KeyStore-era state in Settings.Global so
-            // ensureNodeKeypairLegacy regenerates fresh software keys.
-            if (!gstr("focus_lock_node_privkey_legacy").isEmpty()) {
-                Settings.Global.putString(getContentResolver(),
-                    "focus_lock_node_privkey_legacy", "");
-            }
+
+            // 3. Generate fresh hardware-backed key. setDigests MUST include
+            //    BOTH SHA-256 and SHA-1 — SHA-256 for the OAEP main hash and
+            //    for signatures, SHA-1 for MGF1 (which KeyStore uses
+            //    internally regardless of OAEPParameterSpec). Landmine #1.
+            android.security.keystore.KeyGenParameterSpec spec =
+                new android.security.keystore.KeyGenParameterSpec.Builder(
+                    KEYSTORE_ALIAS,
+                    android.security.keystore.KeyProperties.PURPOSE_DECRYPT
+                    | android.security.keystore.KeyProperties.PURPOSE_SIGN)
+                .setKeySize(2048)
+                .setDigests(
+                    android.security.keystore.KeyProperties.DIGEST_SHA256,
+                    android.security.keystore.KeyProperties.DIGEST_SHA1)
+                .setEncryptionPaddings(android.security.keystore.KeyProperties.ENCRYPTION_PADDING_RSA_OAEP)
+                .setSignaturePaddings(android.security.keystore.KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
+                .build();
+            KeyPairGenerator kpg = KeyPairGenerator.getInstance(
+                android.security.keystore.KeyProperties.KEY_ALGORITHM_RSA, "AndroidKeyStore");
+            kpg.initialize(spec);
+            java.security.KeyPair kp = kpg.generateKeyPair();
+            byte[] pubDer = kp.getPublic().getEncoded();
+            String pub = android.util.Base64.encodeToString(pubDer, android.util.Base64.NO_WRAP);
+            Settings.Global.putString(getContentResolver(), "focus_lock_node_pubkey", pub);
+            Log.w(TAG, "Generated AndroidKeyStore vault keypair (slot="
+                + VaultCrypto.slotIdForPubkey(pubDer) + ")");
+            cachedNodePubDer = pubDer;
+            cachedNodePrivKey = kp.getPrivate();
+            return pubDer;
         } catch (Exception e) {
-            Log.w(TAG, "HOTFIX: KeyStore cleanup failed (non-fatal): " + e.getMessage());
+            Log.e(TAG, "ensureNodeKeypair (KeyStore) failed, falling back to software key", e);
+            byte[] pubDer = ensureNodeKeypairLegacy();
+            cachedNodePubDer = pubDer;
+            return pubDer;
         }
-        byte[] pubDer = ensureNodeKeypairLegacy();
-        cachedNodePubDer = pubDer;
-        return pubDer;
     }
 
     /** Legacy key generation (software-backed, extractable). Used as fallback. */
@@ -2656,24 +2707,44 @@ public class ControlService extends Service {
     }
 
     /**
-     * Get the PrivateKey for vault operations. Tries KeyStore first, falls
-     * back to legacy Settings.Global key during migration.
+     * Get the PrivateKey for vault operations.
+     *
+     * Order of preference mirrors ensureNodeKeypair:
+     *   1. Cached PrivateKey (either KeyStore-backed or software, set during
+     *      ensureNodeKeypair).
+     *   2. Software key from Settings.Global (v55/v56 upgrade path). Takes
+     *      precedence over KeyStore because existing installs have approved
+     *      server-side registrations tied to the software pubkey's slot.
+     *   3. AndroidKeyStore lookup (fresh-install path).
      */
     private java.security.PrivateKey getNodePrivateKey() {
         if (cachedNodePrivKey != null) return cachedNodePrivKey;
-        // HOTFIX 2026-04-11: bypass AndroidKeyStore for the same reason as
-        // ensureNodeKeypair — OAEP MGF1 digest mismatch causes decrypt to
-        // fail. Always load the software key from Settings.Global instead.
+
+        // Software key takes precedence (v55/v56 upgrade path — node is
+        // already server-approved under this key's slot).
         String privB64 = gstr("focus_lock_node_privkey");
         if (privB64.isEmpty()) privB64 = gstr("focus_lock_node_privkey_legacy");
         if (!privB64.isEmpty()) {
             try {
                 byte[] privDer = android.util.Base64.decode(privB64, android.util.Base64.DEFAULT);
-                return java.security.KeyFactory.getInstance("RSA")
+                cachedNodePrivKey = java.security.KeyFactory.getInstance("RSA")
                     .generatePrivate(new java.security.spec.PKCS8EncodedKeySpec(privDer));
+                return cachedNodePrivKey;
             } catch (Exception e) {
-                Log.e(TAG, "Legacy privkey decode failed", e);
+                Log.e(TAG, "Software privkey decode failed", e);
             }
+        }
+
+        // Fresh-install path: KeyStore-backed key.
+        try {
+            java.security.KeyStore ks = java.security.KeyStore.getInstance("AndroidKeyStore");
+            ks.load(null);
+            if (ks.containsAlias(KEYSTORE_ALIAS)) {
+                cachedNodePrivKey = (java.security.PrivateKey) ks.getKey(KEYSTORE_ALIAS, null);
+                return cachedNodePrivKey;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "KeyStore getKey failed: " + e);
         }
         return null;
     }

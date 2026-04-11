@@ -77,10 +77,13 @@ public class VaultCrypto {
             PublicKey pk = KeyFactory.getInstance("RSA")
                 .generatePublic(new X509EncodedKeySpec(pubkeyDer));
 
+            // MGF1 uses SHA-1 (not SHA-256) so AndroidKeyStore-backed recipient
+            // keys can decrypt the result — see landmine #1. Main OAEP hash
+            // stays at SHA-256. Software recipients work with either.
             Cipher rsa = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");
             rsa.init(Cipher.ENCRYPT_MODE, pk, new OAEPParameterSpec(
                 "SHA-256", "MGF1",
-                MGF1ParameterSpec.SHA256,
+                MGF1ParameterSpec.SHA1,
                 PSource.PSpecified.DEFAULT));
             byte[] wrappedKey = rsa.doFinal(aesKey.getEncoded());
 
@@ -173,12 +176,26 @@ public class VaultCrypto {
             PrivateKey pk = KeyFactory.getInstance("RSA")
                 .generatePrivate(new PKCS8EncodedKeySpec(privDer));
 
-            Cipher rsa = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");
-            rsa.init(Cipher.DECRYPT_MODE, pk, new OAEPParameterSpec(
-                "SHA-256", "MGF1",
-                MGF1ParameterSpec.SHA256,
-                PSource.PSpecified.DEFAULT));
-            byte[] aesKeyBytes = rsa.doFinal(Base64.decode(ekB64, Base64.DEFAULT));
+            // Try MGF1-SHA1 first (v57+ protocol). Fall back to MGF1-SHA256
+            // for blobs from pre-v57 peers during the transition. Remove once
+            // all peers have upgraded.
+            byte[] ekBytes = Base64.decode(ekB64, Base64.DEFAULT);
+            byte[] aesKeyBytes;
+            try {
+                Cipher rsa = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");
+                rsa.init(Cipher.DECRYPT_MODE, pk, new OAEPParameterSpec(
+                    "SHA-256", "MGF1",
+                    MGF1ParameterSpec.SHA1,
+                    PSource.PSpecified.DEFAULT));
+                aesKeyBytes = rsa.doFinal(ekBytes);
+            } catch (Exception sha1Err) {
+                Cipher rsa = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");
+                rsa.init(Cipher.DECRYPT_MODE, pk, new OAEPParameterSpec(
+                    "SHA-256", "MGF1",
+                    MGF1ParameterSpec.SHA256,
+                    PSource.PSpecified.DEFAULT));
+                aesKeyBytes = rsa.doFinal(ekBytes);
+            }
 
             byte[] iv = Base64.decode(ivB64, Base64.DEFAULT);
             byte[] ciphertext = Base64.decode(ctB64, Base64.DEFAULT);

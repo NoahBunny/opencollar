@@ -3,8 +3,23 @@
 """
 Python VaultCrypto — mirrors Java VaultCrypto for desktop collar vault support.
 
-Encryption:  AES-256-GCM body, RSA-OAEP-SHA256 key wrap per recipient.
+Encryption:  AES-256-GCM body, RSA-OAEP key wrap per recipient.
+             Main OAEP hash:  SHA-256
+             MGF1 hash:       SHA-1  (see landmine #1 in project_collar_landmines.md)
 Signatures:  RSA-PKCS1v15-SHA256 over canonical JSON (sort_keys, no whitespace).
+
+MGF1 uses SHA-1 because AndroidKeyStore's RSA-OAEP provider internally calls
+MGF1 with SHA-1 regardless of what OAEPParameterSpec you pass — it only
+honors the parameter if SHA-1 is explicitly authorized in setDigests(). To
+make hardware-backed node keys decryptable by the same ciphertext a Python
+or Java software key would produce, the whole protocol uses MGF1-SHA1.
+
+This has no practical security cost: MGF1 uses the hash as a PRF, where
+SHA-1's collision weakness is not relevant.
+
+Decrypt has a fallback to MGF1-SHA256 for blobs produced by un-upgraded
+pre-v57 clients during the transition window. Remove once all peers are on
+the new protocol.
 
 The canonical JSON format must be byte-identical to the Java canonicalJson()
 and Python json.dumps(sort_keys=True, separators=(",",":"), ensure_ascii=True).
@@ -109,14 +124,28 @@ def decrypt_body(blob, my_privkey_pem, my_pubkey_der):
             return None
 
         privkey = _load_privkey(my_privkey_pem)
-        aes_key = privkey.decrypt(
-            base64.b64decode(ek_b64),
-            asym_padding.OAEP(
-                mgf=asym_padding.MGF1(algorithm=hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None,
-            ),
-        )
+        ek_bytes = base64.b64decode(ek_b64)
+        # Try MGF1-SHA1 first (v57+ protocol — compatible with AndroidKeyStore).
+        # Fall back to MGF1-SHA256 for blobs produced by pre-v57 peers during
+        # the transition window; remove once all peers have upgraded.
+        try:
+            aes_key = privkey.decrypt(
+                ek_bytes,
+                asym_padding.OAEP(
+                    mgf=asym_padding.MGF1(algorithm=hashes.SHA1()),
+                    algorithm=hashes.SHA256(),
+                    label=None,
+                ),
+            )
+        except Exception:
+            aes_key = privkey.decrypt(
+                ek_bytes,
+                asym_padding.OAEP(
+                    mgf=asym_padding.MGF1(algorithm=hashes.SHA256()),
+                    algorithm=hashes.SHA256(),
+                    label=None,
+                ),
+            )
 
         iv = base64.b64decode(iv_b64)
         ciphertext = base64.b64decode(ct_b64)
@@ -149,7 +178,7 @@ def encrypt_body(mesh_id, version, created_at, body, recipients, signer_privkey_
         wrapped_key = pk.encrypt(
             aes_key,
             asym_padding.OAEP(
-                mgf=asym_padding.MGF1(algorithm=hashes.SHA256()),
+                mgf=asym_padding.MGF1(algorithm=hashes.SHA1()),
                 algorithm=hashes.SHA256(),
                 label=None,
             ),

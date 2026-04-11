@@ -301,14 +301,16 @@ Two implementations:
 
 ## 10. Crypto upgrades during migration
 
-The current `E2EEHelper.java` uses `RSA/ECB/PKCS1Padding` — that's RSA-PKCS1v15 encryption, which has known padding-oracle attack risks. **For vault mode, switch to RSA-OAEP-SHA256:**
+The current `E2EEHelper.java` uses `RSA/ECB/PKCS1Padding` — that's RSA-PKCS1v15 encryption, which has known padding-oracle attack risks. **For vault mode, switch to RSA-OAEP with SHA-256 main hash and MGF1-SHA1:**
 
-- Java: `Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding")`
-- Python: `cryptography.hazmat.primitives.asymmetric.padding.OAEP(mgf=MGF1(SHA256()), algorithm=SHA256(), label=None)`
+- Java: `Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding")` with `OAEPParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA1, PSource.PSpecified.DEFAULT)`
+- Python: `cryptography.hazmat.primitives.asymmetric.padding.OAEP(mgf=MGF1(SHA1()), algorithm=SHA256(), label=None)`
 
-This is a one-line change in `E2EEHelper.encrypt()` and a matching one in the Python `vault.py`. Existing message-encryption uses of `E2EEHelper` keep working because we will keep both flavors callable for the legacy code path during phase B/C.
+**Why MGF1-SHA1 instead of MGF1-SHA256** (as of slave v57, controller v61): AndroidKeyStore's RSA-OAEP provider internally calls MGF1 with SHA-1 regardless of what `OAEPParameterSpec` declares — it only honors the parameter if SHA-1 is authorized in `setDigests()`. To make hardware-backed node keys decryptable by software-generated ciphertext, the whole protocol uses MGF1-SHA1. This has no practical security cost: MGF1 uses the hash as a PRF, where SHA-1's collision weaknesses are not relevant.
 
-**Signature algorithm:** keep RSA-PKCS1v15-SHA256 in v1 (matches what the existing `focuslock_mesh.py` already does). PSS migration is a v2 concern — both interop fine and PKCS1v15 signatures aren't subject to the same padding-oracle issues that PKCS1v15 *encryption* is.
+Decrypt paths have a fallback to MGF1-SHA256 for blobs produced by pre-v57 peers during the transition window. This fallback will be removed once all peers have upgraded.
+
+**Signature algorithm:** keep RSA-PKCS1v15-SHA256 in v1 (matches what the existing `focuslock_mesh.py` already does). No MGF1 involved in PKCS1v15 signatures, so the landmine #1 issue does not apply to signatures. PSS migration is a v2 concern — both interop fine and PKCS1v15 signatures aren't subject to the same padding-oracle issues that PKCS1v15 *encryption* is.
 
 ## 11. Open questions and gotchas
 
