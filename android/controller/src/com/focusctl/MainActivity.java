@@ -1194,9 +1194,14 @@ public class MainActivity extends Activity {
     private void doBunnies() {
         java.util.List<BunnyEntry> bunnies = listBunnies();
 
+        // Helper: dp → px for this device density. All programmatic UI sizes
+        // below MUST be scaled with this, otherwise the Bunnies dialog buttons
+        // render at raw-pixel height (≈16dp on 480dpi screens = invisible).
+        final float density = getResources().getDisplayMetrics().density;
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(32, 24, 32, 16);
+        root.setPadding((int)(16*density), (int)(12*density), (int)(16*density), (int)(8*density));
         root.setBackgroundColor(0xFF0a0a14);
 
         if (bunnies.isEmpty()) {
@@ -1211,13 +1216,13 @@ public class MainActivity extends Activity {
             final BunnyEntry bb = b;
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setPadding(0, 12, 0, 12);
+            row.setPadding(0, (int)(10*density), 0, (int)(10*density));
 
             final boolean isActive = bb.id.equals(activeBunnyId);
             TextView dot = new TextView(this);
             dot.setText(isActive ? "\u25cf " : "\u25cb ");  // ● vs ○
             dot.setTextColor(isActive ? 0xFFDAA520 : 0xFF555555);
-            dot.setTextSize(16);
+            dot.setTextSize(20);
             LinearLayout.LayoutParams dotLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -1226,10 +1231,10 @@ public class MainActivity extends Activity {
             TextView label = new TextView(this);
             label.setText(bb.label + "  (" + bb.id + ")");
             label.setTextColor(isActive ? 0xFFDAA520 : 0xFFe0e0e0);
-            label.setTextSize(15);
+            label.setTextSize(16);
             LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-            label.setPadding(12, 0, 12, 0);
+            label.setPadding((int)(8*density), 0, (int)(8*density), 0);
             row.addView(label, labelLp);
 
             // Tap the row → switch active
@@ -1248,20 +1253,21 @@ public class MainActivity extends Activity {
             if (!isActive && bunnies.size() > 1) {
                 Button rm = new Button(this);
                 rm.setText("Remove " + bb.label);
-                rm.setTextSize(11);
+                rm.setTextSize(12);
                 rm.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF2a0a0a));
                 rm.setTextColor(0xFFcc4444);
                 rm.setOnClickListener(v -> doBunnyRemove(bb));
                 LinearLayout.LayoutParams rmLp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, 36);
-                rmLp.bottomMargin = 12;
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+                rmLp.bottomMargin = (int)(8*density);
                 root.addView(rm, rmLp);
             }
         }
 
         Button add = new Button(this);
         add.setText("+ Add Bunny");
-        add.setTextSize(13);
+        add.setTextSize(15);
         add.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF1a1a2e));
         add.setTextColor(0xFFDAA520);
         add.setOnClickListener(v -> {
@@ -1271,8 +1277,10 @@ public class MainActivity extends Activity {
             doSetup();
         });
         LinearLayout.LayoutParams addLp = new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 48);
-        addLp.topMargin = 16;
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT);
+        addLp.topMargin = (int)(16*density);
+        addLp.bottomMargin = (int)(8*density);
         root.addView(add, addLp);
 
         new AlertDialog.Builder(this)
