@@ -181,9 +181,11 @@ def _safe_mesh_id_static(mesh_id):
 
 
 class MeshOrdersRegistry:
-    """Maps mesh_id -> OrdersDocument.  The operator's mesh uses the
-    global ``mesh_orders`` singleton for backwards compatibility; every
-    other mesh gets its own OrdersDocument persisted under base_dir."""
+    """Maps mesh_id -> OrdersDocument. Every mesh — including the operator's
+    own — gets its own OrdersDocument persisted under base_dir. Prior to
+    2026-04-11 the operator's mesh was a special case that shared the
+    legacy global ``mesh_orders`` pointing at /run/focuslock/orders.json;
+    see ``_init_orders_registry()`` for the migration story."""
 
     def __init__(self, base_dir="/run/focuslock/mesh-orders"):
         self.base_dir = base_dir
@@ -214,13 +216,54 @@ _orders_registry = MeshOrdersRegistry()
 # _init_orders_registry() is called from there to register the operator's mesh.
 
 def _init_orders_registry():
-    """Register the operator's mesh in the registry (called after config load)."""
-    if OPERATOR_MESH_ID:
-        _orders_registry.docs[OPERATOR_MESH_ID] = mesh_orders
+    """Make the operator's mesh use a per-mesh file like every other mesh.
+
+    Prior to 2026-04-11, ``mesh_orders`` pointed at the legacy
+    ``/run/focuslock/orders.json`` and the operator's mesh was a special
+    case throughout _resolve_orders(). This meant rotating the operator
+    mesh_id required direct file surgery — writing to the per-mesh file
+    had no effect because the admin API kept reading the legacy singleton.
+
+    The fix:
+      1. If OPERATOR_MESH_ID is empty (public relay with no admin API),
+         leave ``mesh_orders`` alone — it's never read anyway.
+      2. Otherwise, on first run after the fix, atomically rename the
+         legacy file to the per-mesh path (one-shot migration). Skipped
+         if the per-mesh file already exists; the legacy is then orphaned
+         and a warning is logged.
+      3. Rebind the module-level ``mesh_orders`` global to the per-mesh
+         OrdersDocument. Safe to rebind because every call site in this
+         module looks up ``mesh_orders`` by name and this runs at module
+         import time, before any function has been invoked.
+    """
+    global mesh_orders
+    if not OPERATOR_MESH_ID:
+        return  # public relay — nothing to do
+
+    target_path = os.path.join(_orders_registry.base_dir, f"{OPERATOR_MESH_ID}.json")
+
+    # One-shot migration: legacy /run/focuslock/orders.json → per-mesh file.
+    # Only migrate if the target doesn't already exist, to avoid clobbering
+    # state the registry just loaded.
+    if not os.path.exists(target_path) and os.path.exists(MESH_ORDERS_FILE):
+        try:
+            os.rename(MESH_ORDERS_FILE, target_path)
+            print(f"[orders] Migrated legacy {MESH_ORDERS_FILE} → {target_path}")
+        except OSError as e:
+            print(f"[orders] WARN: legacy migration failed: {e}")
+    elif os.path.exists(target_path) and os.path.exists(MESH_ORDERS_FILE):
+        print(f"[orders] WARN: legacy {MESH_ORDERS_FILE} is orphaned "
+              f"(per-mesh file already exists at {target_path}) — ignoring")
+
+    # Get (from registry's _load_all) or create the per-mesh doc, and rebind
+    # the global. Every subsequent reference to ``mesh_orders`` — including
+    # the ones passed to GossipThread/LANDiscoveryThread/mail-loop in main()
+    # — resolves to this doc.
+    mesh_orders = _orders_registry.get_or_create(OPERATOR_MESH_ID)
 
 def _resolve_orders(mesh_id=None):
-    """Get OrdersDocument for mesh_id, or the operator's global orders."""
-    if not mesh_id or mesh_id == OPERATOR_MESH_ID:
+    """Get OrdersDocument for mesh_id, or the operator's default orders."""
+    if not mesh_id:
         return mesh_orders
     doc = _orders_registry.get(mesh_id)
     return doc if doc else mesh_orders
