@@ -7,10 +7,10 @@
 # ── Version constants ──
 # Update these when bumping APK / desktop versions. The watcher daemon and
 # all sub-scripts read from here so there's exactly one place to change.
-TARGET_SLAVE_VERSIONCODE=54
-TARGET_SLAVE_APK="focuslock-v54.apk"
-TARGET_CONTROLLER_VERSIONCODE=59
-TARGET_CONTROLLER_APK="focusctl-v59.apk"
+TARGET_SLAVE_VERSIONCODE=55
+TARGET_SLAVE_APK="focuslock-v55.apk"
+TARGET_CONTROLLER_VERSIONCODE=60
+TARGET_CONTROLLER_APK="focusctl-v60.apk"
 TARGET_COMPANION_VERSIONCODE=41
 TARGET_COMPANION_APK="bunnytasker-v41.apk"
 
