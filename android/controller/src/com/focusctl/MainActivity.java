@@ -79,6 +79,31 @@ public class MainActivity extends Activity {
     private final LocalSnapshot localSnapshot = new LocalSnapshot();
     private volatile boolean vaultRegistered = false;
     private volatile byte[] lionPubDerCache = null;
+
+    /**
+     * Multi-bunny infrastructure (Option B — one mesh per bunny, switcher in
+     * Lion's Share). The controller holds N bunny slots in SharedPreferences
+     * under `bunny_{id}_*` keys, with `bunnies` (JSON array of {id,label}) and
+     * `active_bunny_id` tracking the list and selection. Lion's identity
+     * (`lion_privkey`, `lion_pubkey`, `app_pin`) is shared across all slots.
+     *
+     * Instance vars below cache the *active* slot's config so hot paths
+     * (api, meshGet, vaultPoll, refreshInbox) don't have to re-read prefs
+     * on every tick. setActiveBunny() reloads them.
+     */
+    private String activeBunnyId = "";
+    private String activeBunnyLabel = "";
+    private String pairMode = "";
+    private String bunnyDirectUrl = "";
+    private String bunnyPubkeyB64 = "";
+
+    /** One row in the `bunnies` JSON array. */
+    private static class BunnyEntry {
+        final String id;
+        String label;
+        BunnyEntry(String id, String label) { this.id = id; this.label = label; }
+    }
+
     private long timerEndMs = 0;
     private long scheduledAtMs = 0;  // 0 = send immediately
     private boolean isLocked = false;
@@ -96,20 +121,25 @@ public class MainActivity extends Activity {
         executor = Executors.newSingleThreadExecutor();
         handler = new Handler(Looper.getMainLooper());
         prefs = getSharedPreferences("focusctl", MODE_PRIVATE);
-        meshUrl = prefs.getString("mesh_url", "");
-        if (meshUrl.isEmpty()) {
+
+        // Settings.Global fallback for legacy mesh_url (pre-multi-bunny installs
+        // that had the ADB-provisioned url sitting in Settings.Global). This
+        // must run BEFORE migrateLegacyBunny() so the migration picks it up.
+        if (prefs.getString("mesh_url", "").isEmpty()) {
             try {
                 String g = android.provider.Settings.Global.getString(getContentResolver(), "focus_lock_mesh_url");
                 if (g != null && !g.isEmpty() && !"null".equals(g)) {
-                    meshUrl = g;
-                    prefs.edit().putString("mesh_url", meshUrl).apply();
+                    prefs.edit().putString("mesh_url", g).apply();
                 }
             } catch (Exception e) {}
         }
-        // No default mesh URL — user must enter their own server in Setup.
-        meshId = prefs.getString("mesh_id", "");
-        authToken = prefs.getString("auth_token", "");
-        vaultMode = prefs.getBoolean("vault_mode", false);
+
+        // Multi-bunny: migrate legacy single-mesh state into bunny slot "b1"
+        // if present, then load whichever slot is currently active into the
+        // hot-path instance vars (meshId, meshUrl, authToken, vaultMode,
+        // pairMode, bunnyDirectUrl, bunnyPubkeyB64).
+        migrateLegacyBunny();
+        loadActiveBunny();
 
         // App PIN lock — protect against bunny getting the phone
         String appPin = prefs.getString("app_pin", "");
@@ -199,6 +229,7 @@ public class MainActivity extends Activity {
         findViewById(getId("btn_force_sub")).setOnClickListener(v -> doForceSub());
         try { findViewById(getId("btn_web_remote")).setOnClickListener(v -> doWebRemoteScan()); } catch (Exception e) {}
         try { findViewById(getId("btn_vault_nodes")).setOnClickListener(v -> doVaultNodes()); } catch (Exception e) {}
+        try { findViewById(getId("btn_bunnies")).setOnClickListener(v -> doBunnies()); } catch (Exception e) {}
         findViewById(getId("btn_start_fine")).setOnClickListener(v -> doStartFine());
         findViewById(getId("btn_stop_fine")).setOnClickListener(v -> doStopFine());
         try { findViewById(getId("btn_release_forever")).setOnClickListener(v -> doReleaseForever()); } catch (Exception e) {}
@@ -281,7 +312,7 @@ public class MainActivity extends Activity {
                     // truth — vaultPollLoop() does its own decrypted fetch on
                     // its own ticker. Skip the legacy /mesh/status round trip
                     // to avoid hitting a 410 once vault_only is on.
-                    if (vaultMode && !"direct".equals(prefs.getString("pair_mode", ""))) {
+                    if (vaultMode && !"direct".equals(pairMode)) {
                         String snap = localSnapshot.currentRuntimeJson;
                         if (snap != null) {
                             handler.post(() -> updateLiveStatus(snap));
@@ -313,8 +344,9 @@ public class MainActivity extends Activity {
                 long rem = timerEndMs - System.currentTimeMillis();
                 if (rem > 0) {
                     long m = rem / 60000, s = (rem % 60000) / 1000;
-                    StringBuilder sb = new StringBuilder("LOCKED | ");
-                    sb.append(m).append("m ").append(s).append("s left");
+                    StringBuilder sb = new StringBuilder();
+                    if (!activeBunnyLabel.isEmpty()) sb.append(activeBunnyLabel).append(" | ");
+                    sb.append("LOCKED | ").append(m).append("m ").append(s).append("s left");
                     if (lastEscapes > 0) sb.append(" | ").append(lastEscapes).append(" esc");
                     statusView.setText(sb.toString());
                     View bar = findViewById(getId("status_bar"));
@@ -348,6 +380,11 @@ public class MainActivity extends Activity {
         timerEndMs = timerMs > 0 ? System.currentTimeMillis() + timerMs : 0;
 
         StringBuilder sb = new StringBuilder();
+        // Multi-bunny: prepend the active bunny's label so Lion always knows
+        // which slot the rest of the status line refers to.
+        if (!activeBunnyLabel.isEmpty()) {
+            sb.append(activeBunnyLabel).append(" | ");
+        }
         if (isLocked) {
             sb.append("LOCKED");
             if (timerMs > 0) {
@@ -483,13 +520,200 @@ public class MainActivity extends Activity {
         } catch (Exception e) { return ""; }
     }
 
+    // ── Multi-bunny helpers ──
+    //
+    // Pref layout:
+    //   bunnies            : JSON array of {id,label}
+    //   active_bunny_id    : string (e.g. "b1")
+    //   bunny_{id}_mesh_url, _mesh_id, _auth_token, _invite_code, _pin,
+    //                _vault_mode, _pair_mode, _bunny_direct_url,
+    //                _bunny_pubkey_b64
+    // Global (shared across slots):
+    //   lion_privkey, lion_pubkey, lion_privkey_b64, lion_pubkey_b64, app_pin
+
+    private String bunnyKey(String id, String field) {
+        return "bunny_" + id + "_" + field;
+    }
+
+    private java.util.List<BunnyEntry> listBunnies() {
+        java.util.ArrayList<BunnyEntry> out = new java.util.ArrayList<>();
+        String raw = prefs.getString("bunnies", "");
+        if (raw.isEmpty()) return out;
+        try {
+            org.json.JSONArray arr = new org.json.JSONArray(raw);
+            for (int i = 0; i < arr.length(); i++) {
+                org.json.JSONObject o = arr.getJSONObject(i);
+                String id = o.optString("id", "");
+                String label = o.optString("label", id);
+                if (!id.isEmpty()) out.add(new BunnyEntry(id, label));
+            }
+        } catch (Exception e) {
+            android.util.Log.w("bunnies", "listBunnies parse error: " + e.getMessage());
+        }
+        return out;
+    }
+
+    private void saveBunnyList(java.util.List<BunnyEntry> list) {
+        org.json.JSONArray arr = new org.json.JSONArray();
+        for (BunnyEntry b : list) {
+            org.json.JSONObject o = new org.json.JSONObject();
+            try {
+                o.put("id", b.id);
+                o.put("label", b.label);
+                arr.put(o);
+            } catch (Exception e) {}
+        }
+        prefs.edit().putString("bunnies", arr.toString()).apply();
+    }
+
+    /** Generate a fresh bunny id not already in the list (b1, b2, b3, ...). */
+    private String newBunnyId() {
+        java.util.List<BunnyEntry> list = listBunnies();
+        java.util.HashSet<String> used = new java.util.HashSet<>();
+        for (BunnyEntry b : list) used.add(b.id);
+        for (int i = 1; i < 1000; i++) {
+            String candidate = "b" + i;
+            if (!used.contains(candidate)) return candidate;
+        }
+        return "b" + System.currentTimeMillis();  // fallback, should never happen
+    }
+
+    /** Append a new slot with the given label. Returns the new id. */
+    private String addBunnySlot(String label) {
+        String id = newBunnyId();
+        java.util.List<BunnyEntry> list = listBunnies();
+        list.add(new BunnyEntry(id, label));
+        saveBunnyList(list);
+        return id;
+    }
+
+    /**
+     * Remove a slot and wipe its per-bunny keys. Caller is responsible for
+     * picking a new active bunny if the removed one was active.
+     */
+    private void removeBunnySlot(String id) {
+        java.util.List<BunnyEntry> list = listBunnies();
+        java.util.ArrayList<BunnyEntry> kept = new java.util.ArrayList<>();
+        for (BunnyEntry b : list) {
+            if (!b.id.equals(id)) kept.add(b);
+        }
+        saveBunnyList(kept);
+
+        // Wipe per-bunny keys for the removed slot.
+        SharedPreferences.Editor ed = prefs.edit();
+        String[] fields = {
+            "mesh_url", "mesh_id", "auth_token", "invite_code", "pin",
+            "vault_mode", "pair_mode", "bunny_direct_url", "bunny_pubkey_b64"
+        };
+        for (String f : fields) ed.remove(bunnyKey(id, f));
+        ed.apply();
+    }
+
+    /** Load the active bunny's config into the instance variables. */
+    private void loadActiveBunny() {
+        activeBunnyId = prefs.getString("active_bunny_id", "");
+        if (activeBunnyId.isEmpty()) {
+            // No active bunny — wipe the hot-path vars so api()/meshGet() refuse.
+            activeBunnyLabel = "";
+            meshUrl = "";
+            meshId = "";
+            authToken = "";
+            vaultMode = false;
+            pairMode = "";
+            bunnyDirectUrl = "";
+            bunnyPubkeyB64 = "";
+            return;
+        }
+        // Find label from the list.
+        activeBunnyLabel = activeBunnyId;
+        for (BunnyEntry b : listBunnies()) {
+            if (b.id.equals(activeBunnyId)) { activeBunnyLabel = b.label; break; }
+        }
+        meshUrl        = prefs.getString(bunnyKey(activeBunnyId, "mesh_url"), "");
+        meshId         = prefs.getString(bunnyKey(activeBunnyId, "mesh_id"), "");
+        authToken      = prefs.getString(bunnyKey(activeBunnyId, "auth_token"), "");
+        vaultMode      = prefs.getBoolean(bunnyKey(activeBunnyId, "vault_mode"), false);
+        pairMode       = prefs.getString(bunnyKey(activeBunnyId, "pair_mode"), "");
+        bunnyDirectUrl = prefs.getString(bunnyKey(activeBunnyId, "bunny_direct_url"), "");
+        bunnyPubkeyB64 = prefs.getString(bunnyKey(activeBunnyId, "bunny_pubkey_b64"), "");
+    }
+
+    /**
+     * Switch the active bunny. Resets vault state, clears the local snapshot,
+     * and refreshes the UI to reflect the new slot.
+     */
+    private void setActiveBunny(String id) {
+        prefs.edit().putString("active_bunny_id", id).apply();
+        loadActiveBunny();
+
+        // Reset vault-side state — the new bunny has its own mesh, its own
+        // recipient list, its own blob history.
+        vaultRegistered = false;
+        localSnapshot.currentRuntimeJson = null;
+        localSnapshot.currentOrdersJson = null;
+        localSnapshot.lastSeenVaultVersion = 0L;
+        // lionPubDerCache stays — Lion's keypair is global.
+
+        // Reset runtime status fields so the UI doesn't show the previous
+        // bunny's lock state / timer / escape count during the ~5 second
+        // window before the next status poll fills in the new bunny's data.
+        // These all self-correct on the next updateLiveStatus(), but without
+        // the reset the stale values can leak into button handlers (e.g.
+        // doUnlock checking isLocked) during the gap.
+        isLocked = false;
+        timerEndMs = 0;
+        scheduledAtMs = 0;
+        lastEscapes = 0;
+
+        // Force-refresh UI on next tick.
+        handler.post(() -> {
+            setStatus("Switched to " + activeBunnyLabel);
+            refreshInbox();
+        });
+    }
+
+    /**
+     * One-shot migration: if `bunnies` is empty but the legacy `mesh_id`
+     * pref is set, wrap the legacy single-mesh state as bunny "b1" labeled
+     * "bunny" and mark it active. Idempotent — safe to call every boot.
+     */
+    private void migrateLegacyBunny() {
+        java.util.List<BunnyEntry> existing = listBunnies();
+        if (!existing.isEmpty()) return;  // already migrated or fresh install
+
+        String legacyMeshId = prefs.getString("mesh_id", "");
+        if (legacyMeshId.isEmpty()) return;  // fresh install, nothing to migrate
+
+        String id = "b1";
+        java.util.ArrayList<BunnyEntry> list = new java.util.ArrayList<>();
+        list.add(new BunnyEntry(id, "bunny"));
+        saveBunnyList(list);
+
+        // Copy every legacy key into the b1 slot. Leave the legacy keys in
+        // place so a rollback to the previous APK still works.
+        SharedPreferences.Editor ed = prefs.edit();
+        ed.putString(bunnyKey(id, "mesh_url"),        prefs.getString("mesh_url", ""));
+        ed.putString(bunnyKey(id, "mesh_id"),         legacyMeshId);
+        ed.putString(bunnyKey(id, "auth_token"),      prefs.getString("auth_token", ""));
+        ed.putString(bunnyKey(id, "invite_code"),     prefs.getString("invite_code", ""));
+        ed.putString(bunnyKey(id, "pin"),             prefs.getString("pin", ""));
+        ed.putBoolean(bunnyKey(id, "vault_mode"),     prefs.getBoolean("vault_mode", false));
+        ed.putString(bunnyKey(id, "pair_mode"),       prefs.getString("pair_mode", ""));
+        ed.putString(bunnyKey(id, "bunny_direct_url"),prefs.getString("bunny_direct_url", ""));
+        ed.putString(bunnyKey(id, "bunny_pubkey_b64"),prefs.getString("bunny_pubkey_b64", ""));
+        ed.putString("active_bunny_id", id);
+        ed.apply();
+
+        android.util.Log.i("bunnies", "migrated legacy mesh " + legacyMeshId + " to slot " + id);
+    }
+
     // ── HTTP ──
 
     private String api(String path, String jsonBody) {
         // Direct (serverless) mode: post directly to the bunny's Collar at <ip>:8432.
         // This bypasses any mesh server entirely and works on LAN/Tailscale/VPN.
-        String pairMode = prefs.getString("pair_mode", "");
-        String bunnyDirectUrl = prefs.getString("bunny_direct_url", "");
+        // pairMode / bunnyDirectUrl are instance vars loaded from the active
+        // bunny slot (see loadActiveBunny).
         if ("direct".equals(pairMode) && !bunnyDirectUrl.isEmpty()) {
             String r = meshPost(bunnyDirectUrl + path, jsonBody);
             return r != null ? r : "{\"error\":\"connection failed (direct)\"}";
@@ -757,7 +981,7 @@ public class MainActivity extends Activity {
     private void vaultPollLoop() {
         if (!vaultMode) return;
         if (meshUrl.isEmpty() || meshId.isEmpty()) return;
-        if ("direct".equals(prefs.getString("pair_mode", ""))) return;
+        if ("direct".equals(pairMode)) return;
 
         // Make sure Lion is a vault recipient first; otherwise our slot won't
         // exist in any of the blobs we're about to fetch and decrypt is a no-op.
@@ -777,8 +1001,10 @@ public class MainActivity extends Activity {
             org.json.JSONArray blobs = root.optJSONArray("blobs");
             if (blobs == null || blobs.length() == 0) return;
 
-            // Cache the registered slave pubkeys for signer lookup. Refreshed
-            // each poll tick so newly approved nodes are picked up promptly.
+            // Cache registered node pubkeys for signer lookup, split by role.
+            // P6.5: relay-signed blobs are admin orders (same as Lion-signed);
+            // slave/desktop-signed blobs are runtime state pushes.
+            java.util.ArrayList<String> relayPubkeys = new java.util.ArrayList<>();
             java.util.ArrayList<String> slavePubkeys = new java.util.ArrayList<>();
             String nodesJson = meshGet("/vault/" + meshId + "/nodes");
             if (nodesJson != null) {
@@ -787,10 +1013,16 @@ public class MainActivity extends Activity {
                     String myPubB64 = android.util.Base64.encodeToString(pubDer, android.util.Base64.NO_WRAP)
                         .replaceAll("\\s", "");
                     for (int i = 0; i < nodesArr.length(); i++) {
-                        String npub = nodesArr.getJSONObject(i).optString("node_pubkey", "");
-                        // Skip our own pubkey — we never sign runtime blobs as a slave.
+                        org.json.JSONObject node = nodesArr.getJSONObject(i);
+                        String npub = node.optString("node_pubkey", "");
+                        String ntype = node.optString("node_type", "");
                         if (npub.replaceAll("\\s", "").equals(myPubB64)) continue;
-                        if (!npub.isEmpty()) slavePubkeys.add(npub);
+                        if (npub.isEmpty()) continue;
+                        if ("relay".equals(ntype)) {
+                            relayPubkeys.add(npub);
+                        } else {
+                            slavePubkeys.add(npub);
+                        }
                     }
                 }
             }
@@ -809,18 +1041,27 @@ public class MainActivity extends Activity {
                 String bodyJson = VaultCrypto.decryptBody(blobMap, lionPriv, pubDer);
                 if (bodyJson == null) continue;
 
-                // Classify by signer.
+                // Classify by signer (P6.5: relay-signed = orders, same as Lion).
                 if (VaultCrypto.verifySignature(blobMap, lionPubB64)) {
-                    // Lion-signed → orders blob
                     localSnapshot.currentOrdersJson = bodyJson;
                 } else {
                     boolean matched = false;
-                    for (String spub : slavePubkeys) {
-                        if (VaultCrypto.verifySignature(blobMap, spub)) {
-                            localSnapshot.currentRuntimeJson = bodyJson;
-                            runtimeChanged = true;
+                    // Check relay pubkeys first — relay admin orders are orders, not runtime
+                    for (String rpub : relayPubkeys) {
+                        if (VaultCrypto.verifySignature(blobMap, rpub)) {
+                            localSnapshot.currentOrdersJson = bodyJson;
                             matched = true;
                             break;
+                        }
+                    }
+                    if (!matched) {
+                        for (String spub : slavePubkeys) {
+                            if (VaultCrypto.verifySignature(blobMap, spub)) {
+                                localSnapshot.currentRuntimeJson = bodyJson;
+                                runtimeChanged = true;
+                                matched = true;
+                                break;
+                            }
                         }
                     }
                     if (!matched) {
@@ -939,6 +1180,146 @@ public class MainActivity extends Activity {
                 setStatus("Not a Lion's Share QR code");
             }
         }
+    }
+
+    /**
+     * Multi-bunny switcher dialog. Shows all bunny slots as a radio list, lets
+     * the user switch active, rename inline, add a new bunny (which opens the
+     * setup flow), or remove a slot.
+     *
+     * Guards:
+     *   - Can't remove the currently active bunny (must switch first)
+     *   - Can't remove the last remaining bunny (would leave an unconfigured app)
+     */
+    private void doBunnies() {
+        java.util.List<BunnyEntry> bunnies = listBunnies();
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(32, 24, 32, 16);
+        root.setBackgroundColor(0xFF0a0a14);
+
+        if (bunnies.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText("No bunnies configured yet. Tap 'Add Bunny' to create one.");
+            empty.setTextColor(0xFFaaaaaa);
+            empty.setPadding(0, 8, 0, 16);
+            root.addView(empty);
+        }
+
+        for (BunnyEntry b : bunnies) {
+            final BunnyEntry bb = b;
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setPadding(0, 12, 0, 12);
+
+            final boolean isActive = bb.id.equals(activeBunnyId);
+            TextView dot = new TextView(this);
+            dot.setText(isActive ? "\u25cf " : "\u25cb ");  // ● vs ○
+            dot.setTextColor(isActive ? 0xFFDAA520 : 0xFF555555);
+            dot.setTextSize(16);
+            LinearLayout.LayoutParams dotLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+            row.addView(dot, dotLp);
+
+            TextView label = new TextView(this);
+            label.setText(bb.label + "  (" + bb.id + ")");
+            label.setTextColor(isActive ? 0xFFDAA520 : 0xFFe0e0e0);
+            label.setTextSize(15);
+            LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+            label.setPadding(12, 0, 12, 0);
+            row.addView(label, labelLp);
+
+            // Tap the row → switch active
+            row.setOnClickListener(v -> {
+                if (bb.id.equals(activeBunnyId)) return;
+                setActiveBunny(bb.id);
+            });
+            // Long-press the row → rename
+            row.setOnLongClickListener(v -> {
+                doBunnyRename(bb);
+                return true;
+            });
+            root.addView(row);
+
+            // Remove button (skip for active slot and for the last remaining slot)
+            if (!isActive && bunnies.size() > 1) {
+                Button rm = new Button(this);
+                rm.setText("Remove " + bb.label);
+                rm.setTextSize(11);
+                rm.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF2a0a0a));
+                rm.setTextColor(0xFFcc4444);
+                rm.setOnClickListener(v -> doBunnyRemove(bb));
+                LinearLayout.LayoutParams rmLp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, 36);
+                rmLp.bottomMargin = 12;
+                root.addView(rm, rmLp);
+            }
+        }
+
+        Button add = new Button(this);
+        add.setText("+ Add Bunny");
+        add.setTextSize(13);
+        add.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF1a1a2e));
+        add.setTextColor(0xFFDAA520);
+        add.setOnClickListener(v -> {
+            // Adding a bunny == running the setup flow. createMesh/pairDirect
+            // already handle addBunnySlot() + setActiveBunny() internally, so
+            // we just open the setup dialog here.
+            doSetup();
+        });
+        LinearLayout.LayoutParams addLp = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 48);
+        addLp.topMargin = 16;
+        root.addView(add, addLp);
+
+        new AlertDialog.Builder(this)
+            .setTitle("\uD83D\uDC07 Bunnies")
+            .setView(root)
+            .setNegativeButton("Close", null)
+            .show();
+    }
+
+    /** Rename the given bunny slot (long-press handler). */
+    private void doBunnyRename(BunnyEntry target) {
+        EditText input = new EditText(this);
+        input.setText(target.label);
+        input.setTextColor(0xFFe0e0e0);
+        input.setHintTextColor(0xFF555555);
+        input.setBackgroundColor(0xFF111118);
+        input.setPadding(24, 20, 24, 20);
+        new AlertDialog.Builder(this)
+            .setTitle("Rename " + target.id)
+            .setView(input)
+            .setPositiveButton("Rename", (d, w) -> {
+                String newLabel = input.getText().toString().trim();
+                if (newLabel.isEmpty()) return;
+                java.util.List<BunnyEntry> list = listBunnies();
+                for (BunnyEntry b : list) {
+                    if (b.id.equals(target.id)) b.label = newLabel;
+                }
+                saveBunnyList(list);
+                if (target.id.equals(activeBunnyId)) activeBunnyLabel = newLabel;
+                setStatus("Renamed to " + newLabel);
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    /** Confirm + remove a non-active bunny slot. */
+    private void doBunnyRemove(BunnyEntry target) {
+        new AlertDialog.Builder(this)
+            .setTitle("Remove " + target.label + "?")
+            .setMessage("This wipes the mesh config for this bunny on this device. "
+                + "The mesh itself on the server is untouched — you can re-add with the invite code.")
+            .setPositiveButton("Remove", (d, w) -> {
+                removeBunnySlot(target.id);
+                setStatus("Removed " + target.label);
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
     }
 
     private void doVaultNodes() {
@@ -1277,9 +1658,9 @@ public class MainActivity extends Activity {
     }
 
     private String meshGet(String path) {
-        // Direct (serverless) mode: hit the bunny's Collar status endpoint directly
-        String pairMode = prefs.getString("pair_mode", "");
-        String bunnyDirectUrl = prefs.getString("bunny_direct_url", "");
+        // Direct (serverless) mode: hit the bunny's Collar status endpoint directly.
+        // pairMode / bunnyDirectUrl are instance vars loaded from the active
+        // bunny slot (see loadActiveBunny).
         if ("direct".equals(pairMode) && !bunnyDirectUrl.isEmpty()
             && (path.equals("/mesh/status") || path.startsWith("/mesh/status?"))) {
             // Hit the Collar's /mesh/status directly for the locked/escapes/paywall fields
@@ -1333,7 +1714,7 @@ public class MainActivity extends Activity {
      * tick hasn't completed). Callers must null-check, same as meshGet().
      */
     private String currentStatusJson() {
-        if (vaultMode && !"direct".equals(prefs.getString("pair_mode", ""))) {
+        if (vaultMode && !"direct".equals(pairMode)) {
             return localSnapshot.currentRuntimeJson;
         }
         return meshGet("/mesh/status");
@@ -1628,7 +2009,10 @@ public class MainActivity extends Activity {
 
         if (serverInput != null) {
             serverInput.setHint("Server URL (e.g. https://your-mesh.example.com)");
-            serverInput.setText(prefs.getString("mesh_url", ""));
+            // Multi-bunny: show the ACTIVE bunny's mesh_url, not the legacy
+            // top-level key. meshUrl instance var was loaded from the active
+            // slot in loadActiveBunny().
+            serverInput.setText(meshUrl);
         }
 
         // Vault mode toggle (Phase B/C)
@@ -1637,11 +2021,20 @@ public class MainActivity extends Activity {
             vaultCheck.setChecked(vaultMode);
         }
 
-        // Show current state
+        // Show current state — pull the invite from the active slot, not the
+        // legacy top-level key (which is only correct for bunny b1).
         if (resultView != null) {
             if (!meshId.isEmpty()) {
-                String invite = prefs.getString("invite_code", "");
-                resultView.setText("Mesh: " + meshId + (invite.isEmpty() ? "" : "\nInvite: " + invite));
+                String invite = activeBunnyId.isEmpty()
+                    ? prefs.getString("invite_code", "")
+                    : prefs.getString(bunnyKey(activeBunnyId, "invite_code"), "");
+                StringBuilder st = new StringBuilder();
+                if (!activeBunnyLabel.isEmpty()) {
+                    st.append(activeBunnyLabel).append("\n");
+                }
+                st.append("Mesh: ").append(meshId);
+                if (!invite.isEmpty()) st.append("\nInvite: ").append(invite);
+                resultView.setText(st.toString());
             } else {
                 resultView.setText("No mesh configured. Tap Create Mesh.");
             }
@@ -1678,17 +2071,28 @@ public class MainActivity extends Activity {
                 doPairDirect();
             })
             .setNegativeButton("Save", (d, w) -> {
-                // Save the vault toggle (and any URL change) without creating a new mesh
+                // Save the vault toggle (and any URL change) for the active
+                // bunny slot, without creating a new mesh. vault_mode and
+                // mesh_url are both per-bunny, so they must be written under
+                // the active slot's key prefix.
+                SharedPreferences.Editor ed = prefs.edit();
                 if (vaultCheckFinal != null) {
                     boolean newVault = vaultCheckFinal.isChecked();
                     vaultMode = newVault;
-                    prefs.edit().putBoolean("vault_mode", newVault).apply();
+                    ed.putBoolean("vault_mode", newVault);  // legacy compat
+                    if (!activeBunnyId.isEmpty()) {
+                        ed.putBoolean(bunnyKey(activeBunnyId, "vault_mode"), newVault);
+                    }
                 }
                 String sUrl = serverInput != null ? serverInput.getText().toString().trim() : "";
                 if (!sUrl.isEmpty() && !sUrl.equals(meshUrl)) {
                     meshUrl = sUrl;
-                    prefs.edit().putString("mesh_url", sUrl).apply();
+                    ed.putString("mesh_url", sUrl);  // legacy compat
+                    if (!activeBunnyId.isEmpty()) {
+                        ed.putString(bunnyKey(activeBunnyId, "mesh_url"), sUrl);
+                    }
                 }
+                ed.apply();
                 setStatus("Saved" + (vaultMode ? " (vault mode on)" : ""));
             }).show();
     }
@@ -1782,13 +2186,24 @@ public class MainActivity extends Activity {
                 return;
             }
 
-            // Store pairing — direct mode uses bunnyDirectUrl instead of mesh
+            // Store pairing — direct mode uses bunnyDirectUrl instead of mesh.
+            // Multi-bunny: create a new slot for this direct pairing and set it
+            // active. The slot gets a default label "bunny" which the user can
+            // rename from Advanced → Bunnies.
+            final String newId = addBunnySlot("bunny");
+            final String fBunnyUrl = bunnyUrl;
+            final String fBunnyPubB64 = bunnyPubB64;
             prefs.edit()
-                .putString("bunny_direct_url", bunnyUrl)
-                .putString("bunny_pubkey_b64", bunnyPubB64)
+                .putString(bunnyKey(newId, "bunny_direct_url"), fBunnyUrl)
+                .putString(bunnyKey(newId, "bunny_pubkey_b64"), fBunnyPubB64)
+                .putString(bunnyKey(newId, "pair_mode"), "direct")
+                // Legacy keys also updated so rollback to v58 still works:
+                .putString("bunny_direct_url", fBunnyUrl)
+                .putString("bunny_pubkey_b64", fBunnyPubB64)
                 .putString("pair_mode", "direct")
                 .apply();
-            setStatus("PAIRED direct: " + bunnyUrl);
+            handler.post(() -> setActiveBunny(newId));
+            setStatus("PAIRED direct: " + fBunnyUrl);
         } catch (Exception e) {
             setStatus("Pair error: " + e.getMessage());
         }
@@ -1831,28 +2246,47 @@ public class MainActivity extends Activity {
                 return;
             }
 
-            // Save everything
-            meshId = newMeshId;
-            authToken = newAuthToken;
+            // Multi-bunny: create a new slot for this mesh and set it active.
+            // Lion's RSA keypair (lion_privkey/lion_pubkey) is GLOBAL — one Lion
+            // identity shared across bunnies — so those live in the top-level
+            // prefs, not under the slot. The vault_mode toggle IS per-bunny
+            // (each bunny can independently run vault or legacy).
+            final String newId = addBunnySlot("bunny");
+            final String fMeshId = newMeshId;
+            final String fAuthToken = newAuthToken;
+            final String fInvite = inviteCode;
+            final String fPin = pin;
+            final String fServerUrl = serverUrl;
+            final boolean fVaultMode = vaultMode;
             prefs.edit()
-                .putString("mesh_id", meshId)
-                .putString("auth_token", authToken)
-                .putString("invite_code", inviteCode)
-                .putString("pin", pin)
+                .putString(bunnyKey(newId, "mesh_url"),    fServerUrl)
+                .putString(bunnyKey(newId, "mesh_id"),     fMeshId)
+                .putString(bunnyKey(newId, "auth_token"),  fAuthToken)
+                .putString(bunnyKey(newId, "invite_code"), fInvite)
+                .putString(bunnyKey(newId, "pin"),         fPin)
+                .putBoolean(bunnyKey(newId, "vault_mode"), fVaultMode)
+                .putString(bunnyKey(newId, "pair_mode"),   "")
+                // Lion identity — global:
                 .putString("lion_pubkey", pubKey)
                 .putString("lion_privkey", privKey)
+                // Legacy top-level keys also updated for v58 rollback safety:
+                .putString("mesh_id",     fMeshId)
+                .putString("auth_token",  fAuthToken)
+                .putString("invite_code", fInvite)
+                .putString("pin",         fPin)
                 .apply();
 
             handler.post(() -> {
+                setActiveBunny(newId);
                 setStatus("Mesh created!");
                 // Show invite code prominently
                 new AlertDialog.Builder(this)
                     .setTitle("Mesh Created")
                     .setMessage("Tell your Bunny this invite code:\n\n"
-                        + inviteCode + "\n\n"
+                        + fInvite + "\n\n"
                         + "They'll enter it in Bunny Tasker to join.\n\n"
-                        + "Server: " + meshUrl + "\n"
-                        + "Mesh ID: " + meshId)
+                        + "Server: " + fServerUrl + "\n"
+                        + "Mesh ID: " + fMeshId)
                     .setPositiveButton("OK", null)
                     .show();
             });
@@ -2348,7 +2782,7 @@ public class MainActivity extends Activity {
             // Non-vault mode keeps the legacy poll for backward compat
             // with meshes that haven't migrated yet.
             String msgsResp;
-            if (vaultMode && !"direct".equals(prefs.getString("pair_mode", ""))) {
+            if (vaultMode && !"direct".equals(pairMode)) {
                 msgsResp = meshResp;
             } else {
                 msgsResp = meshGet("/mesh/messages?reader=lion&limit=30");
@@ -2856,7 +3290,7 @@ public class MainActivity extends Activity {
             // an immediate runtime push. The legacy /mesh/message endpoint
             // returns 410 in vault_only mode, so we skip it entirely.
             String r;
-            if (vaultMode && !"direct".equals(prefs.getString("pair_mode", ""))) {
+            if (vaultMode && !"direct".equals(pairMode)) {
                 r = api("/api/send-message", json.toString());
             } else {
                 try {
@@ -2891,7 +3325,7 @@ public class MainActivity extends Activity {
     // Follow-up if Lion ever needs read receipts in vault mode: add a
     // mark-read action and store reader_state in the slave's history.
     private void markLionRead() {
-        if (vaultMode && !"direct".equals(prefs.getString("pair_mode", ""))) return;
+        if (vaultMode && !"direct".equals(pairMode)) return;
         executor.execute(() -> {
             try {
                 String body = "{\"reader\":\"lion\"}";
