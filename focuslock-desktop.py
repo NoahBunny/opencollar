@@ -1357,11 +1357,12 @@ class CollarApp(Gtk.Application):
                     data = self._legacy_result
                     self._legacy_result = None
                 if "_failed" in data:
+                    # 2026-04-11: removed stale fail-safe auto-lock. Old behavior
+                    # was to lock after 3 failed legacy fetches ("Cannot reach
+                    # mesh or homelab. Locked for safety.") but this violated
+                    # feedback_offline_no_lock.md — bunny may be offline for
+                    # days, unreachable must NOT auto-lock. Silent retry only.
                     state.unreachable_count += 1
-                    if state.unreachable_count >= 3 and not state.locked:
-                        state.locked = True
-                        state.message = "Cannot reach mesh or homelab. Locked for safety."
-                        self.show_lock()
                     return True
                 state.unreachable_count = 0
                 desktop_locked = data.get("locked", False)
