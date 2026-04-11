@@ -1,8 +1,8 @@
 # Vault Mode — Zero-Knowledge Mesh Server
 
-**Status:** design draft, 2026-04-07
+**Status:** Phases A–E + P6.5 (multi-signer) + P7 (Syncthing transport) SHIPPED, 2026-04-10
 **Author:** Lion's Share + Collar maintainers
-**Replaces:** plaintext orders relay in `focuslock-mail.py`
+**Replaces:** plaintext orders relay in `focuslock-mail.py` (removed)
 
 ## 1. Goal
 
@@ -14,10 +14,14 @@ The goal is *not* anonymity from the server (it still sees `mesh_id`, version nu
 
 | Adversary | Can do | Cannot do |
 |---|---|---|
-| Server admin (root on the relay host) | Read mesh_id, version, signature, ciphertext bytes, timing, node IDs. Delete blobs (DoS). Refuse to accept new blobs (DoS). | Read order contents. Forge orders (no Lion privkey). Replay old orders to clients (rejected by version monotonicity + signature). Decrypt past blobs even with future server compromise (forward secrecy is **not** in scope for v1). |
-| Server admin running a different mesh on the same instance | See another tenant's blob count, sizes, timing | Cross-mesh correlation beyond what `mesh_id` already exposes. Read content. |
+| **Public relay admin** (hosted Bunny Dev) | Read mesh_id, version, signature bytes, ciphertext sizes, timing, node IDs. Delete blobs (DoS). Refuse appends (DoS). | Read order contents. Forge orders (no Lion privkey on server — P6.5). Admin API is disabled for non-operator meshes. |
+| **Homelab relay admin** (self-hosted, own mesh) | Above, plus: sign admin orders on behalf of Lion via the relay keypair (same trust domain — the operator IS the Lion, so this is expected). | Forge orders in *other* meshes (the relay is only a registered node in the operator's mesh). |
+| Server admin running a different mesh on the same instance | See another tenant's blob count, sizes, timing | Cross-mesh correlation beyond what `mesh_id` already exposes. Read content. Sign orders for tenants (relay is only registered in the operator mesh). |
 | Network attacker on the wire | Observe TLS metadata | Decrypt — protected by TLS *and* the vault layer below it |
-| Malicious bunny node (compromised slave) | Read its own mesh contents (necessary — it must apply orders) | Forge orders to other bunny nodes (no Lion privkey). Promote itself to a controller. |
+| Malicious bunny node (compromised slave) | Read its own mesh contents (necessary — it must apply orders) | Forge orders to other bunny nodes (no Lion privkey). Promote itself to a controller. Take over another node's identity via `register-node-request` (key rotation requires Lion approval since 2026-04-10). |
+| LAN peer without credentials | Observe plaintext gossip traffic (if LAN is hostile) — but orders are RSA-signed so integrity is preserved | POST to `/mesh/order` without a valid PIN or Lion signature (P1 fix, 2026-04-10). Push unsigned orders via `/mesh/sync` when `lion_pubkey` is configured (P1 fix, 2026-04-10). |
+| Browser-based attacker against web UI | — | Run scripts via XSS (mesh-controlled strings are HTML-escaped, P2 fix 2026-04-10). Frame the web UI for clickjacking (`X-Frame-Options: DENY`). Read admin endpoints cross-origin (CORS scoped out of `/admin/*`). |
+| Web session stealer (post-approval token leak) | Act as admin for at most 8 hours | Use the stolen token past TTL. Impersonate Lion for new approvals (a fresh session needs Lion's RSA signature). Access the master `ADMIN_TOKEN` (web UI only ever sees scoped session tokens since 2026-04-10). |
 | Lost Lion phone | — | Continue locking. Recovery is via Release Forever or factory reset, same as today. |
 
 **Out of scope for v1:**
@@ -209,39 +213,91 @@ In vault mode, the server cannot read or write the orders directly — so these 
 
 ## 9. Migration plan
 
-### Phase A — Server vault endpoints, dual-stack (no client changes)
+### Phase A — Server vault endpoints, dual-stack (SHIPPED 2026-04-07)
 
-1. Add §6 endpoints to `focuslock-mail.py` — append/since/register-node/nodes
-2. Add `/run/focuslock/vaults/{mesh_id}/` storage directory + GC cron
-3. Add config flag `vault_mode_allowed: true` (server-side opt-in)
-4. **No client changes** — every existing mesh keeps using the legacy plaintext relay
+1. ✅ `/vault/*` endpoints in `focuslock-mail.py` — append/since/register-node/nodes
+2. ✅ `/run/focuslock/vaults/{mesh_id}/` storage + GC (retention-based)
+3. ✅ `vault_mode_allowed` config flag
+4. ✅ Dual-stack — every existing mesh kept using legacy plaintext during rollout
 
-This phase ships and is verified by hand (curl tests of append → since round-trip).
+### Phase B — Lion's Share vault writer (SHIPPED 2026-04-08)
 
-### Phase B — Lion's Share vault writer (opt-in per mesh)
+1. ✅ Vault mode toggle in Lion's Share Setup
+2. ✅ Deterministic mesh_id from Lion pubkey, registers all nodes, encrypts+signs+appends
+3. ✅ Dual-writes to legacy paths during rollout
 
-1. Add `Settings → Vault Mode (experimental)` toggle in Lion's Share
-2. When enabled, on next order: derive mesh_id from pubkey, register all known node pubkeys, encrypt+sign+append
-3. Lion's Share continues to *also* hit the legacy `/api/mesh/{id}/order` path until §C is shipped (so existing v44/v49 collars don't go dark)
+### Phase C — Slave + desktop vault reader (SHIPPED 2026-04-08)
 
-### Phase C — Slave + desktop vault reader
+1. ✅ `VaultCrypto.java` in slave + controller codebases
+2. ✅ `ControlService.vaultSync()` polls `/vault/{mesh_id}/since/{v}`
+3. ✅ Slave RSA-2048 keypair in AndroidKeyStore (P5) with PEM-file legacy fallback
+4. ✅ `register-node-request` unsigned pending queue, Lion approves in Vault Nodes dialog
+5. ✅ Desktop collars: `focuslock-desktop.py` + `focuslock-desktop-win.py` with keypair at `~/.config/focuslock/node_privkey.pem`
+6. ✅ BunnyTasker reads runtime state from vault blobs
 
-1. Add `VaultCrypto.java` to slave codebase
-2. `ControlService.meshGossip()` gains a vault-mode branch: when `focus_lock_vault_mode == 1`, hit `/vault/{mesh_id}/since/{v}` instead of `/api/mesh/{id}/sync`
-3. Slave generates and persists its own RSA-2048 keypair (one-time, stored in `Settings.Secure` + `KeyStore`)
-4. On first vault-mode sync, slave registers its pubkey via `POST /vault/{mesh_id}/register-node`. Lion's Share signs the registration the next time it appends (chicken-and-egg: see §11).
-5. Desktop collars: same path in `focuslock-desktop.py`, key in `~/.config/focuslock/node_privkey.pem`
-6. BunnyTasker: shares slave's keypair via `Settings.Global`
+### Phase D — Vault-only on operator mesh (SHIPPED 2026-04-09)
 
-After §C, the Lion can flip `vault_mode = true` and the entire mesh runs encrypted.
+1. ✅ `vault_only` flag per mesh
+2. ✅ Legacy `/mesh/{sync,order,status}` + `/api/mesh/{id}/{sync,order,status}` return 410 when vault_only
+3. ✅ Enforcement admin API (`/admin/status`, `/admin/order`) with admin_token auth
+4. ✅ E2E verified on pegasus + umbreon (Pixel 10), 2100+ vault versions in production
 
-### Phase D — Deprecate plaintext for vault meshes
+### Phase E — Vault-only (SHIPPED 2026-04-10, P6)
 
-Once all known meshes are vault-mode for ≥30 days, remove the plaintext order body from `/api/mesh/{id}/sync` responses for those meshes. The endpoints stay, but they only return version + signature metadata, no plaintext.
+The legacy `/mesh/*` and `/api/mesh/{id}/*` plaintext paths are **removed**. Server is vault-only. `find_mesh_id_by_pin()` + `MeshAccountRegistry.validate_pin()` deleted. `/api/pair/create` migrated from PIN to admin_token auth. Slave's local `/mesh/*` endpoints preserved (LAN trust model).
 
-### Phase E — Vault-only
+### Phase F — Multi-signer + Zero-knowledge relay (SHIPPED 2026-04-10, P6.5)
 
-A future release date (TBD) drops the legacy `/api/mesh/{id}/order` and `/api/mesh/{id}/sync` plaintext paths entirely. Server becomes vault-only. This is a breaking change for any mesh that hasn't migrated.
+The server previously held Lion's private key to sign admin-originated vault blobs (`_admin_order_to_vault_blob()`). This broke the zero-knowledge claim: a hosted relay operator could read nothing but COULD forge orders on behalf of Lion.
+
+**Fix:** the server now generates its own RSA-2048 keypair at `~/.config/focuslock/relay_{priv,pub}key.pem` on first run. It auto-registers as a vault node with `node_type: "relay"`, `node_id: "relay"` for the operator's mesh (gated by `OPERATOR_MESH_ID`). Admin orders are signed with the relay keypair. Lion's private key is no longer present on the server.
+
+**Trust tiers:**
+- **Public relay (Bunny Dev):** no `OPERATOR_MESH_ID`, no admin API, no signing keys for any mesh. Pure ciphertext blob store. Zero-knowledge by construction.
+- **Homelab / self-hosted:** `OPERATOR_MESH_ID` set, admin API available for that mesh only. Server signs admin orders with relay keypair. Clients accept relay-signed blobs because the relay is a registered node in the approved list.
+
+**Multi-signer verification:** the previous verification logic only accepted blobs signed by Lion or self. Now clients fetch the approved-nodes list from `/vault/{mesh_id}/nodes` and verify against any registered pubkey:
+
+- **Server** (`_verify_blob_two_writer`): Lion pubkey → iterate all registered node pubkeys
+- **Slave** (`ControlService.vaultSync`): Lion → self → any approved node (`fetchApprovedNodes()` with 30-minute cache, lazy refresh on miss, rate-limited to once per poll)
+- **Controller** (`MainActivity.vaultPollLoop`): Lion-signed → orders. Relay-signed → orders (node_type "relay"). Other node-signed → runtime state pushes. Splits `relayPubkeys` from `slavePubkeys`.
+- **Desktop collars** (`_vault_verify_any_signer`): Lion → any approved node, lazy refresh, rate-limited
+
+**Key rotation security:** previously `register-node-request` auto-approved if `node_id` matched an existing active node. This was an unauthenticated takeover vector — an attacker knowing a mesh_id + node_id could replace any node's pubkey. **Removed in 2026-04-10.** Key rotation now requires Lion approval via the pending queue.
+
+### Phase G — Transport abstraction + Syncthing P2P (SHIPPED 2026-04-10, P7)
+
+The HTTP relay is now one of multiple pluggable transports. New module `shared/focuslock_transport.py` defines:
+
+```python
+class VaultTransport:
+    def since(mesh_id, version) -> (blobs, current_version)
+    def append(mesh_id, blob) -> (version, error)
+    def nodes(mesh_id) -> list[dict]
+    def register_node(mesh_id, payload) -> dict
+```
+
+Two implementations:
+- **`HttpVaultTransport`** — wraps the current HTTP relay. 10 MB response cap to prevent OOM from a malicious server.
+- **`SyncthingVaultTransport`** — directory-based P2P transport. Blobs are written as files to a Syncthing-shared folder, same format as the server's `VaultStore` uses (`{vault_dir}/{mesh_id}/blobs/{version:08d}.json`). Clients read by scanning the directory.
+
+**Config:**
+```json
+{
+  "vault_transport": "http",  // or "syncthing"
+  "syncthing_vault_dir": "~/Syncthing/focuslock-vault/"
+}
+```
+
+**Why Syncthing:** it sells the hosted Bunny Dev relay by giving users a credible exit lane. Switch `vault_transport` to `syncthing`, point Lion's Share and the collars at the same Syncthing folder, and the mesh works fully P2P with zero VPS, zero relay, zero ongoing cost. No lock-in.
+
+**Security hardening on the Syncthing transport:**
+- Mesh ID and node ID are validated with `_safe_id()` (alphanumeric, max 64 chars)
+- All paths go through `_safe_path()` which uses `os.path.realpath()` to verify the resolved path stays inside `vault_dir` (defeats path traversal and symlink escape)
+- `os.path.islink()` checks on every file read (defeats runtime symlink swaps)
+- Version numbers parsed from filenames are bounded `0 < v ≤ 2³¹−1` to prevent a malicious peer poisoning `current_version` with `99999999.json`
+
+**Android support deferred** — Syncthing-Fork + Storage Access Framework integration is out of scope for this phase. Desktop collars support Syncthing immediately; Android collars remain HTTP-only until a future phase.
 
 ## 10. Crypto upgrades during migration
 

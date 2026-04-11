@@ -197,9 +197,15 @@ class OrdersDocument:
         remote_orders = doc.get("orders", {})
         remote_sig = doc.get("signature", "")
 
-        # Verify RSA signature if present AND we have the public key
-        # Unsigned orders (from phone mesh push) are accepted — only Lion's Share signs
-        if remote_sig and lion_pubkey:
+        # SECURITY: if we have Lion's pubkey configured, REQUIRE a valid
+        # signature on remote orders. The previous behavior accepted unsigned
+        # orders for legacy phone push, which let any LAN peer spoof orders.
+        # Nodes without lion_pubkey yet (uninitialized) still use the
+        # permissive path so initial setup can complete.
+        if lion_pubkey:
+            if not remote_sig:
+                print(f"[mesh] REJECTED orders v{remote_version} — unsigned (lion_pubkey configured)")
+                return False
             if not verify_signature(remote_orders, remote_sig, lion_pubkey):
                 print(f"[mesh] REJECTED orders v{remote_version} — invalid signature!")
                 return False
@@ -685,6 +691,25 @@ def handle_mesh_order(body: dict, orders: OrdersDocument, peers: PeerRegistry,
     if not action:
         return {"error": "action required"}
 
+    # SECURITY: require either a valid PIN or a valid Lion signature.
+    # Without this any LAN peer could POST to /mesh/order and unlock the collar.
+    expected_pin = str(orders.get("pin", ""))
+    pin_ok = validate_pin(body, orders) if expected_pin else False
+    sig_ok = False
+    if signature and lion_pubkey:
+        try:
+            # Signature covers canonical({action, params}) — minimal envelope
+            sig_payload = {"action": action, "params": params}
+            sig_ok = verify_signature(sig_payload, signature, lion_pubkey)
+        except Exception:
+            sig_ok = False
+    # If neither auth method configured (PIN and lion_pubkey both missing),
+    # this is an uninitialized node — fall through legacy permissive behavior
+    # so initial setup can complete. Otherwise require one to pass.
+    if expected_pin or lion_pubkey:
+        if not pin_ok and not sig_ok:
+            return {"error": "unauthenticated — missing valid pin or signature"}
+
     # Apply the action locally
     result = {}
     if apply_fn:
@@ -817,10 +842,14 @@ class GossipThread(threading.Thread):
 # ── Utility: PIN Validation ──
 
 def validate_pin(body: dict, orders: OrdersDocument) -> bool:
-    """Check PIN from request body against orders document."""
-    pin = body.get("pin", "")
+    """Check PIN from request body against orders document.
+    Uses timing-safe comparison to prevent pin guessing via response time."""
+    import hmac
+    pin = str(body.get("pin", ""))
     expected = str(orders.get("pin", ""))
-    return pin == expected
+    if not pin or not expected:
+        return False
+    return hmac.compare_digest(pin, expected)
 
 
 # ── Utility: Get Local Addresses ──

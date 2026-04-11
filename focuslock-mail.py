@@ -41,8 +41,48 @@ SERVICE_START_TIME = time.time()
 
 # ── Web Session Auth (QR code login for Lion's Share web UI) ──
 # Ephemeral sessions: phone scans QR → approves session → web auto-logs in.
-_web_sessions = {}  # session_id -> {secret, approved, created_at, admin_token}
-_WEB_SESSION_TTL = 300  # 5 minutes
+_web_sessions = {}  # session_id -> {secret, approved, created_at}
+_WEB_SESSION_TTL = 300  # 5 minutes (approval flow window)
+
+# P0 fix: scoped session tokens issued INSTEAD of ADMIN_TOKEN.
+# The web UI receives one of these after Lion's signed approval. It behaves
+# like ADMIN_TOKEN for authorization but has a TTL — if stolen, the damage
+# window is bounded. Never hand the master ADMIN_TOKEN to any web client.
+_active_session_tokens = {}  # session_token -> {issued_at, expires_at, session_id}
+_SESSION_TOKEN_TTL = 8 * 3600  # 8 hours — long enough for a work session
+_session_tokens_lock = threading.Lock()
+
+def _issue_session_token(session_id):
+    """Mint a new scoped session token tied to a web session."""
+    with _session_tokens_lock:
+        # Prune expired tokens
+        now_ts = time.time()
+        stale = [t for t, v in _active_session_tokens.items() if v["expires_at"] < now_ts]
+        for t in stale:
+            del _active_session_tokens[t]
+        token = secrets.token_urlsafe(32)
+        _active_session_tokens[token] = {
+            "issued_at": now_ts,
+            "expires_at": now_ts + _SESSION_TOKEN_TTL,
+            "session_id": session_id,
+        }
+        return token
+
+def _is_valid_admin_auth(token):
+    """Check if a token is either the master ADMIN_TOKEN or a live session token.
+    Constant-time comparison to prevent timing attacks."""
+    if not token or not ADMIN_TOKEN:
+        return False
+    if hmac.compare_digest(token, ADMIN_TOKEN):
+        return True
+    with _session_tokens_lock:
+        entry = _active_session_tokens.get(token)
+        if not entry:
+            return False
+        if entry["expires_at"] < time.time():
+            del _active_session_tokens[token]
+            return False
+        return True
 
 
 def _compute_source_sha256():
@@ -132,6 +172,14 @@ mesh_peers = mesh.PeerRegistry(persist_path=MESH_PEERS_FILE)
 
 # ── Per-Mesh Orders Registry (multi-tenant isolation) ──
 
+def _safe_mesh_id_static(mesh_id):
+    """Module-level mesh_id validator (used before _safe_mesh_id method is defined).
+    Allow only [A-Za-z0-9_-] and max 64 chars."""
+    if not mesh_id or not isinstance(mesh_id, str) or len(mesh_id) > 64:
+        return False
+    return all(c.isalnum() or c in "-_" for c in mesh_id)
+
+
 class MeshOrdersRegistry:
     """Maps mesh_id -> OrdersDocument.  The operator's mesh uses the
     global ``mesh_orders`` singleton for backwards compatibility; every
@@ -153,6 +201,9 @@ class MeshOrdersRegistry:
         return self.docs.get(mesh_id)
 
     def get_or_create(self, mesh_id):
+        # SECURITY: defense-in-depth — validate mesh_id before using in path
+        if not _safe_mesh_id_static(mesh_id):
+            raise ValueError(f"invalid mesh_id: {mesh_id!r}")
         if mesh_id not in self.docs:
             path = os.path.join(self.base_dir, f"{mesh_id}.json")
             self.docs[mesh_id] = mesh.OrdersDocument(persist_path=path)
@@ -250,8 +301,12 @@ def mesh_local_status():
     }
 
 def _admin_order_to_vault_blob(action, params, mesh_id=None):
-    """Write an admin order as a Lion-signed vault RPC blob so vault-mode slaves pick it up.
-    Uses the Lion's private key on disk and encrypts for all registered vault nodes."""
+    """Write an admin order as a relay-signed vault RPC blob so vault-mode slaves pick it up.
+    Uses the RELAY's private key (P6.5 zero-knowledge compliance — Lion's key never on server).
+    Only works for the operator's mesh (admin API is operator-scoped)."""
+    if not RELAY_PRIVKEY_PEM:
+        print(f"[admin] vault blob write skipped: no relay keypair")
+        return
     try:
         from focuslock_vault import encrypt_body
     except ImportError:
@@ -264,15 +319,6 @@ def _admin_order_to_vault_blob(action, params, mesh_id=None):
     mid = mesh_id or OPERATOR_MESH_ID
     if not mid:
         return
-    # Load Lion's private key
-    lion_priv_path = os.path.expanduser("~/.config/focuslock/lion_privkey.pem")
-    if not os.path.exists(lion_priv_path):
-        lion_priv_path = "/opt/focuslock/.config/focuslock/lion_privkey.pem"
-    if not os.path.exists(lion_priv_path):
-        print(f"[admin] vault blob write skipped: no lion_privkey.pem")
-        return
-    with open(lion_priv_path) as f:
-        lion_priv_pem = f.read().strip()
     # Get registered nodes (recipients for encryption)
     nodes = _vault_store.get_nodes(mid)
     if not nodes:
@@ -285,12 +331,12 @@ def _admin_order_to_vault_blob(action, params, mesh_id=None):
     body = {"action": action, "params": params or {}}
     version = _vault_store.current_version(mid) + 1
     created_at = int(time.time() * 1000)
-    blob = encrypt_body(mid, version, created_at, body, recipients, lion_priv_pem)
+    blob = encrypt_body(mid, version, created_at, body, recipients, RELAY_PRIVKEY_PEM)
     ver, err = _vault_store.append(mid, blob)
     if err:
         print(f"[admin] vault blob append error: {err}")
     else:
-        print(f"[admin] vault blob written: v{ver} action={action}")
+        print(f"[admin] vault blob written: v{ver} action={action} (relay-signed)")
 
 def on_mesh_orders_applied(orders_dict):
     """Called when mesh gossip applies new orders.
@@ -848,12 +894,71 @@ ADMIN_TOKEN = _cfg.get("admin_token", "") or os.environ.get("FOCUSLOCK_ADMIN_TOK
 OPERATOR_MESH_ID = _cfg.get("operator_mesh_id", "") or os.environ.get("FOCUSLOCK_OPERATOR_MESH_ID", "")
 _init_orders_registry()  # Now that OPERATOR_MESH_ID is known, register operator's mesh
 
+# ── Relay Keypair (P6.5 zero-knowledge compliance) ──
+# The relay signs admin-originated vault blobs with its OWN key, not Lion's.
+# For public hosted relays without OPERATOR_MESH_ID, this keypair exists but
+# is never used for signing (admin API is operator-only).
+RELAY_PRIVKEY_PEM = ""
+RELAY_PUBKEY_PEM = ""
+RELAY_PUBKEY_DER_B64 = ""
+
+def _init_relay_keypair():
+    """Generate or load the relay's RSA-2048 keypair.
+    Stored alongside config at ~/.config/focuslock/relay_{priv,pub}key.pem."""
+    global RELAY_PRIVKEY_PEM, RELAY_PUBKEY_PEM, RELAY_PUBKEY_DER_B64
+    try:
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.hazmat.primitives import serialization
+    except ImportError:
+        print("[relay] cryptography not available — relay keypair disabled")
+        return
+    config_dir = os.path.expanduser("~/.config/focuslock")
+    os.makedirs(config_dir, mode=0o700, exist_ok=True)
+    priv_path = os.path.join(config_dir, "relay_privkey.pem")
+    pub_path = os.path.join(config_dir, "relay_pubkey.pem")
+    if os.path.exists(priv_path) and os.path.exists(pub_path):
+        # Enforce private key file permissions on load
+        mode = os.stat(priv_path).st_mode & 0o777
+        if mode & 0o077:
+            print(f"[relay] WARNING: {priv_path} is group/world-readable (mode {oct(mode)}), fixing")
+            os.chmod(priv_path, 0o600)
+        with open(priv_path) as f:
+            RELAY_PRIVKEY_PEM = f.read().strip()
+        with open(pub_path) as f:
+            RELAY_PUBKEY_PEM = f.read().strip()
+    else:
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        RELAY_PRIVKEY_PEM = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode()
+        RELAY_PUBKEY_PEM = key.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode()
+        with open(priv_path, "w") as f:
+            f.write(RELAY_PRIVKEY_PEM)
+        os.chmod(priv_path, 0o600)
+        with open(pub_path, "w") as f:
+            f.write(RELAY_PUBKEY_PEM)
+        print(f"[relay] Generated new RSA-2048 keypair at {priv_path}")
+    # Compute base64 DER for node registration
+    try:
+        pk = serialization.load_pem_public_key(RELAY_PUBKEY_PEM.encode())
+        der = pk.public_bytes(serialization.Encoding.DER,
+                              serialization.PublicFormat.SubjectPublicKeyInfo)
+        RELAY_PUBKEY_DER_B64 = base64.b64encode(der).decode()
+        print(f"[relay] Keypair loaded (pubkey {len(der)} bytes)")
+    except Exception as e:
+        print(f"[relay] Keypair DER export failed: {e}")
+
+_init_relay_keypair()
+
 
 def _safe_mesh_id(mesh_id):
     """Allow only [A-Za-z0-9_-] in mesh_id (matches base64url alphabet)."""
-    if not mesh_id or len(mesh_id) > 64:
-        return False
-    return all(c.isalnum() or c in "-_" for c in mesh_id)
+    return _safe_mesh_id_static(mesh_id)
 
 
 class VaultStore:
@@ -1094,6 +1199,33 @@ class VaultStore:
 
 _vault_store = VaultStore()
 
+
+def _relay_self_register():
+    """Auto-register the relay as a vault node for the operator's mesh (P6.5).
+    Only runs if OPERATOR_MESH_ID is set and relay has a keypair.
+    No Lion approval needed — the server IS the operator's infrastructure."""
+    if not OPERATOR_MESH_ID or not RELAY_PUBKEY_DER_B64:
+        return
+    nodes = _vault_store.get_nodes(OPERATOR_MESH_ID)
+    for n in nodes:
+        if n.get("node_id") == "relay":
+            # Already registered — check if pubkey changed (key rotation)
+            if n.get("node_pubkey") == RELAY_PUBKEY_DER_B64:
+                print(f"[relay] Already registered as vault node for {OPERATOR_MESH_ID}")
+                return
+            print(f"[relay] Key rotated — re-registering vault node")
+            break
+    _vault_store.add_node(OPERATOR_MESH_ID, {
+        "node_id": "relay",
+        "node_type": "relay",
+        "node_pubkey": RELAY_PUBKEY_DER_B64,
+        "registered_at": int(time.time()),
+    })
+    print(f"[relay] Registered as vault node for operator mesh {OPERATOR_MESH_ID}")
+
+_relay_self_register()
+
+
 # In-memory daily blob counter per mesh — resets on date change.
 # Key: (mesh_id, "YYYYMMDD"), Value: count.
 _daily_blob_counts: dict = {}
@@ -1160,10 +1292,11 @@ def _verify_signed_payload(payload, signature_b64, lion_pubkey_str, quiet=False)
 
 
 def _verify_blob_two_writer(blob, lion_pubkey, registered_nodes):
-    """Phase D two-writer verification. Try Lion pubkey first (the common case
-    for order blobs), then fall back to iterating registered slave node pubkeys
-    for runtime blobs. Returns (writer_role, writer_id) on success or
-    (None, None) on failure. writer_role is "lion" or "node"."""
+    """Multi-writer verification. Try Lion pubkey first (order blobs from
+    controller), then iterate registered node pubkeys (slave runtime pushes,
+    relay admin orders, desktop collars). Returns (writer_role, writer_id)
+    on success or (None, None) on failure.
+    writer_role is "lion" or "node" (includes relay nodes)."""
     sig = blob.get("signature", "")
     if not sig:
         return None, None
@@ -1350,7 +1483,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(503, {"error": "admin_token not configured"})
                 return
             token = data.get("admin_token", "")
-            if not token or not hmac.compare_digest(token, ADMIN_TOKEN):
+            if not _is_valid_admin_auth(token):
                 self.respond(403, {"error": "invalid admin_token"})
                 return
             req_mesh_id = data.get("mesh_id", "")
@@ -1558,21 +1691,10 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     print(f"[{now()}] Vault register-node-request DENIED (rejected): mesh={mesh_id} node={node_id}")
                     self.respond(403, {"error": "node rejected"})
                     return
-                # P5: Auto-approve if node_id already exists in active nodes (key rotation)
-                active_nodes = _vault_store.get_nodes(mesh_id)
-                existing = [n for n in active_nodes if n.get("node_id") == node_id]
-                if existing:
-                    # Key rotation: replace old pubkey, auto-approve
-                    _vault_store.add_node(mesh_id, {
-                        "node_id": node_id,
-                        "node_type": node_type,
-                        "node_pubkey": node_pubkey,
-                        "approved_at": int(time.time()),
-                        "rotated_from": existing[0].get("node_pubkey", "")[:24],
-                    })
-                    print(f"[{now()}] Vault register-node-request AUTO-APPROVED (key rotation): mesh={mesh_id} node={node_id}")
-                    self.respond(200, {"ok": True, "status": "approved"})
-                    return
+                # Security: key rotation (same node_id, new pubkey) goes to pending
+                # queue like any new node. Lion must approve. Auto-approve was removed
+                # because it allowed unauthenticated pubkey replacement — an attacker
+                # who knew a mesh_id + node_id could replace any node's key.
                 _vault_store.add_pending_node(mesh_id, {
                     "node_id": node_id,
                     "node_type": node_type,
@@ -1643,14 +1765,18 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         elif self.path == "/api/pair/create":
             # Lion's Share creates a pairing code for desktop enrollment
             token = data.get("admin_token", "") or data.get("auth_token", "")
-            if not ADMIN_TOKEN or not token or not hmac.compare_digest(token, ADMIN_TOKEN):
+            if not _is_valid_admin_auth(token):
                 self.respond(403, {"error": "invalid admin_token"})
                 return
-            import string
+            import string, re
             code = data.get("code", "").upper().strip()
             if not code:
                 chars = string.ascii_uppercase + string.digits
                 code = "".join(secrets.choice(chars) for _ in range(6))
+            # SECURITY: pairing code must be alphanumeric only (used as filename)
+            if not re.match(r'^[A-Z0-9]{4,12}$', code):
+                self.respond(400, {"error": "invalid code format (4-12 alphanumeric)"})
+                return
             expires_min = data.get("expires_minutes", 60)
             # Build config payload
             local_addrs = mesh.get_local_addresses()
@@ -1831,7 +1957,15 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(404, {"error": "session expired or not found"})
                 return
             if session["approved"]:
-                self.respond(200, {"approved": True, "admin_token": ADMIN_TOKEN})
+                # P0 fix: issue a scoped session token instead of the master
+                # ADMIN_TOKEN. The session token expires after 8 hours and can
+                # be revoked server-side without rotating the real admin_token.
+                scoped_token = _issue_session_token(session_id)
+                self.respond(200, {
+                    "approved": True,
+                    "session_token": scoped_token,
+                    "expires_in": _SESSION_TOKEN_TTL,
+                })
                 # One-time use: delete after successful retrieval
                 del _web_sessions[session_id]
             else:
@@ -1858,6 +1992,8 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                        b"<p style='margin-top:1rem;font-size:0.85rem;color:#888'>Only the Lion's private key can approve web sessions.</p>")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             self.wfile.write(
                 b"<html><body style='background:#0a0a14;color:#b8860b;font-family:sans-serif;text-align:center;padding:4rem'>"
@@ -1875,7 +2011,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if not ADMIN_TOKEN:
                 self.respond(503, {"error": "admin_token not configured"})
                 return
-            if not token or not hmac.compare_digest(token, ADMIN_TOKEN):
+            if not _is_valid_admin_auth(token):
                 self.respond(403, {"error": "invalid admin_token"})
                 return
             req_mesh_id = params.get("mesh_id", [""])[0]
@@ -1969,12 +2105,17 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(500, {"error": "internal error"})
 
         elif self.path == "/standing-orders":
-            # Serve CLAUDE.md for desktop collar memory sync
+            # Serve CLAUDE.md for desktop collar memory sync.
+            # SECURITY: scrub the admin_token from the served content — clients
+            # get the rules text for Claude Code enforcement, but the actual
+            # token must be installed separately (via initial setup, not sync).
             try:
                 claude_md = os.path.expanduser("~/.claude/CLAUDE.md")
                 if os.path.exists(claude_md):
                     with open(claude_md, "r") as f:
                         content = f.read()
+                    if ADMIN_TOKEN and ADMIN_TOKEN in content:
+                        content = content.replace(ADMIN_TOKEN, "<REDACTED>")
                     self.send_response(200)
                     self.send_header("Content-Type", "text/plain")
                     self.end_headers()
@@ -1986,12 +2127,15 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(500, {"error": "internal error"})
 
         elif self.path == "/settings":
-            # Serve settings.json (enforcement hooks) for sync
+            # Serve settings.json (enforcement hooks) for sync.
+            # SECURITY: scrub the admin_token from the served content.
             try:
                 settings = os.path.expanduser("~/.claude/settings.json")
                 if os.path.exists(settings):
                     with open(settings, "r") as f:
                         content = f.read()
+                    if ADMIN_TOKEN and ADMIN_TOKEN in content:
+                        content = content.replace(ADMIN_TOKEN, "<REDACTED>")
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.end_headers()
@@ -2028,8 +2172,10 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
 
         elif self.path.startswith("/api/pair/"):
             # Desktop pairing — look up a 6-char code
+            import re
             code = self.path.split("/")[-1].upper().strip()
-            if not code or len(code) < 4:
+            # SECURITY: pairing code must be alphanumeric only (used as filename)
+            if not re.match(r'^[A-Z0-9]{4,12}$', code):
                 self.respond(400, {"error": "invalid pairing code"})
                 return
             pair_dir = "/opt/focuslock/pairing-codes"
@@ -2083,19 +2229,25 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             else:
                 self.respond(404, {"error": "no memory dir", "checked": mem_dir})
 
-        elif self.path in ("/", "/index.html", "/signup", "/signup.html", "/cost", "/cost.html"):
-            # Serve web UI (index, signup, or cost)
+        elif self.path in ("/", "/index.html", "/signup", "/signup.html",
+                           "/cost", "/cost.html", "/trust", "/trust.html"):
+            # Serve web UI (index, signup, cost, or trust)
             web_dir = "/opt/focuslock/web"
             if self.path.startswith("/signup"):
                 fname = "signup.html"
             elif self.path.startswith("/cost"):
                 fname = "cost.html"
+            elif self.path.startswith("/trust"):
+                fname = "trust.html"
             else:
                 fname = "index.html"
             page = os.path.join(web_dir, fname)
             if os.path.exists(page):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("X-Frame-Options", "DENY")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Referrer-Policy", "no-referrer")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 with open(page, "rb") as f:
@@ -2109,6 +2261,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if os.path.exists(js_path):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/javascript; charset=utf-8")
+                self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header("Cache-Control", "public, max-age=86400")
                 self.end_headers()
                 with open(js_path, "rb") as f:
@@ -2147,7 +2300,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             self.respond(404, {"error": "not found"})
 
     def respond(self, code, data):
-        self.respond_json(code, data, cors=True)
+        # SECURITY: omit CORS * on /admin/* paths. Admin endpoints must not
+        # be callable from arbitrary third-party origins in a browser context.
+        # Other endpoints keep CORS * for the mesh/vault use case (phones
+        # and desktops making cross-origin requests via fetch()).
+        is_admin = self.path.startswith("/admin/") or self.path.startswith("/api/web-session")
+        self.respond_json(code, data, cors=not is_admin)
 
     def log_message(self, format, *args):
         print(f"[{now()}] Webhook: {args[0]}")

@@ -57,6 +57,11 @@ public class ControlService extends Service {
     // SHA256 of the last successfully-pushed runtime body. Skip the next push
     // if the body hasn't changed — RSA encryption per recipient is expensive.
     private volatile String lastRuntimeBodyHash = "";
+    // P6.5: cache approved vault node pubkeys for multi-signer verification.
+    // Relay-signed admin orders are verified against this list alongside Lion's pubkey.
+    private final java.util.List<String> approvedNodePubkeys = new java.util.ArrayList<>();
+    private volatile long approvedNodesFetchedAt = 0;
+    private static final long NODES_REFRESH_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
     // Cached vault keypair — avoids KeyStore IPC on every tick
     private volatile byte[] cachedNodePubDer = null;
     private volatile java.security.PrivateKey cachedNodePrivKey = null;
@@ -2679,10 +2684,50 @@ public class ControlService extends Service {
     }
 
     /**
-     * Phase C vault reader (see docs/VAULT-DESIGN.md §7.2).
-     * Polls /vault/{mesh_id}/since/{current_version}, verifies each blob's
-     * Lion signature, decrypts the body, and applies orders. Best-effort:
-     * failures are logged but the legacy gossip continues to run.
+     * P6.5: Fetch approved vault node pubkeys from relay for multi-signer verification.
+     * Relay-signed admin orders won't match Lion's pubkey — they match the relay's
+     * registered node pubkey in this list.
+     */
+    private void fetchApprovedNodes(String meshUrl, String meshId) {
+        try {
+            String url = meshUrl + "/vault/" + meshId + "/nodes";
+            String resp = vaultHttpGet(url);
+            if (resp == null) return;
+            org.json.JSONObject obj = new org.json.JSONObject(resp);
+            org.json.JSONArray nodes = obj.optJSONArray("nodes");
+            if (nodes == null) return;
+            synchronized (approvedNodePubkeys) {
+                approvedNodePubkeys.clear();
+                for (int i = 0; i < nodes.length(); i++) {
+                    String pk = nodes.getJSONObject(i).optString("node_pubkey", "");
+                    if (!pk.isEmpty()) approvedNodePubkeys.add(pk);
+                }
+            }
+            approvedNodesFetchedAt = System.currentTimeMillis();
+            Log.w(TAG, "vault: fetched " + nodes.length() + " approved node pubkeys");
+        } catch (Exception e) {
+            Log.w(TAG, "vault: fetch nodes failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * P6.5: Check if a blob is signed by any approved vault node.
+     * Returns true if the signature matches any cached node pubkey.
+     */
+    private boolean isSignedByApprovedNode(java.util.Map<String, Object> blob) {
+        synchronized (approvedNodePubkeys) {
+            for (String pk : approvedNodePubkeys) {
+                if (VaultCrypto.verifySignature(blob, pk)) return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Vault reader — polls /vault/{mesh_id}/since/{current_version}, verifies
+     * each blob's signature (Lion, self, or approved node), decrypts the body,
+     * and applies orders. Best-effort: failures are logged but legacy gossip
+     * continues to run.
      *
      * Also handles first-time node registration via register-node-request.
      */
@@ -2698,6 +2743,11 @@ public class ControlService extends Service {
             java.security.PrivateKey myPrivKey = getNodePrivateKey();
             if (myPrivKey == null) { Log.e(TAG, "vault: no private key available"); return; }
             String mySlotId = VaultCrypto.slotIdForPubkey(myPubDer);
+
+            // P6.5: refresh approved node pubkeys periodically
+            if (System.currentTimeMillis() - approvedNodesFetchedAt > NODES_REFRESH_INTERVAL_MS) {
+                fetchApprovedNodes(meshUrl, meshId);
+            }
 
             // 1. Fetch blobs since current version
             long currentVersion = meshVersion.get();
@@ -2720,6 +2770,7 @@ public class ControlService extends Service {
             int applied = 0;
             int skipped = 0;
             boolean needRegister = false;
+            boolean lazyRefreshDone = false;  // Rate-limit lazy node refresh to once per poll
             long latestApplied = currentVersion;
             for (int i = 0; i < blobsArr.length(); i++) {
                 org.json.JSONObject blobJson = blobsArr.getJSONObject(i);
@@ -2729,19 +2780,29 @@ public class ControlService extends Service {
                 if (verObj instanceof Number) ver = ((Number) verObj).longValue();
                 if (ver <= latestApplied) { skipped++; continue; }
 
-                // Phase D two-writer: blobs may be signed by Lion (orders/RPC) or
-                // by THIS slave (our own runtime pushes). After a data wipe + restart,
-                // meshVersion resets to 0 and we'll re-fetch our own past pushes —
-                // verifying them with lionPub would always fail. Try lionPub first,
-                // then fall back to our own pubkey to detect self-pushes.
+                // Multi-signer verification (P6.5): blobs may be signed by:
+                // 1. Lion (orders/RPC from controller)
+                // 2. This slave (our own runtime pushes)
+                // 3. Approved node (relay admin orders, other nodes)
                 boolean isLionSigned = VaultCrypto.verifySignature(blob, lionPub);
                 boolean isSelfSigned = false;
+                boolean isNodeSigned = false;
                 if (!isLionSigned) {
                     String myPubB64 = android.util.Base64.encodeToString(
                         myPubDer, android.util.Base64.NO_WRAP);
                     isSelfSigned = VaultCrypto.verifySignature(blob, myPubB64);
                 }
                 if (!isLionSigned && !isSelfSigned) {
+                    isNodeSigned = isSignedByApprovedNode(blob);
+                    if (!isNodeSigned && !lazyRefreshDone) {
+                        // Lazy refresh: maybe a new node was approved since last fetch
+                        // Rate-limited to once per vaultSync() to prevent amplification
+                        lazyRefreshDone = true;
+                        fetchApprovedNodes(meshUrl, meshId);
+                        isNodeSigned = isSignedByApprovedNode(blob);
+                    }
+                }
+                if (!isLionSigned && !isSelfSigned && !isNodeSigned) {
                     Log.w(TAG, "vault: REJECTED v" + ver + " (bad signature)");
                     skipped++;
                     continue;

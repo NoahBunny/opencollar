@@ -47,6 +47,8 @@ DEFAULTS = {
     "ntfy_enabled": False,
     "ntfy_server": "https://ntfy.sh",
     "ntfy_topic": "",
+    "vault_transport": "http",
+    "syncthing_vault_dir": "",
     "banking": {
         "app_packages": [],
         "payment_url": "",
@@ -91,6 +93,9 @@ _ENV_MAP = {
     "FOCUSLOCK_NTFY_ENABLED": "ntfy_enabled",
     "FOCUSLOCK_NTFY_SERVER": "ntfy_server",
     "FOCUSLOCK_NTFY_TOPIC": "ntfy_topic",
+    # Transport (P7)
+    "FOCUSLOCK_VAULT_TRANSPORT": "vault_transport",
+    "FOCUSLOCK_SYNCTHING_VAULT_DIR": "syncthing_vault_dir",
     # Legacy
     "PHONE_PIN": "pin",
     "PHONE_URL": "_phone_url",  # parsed specially

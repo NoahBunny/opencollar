@@ -1137,6 +1137,12 @@ label {
   // ── DOM refs ──
   const $ = (sel, ctx) => (ctx || document).querySelector(sel);
   const $$ = (sel, ctx) => [...(ctx || document).querySelectorAll(sel)];
+  // XSS prevention: escape HTML entities in any mesh-controlled string
+  // before interpolating into innerHTML. Mesh orders can contain user-
+  // provided strings (messages, hostnames) which must never execute as HTML.
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
   const loginScreen = $('#loginScreen');
   const appShell = $('#appShell');
@@ -1233,7 +1239,7 @@ label {
 
   function showPromptModal(title, placeholder, confirmLabel, onConfirm) {
     $('#modalTitle').textContent = title;
-    $('#modalBody').innerHTML = `<input type="text" id="modalInput" placeholder="${placeholder}" style="margin-top:0.5rem">`;
+    $('#modalBody').innerHTML = `<input type="text" id="modalInput" placeholder="${esc(placeholder)}" style="margin-top:0.5rem">`;
     const actionsEl = $('#modalActions');
     actionsEl.innerHTML = '';
     [
@@ -1319,13 +1325,15 @@ label {
           fetch(`/admin/web-session/${qrSessionId}`)
             .then(r => r.json())
             .then(d => {
-              if (d.approved && d.admin_token) {
+              // Accept either session_token (new, scoped) or admin_token (legacy)
+              const tok = d.session_token || d.admin_token;
+              if (d.approved && tok) {
                 clearInterval(qrPollId);
                 qrPollId = null;
                 statusEl.textContent = 'Approved!';
-                PIN = d.admin_token;
+                PIN = tok;
                 MODE = 'relay';
-                enterApp(d.admin_token, null);
+                enterApp(tok, null);
                 // Fetch initial status after login
                 pollStatus();
               }
@@ -1482,12 +1490,12 @@ label {
       badge.classList.add('hidden');
     }
 
-    // Meta info
+    // Meta info — escape all mesh-controlled values to prevent XSS
     let parts = [];
-    if (status.escapes !== undefined) parts.push(`<span>Escapes: ${status.escapes}</span>`);
-    if (status.mode) parts.push(`<span>Mode: ${status.mode}</span>`);
-    if (status.message) parts.push(`<span>Msg: ${status.message}</span>`);
-    if (status.last_unlock_source) parts.push(`<span>Last unlock: ${status.last_unlock_source}</span>`);
+    if (status.escapes !== undefined) parts.push(`<span>Escapes: ${esc(status.escapes)}</span>`);
+    if (status.mode) parts.push(`<span>Mode: ${esc(status.mode)}</span>`);
+    if (status.message) parts.push(`<span>Msg: ${esc(status.message)}</span>`);
+    if (status.last_unlock_source) parts.push(`<span>Last unlock: ${esc(status.last_unlock_source)}</span>`);
     meta.innerHTML = parts.join('');
 
     // Paywall
@@ -1533,7 +1541,7 @@ label {
     }
     const keys = Object.keys(nodes);
 
-    // Device pills (Tab 1)
+    // Device pills (Tab 1) — escape all mesh-controlled values
     if (keys.length > 0) {
       pills.innerHTML = keys.map(k => {
         const n = nodes[k];
@@ -1541,13 +1549,13 @@ label {
         const locked = n.locked;
         const dotClass = locked ? 'locked' : (online ? 'online' : 'offline');
         const icon = (n.type === 'phone' || k.toLowerCase().includes('phone')) ? '\u{1F4F1}' : '\u{1F4BB}';
-        return `<div class="device-pill">${icon} <span class="dot ${dotClass}"></span> ${n.hostname || k}</div>`;
+        return `<div class="device-pill">${icon} <span class="dot ${dotClass}"></span> ${esc(n.hostname || k)}</div>`;
       }).join('');
     } else {
       pills.innerHTML = `<div class="device-pill">\u{1F4F1} <span class="dot ${status.locked ? 'locked' : 'online'}"></span> Phone</div>`;
     }
 
-    // Mesh device cards (Tab 3)
+    // Mesh device cards (Tab 3) — escape all mesh-controlled values
     if (keys.length > 0) {
       container.innerHTML = keys.map(k => {
         const n = nodes[k];
@@ -1559,8 +1567,8 @@ label {
             <div class="mesh-info">
               <span class="mesh-icon">${icon}</span>
               <div>
-                <div class="mesh-name">${n.hostname || k}</div>
-                <div class="mesh-type">${n.type || 'device'}</div>
+                <div class="mesh-name">${esc(n.hostname || k)}</div>
+                <div class="mesh-type">${esc(n.type || 'device')}</div>
               </div>
             </div>
             <div class="mesh-status-badges">

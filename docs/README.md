@@ -32,12 +32,14 @@ Lion's Device               Relay Server                    Bunny's Phone (Andro
    RSA-signed orders       |  - Photo verification |       | Vault mode E2E encrypted  |
    E2E encrypted           |  - Ollama LLM eval    |       | Session lock enforcement  |
    Zero-knowledge relay    +----------------------+       | Mesh node (gossip P2P)    |
+   (no Lion key on server)                                 | Pluggable transport:      |
+                                                           |  http | syncthing P2P     |
                                                            +---------------------------+
 ```
 
-## Zero-Knowledge Vault (Phase D)
+## Zero-Knowledge Vault (Phase D + P6.5)
 
-All order content is **end-to-end encrypted**. The relay server stores opaque ciphertext blobs and verifies RSA signatures but **cannot read** lock commands, paywall amounts, messages, geofence coordinates, or any other order content.
+All order content is **end-to-end encrypted**. The relay server stores opaque ciphertext blobs and verifies RSA signatures but **cannot read** lock commands, paywall amounts, messages, geofence coordinates, or any other order content. As of P6.5 (2026-04-10) **Lion's private key no longer exists on the server** — the relay generates its own keypair and signs admin orders with it, so a compromised public relay cannot forge orders on behalf of any Lion.
 
 | What the server sees | What the server can't see |
 |---------------------|--------------------------|
@@ -56,7 +58,42 @@ All order content is **end-to-end encrypted**. The relay server stores opaque ci
 | Signatures | RSA-PKCS1v15-SHA256 |
 | Canonical encoding | JSON sort_keys, no whitespace, ensure_ascii |
 
+### Multi-Signer Verification (P6.5)
+
+Each client maintains a cache of approved node pubkeys fetched from `/vault/{mesh_id}/nodes`. Blobs are accepted if signed by:
+
+- **Lion's pubkey** (orders from the controller)
+- **The client's own pubkey** (self-pushed runtime state, skipped on apply)
+- **Any approved node pubkey** (relay-signed admin orders, peer slave pushes)
+
+The cache refreshes every 30 minutes and lazily on unknown-signature blobs (rate-limited to once per poll to prevent amplification DoS).
+
+### Two Trust Tiers
+
+- **Public relay (Bunny Dev hosted):** no `OPERATOR_MESH_ID`, no admin API, no signing keys. Pure ciphertext blob store. Zero-knowledge by construction.
+- **Self-hosted / homelab:** `OPERATOR_MESH_ID` set, admin API scoped to that mesh only. Relay has its own keypair and signs admin orders (same trust domain as the operator — the operator IS the Lion).
+
 Legacy plaintext endpoints (`/mesh/sync`, `/mesh/order`, `/mesh/status`, `/desktop-status`) have been **removed**. The server only speaks vault. See `docs/VAULT-DESIGN.md` for the full threat model.
+
+## Transport Options (P7)
+
+The HTTP relay is now one of multiple pluggable transports. Lion chooses at setup time:
+
+| Transport | What it is | Infra | Cost |
+|-----------|-----------|-------|------|
+| **HTTPS relay** (default) | Vault blobs via HTTP to a relay server | VPS or homelab | $0–$10/mo |
+| **Syncthing P2P** | Vault blobs synced as files via Syncthing | Devices sync directly | $0 |
+| **Self-host homelab** | Your own relay on your hardware | Home server | $0 (sunk) |
+
+Configure via `vault_transport` in `~/.config/focuslock/config.json`:
+```json
+{
+  "vault_transport": "syncthing",
+  "syncthing_vault_dir": "~/Syncthing/focuslock-vault/"
+}
+```
+
+With Syncthing transport, no relay is needed at all. Your Lion's Share and desktop collars write vault blobs into a shared Syncthing folder; collars watch the directory. This is the "credible exit lane" — switch away from the hosted relay any time with zero lock-in. Android collars remain HTTP-only for now.
 
 ## Apps
 
@@ -157,13 +194,14 @@ Basic, Negotiation, Task, Compliment, Gratitude Journal, Exercise, Love Letter, 
 - `companion/` -- Bunny Tasker (bunny's phone, visible companion)
 
 ### Server
-- `focuslock-mail.py` -- Vault relay + webhook + mail service
-- `focuslock_mesh.py` -- Shared mesh gossip protocol
+- `focuslock-mail.py` -- Vault relay + webhook + mail service. Holds the relay keypair at `~/.config/focuslock/relay_{priv,pub}key.pem` (0o600). No Lion privkey.
+- `focuslock_mesh.py` -- Shared mesh gossip protocol (PIN-authed, signature-verified)
 - `focuslock_ntfy.py` -- ntfy push notifications (zero-knowledge)
 - `focuslock-bridge.sh` -- ADB bridge enforcement (homelab)
-- `web/index.html` -- Lion's Share web UI
+- `web/index.html` -- Lion's Share web UI (XSS-hardened)
 - `web/signup.html` -- Self-service mesh signup
-- `web/cost.html` -- Cost and trust transparency page
+- `web/cost.html` -- Cost transparency page
+- `web/trust.html` -- Trust & audit page (live /version, threat model, verification, canary)
 - `web/qrcode.min.js` -- QR code library for signup
 
 ### Desktop
@@ -174,8 +212,10 @@ Basic, Negotiation, Task, Compliment, Gratitude Journal, Exercise, Love Letter, 
 
 ### Shared (`shared/`)
 - `focuslock_vault.py` -- Python VaultCrypto (encrypt/decrypt/sign/verify)
+- `focuslock_transport.py` -- Pluggable vault transport (HTTP relay, Syncthing P2P)
 - `focuslock_config.py` -- Config loader
 - `focuslock_sync.py` -- Mesh sync helpers
+- `focuslock_http.py` -- JSON response mixin (sets X-Frame-Options, nosniff)
 - `banks.json` -- Payment detection keywords (145+ banks, 21 regions)
 
 ### Installers (`installers/`)
@@ -228,6 +268,8 @@ The relay server exposes a public `/version` endpoint:
 ```
 
 Auditors can: read source on GitHub -> compute hash -> `curl /version` -> verify match.
+
+The relay also serves a human-readable **Trust & Transparency page** at `/trust` (P8): live build info fetched from `/version`, threat model, cryptographic design, step-by-step verification instructions, self-host and P2P alternatives, and a warrant canary. See `web/trust.html`.
 
 ## License
 

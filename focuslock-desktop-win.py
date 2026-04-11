@@ -139,6 +139,14 @@ def get_lion_pubkey():
 # ── Vault Mode (Phase D desktop support) ──
 
 VAULT_MODE = _cfg.get("vault_mode", False) and VAULT_CRYPTO_OK and bool(MESH_ID)
+
+# P7: Transport abstraction — pluggable vault blob read/write backend
+try:
+    from focuslock_transport import transport_factory
+    _vault_transport = transport_factory(_cfg)
+except ImportError:
+    _vault_transport = None
+
 _vault_last_version = 0
 _vault_node_registered = False
 
@@ -170,45 +178,104 @@ def _vault_init_keypair():
         _vault_pubkey_der = der
         print(f"[vault] Generated new keypair (slot={vault_slot_id(der)})")
 
+# P6.5: approved node pubkeys cache for multi-signer verification
+_approved_node_pubkeys = []
+_nodes_last_fetch = 0
+_NODES_REFRESH_SECS = 1800  # 30 minutes
+
+def _vault_fetch_nodes():
+    """Fetch approved vault node pubkeys for multi-signer verification."""
+    global _approved_node_pubkeys, _nodes_last_fetch
+    try:
+        if _vault_transport:
+            nodes = _vault_transport.nodes(MESH_ID)
+        elif MESH_URL:
+            url = f"{MESH_URL}/vault/{MESH_ID}/nodes"
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+            nodes = data.get("nodes", [])
+        else:
+            return
+        _approved_node_pubkeys = [n.get("node_pubkey", "") for n in nodes if n.get("node_pubkey")]
+        _nodes_last_fetch = time.time()
+        print(f"[vault] Fetched {len(_approved_node_pubkeys)} approved node pubkeys")
+    except Exception as e:
+        print(f"[vault] Fetch nodes error: {e}")
+
+_lazy_refresh_done_this_poll = False
+
+def _vault_verify_any_signer(blob, lion_pub):
+    """P6.5: Verify blob against Lion pubkey OR any approved node pubkey."""
+    global _lazy_refresh_done_this_poll
+    if lion_pub and vault_verify(blob, lion_pub):
+        return True
+    for pk in _approved_node_pubkeys:
+        if pk and vault_verify(blob, pk):
+            return True
+    if not _lazy_refresh_done_this_poll:
+        _lazy_refresh_done_this_poll = True
+        _vault_fetch_nodes()
+        for pk in _approved_node_pubkeys:
+            if pk and vault_verify(blob, pk):
+                return True
+    return False
+
 def _vault_register_node():
     """Register this desktop as a vault recipient if not already."""
     global _vault_node_registered
-    if _vault_node_registered or not MESH_URL:
+    if _vault_node_registered:
+        return
+    if not _vault_transport and not MESH_URL:
         return
     import base64
     pubkey_b64 = base64.b64encode(_vault_pubkey_der).decode()
-    payload = json.dumps({
+    payload = {
         "node_id": MESH_NODE_ID,
         "node_type": "desktop",
         "node_pubkey": pubkey_b64,
-    }).encode()
+    }
     try:
-        req = urllib.request.Request(
-            f"{MESH_URL}/vault/{MESH_ID}/register-node",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            result = json.loads(resp.read())
-            if result.get("ok") or result.get("status") in ("approved", "pending"):
-                _vault_node_registered = True
-                print(f"[vault] Node registered: {result}")
+        if _vault_transport:
+            result = _vault_transport.register_node(MESH_ID, payload)
+        else:
+            body = json.dumps(payload).encode()
+            req = urllib.request.Request(
+                f"{MESH_URL}/vault/{MESH_ID}/register-node-request",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read())
+        if result.get("ok") or result.get("status") in ("approved", "pending"):
+            _vault_node_registered = True
+            print(f"[vault] Node registered: {result}")
     except Exception as e:
         print(f"[vault] Register error (will retry): {e}")
 
 def _vault_poll():
     """Fetch and decrypt vault blobs since last known version."""
-    global _vault_last_version
-    if not MESH_URL or not _vault_privkey_pem:
+    global _vault_last_version, _lazy_refresh_done_this_poll
+    if not _vault_privkey_pem:
         return
+    if not _vault_transport and not MESH_URL:
+        return
+    _lazy_refresh_done_this_poll = False
     _vault_register_node()
+    # P6.5: periodically refresh approved node pubkeys
+    if time.time() - _nodes_last_fetch > _NODES_REFRESH_SECS:
+        _vault_fetch_nodes()
     try:
-        url = f"{MESH_URL}/vault/{MESH_ID}/since/{_vault_last_version}"
-        req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-        blobs = data.get("blobs", [])
+        # P7: use transport abstraction if available
+        if _vault_transport:
+            blobs, _ = _vault_transport.since(MESH_ID, _vault_last_version)
+        else:
+            url = f"{MESH_URL}/vault/{MESH_ID}/since/{_vault_last_version}"
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+            blobs = data.get("blobs", [])
         if not blobs:
             return
         lion_pub = get_lion_pubkey()
@@ -216,7 +283,8 @@ def _vault_poll():
             v = blob.get("version", 0)
             if v <= _vault_last_version:
                 continue
-            if lion_pub and not vault_verify(blob, lion_pub):
+            # P6.5: verify against Lion pubkey OR any approved node
+            if not _vault_verify_any_signer(blob, lion_pub):
                 print(f"[vault] Signature verification FAILED for v{v} — skipping")
                 continue
             plaintext = vault_decrypt(blob, _vault_privkey_pem, _vault_pubkey_der)
@@ -907,7 +975,14 @@ def _show_countdown_warning(remaining_ms: int, message: str):
     else:
         winsound.Beep(600, 150)   # low pitch, normal warning
 
-    # Windows toast notification via PowerShell
+    # Windows toast notification via PowerShell.
+    # SECURITY: title/body come from mesh orders (user-controlled). We escape
+    # single quotes (PowerShell's literal-string escape) to prevent command
+    # injection. PowerShell uses '' to escape a single quote inside a '...' string.
+    def _ps_escape(s):
+        return str(s).replace("'", "''")
+    title_esc = _ps_escape(title)
+    body_esc = _ps_escape(body)
     try:
         ps_cmd = (
             "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, "
@@ -915,8 +990,8 @@ def _show_countdown_warning(remaining_ms: int, message: str):
             "$xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent("
             "[Windows.UI.Notifications.ToastTemplateType]::ToastText02); "
             "$texts = $xml.GetElementsByTagName('text'); "
-            f"$texts[0].AppendChild($xml.CreateTextNode('{title}')) > $null; "
-            f"$texts[1].AppendChild($xml.CreateTextNode('{body}')) > $null; "
+            f"$texts[0].AppendChild($xml.CreateTextNode('{title_esc}')) > $null; "
+            f"$texts[1].AppendChild($xml.CreateTextNode('{body_esc}')) > $null; "
             "$toast = [Windows.UI.Notifications.ToastNotification]::new($xml); "
             "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('FocusLock').Show($toast)"
         )
@@ -936,9 +1011,15 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 def _create_pairing_code(body):
     """Generate a pairing code with config payload for new devices."""
-    import random
+    import secrets
     import string
-    code = body.get("code") or "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    import re as _re
+    chars = string.ascii_uppercase + string.digits
+    code = body.get("code") or "".join(secrets.choice(chars) for _ in range(6))
+    code = str(code).upper().strip()
+    # SECURITY: pairing code must be alphanumeric only (used as filename)
+    if not _re.match(r'^[A-Z0-9]{4,12}$', code):
+        return {"ok": False, "error": "invalid code format"}
     expires_min = body.get("expires_minutes", 60)
     my_addrs = get_local_addresses()
     config = {
@@ -960,12 +1041,27 @@ def _create_pairing_code(body):
 
 
 class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
+    MAX_BODY_BYTES = 1_048_576  # 1 MB — matches server
+
     def log_message(self, format, *args):
         pass  # Suppress HTTP logs
 
     def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(length)) if length else {}
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (ValueError, TypeError):
+            self.send_response(400)
+            self.end_headers()
+            return
+        if length > self.MAX_BODY_BYTES:
+            self.send_response(413)
+            self.end_headers()
+            return
+        try:
+            body = json.loads(self.rfile.read(length)) if length else {}
+        except (json.JSONDecodeError, ValueError):
+            self.respond_json(400, {"error": "invalid JSON"})
+            return
         path = self.path
 
         if path == "/mesh/sync":
@@ -984,6 +1080,9 @@ class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 lion_pubkey=get_lion_pubkey(),
                 on_orders_applied=on_mesh_orders_applied,
             )
+            if isinstance(resp, dict) and "unauthenticated" in resp.get("error", ""):
+                self.respond_json(403, resp, cors=True)
+                return
         elif path == "/api/pair/create":
             resp = _create_pairing_code(body)
         else:
@@ -1033,7 +1132,13 @@ class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
 
     def _serve_pairing_code(self, code):
         """Serve pairing config for a given code."""
-        code_file = os.path.join(CONFIG_DIR, "pairing-codes", f"{code.upper()}.json")
+        import re as _re
+        code = str(code).upper().strip()
+        # SECURITY: validate alphanumeric to prevent path traversal
+        if not _re.match(r'^[A-Z0-9]{4,12}$', code):
+            self.respond_json(400, {"error": "invalid code format"})
+            return
+        code_file = os.path.join(CONFIG_DIR, "pairing-codes", f"{code}.json")
         if os.path.exists(code_file):
             with open(code_file, "r") as f:
                 self.respond_json(200, json.load(f))

@@ -31,6 +31,9 @@ class JSONResponseMixin:
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        # Clickjacking protection — deny framing regardless of origin
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Content-Type-Options", "nosniff")
         if cors:
             self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()

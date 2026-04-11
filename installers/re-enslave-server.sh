@@ -67,7 +67,7 @@ if [ -f "$ICONS/$SERVER_ICON" ]; then
     DEPLOY_PAIRS+=("$ICONS/$SERVER_ICON|/opt/focuslock/$SERVER_ICON")
 fi
 # Web UI (relay HTML pages + JS assets)
-for wf in index.html signup.html cost.html qrcode.min.js; do
+for wf in index.html signup.html cost.html trust.html qrcode.min.js; do
     if [ -f "$LS/web/$wf" ]; then
         DEPLOY_PAIRS+=("$LS/web/$wf|/opt/focuslock/web/$wf")
     fi
