@@ -2574,57 +2574,37 @@ public class ControlService extends Service {
      */
     private byte[] ensureNodeKeypair() {
         if (cachedNodePubDer != null) return cachedNodePubDer;
+        // HOTFIX 2026-04-11: bypass AndroidKeyStore due to an OAEP MGF1 digest
+        // mismatch. The KeyGenParameterSpec below declared only SHA-256 as the
+        // digest, but Android's AndroidKeyStore OAEP implementation uses
+        // MGF1-SHA1 internally regardless — so Cipher.init with
+        // OAEPParameterSpec(MGF1-SHA256) fails at decrypt time with
+        // "Keystore operation failed", breaking every lock / message delivery.
+        // TODO: properly fix by (a) declaring setDigests(SHA256, SHA1) AND
+        // switching VaultCrypto.decryptOrders to OAEPParameterSpec with
+        // MGF1-SHA1, or (b) splitting: hardware key for SIGN only, software
+        // key for DECRYPT. For now, always use the software-key path stored
+        // in Settings.Global. Delete any stale KeyStore alias to avoid the
+        // branch in getNodePrivateKey() picking up a dead entry.
         try {
-            // 1. Check if AndroidKeyStore key exists
             java.security.KeyStore ks = java.security.KeyStore.getInstance("AndroidKeyStore");
             ks.load(null);
             if (ks.containsAlias(KEYSTORE_ALIAS)) {
-                java.security.cert.Certificate cert = ks.getCertificate(KEYSTORE_ALIAS);
-                byte[] pubDer = cert.getPublicKey().getEncoded();
-                String pub = android.util.Base64.encodeToString(pubDer, android.util.Base64.NO_WRAP);
-                Settings.Global.putString(getContentResolver(), "focus_lock_node_pubkey", pub);
-                cachedNodePubDer = pubDer;
-                cachedNodePrivKey = (java.security.PrivateKey) ks.getKey(KEYSTORE_ALIAS, null);
-                return pubDer;
+                ks.deleteEntry(KEYSTORE_ALIAS);
+                Log.w(TAG, "HOTFIX: deleted stale AndroidKeyStore alias " + KEYSTORE_ALIAS);
             }
-
-            // 2. Generate new key in AndroidKeyStore
-            android.security.keystore.KeyGenParameterSpec spec =
-                new android.security.keystore.KeyGenParameterSpec.Builder(
-                    KEYSTORE_ALIAS,
-                    android.security.keystore.KeyProperties.PURPOSE_DECRYPT
-                    | android.security.keystore.KeyProperties.PURPOSE_SIGN)
-                .setKeySize(2048)
-                .setDigests(android.security.keystore.KeyProperties.DIGEST_SHA256)
-                .setEncryptionPaddings(android.security.keystore.KeyProperties.ENCRYPTION_PADDING_RSA_OAEP)
-                .setSignaturePaddings(android.security.keystore.KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
-                .build();
-            KeyPairGenerator kpg = KeyPairGenerator.getInstance(
-                android.security.keystore.KeyProperties.KEY_ALGORITHM_RSA, "AndroidKeyStore");
-            kpg.initialize(spec);
-            java.security.KeyPair kp = kpg.generateKeyPair();
-            byte[] pubDer = kp.getPublic().getEncoded();
-            String pub = android.util.Base64.encodeToString(pubDer, android.util.Base64.NO_WRAP);
-            Settings.Global.putString(getContentResolver(), "focus_lock_node_pubkey", pub);
-
-            // 3. If there was a legacy Settings.Global key, this is a migration.
-            //    Keep the old privkey until the new key is registered and approved.
-            //    Flag that we need to re-register with the new pubkey.
-            String oldPriv = gstr("focus_lock_node_privkey");
-            if (!oldPriv.isEmpty()) {
-                Settings.Global.putString(getContentResolver(), "focus_lock_node_privkey_legacy", oldPriv);
-                Settings.Global.putString(getContentResolver(), "focus_lock_node_privkey", "");
-                Log.w(TAG, "KeyStore migration: new key generated, legacy key preserved for transition");
+            // Also clear any legacy KeyStore-era state in Settings.Global so
+            // ensureNodeKeypairLegacy regenerates fresh software keys.
+            if (!gstr("focus_lock_node_privkey_legacy").isEmpty()) {
+                Settings.Global.putString(getContentResolver(),
+                    "focus_lock_node_privkey_legacy", "");
             }
-
-            Log.w(TAG, "Generated KeyStore vault keypair (slot=" + VaultCrypto.slotIdForPubkey(pubDer) + ")");
-            cachedNodePubDer = pubDer;
-            cachedNodePrivKey = kp.getPrivate();
-            return pubDer;
         } catch (Exception e) {
-            Log.e(TAG, "ensureNodeKeypair (KeyStore) failed, falling back to legacy", e);
-            return ensureNodeKeypairLegacy();
+            Log.w(TAG, "HOTFIX: KeyStore cleanup failed (non-fatal): " + e.getMessage());
         }
+        byte[] pubDer = ensureNodeKeypairLegacy();
+        cachedNodePubDer = pubDer;
+        return pubDer;
     }
 
     /** Legacy key generation (software-backed, extractable). Used as fallback. */
@@ -2658,17 +2638,9 @@ public class ControlService extends Service {
      */
     private java.security.PrivateKey getNodePrivateKey() {
         if (cachedNodePrivKey != null) return cachedNodePrivKey;
-        try {
-            java.security.KeyStore ks = java.security.KeyStore.getInstance("AndroidKeyStore");
-            ks.load(null);
-            if (ks.containsAlias(KEYSTORE_ALIAS)) {
-                cachedNodePrivKey = (java.security.PrivateKey) ks.getKey(KEYSTORE_ALIAS, null);
-                return cachedNodePrivKey;
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "KeyStore getKey failed: " + e);
-        }
-        // Fallback to legacy key or migration key
+        // HOTFIX 2026-04-11: bypass AndroidKeyStore for the same reason as
+        // ensureNodeKeypair — OAEP MGF1 digest mismatch causes decrypt to
+        // fail. Always load the software key from Settings.Global instead.
         String privB64 = gstr("focus_lock_node_privkey");
         if (privB64.isEmpty()) privB64 = gstr("focus_lock_node_privkey_legacy");
         if (!privB64.isEmpty()) {
