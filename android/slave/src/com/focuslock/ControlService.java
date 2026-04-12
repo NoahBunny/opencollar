@@ -1787,6 +1787,33 @@ public class ControlService extends Service {
         }
     }
 
+    /** Show a warm praise notification from Lion — a reward, not a command. */
+    private void showPraiseNotification(String text) {
+        try {
+            NotificationChannel ch = new NotificationChannel(
+                "praise", "Lion's Praise", NotificationManager.IMPORTANCE_HIGH);
+            ch.setShowBadge(true);
+            ch.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+            ch.setDescription("Warm messages from your Lion");
+            getSystemService(NotificationManager.class).createNotificationChannel(ch);
+
+            Notification n = new Notification.Builder(this, "praise")
+                .setContentTitle("\u2764\uFE0F From your Lion")
+                .setContentText(text)
+                .setStyle(new Notification.BigTextStyle().bigText(text))
+                .setSmallIcon(android.R.drawable.btn_star_big_on)
+                .setCategory(Notification.CATEGORY_MESSAGE)
+                .setPriority(Notification.PRIORITY_HIGH)
+                .setDefaults(Notification.DEFAULT_SOUND | Notification.DEFAULT_VIBRATE)
+                .setAutoCancel(true)
+                .build();
+            getSystemService(NotificationManager.class).notify(97, n);
+            Log.i(TAG, "Praise notification: " + text);
+        } catch (Exception e) {
+            Log.e(TAG, "Praise notification failed", e);
+        }
+    }
+
     /** Disable all escape hatches — called on lock AND every 2s while locked. */
     private void enforceEscapeHatches() {
         try {
@@ -2334,6 +2361,7 @@ public class ControlService extends Service {
                 boolean encrypted = "true".equals(jval(body, "encrypted"));
                 boolean pinned = "true".equals(jval(body, "pinned"));
                 boolean mandatoryReply = "true".equals(jval(body, "mandatory_reply"));
+                boolean praise = "true".equals(jval(body, "praise"));
                 try {
                     org.json.JSONObject m = new org.json.JSONObject();
                     m.put("from", from);
@@ -2346,6 +2374,7 @@ public class ControlService extends Service {
                     }
                     if (pinned) m.put("pinned", true);
                     if (mandatoryReply) m.put("mandatory_reply", true);
+                    if (praise) m.put("praise", true);
                     if (attachUrl != null && !attachUrl.isEmpty()) {
                         m.put("attachment_url", attachUrl);
                     }
@@ -2362,6 +2391,12 @@ public class ControlService extends Service {
                         Settings.Global.putString(getContentResolver(),
                             "focus_lock_pinned_message", text);
                     }
+
+                    // Praise: show a warm heads-up notification
+                    if (praise && text != null && !text.isEmpty()) {
+                        showPraiseNotification(text);
+                    }
+
                     result = "{\"ok\":true,\"action\":\"message_appended\"}";
                 } catch (Exception e) {
                     result = "{\"error\":\"send-message: " + esc(e.getMessage()) + "\"}";

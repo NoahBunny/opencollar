@@ -1075,8 +1075,9 @@ label {
       <div class="input-group">
         <textarea id="msgText" placeholder="Send a message to bunny..."></textarea>
       </div>
-      <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem">
+      <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;flex-wrap:wrap">
         <button class="toggle-btn" id="msgPin">Pin as notification</button>
+        <button class="toggle-btn" id="msgPraise">Praise</button>
       </div>
       <button class="btn btn-primary btn-full" id="btnSendMsg">Send</button>
     </div>
@@ -1775,6 +1776,7 @@ label {
   // Toggles that aren't modifiers
   $('#taskRandomize').addEventListener('click', function() { this.classList.toggle('active'); });
   $('#msgPin').addEventListener('click', function() { this.classList.toggle('active'); });
+  $('#msgPraise').addEventListener('click', function() { this.classList.toggle('active'); });
 
   // ── Task + Lock ──
   $('#btnTaskLock').addEventListener('click', () => {
@@ -1991,11 +1993,22 @@ label {
     const text = $('#msgText').value;
     if (!text.trim()) { toast('Enter a message', true); return; }
     const isPinned = $('#msgPin').classList.contains('active');
+    const isPraise = $('#msgPraise').classList.contains('active');
 
-    const endpoint = isPinned ? '/api/pin-message' : '/api/message';
-    api('POST', endpoint, { message: text })
-      .then(() => { toast(isPinned ? 'Pinned message sent' : 'Message sent'); $('#msgText').value = ''; })
-      .catch(e => toast(`Failed: ${e.message}`, true));
+    if (isPraise) {
+      // Praise routes through send-message action so the slave shows a
+      // warm notification.  Works in both vault and LAN mode via /mesh/order.
+      const params = { from: 'lion', text, praise: true };
+      if (isPinned) params.pinned = true;
+      api('POST', '/mesh/order', { action: 'send-message', params })
+        .then(() => { toast('Praise sent \u2764\uFE0F'); $('#msgText').value = ''; $('#msgPraise').classList.remove('active'); })
+        .catch(e => toast(`Failed: ${e.message}`, true));
+    } else {
+      const endpoint = isPinned ? '/api/pin-message' : '/api/message';
+      api('POST', endpoint, { message: text })
+        .then(() => { toast(isPinned ? 'Pinned message sent' : 'Message sent'); $('#msgText').value = ''; })
+        .catch(e => toast(`Failed: ${e.message}`, true));
+    }
   });
 
   // ── Scheduling Controls ──

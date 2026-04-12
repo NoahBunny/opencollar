@@ -2988,6 +2988,7 @@ public class MainActivity extends Activity {
                 boolean pinned = obj.contains("\"pinned\":true") || obj.contains("\"pinned\": true");
                 boolean mandatory = obj.contains("\"mandatory_reply\":true");
                 boolean replied = obj.contains("\"replied\":true");
+                boolean isPraise = obj.contains("\"praise\":true") || obj.contains("\"praise\": true");
                 String readByBunny = obj.contains("\"read_by_bunny\":true") ? "read" : "unread";
 
                 // Decrypt E2EE messages from bunny
@@ -3014,11 +3015,12 @@ public class MainActivity extends Activity {
 
                 boolean fromBunny = "bunny".equals(from);
                 boolean isSystem = "system".equals(from);
-                int bgColor = fromBunny ? 0xFF120e1a : isSystem ? 0xFF0e1a0e : 0xFF1a1808;
-                int textColor = fromBunny ? 0xFFaa88cc : isSystem ? 0xFF66aa66 : 0xFFDAA520;
+                int bgColor = isPraise ? 0xFF1a0e18 : fromBunny ? 0xFF120e1a : isSystem ? 0xFF0e1a0e : 0xFF1a1808;
+                int textColor = isPraise ? 0xFFe88ccc : fromBunny ? 0xFFaa88cc : isSystem ? 0xFF66aa66 : 0xFFDAA520;
 
-                String prefix = fromBunny ? "bunny" : isSystem ? "system" : "you";
+                String prefix = isPraise ? "\u2764\uFE0F" : fromBunny ? "bunny" : isSystem ? "system" : "you";
                 String suffix = "";
+                if (isPraise) suffix += " [praise]";
                 if (pinned) suffix += " [pinned]";
                 if (mandatory && !replied) suffix += " [MUST REPLY]";
                 if (fromBunny) suffix += " (" + readByBunny + ")";

@@ -78,7 +78,13 @@ discover_paths() {
 # `load_config` ahead of it (the previous order was a foot-gun in all 4
 # callers).
 check_paywall() {
-    if [ -z "${FOCUSLOCK_MESH_URL:-}" ] && [ -f "$HOME/.config/focuslock/re-enslave.config" ]; then
+    # Try both $HOME and the invoking user's home (sudo changes $HOME to /root)
+    local _real_home="${SUDO_USER:+$(eval echo "~$SUDO_USER")}"
+    _real_home="${_real_home:-$HOME}"
+    if [ -z "${FOCUSLOCK_MESH_URL:-}" ] && [ -f "$_real_home/.config/focuslock/re-enslave.config" ]; then
+        # shellcheck disable=SC1090
+        source "$_real_home/.config/focuslock/re-enslave.config"
+    elif [ -z "${FOCUSLOCK_MESH_URL:-}" ] && [ -f "$HOME/.config/focuslock/re-enslave.config" ]; then
         # shellcheck disable=SC1090
         source "$HOME/.config/focuslock/re-enslave.config"
     fi
@@ -107,7 +113,10 @@ print(o.get("paywall","") or "")' 2>/dev/null)
 # ── Per-user config loader ──
 # Reads ~/.config/focuslock/re-enslave.config if present. This is where users
 # put hostnames, IPs, and SSH targets that aren't safe to commit to git.
-RE_CONFIG="$HOME/.config/focuslock/re-enslave.config"
+# Use SUDO_USER's home when running under sudo (sudo changes $HOME to /root).
+_REAL_HOME="${SUDO_USER:+$(eval echo "~${SUDO_USER}")}"
+_REAL_HOME="${_REAL_HOME:-$HOME}"
+RE_CONFIG="$_REAL_HOME/.config/focuslock/re-enslave.config"
 load_config() {
     if [ -f "$RE_CONFIG" ]; then
         # shellcheck disable=SC1090
