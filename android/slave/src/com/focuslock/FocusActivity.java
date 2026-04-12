@@ -172,7 +172,7 @@ public class FocusActivity extends Activity {
                 new android.window.OnBackInvokedCallback() {
                     @Override
                     public void onBackInvoked() {
-                        recordEscape(); // Back gesture = escape attempt
+                        // Consumed — back gesture does nothing during lock
                     }
                 }
             );
@@ -1206,20 +1206,33 @@ public class FocusActivity extends Activity {
     }
 
     private void applyImmersive() {
-        // Full immersive sticky — hide both status bar and navigation bar
-        // Nav bar reappears briefly on swipe but auto-hides; touches still work
-        getWindow().getDecorView().setSystemUiVisibility(
-            View.SYSTEM_UI_FLAG_FULLSCREEN
-            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-        );
-        // Re-apply if system UI changes (e.g. user swipes nav bar up)
+        // Modern API (API 30+): WindowInsetsController with TRANSIENT bars.
+        // Transient bars appear as semi-transparent overlays on swipe but
+        // CANNOT be interacted with — the notification shade can't be pulled
+        // down from a transient status bar.  Auto-hides after ~3 seconds.
+        if (Build.VERSION.SDK_INT >= 30) {
+            android.view.WindowInsetsController wic = getWindow().getInsetsController();
+            if (wic != null) {
+                wic.hide(android.view.WindowInsets.Type.statusBars()
+                    | android.view.WindowInsets.Type.navigationBars());
+                wic.setSystemBarsBehavior(
+                    android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            }
+        } else {
+            // Fallback for older devices (API 26-29)
+            getWindow().getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_FULLSCREEN
+                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+            );
+        }
+        // Re-apply on any system UI change (belt-and-suspenders)
         getWindow().getDecorView().setOnSystemUiVisibilityChangeListener(vis -> {
             if ((vis & View.SYSTEM_UI_FLAG_FULLSCREEN) == 0) {
-                handler.postDelayed(this::applyImmersive, 1000);
+                handler.postDelayed(this::applyImmersive, 50);
             }
         });
     }
@@ -1228,11 +1241,42 @@ public class FocusActivity extends Activity {
         return Settings.Global.getInt(getContentResolver(), "focus_lock_active", 0) == 1;
     }
 
+    /** When we're ROLE_HOME but not locked, forward to the real launcher. */
+    private void launchPriorHome() {
+        String pkg = resolvePriorHomePkg();
+        if (pkg == null) return;
+        try {
+            Intent homeIntent = new Intent(Intent.ACTION_MAIN);
+            homeIntent.addCategory(Intent.CATEGORY_HOME);
+            homeIntent.setPackage(pkg);
+            homeIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(homeIntent);
+        } catch (Exception e) {
+            // Launcher not found — just finish and let the system handle it
+        }
+    }
+
+    /** Resolve the prior home launcher: stored preference, then first non-Collar launcher. */
+    private String resolvePriorHomePkg() {
+        String stored = Settings.Global.getString(getContentResolver(), "focus_lock_prior_home_pkg");
+        if (stored != null && !stored.isEmpty()) {
+            try { getPackageManager().getPackageInfo(stored, 0); return stored; }
+            catch (Exception e) { /* uninstalled — fall through */ }
+        }
+        Intent homeIntent = new Intent(Intent.ACTION_MAIN);
+        homeIntent.addCategory(Intent.CATEGORY_HOME);
+        for (android.content.pm.ResolveInfo ri :
+                getPackageManager().queryIntentActivities(homeIntent, 0)) {
+            if (!"com.focuslock".equals(ri.activityInfo.packageName)) return ri.activityInfo.packageName;
+        }
+        return null;
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
         activityVisible = true;
-        if (!isLockActive()) { finish(); return; }
+        if (!isLockActive()) { launchPriorHome(); finish(); return; }
 
         // First-time consent check
         int consented = Settings.Global.getInt(getContentResolver(), "focus_lock_consented", 0);
@@ -1326,17 +1370,20 @@ public class FocusActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
-        // Back button — real escape attempt (rarely fires on modern Android)
-        recordEscape();
+        // Back button is harmless during lock — consumed, no escape penalty
     }
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_CAMERA) {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            return true; // consumed, no penalty
+        }
+        if (keyCode == KeyEvent.KEYCODE_CAMERA) {
             recordEscape();
             return true;
         }
         if (keyCode == KeyEvent.KEYCODE_HOME || keyCode == KeyEvent.KEYCODE_APP_SWITCH) {
+            recordEscape();
             return true;
         }
         return super.onKeyDown(keyCode, event);
@@ -1347,13 +1394,16 @@ public class FocusActivity extends Activity {
         super.onStop();
         activityVisible = false;
         if (isLockActive() && !allowPause) {
-            // Just relaunch — no app launch penalty (too many false positives from screen off)
+            // App switch / notification tap while locked = escape attempt.
+            // recordEscape() checks isInteractive() so screen-off won't count.
+            recordEscape();
+            // Relaunch fast — 200ms keeps us ahead of notification-tap app launches
             handler.postDelayed(() -> {
                 if (isLockActive() && !allowPause) {
                     startActivity(new Intent(this, FocusActivity.class)
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT));
                 }
-            }, 500);
+            }, 200);
         }
         if (allowPause) {
             // 15 seconds for banking app, then jail comes back

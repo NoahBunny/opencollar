@@ -39,18 +39,14 @@ public class ControlService extends Service {
     private static final int PORT = 8432;
 
     /**
-     * Launchers + Settings we try to disable on lock so the home button and
-     * the escape-hatch app can't break out. NOTE: {@code Runtime.exec("pm
-     * disable-user …")} runs as the slave's app UID, NOT shell, so these
-     * commands typically fail silently on most phones. We still issue them
-     * because (a) on rooted / device-owner devices they do work, and (b) it
-     * documents intent. The REAL fix for the home button is
-     * {@code RoleManager.ROLE_HOME} — see landmine #3 in
-     * project_collar_landmines.md and the deferred follow-up task.
+     * Launchers + Settings we try to disable on lock. {@code pm disable-user}
+     * runs as the slave's app UID (not shell) so these fail silently on most
+     * phones — kept as belt-and-suspenders alongside ROLE_HOME.
      *
-     * Jace and Livv's phones both run Fossify Launcher
-     * ({@code org.fossify.home}), which was missing from this list prior to
-     * slave v56 — hence the home-button enforcement gap Livv observed.
+     * Primary enforcement: ROLE_HOME requested at consent time (ConsentActivity)
+     * and forced via {@code cmd role set-role-holder} during ADB recage. When
+     * held, the home button always lands in FocusActivity; on unlock the prior
+     * launcher is forwarded to via {@link #launchPriorHome()}.
      */
     private static final String[] ESCAPE_HATCH_PACKAGES = {
         "com.android.launcher3",
@@ -948,7 +944,9 @@ public class ControlService extends Service {
             Settings.Global.putInt(getContentResolver(), "focus_lock_saved_volume_notif",
                 am.getStreamVolume(android.media.AudioManager.STREAM_NOTIFICATION));
         } catch (Exception e) {}
-        // Disable escape hatches: status bar (notification shade), launcher (home button), settings
+        // Disable escape hatches: notification shade via policy_control (works with
+        // WRITE_SECURE_SETTINGS), launcher packages (best-effort from app UID)
+        Settings.Global.putString(getContentResolver(), "policy_control", "immersive.full=*");
         try {
             Runtime.getRuntime().exec(new String[]{"cmd", "statusbar", "disable-for-setup", "true"});
             for (String pkg : ESCAPE_HATCH_PACKAGES) {
@@ -981,15 +979,17 @@ public class ControlService extends Service {
         Settings.Global.putInt(getContentResolver(), "focus_lock_mute", 0);
         Settings.Global.putInt(getContentResolver(), "focus_lock_vibrate", 0);
         // Try to restore statusbar + launcher via shell (best effort — bridge also does this).
-        // Same UID caveat applies as in ESCAPE_HATCH_PACKAGES — these exec
-        // calls are no-ops under a regular app UID.
+        // Restore notification shade + system UI
+        Settings.Global.putString(getContentResolver(), "policy_control", "");
         try {
             Runtime.getRuntime().exec(new String[]{"cmd", "statusbar", "disable-for-setup", "false"});
             for (String pkg : ESCAPE_HATCH_PACKAGES) {
                 Runtime.getRuntime().exec(new String[]{"pm", "enable", "--user", "0", pkg});
             }
-            Runtime.getRuntime().exec(new String[]{"input", "keyevent", "KEYCODE_HOME"});
         } catch (Exception e) {}
+        // Launch the user's real home launcher directly.  When we hold ROLE_HOME,
+        // a HOME keyevent would bounce through FocusActivity — skip the round trip.
+        launchPriorHome();
         // Re-enable camera double-press shortcut
         try {
             Settings.Secure.putInt(getContentResolver(), "camera_double_tap_power_gesture_disabled", 0);
@@ -1728,7 +1728,18 @@ public class ControlService extends Service {
     }
 
     private void launchFocus() {
-        // Full-screen notification — shows FocusActivity immediately like an alarm/call
+        // Direct activity start — works when screen is on (fullScreenIntent only
+        // auto-launches when the keyguard is showing / screen is off).
+        try {
+            Intent direct = new Intent(this, FocusActivity.class);
+            direct.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+            startActivity(direct);
+        } catch (Exception e) {
+            Log.w(TAG, "Direct FocusActivity launch failed (BAL?): " + e);
+        }
+
+        // Full-screen notification — fallback for screen-off / keyguard scenarios
         try {
             Intent i = new Intent(this, FocusActivity.class);
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
@@ -1816,11 +1827,11 @@ public class ControlService extends Service {
 
     /** Disable all escape hatches — called on lock AND every 2s while locked. */
     private void enforceEscapeHatches() {
+        // Force immersive mode system-wide — blocks notification shade pull-down.
+        // Works because the slave holds WRITE_SECURE_SETTINGS.
+        Settings.Global.putString(getContentResolver(), "policy_control", "immersive.full=*");
         try {
-            // Disable notification shade (pull-down)
             Runtime.getRuntime().exec(new String[]{"cmd", "statusbar", "disable-for-setup", "true"});
-            // Disable all launchers (home button goes nowhere) + Settings
-            // Package list is shared with doLock() — see ESCAPE_HATCH_PACKAGES.
             for (String pkg : ESCAPE_HATCH_PACKAGES) {
                 Runtime.getRuntime().exec(new String[]{"pm", "disable-user", "--user", "0", pkg});
             }
@@ -1832,6 +1843,37 @@ public class ControlService extends Service {
         try {
             getSystemService(NotificationManager.class).cancel(99);
         } catch (Exception e) {}
+    }
+
+    /** Launch the user's real home launcher (stored at consent time or detected). */
+    private void launchPriorHome() {
+        String pkg = resolvePriorHomePkg();
+        if (pkg == null) return;
+        try {
+            Intent homeIntent = new Intent(Intent.ACTION_MAIN);
+            homeIntent.addCategory(Intent.CATEGORY_HOME);
+            homeIntent.setPackage(pkg);
+            homeIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(homeIntent);
+        } catch (Exception e) {
+            Log.w(TAG, "launchPriorHome failed for " + pkg + ": " + e);
+        }
+    }
+
+    /** Resolve the prior home launcher: stored preference, then first non-Collar launcher. */
+    private String resolvePriorHomePkg() {
+        String stored = Settings.Global.getString(getContentResolver(), "focus_lock_prior_home_pkg");
+        if (stored != null && !stored.isEmpty()) {
+            try { getPackageManager().getPackageInfo(stored, 0); return stored; }
+            catch (Exception e) { /* uninstalled — fall through */ }
+        }
+        Intent homeIntent = new Intent(Intent.ACTION_MAIN);
+        homeIntent.addCategory(Intent.CATEGORY_HOME);
+        for (android.content.pm.ResolveInfo ri :
+                getPackageManager().queryIntentActivities(homeIntent, 0)) {
+            if (!"com.focuslock".equals(ri.activityInfo.packageName)) return ri.activityInfo.packageName;
+        }
+        return null;
     }
 
     private String doAdbPort() {
@@ -2178,7 +2220,7 @@ public class ControlService extends Service {
         String ntfyTopic = gstr("focus_lock_ntfy_topic");
         if (ntfyTopic.isEmpty()) {
             String mid = gstr("focus_lock_mesh_id");
-            if (!mid.isEmpty()) ntfyTopic = "fl-" + mid;
+            if (!mid.isEmpty()) ntfyTopic = "focuslock-" + mid;
         }
         if (!ntfyTopic.isEmpty()) {
             if (ntfyServer.isEmpty()) ntfyServer = "https://ntfy.sh";

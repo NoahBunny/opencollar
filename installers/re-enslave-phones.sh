@@ -122,6 +122,14 @@ recage_focuslock() {
     adb_cmd -s "$dev" shell "dpm set-active-admin --user 0 com.focuslock/.AdminReceiver" >/dev/null 2>&1 || true
     adb_cmd -s "$dev" shell "cmd notification allow_listener com.focuslock/.PaymentListener" >/dev/null 2>&1 || true
     adb_cmd -s "$dev" shell "settings put global focus_lock_consent_given 1" >/dev/null 2>&1 || true
+    # Make The Collar the default home app so the home button always lands in FocusActivity.
+    # Stores the prior launcher first so unlock can forward back to it.
+    local prior_home
+    prior_home=$(adb_cmd -s "$dev" shell "cmd role get-role-holders android.app.role.HOME" 2>/dev/null | tr -d '\r\n ')
+    if [ -n "$prior_home" ] && [ "$prior_home" != "com.focuslock" ]; then
+        adb_cmd -s "$dev" shell "settings put global focus_lock_prior_home_pkg $prior_home" >/dev/null 2>&1 || true
+    fi
+    adb_cmd -s "$dev" shell "cmd role add-role-holder --user 0 android.app.role.HOME com.focuslock 0" >/dev/null 2>&1 || true
     adb_cmd -s "$dev" shell "am force-stop com.focuslock" >/dev/null 2>&1 || true
     adb_cmd -s "$dev" shell "am start-foreground-service -n com.focuslock/.ControlService" >/dev/null 2>&1 || true
 

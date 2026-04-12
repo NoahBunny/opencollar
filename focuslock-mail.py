@@ -1709,9 +1709,10 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 apply_fn=mesh_apply_order,
                 lion_pubkey=get_lion_pubkey(),
                 on_orders_applied=on_mesh_orders_applied,
-                ntfy_fn=ntfy_fn,
+                ntfy_fn=None,  # Don't fire ntfy here — vault blob isn't written yet
             )
-            # Also write as vault blob so vault-mode slaves pick it up
+            # Write vault blob FIRST, then fire ntfy so the slave sees
+            # the new blob when it wakes up (fixes ntfy race condition).
             action = data.get("action", "")
             params = data.get("params", {})
             if action:
@@ -1719,6 +1720,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     _admin_order_to_vault_blob(action, params, req_mesh_id or OPERATOR_MESH_ID)
                 except Exception as e:
                     print(f"[admin] vault blob write failed: {e}")
+            if ntfy_fn:
+                try: ntfy_fn(mesh_orders.version)
+                except Exception: pass
             self.respond(200, result)
 
         # ── Account-Based Mesh API ──

@@ -36,6 +36,7 @@ import time
 import urllib.request
 import os
 import random
+import subprocess
 import sys
 import signal
 import threading
@@ -506,6 +507,54 @@ def _show_countdown_warning(remaining_ms: int, message: str):
 
 _poll_status_fn = None  # Set by CollarApp.do_activate so gossip can trigger immediate refresh
 
+_last_phone_lock_active = None  # track for ADB statusbar enforcement
+
+def _adb_statusbar_enforce(lock_active):
+    """Toggle phone statusbar via ADB shell when lock state changes.
+    Only works from a machine with an active ADB connection to the phone
+    (vir). Silently no-ops if no phone is connected."""
+    cmd = "true" if lock_active else "false"
+    adb_port = os.environ.get("ANDROID_ADB_SERVER_PORT", "15037")
+    try:
+        out = subprocess.check_output(
+            ["adb", "devices"], env={**os.environ, "ANDROID_ADB_SERVER_PORT": adb_port},
+            timeout=5, stderr=subprocess.DEVNULL).decode()
+        for line in out.strip().splitlines()[1:]:
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == "device":
+                dev = parts[0]
+                subprocess.Popen(
+                    ["adb", "-s", dev, "shell", "cmd", "statusbar", "disable-for-setup", cmd],
+                    env={**os.environ, "ANDROID_ADB_SERVER_PORT": adb_port},
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                print(f"[collar] ADB statusbar disable-for-setup {cmd} → {dev}")
+    except Exception as e:
+        print(f"[collar] ADB statusbar enforce skipped: {e}")
+
+
+def _phone_statusbar_loop():
+    """Poll phone lock state via HTTP every 10s and ADB-enforce statusbar.
+    Independent of gossip/vault — works even when vault node is pending."""
+    global _last_phone_lock_active
+    if not PHONE_ADDRESSES:
+        return
+    while True:
+        try:
+            time.sleep(10)
+            for addr in PHONE_ADDRESSES:
+                url = f"http://{addr}:{PHONE_PORT}/api/status"
+                req = urllib.request.Request(url, method="GET")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    data = json.loads(resp.read())
+                lock_active = 1 if data.get("locked") else 0
+                if lock_active != _last_phone_lock_active:
+                    _last_phone_lock_active = lock_active
+                    _adb_statusbar_enforce(lock_active)
+                break  # first reachable phone is enough
+        except Exception:
+            pass  # phone unreachable — skip silently
+
+
 def on_mesh_orders_applied(orders_dict):
     """Called when gossip applies new orders.
     Do NOT update state.locked here — poll_status on the GTK thread is the
@@ -514,6 +563,8 @@ def on_mesh_orders_applied(orders_dict):
     waiting up to POLL_INTERVAL (5s)."""
     print(f"[collar] Mesh orders applied: desktop_active={orders_dict.get('desktop_active')} "
           f"lock_active={orders_dict.get('lock_active')}")
+    # ADB statusbar enforcement is handled by _phone_statusbar_loop (HTTP poll),
+    # NOT gossip — gossip lock_active can be stale when vault node is pending.
     if _poll_status_fn:
         GLib.idle_add(lambda: (_poll_status_fn(), False)[1])
 
@@ -1226,6 +1277,10 @@ class CollarApp(Gtk.Application):
                 _ntfy_topic, on_wake=_ntfy_wake, server=_ntfy_server)
             self.ntfy_sub.start()
             print(f"[ntfy] Subscribed to {_ntfy_server}/{_ntfy_topic}")
+
+        # ADB statusbar enforcement — poll phone lock state every 10s
+        threading.Thread(target=_phone_statusbar_loop, daemon=True).start()
+        print("[collar] Phone statusbar enforcement thread started")
 
         # Keep polling to update GTK lock state from mesh orders
         GLib.timeout_add_seconds(POLL_INTERVAL, self.poll_status)

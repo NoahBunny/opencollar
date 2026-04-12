@@ -2,6 +2,11 @@ package com.focuslock;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.role.RoleManager;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.ResolveInfo;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.text.SpannableString;
@@ -15,11 +20,15 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import java.util.List;
+
 /**
  * Shown once on first launch. Displays Terms of Surrender.
  * Once consented, this activity never shows again — FocusLock runs headless.
  */
 public class ConsentActivity extends Activity {
+
+    private static final int REQ_ROLE_HOME = 1001;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -140,16 +149,20 @@ public class ConsentActivity extends Activity {
             Settings.Global.putInt(getContentResolver(), "focus_lock_consented", 1);
             Settings.Global.putLong(getContentResolver(), "focus_lock_consent_time",
                 System.currentTimeMillis());
-            new AlertDialog.Builder(this)
-                .setTitle("Consent Recorded")
-                .setMessage("Timestamp: " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
-                    .format(new java.util.Date()) +
-                    "\n\nThe cage is ready. The Lion can now lock this phone at any time." +
-                    "\n\nThis app will not appear in your launcher. " +
-                    "It runs silently in the background, waiting.")
-                .setPositiveButton("Understood", (d, w) -> finish())
-                .setCancelable(false)
-                .show();
+            // Detect and store the current home launcher BEFORE requesting the role
+            storePriorHomePkg();
+            // Request ROLE_HOME on Android 10+ so the home button always lands here
+            if (Build.VERSION.SDK_INT >= 29) {
+                try {
+                    RoleManager rm = (RoleManager) getSystemService(Context.ROLE_SERVICE);
+                    if (rm != null && !rm.isRoleHeld(RoleManager.ROLE_HOME)) {
+                        startActivityForResult(
+                            rm.createRequestRoleIntent(RoleManager.ROLE_HOME), REQ_ROLE_HOME);
+                        return; // dialog shown in onActivityResult
+                    }
+                } catch (Exception e) { /* pre-Q or role unavailable — fall through */ }
+            }
+            showConsentRecordedDialog();
         });
         root.addView(consentBtn);
 
@@ -177,6 +190,40 @@ public class ConsentActivity extends Activity {
 
         getWindow().setStatusBarColor(0xFF0a0a14);
         getWindow().setNavigationBarColor(0xFF0a0a14);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == REQ_ROLE_HOME) {
+            showConsentRecordedDialog();
+        }
+    }
+
+    private void showConsentRecordedDialog() {
+        new AlertDialog.Builder(this)
+            .setTitle("Consent Recorded")
+            .setMessage("Timestamp: " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
+                .format(new java.util.Date()) +
+                "\n\nThe cage is ready. The Lion can now lock this phone at any time." +
+                "\n\nThis app will not appear in your launcher. " +
+                "It runs silently in the background, waiting.")
+            .setPositiveButton("Understood", (d, w) -> finish())
+            .setCancelable(false)
+            .show();
+    }
+
+    /** Store the current default home launcher so we can return to it on unlock. */
+    private void storePriorHomePkg() {
+        Intent homeIntent = new Intent(Intent.ACTION_MAIN);
+        homeIntent.addCategory(Intent.CATEGORY_HOME);
+        List<ResolveInfo> homes = getPackageManager().queryIntentActivities(homeIntent, 0);
+        for (ResolveInfo ri : homes) {
+            if (!"com.focuslock".equals(ri.activityInfo.packageName)) {
+                Settings.Global.putString(getContentResolver(),
+                    "focus_lock_prior_home_pkg", ri.activityInfo.packageName);
+                return;
+            }
+        }
     }
 
     /** Add a term paragraph. If highlight is non-null, it's appended in bold red. */

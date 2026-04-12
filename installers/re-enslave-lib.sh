@@ -7,8 +7,8 @@
 # ── Version constants ──
 # Update these when bumping APK / desktop versions. The watcher daemon and
 # all sub-scripts read from here so there's exactly one place to change.
-TARGET_SLAVE_VERSIONCODE=58
-TARGET_SLAVE_APK="focuslock-v58.apk"
+TARGET_SLAVE_VERSIONCODE=59
+TARGET_SLAVE_APK="focuslock-v59.apk"
 TARGET_CONTROLLER_VERSIONCODE=62
 TARGET_CONTROLLER_APK="focusctl-v62.apk"
 TARGET_COMPANION_VERSIONCODE=42
@@ -18,6 +18,7 @@ TARGET_COMPANION_APK="bunnytasker-v42.apk"
 SERVER_FILES=(
     "focuslock-mail.py"
     "focuslock_mesh.py"
+    "focuslock_ntfy.py"
 )
 SERVER_ICON="collar-icon.png"
 
