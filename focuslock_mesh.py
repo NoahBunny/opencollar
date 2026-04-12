@@ -136,6 +136,21 @@ ORDER_KEYS = {
     # Screen time leash
     "screen_time_quota_minutes": 0,  # 0 = disabled
     "screen_time_reset_hour": 0,     # hour of day to reset counter (default midnight)
+    # Daily tribute (cost of freedom — accrues while unlocked)
+    "tribute_active": 0,
+    "tribute_amount": 0,             # $/day added to paywall while unlocked
+    "tribute_last_applied": 0,       # epoch ms when last applied
+    # Fine (recurring penalty — accrues regardless of lock state)
+    "fine_active": 0,
+    "fine_amount": 0,                # $ per interval
+    "fine_interval_m": 60,           # minutes between charges
+    "fine_last_applied": 0,          # epoch ms
+    # Streak bonuses (positive reinforcement — Lion enables, server tracks)
+    "streak_enabled": 0,
+    "streak_start": 0,               # epoch ms when current streak began
+    "streak_escapes_at_start": 0,    # escape count when streak began
+    "streak_7d_claimed": 0,          # 1 if 7d bonus already applied this streak
+    "streak_30d_claimed": 0,         # 1 if 30d bonus already applied this streak
 }
 
 

@@ -1044,6 +1044,8 @@ label {
         <button class="btn tooltip-wrap" id="btnConfineHome" data-tooltip="Lock to current location + 100m">Confine Home</button>
         <button class="btn tooltip-wrap" id="btnPinMessage" data-tooltip="Pin a persistent notification">Pin Message</button>
         <button class="btn tooltip-wrap" id="btnSubscription" data-tooltip="Set subscription tier">Subscription</button>
+        <button class="btn tooltip-wrap" id="btnTribute" data-tooltip="Daily cost of freedom while unlocked">Daily Tribute</button>
+        <button class="btn tooltip-wrap" id="btnStreak" data-tooltip="7d = -$5, 30d = -$25 (resets on escape)">Streak Bonus</button>
         <button class="btn btn-danger tooltip-wrap" id="btnEntrap" data-tooltip="Scramble PIN, no escape">Entrap</button>
       </div>
     </div>
@@ -1420,6 +1422,8 @@ label {
       desktop_locked: o.desktop_active == 1,
       fine_active: o.fine_active || 0,
       fine_amount: o.fine_amount || 0,
+      tribute_active: o.tribute_active || 0,
+      tribute_amount: o.tribute_amount || 0,
       entrapped: o.entrapped == 1,
       _nodes: adminData.nodes || {},
       _orders: o,
@@ -1500,6 +1504,13 @@ label {
     if (status.mode) parts.push(`<span>Mode: ${esc(status.mode)}</span>`);
     if (status.message) parts.push(`<span>Msg: ${esc(status.message)}</span>`);
     if (status.last_unlock_source) parts.push(`<span>Last unlock: ${esc(status.last_unlock_source)}</span>`);
+    if (String(status.tribute_active) === '1') parts.push(`<span style="color:var(--gold)">Tribute: $${esc(status.tribute_amount)}/day</span>`);
+    if (String(status.fine_active) === '1') parts.push(`<span style="color:#e74c3c">Fine: $${esc(status.fine_amount)}/tick</span>`);
+    if (String((meshData.orders||{}).streak_enabled) === '1') {
+      const start = parseInt((meshData.orders||{}).streak_start) || 0;
+      const days = start ? Math.floor((Date.now() - start) / 86400000) : 0;
+      parts.push(`<span style="color:#2ecc71">Streak: ${days}d</span>`);
+    }
     meta.innerHTML = parts.join('');
 
     // Paywall
@@ -1909,6 +1920,36 @@ label {
         .catch(err => toast(`Failed: ${err.message}`, true));
     };
     document.addEventListener('set-sub', handler);
+  });
+
+  $('#btnTribute').addEventListener('click', () => {
+    const active = (meshData.orders || {}).tribute_active;
+    if (active && String(active) === '1') {
+      api('POST', '/mesh/order', { action: 'clear-tribute', params: {} })
+        .then(() => { toast('Daily tribute stopped'); pollStatus(); })
+        .catch(e => toast(`Failed: ${e.message}`, true));
+    } else {
+      showPromptModal('Daily Tribute', 'Amount per day ($)', 'Start', (val) => {
+        const amt = parseInt(val) || 1;
+        api('POST', '/mesh/order', { action: 'set-tribute', params: { amount: amt } })
+          .then(() => { toast(`Daily tribute: $${amt}/day while unlocked`); pollStatus(); })
+          .catch(e => toast(`Failed: ${e.message}`, true));
+      });
+    }
+  });
+
+  $('#btnStreak').addEventListener('click', () => {
+    const active = (meshData.orders || {}).streak_enabled;
+    if (active && String(active) === '1') {
+      api('POST', '/mesh/order', { action: 'stop-streak', params: {} })
+        .then(() => { toast('Streak tracking stopped'); pollStatus(); })
+        .catch(e => toast(`Failed: ${e.message}`, true));
+    } else {
+      const escapes = status.escapes || 0;
+      api('POST', '/mesh/order', { action: 'start-streak', params: { escapes } })
+        .then(() => { toast(`Streak started (${escapes} escapes baseline). 7d = -$5, 30d = -$25`); pollStatus(); })
+        .catch(e => toast(`Failed: ${e.message}`, true));
+    }
   });
 
   $('#btnEntrap').addEventListener('click', () => {

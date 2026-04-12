@@ -503,6 +503,22 @@ def mesh_apply_order(action, params, orders):
         orders.set("lion_pinned_message", "")
     elif action == "set-checkin":
         orders.set("checkin_deadline", int(params.get("deadline", -1)))
+    elif action == "set-tribute":
+        import time as t0
+        orders.set("tribute_active", 1)
+        orders.set("tribute_amount", int(params.get("amount", 1)))
+        orders.set("tribute_last_applied", int(t0.time() * 1000))
+    elif action == "clear-tribute":
+        orders.set("tribute_active", 0)
+    elif action == "start-streak":
+        import time as t1
+        orders.set("streak_enabled", 1)
+        orders.set("streak_start", int(t1.time() * 1000))
+        orders.set("streak_escapes_at_start", int(params.get("escapes", 0)))
+        orders.set("streak_7d_claimed", 0)
+        orders.set("streak_30d_claimed", 0)
+    elif action == "stop-streak":
+        orders.set("streak_enabled", 0)
     elif action == "start-fine":
         import time as t
         orders.set("fine_active", 1)
@@ -699,6 +715,113 @@ def check_desktop_heartbeats():
             print(f"[{now()}] Desktop heartbeat checker error: {e}")
 
         time.sleep(3600)  # Check hourly
+
+
+# ── Daily Tribute + Fine Enforcement ──
+
+def check_tributes_and_fines():
+    """Periodic check for daily tribute (cost of freedom while unlocked)
+    and recurring fines. Runs every 5 minutes to stay responsive."""
+    while True:
+        try:
+            now_ms = int(time.time() * 1000)
+
+            # Daily tribute — accrues while phone is UNLOCKED
+            tribute_active = mesh_orders.get("tribute_active", 0)
+            if str(tribute_active) == "1":
+                lock_active = mesh_orders.get("lock_active", 0)
+                if str(lock_active) != "1":  # unlocked → tribute accrues
+                    last = int(mesh_orders.get("tribute_last_applied", 0))
+                    elapsed_ms = now_ms - last if last else 0
+                    if elapsed_ms >= 86400000:  # 24 hours
+                        amount = int(mesh_orders.get("tribute_amount", 1))
+                        current_pw = 0
+                        try:
+                            current_pw = int(mesh_orders.get("paywall", "0"))
+                        except (ValueError, TypeError):
+                            pass
+                        mesh_orders.set("paywall", str(current_pw + amount))
+                        mesh_orders.set("tribute_last_applied", now_ms)
+                        mesh_orders.bump_version()
+                        mesh.push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
+                        if ntfy_fn:
+                            try: ntfy_fn(mesh_orders.version)
+                            except: pass
+                        print(f"[{now()}] Daily tribute: +${amount} (unlocked for 24h+)")
+
+            # Recurring fine — accrues regardless of lock state
+            fine_active = mesh_orders.get("fine_active", 0)
+            if str(fine_active) == "1":
+                fine_amount = int(mesh_orders.get("fine_amount", 10))
+                fine_interval = int(mesh_orders.get("fine_interval_m", 60))
+                last_fine = int(mesh_orders.get("fine_last_applied", 0))
+                elapsed_ms = now_ms - last_fine if last_fine else 0
+                if elapsed_ms >= fine_interval * 60000:
+                    current_pw = 0
+                    try:
+                        current_pw = int(mesh_orders.get("paywall", "0"))
+                    except (ValueError, TypeError):
+                        pass
+                    mesh_orders.set("paywall", str(current_pw + fine_amount))
+                    mesh_orders.set("fine_last_applied", now_ms)
+                    mesh_orders.bump_version()
+                    push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
+                    if ntfy_fn:
+                        try: ntfy_fn(mesh_orders.version)
+                        except: pass
+                    print(f"[{now()}] Fine applied: +${fine_amount}")
+
+            # Streak bonuses — 7d clean = -$5, 30d clean = -$25
+            streak_enabled = mesh_orders.get("streak_enabled", 0)
+            if str(streak_enabled) == "1":
+                streak_start = int(mesh_orders.get("streak_start", 0))
+                escapes_at_start = int(mesh_orders.get("streak_escapes_at_start", 0))
+                # Read current escapes from the runtime body (set by slave)
+                current_escapes = 0
+                try:
+                    current_escapes = int(mesh_orders.get("escapes", 0))
+                except (ValueError, TypeError):
+                    pass
+                streak_broken = current_escapes > escapes_at_start
+
+                if streak_broken:
+                    mesh_orders.set("streak_enabled", 0)
+                    mesh_orders.bump_version()
+                    mesh.push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
+                    print(f"[{now()}] Streak broken: escapes {escapes_at_start} → {current_escapes}")
+                elif streak_start > 0:
+                    elapsed_days = (now_ms - streak_start) / 86400000
+
+                    if elapsed_days >= 7 and str(mesh_orders.get("streak_7d_claimed", 0)) != "1":
+                        current_pw = 0
+                        try:
+                            current_pw = int(mesh_orders.get("paywall", "0"))
+                        except (ValueError, TypeError):
+                            pass
+                        new_pw = max(0, current_pw - 5)
+                        mesh_orders.set("paywall", str(new_pw))
+                        mesh_orders.set("streak_7d_claimed", 1)
+                        mesh_orders.bump_version()
+                        mesh.push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
+                        print(f"[{now()}] Streak bonus: 7d clean → -$5 (paywall ${current_pw} → ${new_pw})")
+
+                    if elapsed_days >= 30 and str(mesh_orders.get("streak_30d_claimed", 0)) != "1":
+                        current_pw = 0
+                        try:
+                            current_pw = int(mesh_orders.get("paywall", "0"))
+                        except (ValueError, TypeError):
+                            pass
+                        new_pw = max(0, current_pw - 25)
+                        mesh_orders.set("paywall", str(new_pw))
+                        mesh_orders.set("streak_30d_claimed", 1)
+                        mesh_orders.bump_version()
+                        mesh.push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
+                        print(f"[{now()}] Streak bonus: 30d clean → -$25 (paywall ${current_pw} → ${new_pw})")
+
+        except Exception as e:
+            print(f"[{now()}] Tribute/fine/streak checker error: {e}")
+
+        time.sleep(300)  # Check every 5 minutes
 
 
 # ── Webhook HTTP Server ──
@@ -2464,6 +2587,10 @@ if __name__ == "__main__":
     # Start desktop dead-man's switch checker
     desktop_thread = threading.Thread(target=check_desktop_heartbeats, daemon=True)
     desktop_thread.start()
+
+    # Start tribute/fine enforcement checker
+    tribute_thread = threading.Thread(target=check_tributes_and_fines, daemon=True)
+    tribute_thread.start()
 
     # Start webhook server
     server = HTTPServer(("0.0.0.0", WEBHOOK_PORT), WebhookHandler)

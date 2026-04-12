@@ -571,9 +571,15 @@ def _relay_to_phones(action, params):
 
 
 def on_mesh_orders_applied(orders_dict):
-    """Called when gossip applies new orders."""
+    """Called when gossip applies new orders.
+    Trigger an immediate poll so the UI refreshes within ~100ms instead of
+    waiting up to POLL_INTERVAL (5s)."""
     print(f"[collar] Mesh orders applied: desktop_active={orders_dict.get('desktop_active')} "
           f"lock_active={orders_dict.get('lock_active')}")
+    try:
+        poll_status()
+    except Exception:
+        pass  # best effort — next tick will catch up
 
 
 # ── Direct Sync Fallback ──

@@ -504,12 +504,18 @@ def _show_countdown_warning(remaining_ms: int, message: str):
     print(f"[collar] Countdown: {time_str} remaining" + (f" — {message}" if message else ""))
 
 
+_poll_status_fn = None  # Set by CollarApp.do_activate so gossip can trigger immediate refresh
+
 def on_mesh_orders_applied(orders_dict):
     """Called when gossip applies new orders.
     Do NOT update state.locked here — poll_status on the GTK thread is the
-    sole writer so it can detect transitions and call show_lock/hide_lock."""
+    sole writer so it can detect transitions and call show_lock/hide_lock.
+    Schedule an immediate poll so the UI refreshes within ~100ms instead of
+    waiting up to POLL_INTERVAL (5s)."""
     print(f"[collar] Mesh orders applied: desktop_active={orders_dict.get('desktop_active')} "
           f"lock_active={orders_dict.get('lock_active')}")
+    if _poll_status_fn:
+        GLib.idle_add(lambda: (_poll_status_fn(), False)[1])
 
 
 def _relay_to_phones(action, params):
@@ -1167,6 +1173,9 @@ class CollarApp(Gtk.Application):
         self.start_collar()
 
     def start_collar(self):
+        global _poll_status_fn
+        _poll_status_fn = self.poll_status
+
         # Seed mesh peers and start mesh HTTP server
         seed_mesh_peers()
         mesh_server_thread = threading.Thread(target=start_mesh_server, daemon=True)
