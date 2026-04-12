@@ -139,7 +139,7 @@ if [ "${#PUSH_LIST[@]}" -gt 0 ]; then
         remote_path="${pair##*|}"
         bn=$(basename "$local_path")
         scp -o ConnectTimeout=10 -q "$local_path" "$DEPLOY_USER@$HOMELAB_SSH:$TMPDIR_REMOTE/$bn"
-        ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
+        ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
             "sudo install -D -m 644 $TMPDIR_REMOTE/$bn '$remote_path'"
         log "  pushed: $bn → $remote_path"
     done
@@ -147,14 +147,14 @@ if [ "${#PUSH_LIST[@]}" -gt 0 ]; then
 fi
 
 # Ensure runtime dirs exist (vault store + meshes + per-mesh orders)
-ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
+ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
     'sudo mkdir -p /run/focuslock/meshes /run/focuslock/vaults /run/focuslock/mesh-orders && sudo chmod 755 /run/focuslock/meshes /run/focuslock/vaults /run/focuslock/mesh-orders' || \
     warn "Could not create /run/focuslock dirs"
 
 # Write git commit hash for /version transparency (P3)
 GIT_COMMIT=$(git -C "$LS" rev-parse HEAD 2>/dev/null || echo "")
 if [ -n "$GIT_COMMIT" ]; then
-    echo "$GIT_COMMIT" | ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
+    echo "$GIT_COMMIT" | ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
         "sudo tee /opt/focuslock/.git_commit > /dev/null"
     log "  git commit: $GIT_COMMIT"
 fi
@@ -162,7 +162,7 @@ fi
 # Restart service if focuslock-mail.py changed (or --force-restart)
 if [ "$NEEDS_RESTART" = 1 ] || [ "$FORCE_RESTART" = 1 ]; then
     section "Restarting focuslock-mail.service"
-    ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
+    ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
         'sudo systemctl restart focuslock-mail && sleep 3 && sudo systemctl is-active focuslock-mail' \
         || fail "Service failed to come back up — check journalctl -u focuslock-mail"
     log "Service restarted clean."
@@ -181,7 +181,7 @@ else
 fi
 
 # Check journal for errors in the last 2 minutes
-err_count=$(ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
+err_count=$(ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
     'sudo journalctl -u focuslock-mail --since "2 minutes ago" --no-pager 2>/dev/null | grep -ciE "error|exception|traceback" || true' \
     2>/dev/null | tr -d '\r')
 if [ "${err_count:-0}" -gt 0 ]; then
