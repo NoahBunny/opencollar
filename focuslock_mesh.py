@@ -106,6 +106,7 @@ ORDER_KEYS = {
     "geofence_lon": "",
     "geofence_radius_m": "",
     "pinned_message": "",
+    "lion_pinned_message": "",
     "sub_tier": "",
     "sub_due": 0,
     "sub_total_owed": 0,
@@ -133,9 +134,21 @@ ORDER_KEYS = {
     "bedtime_enabled": 0,
     "bedtime_lock_hour": -1,    # hour of day (0-23), -1 = not set
     "bedtime_unlock_hour": -1,  # auto-unlock hour
+    # Body check
+    "body_check_active": 0,
+    "body_check_area": "",
+    "body_check_interval_h": 12,
+    "body_check_last": 0,
+    "body_check_streak": 0,
+    "body_check_last_result": "",
+    "body_check_baseline": "",
     # Screen time leash
     "screen_time_quota_minutes": 0,  # 0 = disabled
     "screen_time_reset_hour": 0,     # hour of day to reset counter (default midnight)
+    # Release
+    "released": "",                  # device target for release-forever
+    "release_timestamp": "",         # epoch ms string
+    "entrapped": 0,                  # scrambled PIN, no escape
     # Daily tribute (cost of freedom — accrues while unlocked)
     "tribute_active": 0,
     "tribute_amount": 0,             # $/day added to paywall while unlocked

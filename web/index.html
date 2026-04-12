@@ -1595,6 +1595,27 @@ label {
     } else {
       container.innerHTML = `<div style="color:var(--text-muted);font-size:0.85rem;">No mesh devices found</div>`;
     }
+
+    // Toggle-state styling for tribute/streak/fine buttons
+    const o = meshData.orders || {};
+    const tributeBtn = $('#btnTribute');
+    if (tributeBtn) {
+      const on = String(o.tribute_active) === '1';
+      tributeBtn.textContent = on ? `Tribute ON ($${o.tribute_amount || 1}/d)` : 'Daily Tribute';
+      tributeBtn.style.borderColor = on ? 'var(--gold)' : '';
+    }
+    const streakBtn = $('#btnStreak');
+    if (streakBtn) {
+      const on = String(o.streak_enabled) === '1';
+      if (on) {
+        const days = o.streak_start ? Math.floor((Date.now() - parseInt(o.streak_start)) / 86400000) : 0;
+        streakBtn.textContent = `Streak: ${days}d`;
+        streakBtn.style.borderColor = '#2ecc71';
+      } else {
+        streakBtn.textContent = 'Streak Bonus';
+        streakBtn.style.borderColor = '';
+      }
+    }
   }
 
   // ── Timer Tick ──

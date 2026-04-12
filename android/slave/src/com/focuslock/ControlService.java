@@ -105,6 +105,10 @@ public class ControlService extends Service {
         "countdown_lock_at", "countdown_message",
         "bedtime_enabled", "bedtime_lock_hour", "bedtime_unlock_hour",
         "screen_time_quota_minutes", "screen_time_reset_hour",
+        "tribute_active", "tribute_amount", "tribute_last_applied",
+        "streak_enabled", "streak_start", "streak_escapes_at_start",
+        "streak_7d_claimed", "streak_30d_claimed",
+        "lion_pinned_message", "released", "release_timestamp", "entrapped",
     };
 
     @Override
