@@ -3272,7 +3272,7 @@ public class MainActivity extends Activity {
         executor.execute(() -> {
             // E2EE: encrypt with bunny's public key if available
             // Lion's Share stores bunny pubkey from pairing in prefs
-            String bunnyPubKey = prefs.getString("bunny_pubkey", "");
+            String bunnyPubKey = bunnyPubkeyB64;
             StringBuilder json = new StringBuilder("{\"from\":\"lion\"");
             if (E2EEHelper.canEncrypt(bunnyPubKey)) {
                 E2EEHelper.EncryptedMessage enc = E2EEHelper.encrypt(msg, bunnyPubKey);

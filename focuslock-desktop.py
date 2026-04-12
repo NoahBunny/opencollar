@@ -30,6 +30,7 @@ if WEBKIT_OK:
         from gi.repository import WebKit2 as WebKit
 
 import datetime
+import html as _html
 import json
 import time
 import urllib.request
@@ -1913,8 +1914,8 @@ for (var i = 0; i < c.length; i++) {
 
     def write_lock_page(self):
         """Generate the lock screen HTML."""
-        paywall_html = f'<div class="paywall">${state.paywall} owed</div>' if state.paywall else ''
-        pinned_html = f'<div class="pinned">{state.pinned}</div>' if state.pinned else ''
+        paywall_html = f'<div class="paywall">${_html.escape(state.paywall)} owed</div>' if state.paywall else ''
+        pinned_html = f'<div class="pinned">{_html.escape(state.pinned)}</div>' if state.pinned else ''
         banking_html = f'''<div class="pay-label">PAY YOUR DEBT</div>
             <iframe src="{BANKING_URL}" class="bank"></iframe>''' if state.paywall else ''
         icon_b64 = ""
@@ -1973,9 +1974,9 @@ document.addEventListener("keydown", function(e) {{
 <div class="card">
     {"<img class='icon' src='data:image/png;base64," + icon_b64 + "'>" if icon_b64 else ""}
     <div id="clock" class="clock">00:00</div>
-    {f'<div class="tier">{state.sub_tier.upper()}</div>' if state.sub_tier else ''}
+    {f'<div class="tier">{_html.escape(state.sub_tier.upper())}</div>' if state.sub_tier else ''}
     <div class="divider"></div>
-    <div class="message">{state.message or "No PC for now."}</div>
+    <div class="message">{_html.escape(state.message or "No PC for now.")}</div>
     {pinned_html}
     {paywall_html}
 </div>

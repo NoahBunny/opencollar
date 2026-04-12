@@ -2327,12 +2327,9 @@ public class ControlService extends Service {
                 String encryptedKey = jval(body, "encrypted_key");
                 String iv = jval(body, "iv");
                 String attachUrl = jval(body, "attachment_url");
-                boolean encrypted = body.contains("\"encrypted\":true")
-                    || body.contains("\"encrypted\": true");
-                boolean pinned = body.contains("\"pinned\":true")
-                    || body.contains("\"pinned\": true");
-                boolean mandatoryReply = body.contains("\"mandatory_reply\":true")
-                    || body.contains("\"mandatory_reply\": true");
+                boolean encrypted = "true".equals(jval(body, "encrypted"));
+                boolean pinned = "true".equals(jval(body, "pinned"));
+                boolean mandatoryReply = "true".equals(jval(body, "mandatory_reply"));
                 try {
                     org.json.JSONObject m = new org.json.JSONObject();
                     m.put("from", from);
@@ -3225,6 +3222,8 @@ public class ControlService extends Service {
                 try {
                     arr = new org.json.JSONArray(existing);
                 } catch (Exception e) {
+                    Log.w(TAG, "appendMessageHistory: corrupted JSON, resetting ("
+                        + existing.length() + " chars lost): " + e.getMessage());
                     arr = new org.json.JSONArray();
                 }
             }

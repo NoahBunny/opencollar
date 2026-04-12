@@ -421,7 +421,7 @@ def mesh_apply_order(action, params, orders):
             import urllib.request
             req = urllib.request.Request(
                 f"{PHONE_URL}/api/unlock",
-                data=json.dumps({"pin": PHONE_PIN}).encode(),
+                data=json.dumps({"pin": PHONE_PIN, **params}).encode(),
                 headers={"Content-Type": "application/json"})
             urllib.request.urlopen(req, timeout=3)
             print(f"[mesh] Direct push succeeded (unlock)")
@@ -464,6 +464,15 @@ def mesh_apply_order(action, params, orders):
         orders.set("paywall", str(current + int(params.get("amount", 0))))
     elif action == "clear-paywall":
         orders.set("paywall", "0")
+    elif action == "send-message":
+        # Update orders.message so gossip carries the text to desktop collars
+        # and the web UI status display.  The vault blob (written separately)
+        # carries the full payload to the slave's send-message handler.
+        msg = params.get("text") or params.get("message", "")
+        if msg:
+            orders.set("message", msg)
+        if params.get("pinned"):
+            orders.set("pinned_message", msg)
     elif action == "pin-message":
         orders.set("pinned_message", params.get("message", ""))
     elif action == "pin-lion-message":
