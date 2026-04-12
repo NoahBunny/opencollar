@@ -1,6 +1,6 @@
-# Contributing to FocusLock
+# Contributing to The Collar
 
-Thanks for your interest in contributing to FocusLock.
+Thanks for your interest in contributing to The Collar.
 
 ## Getting Started
 
