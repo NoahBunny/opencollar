@@ -41,7 +41,7 @@ section() { printf '\n=== %s ===\n' "$*"; }
 #   FL          — FocusLock dir (Android source)
 #   LS          — Lion's Share + Bunny Tasker dir (Python server, icons, installers)
 #   ICONS       — $LS/icons
-#   APKS        — $LS/apks (or $FL/apks as fallback)
+#   APKS        — $LS/apks (preferred) or $FL/apks (legacy fallback)
 discover_paths() {
     NC=""
     for p in ~/Nextcloud ~/rclone_mounts/Nextcloud /mnt/CargoBay8/NC-BFC; do
@@ -55,8 +55,13 @@ discover_paths() {
     FL="$NC/Scripts/FocusLock"
     LS="$NC/Scripts/Lion's Share + Bunny Tasker"
     ICONS="$LS/icons"
-    if [ -d "$FL/apks" ]; then APKS="$FL/apks"
-    elif [ -d "$LS/apks" ]; then APKS="$LS/apks"
+    # APK location preference: LS/apks first (current build output target),
+    # FL/apks as fallback for legacy machines. Historically FL/apks was
+    # canonical per project_source_layout.md but recent build workflow writes
+    # version-bumped APKs into LS/apks instead — preferring LS/apks self-heals
+    # the drift so re-enslave-phones.sh picks up the freshest file.
+    if [ -d "$LS/apks" ]; then APKS="$LS/apks"
+    elif [ -d "$FL/apks" ]; then APKS="$FL/apks"
     else APKS="$HOME/Desktop"
     fi
 
