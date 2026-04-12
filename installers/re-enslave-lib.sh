@@ -44,7 +44,7 @@ section() { printf '\n=== %s ===\n' "$*"; }
 #   APKS        — $LS/apks (preferred) or $FL/apks (legacy fallback)
 discover_paths() {
     NC=""
-    for p in ~/Nextcloud ~/rclone_mounts/Nextcloud /mnt/CargoBay8/NC-BFC; do
+    for p in "$_REAL_HOME/Nextcloud" "$_REAL_HOME/rclone_mounts/Nextcloud" /mnt/CargoBay8/NC-BFC; do
         if [ -d "$p/Scripts/FocusLock" ] || [ -d "$p/Scripts/Lion's Share + Bunny Tasker" ]; then
             NC="$p"
             break
@@ -62,7 +62,7 @@ discover_paths() {
     # the drift so re-enslave-phones.sh picks up the freshest file.
     if [ -d "$LS/apks" ]; then APKS="$LS/apks"
     elif [ -d "$FL/apks" ]; then APKS="$FL/apks"
-    else APKS="$HOME/Desktop"
+    else APKS="$_REAL_HOME/Desktop"
     fi
 
     [ -d "$LS" ] || fail "Lion's Share + Bunny Tasker not found at: $LS"
