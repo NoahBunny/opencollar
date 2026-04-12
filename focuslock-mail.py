@@ -252,8 +252,28 @@ def _init_orders_registry():
         except OSError as e:
             print(f"[orders] WARN: legacy migration failed: {e}")
     elif os.path.exists(target_path) and os.path.exists(MESH_ORDERS_FILE):
-        print(f"[orders] WARN: legacy {MESH_ORDERS_FILE} is orphaned "
-              f"(per-mesh file already exists at {target_path}) — ignoring")
+        # Both exist — compare updated_at/version and keep the newer one.
+        # This avoids the 2026-04-11 deploy incident where the per-mesh file
+        # was a stale snapshot and clobbered the authoritative legacy state.
+        try:
+            import json as _j
+            with open(MESH_ORDERS_FILE) as _f:
+                _legacy = _j.load(_f)
+            with open(target_path) as _f:
+                _permesh = _j.load(_f)
+            _leg_ts = _legacy.get("updated_at", 0)
+            _pm_ts = _permesh.get("updated_at", 0)
+            if _leg_ts > _pm_ts:
+                import shutil
+                shutil.copy2(MESH_ORDERS_FILE, target_path)
+                print(f"[orders] WARN: legacy file is NEWER (legacy={_leg_ts} vs per-mesh={_pm_ts})"
+                      f" — copied legacy → per-mesh to preserve authoritative state")
+            else:
+                print(f"[orders] legacy {MESH_ORDERS_FILE} is orphaned "
+                      f"(per-mesh is newer: {_pm_ts} >= {_leg_ts}) — ignoring")
+        except Exception as _e:
+            print(f"[orders] WARN: could not compare both-exist files: {_e} "
+                  f"— keeping per-mesh as-is")
 
     # Get (from registry's _load_all) or create the per-mesh doc, and rebind
     # the global. Every subsequent reference to ``mesh_orders`` — including
@@ -475,8 +495,12 @@ def mesh_apply_order(action, params, orders):
             orders.set("pinned_message", msg)
     elif action == "pin-message":
         orders.set("pinned_message", params.get("message", ""))
+    elif action == "clear-pinned-message":
+        orders.set("pinned_message", "")
     elif action == "pin-lion-message":
         orders.set("lion_pinned_message", params.get("message", ""))
+    elif action == "clear-lion-pinned-message":
+        orders.set("lion_pinned_message", "")
     elif action == "set-checkin":
         orders.set("checkin_deadline", int(params.get("deadline", -1)))
     elif action == "start-fine":
@@ -1539,6 +1563,20 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(403, {"error": "invalid admin_token"})
                 return
             req_mesh_id = data.get("mesh_id", "")
+            action = data.get("action", "")
+
+            # set-vault-only is a mesh-account-level operation, not an order.
+            if action == "set-vault-only":
+                target = req_mesh_id or OPERATOR_MESH_ID
+                value = bool(data.get("params", {}).get("enabled", True))
+                ok = _mesh_accounts.set_vault_only(target, value)
+                self.respond(200 if ok else 404, {
+                    "ok": ok,
+                    "mesh_id": target,
+                    "vault_only": value,
+                })
+                return
+
             if req_mesh_id and req_mesh_id != OPERATOR_MESH_ID:
                 if _mesh_accounts.is_vault_only(req_mesh_id):
                     self.respond(403, {"error": "vault_only mesh — admin plaintext orders refused"})

@@ -709,17 +709,22 @@ def generate_lock_wallpaper():
         font_pinned = font_msg
         font_paywall = font_msg
 
-    # Message
+    # Message — truncate for wallpaper; the overlay window shows full text.
     msg = state.message or "No PC for now."
+    if len(msg) > 80:
+        msg = msg[:77] + "..."
     bbox = draw.textbbox((0, 0), msg, font=font_msg)
     tw = bbox[2] - bbox[0]
     draw.text((W//2 - tw//2, H//2 + 560), msg, fill=(171, 136, 102), font=font_msg)
 
     # Pinned message
     if state.pinned:
-        bbox = draw.textbbox((0, 0), state.pinned, font=font_pinned)
+        pinned_wp = state.pinned
+        if len(pinned_wp) > 80:
+            pinned_wp = pinned_wp[:77] + "..."
+        bbox = draw.textbbox((0, 0), pinned_wp, font=font_pinned)
         tw = bbox[2] - bbox[0]
-        draw.text((W//2 - tw//2, H//2 + 630), state.pinned, fill=(204, 153, 0), font=font_pinned)
+        draw.text((W//2 - tw//2, H//2 + 630), pinned_wp, fill=(204, 153, 0), font=font_pinned)
 
     # Paywall
     if state.paywall and state.paywall != "0":
@@ -906,6 +911,13 @@ def poll_status():
         show_lock()
     elif not state.locked and was_locked:
         hide_lock()
+    elif state.locked and was_locked:
+        # Refresh wallpaper if message/pinned/paywall changed mid-lock
+        _cur = (state.message, state.pinned, state.paywall)
+        if not hasattr(poll_status, '_prev_display') or poll_status._prev_display != _cur:
+            set_lock_wallpaper()
+    if state.locked:
+        poll_status._prev_display = (state.message, state.pinned, state.paywall)
 
 
 def _handle_countdown(lock_at_ms: int, message: str):

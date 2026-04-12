@@ -2997,7 +2997,7 @@ public class MainActivity extends Activity {
                     String iv = parseJsonStr(obj, "iv");
                     // Lion decrypts with own private key
                     String lionPriv = prefs.getString("lion_privkey", "");
-                    if (E2EEHelper.canDecrypt(lionPriv) && ct != null) {
+                    if (E2EEHelper.canDecrypt(lionPriv) && ct != null && ek != null && iv != null) {
                         String dec = E2EEHelper.decrypt(ct, ek, iv, lionPriv);
                         text = dec != null ? dec : "[encrypted]";
                     } else {
@@ -3058,9 +3058,9 @@ public class MainActivity extends Activity {
                                 String content = parseJsonStr(resp, "content");
                                 boolean attEnc = resp.contains("\"encrypted\":true") || resp.contains("\"encrypted\": true");
                                 if (attEnc && E2EEHelper.canDecrypt(privKey)) {
-                                    String ek = parseJsonStr(resp, "encrypted_key");
-                                    String iv = parseJsonStr(resp, "iv");
-                                    String dec = E2EEHelper.decrypt(content, ek, iv, privKey);
+                                    String aek = parseJsonStr(resp, "encrypted_key");
+                                    String aiv = parseJsonStr(resp, "iv");
+                                    String dec = (aek != null && aiv != null) ? E2EEHelper.decrypt(content, aek, aiv, privKey) : null;
                                     if (dec != null) content = dec;
                                 }
                                 if (content != null) {

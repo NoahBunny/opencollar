@@ -1597,7 +1597,10 @@ class CollarApp(Gtk.Application):
                     pass
 
             # Message — below icon (icon bottom is ~H/2 + 515)
+            # Truncate for wallpaper; GTK label + HTML page show full text.
             msg = state.message or "No PC for now."
+            if len(msg) > 80:
+                msg = msg[:77] + "..."
             ctx.select_font_face("Lexend", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
             ctx.set_font_size(52)
             ctx.set_source_rgba(0.67, 0.53, 0.4, 0.9)
@@ -1607,11 +1610,14 @@ class CollarApp(Gtk.Application):
 
             # Pinned message
             if state.pinned:
+                pinned_wp = state.pinned
+                if len(pinned_wp) > 80:
+                    pinned_wp = pinned_wp[:77] + "..."
                 ctx.set_font_size(40)
                 ctx.set_source_rgba(0.8, 0.6, 0.0, 0.9)
-                ext = ctx.text_extents(state.pinned)
+                ext = ctx.text_extents(pinned_wp)
                 ctx.move_to(W/2 - ext.width/2, H/2 + 650)
-                ctx.show_text(state.pinned)
+                ctx.show_text(pinned_wp)
 
             # Paywall
             if state.paywall:

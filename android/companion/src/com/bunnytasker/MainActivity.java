@@ -1225,9 +1225,6 @@ public class MainActivity extends Activity {
                 jsonBody = "{\"from\":\"bunny\",\"text\":\"" + escJson(msg) + "\"}";
             }
             sendWebhook("/mesh/message", jsonBody);
-            // Also send old webhook for backward compat
-            sendWebhook("/webhook/bunny-message",
-                "{\"text\":\"" + escJson(msg) + "\",\"type\":\"message\"}");
             // Record check-in timestamp (any message counts as check-in)
             Settings.Global.putLong(getContentResolver(), "focus_lock_checkin_timestamp",
                 System.currentTimeMillis());
