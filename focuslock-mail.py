@@ -2131,6 +2131,14 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 print(f"[{now()}] Registry write error: {e}")
             self.respond(200, {"ok": True})
 
+        # ── Legacy plaintext mesh endpoints (removed Phase D) ──
+        # Return 410 Gone so clients latch vaultOnlyDetected and stop retrying.
+        elif (self.path.startswith("/api/mesh/") and
+              any(self.path.endswith(s) for s in ("/sync", "/order", "/status"))):
+            self.respond(410, {"error": "gone — use /vault/* endpoints"})
+        elif self.path in ("/mesh/sync", "/mesh/order", "/mesh/status"):
+            self.respond(410, {"error": "gone — use /vault/* endpoints"})
+
         else:
             self.respond(404, {"error": "not found"})
 
@@ -2512,6 +2520,13 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             else:
                 self.send_response(404)
                 self.end_headers()
+
+        # ── Legacy plaintext mesh endpoints (removed Phase D) ──
+        elif (self.path.startswith("/api/mesh/") and
+              any(self.path.endswith(s) for s in ("/sync", "/order", "/status"))):
+            self.respond(410, {"error": "gone — use /vault/* endpoints"})
+        elif self.path in ("/mesh/sync", "/mesh/order", "/mesh/status"):
+            self.respond(410, {"error": "gone — use /vault/* endpoints"})
 
         else:
             self.respond(404, {"error": "not found"})

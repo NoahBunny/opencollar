@@ -718,7 +718,7 @@ public class MainActivity extends Activity {
         layout.addView(inviteInput);
 
         EditText serverInput = new EditText(this);
-        serverInput.setHint("Server URL (e.g. https://your-mesh.example.com)");
+        serverInput.setHint("Server URL (e.g. https://focus.wildhome.ca)");
         serverInput.setTextSize(13);
         serverInput.setTextColor(0xFFaaaaaa);
         serverInput.setHintTextColor(0xFF444444);
@@ -733,11 +733,11 @@ public class MainActivity extends Activity {
         // Vault Mode toggle (Phase C — slave reads /vault/{id}/since instead of plaintext gossip)
         // Reads/writes focus_lock_vault_mode in Settings.Global so ControlService.vaultSync() picks it up.
         android.widget.CheckBox vaultCheck = new android.widget.CheckBox(this);
-        vaultCheck.setText("Vault mode (experimental — encrypted orders)");
+        vaultCheck.setText("Encrypted orders (recommended)");
         vaultCheck.setTextColor(0xFFcccccc);
         vaultCheck.setTextSize(13);
         try {
-            int cur = Settings.Global.getInt(getContentResolver(), "focus_lock_vault_mode", 0);
+            int cur = Settings.Global.getInt(getContentResolver(), "focus_lock_vault_mode", 1);
             vaultCheck.setChecked(cur == 1);
         } catch (Exception e) { vaultCheck.setChecked(false); }
         LinearLayout.LayoutParams vlp = new LinearLayout.LayoutParams(
@@ -746,11 +746,36 @@ public class MainActivity extends Activity {
         vaultCheck.setLayoutParams(vlp);
         layout.addView(vaultCheck);
 
+        // "Paste QR" button — reads clipboard JSON from web signup QR code
+        // and auto-fills invite code + server URL fields.
+        android.widget.Button pasteBtn = new android.widget.Button(this);
+        pasteBtn.setText("Paste QR Code");
+        pasteBtn.setTextSize(13);
+        pasteBtn.setBackgroundColor(0xFF1a1a2a);
+        pasteBtn.setTextColor(0xFFDAA520);
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        plp.topMargin = 12;
+        pasteBtn.setLayoutParams(plp);
+        pasteBtn.setOnClickListener(v2 -> {
+            try {
+                android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                    getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+                if (cm != null && cm.hasPrimaryClip() && cm.getPrimaryClip().getItemCount() > 0) {
+                    String clip = cm.getPrimaryClip().getItemAt(0).getText().toString();
+                    org.json.JSONObject qr = new org.json.JSONObject(clip);
+                    if (qr.has("relay")) serverInput.setText(qr.getString("relay"));
+                    if (qr.has("invite")) inviteInput.setText(qr.getString("invite"));
+                }
+            } catch (Exception ex) { /* not QR JSON, ignore */ }
+        });
+        layout.addView(pasteBtn);
+
         final android.widget.CheckBox vaultCheckFinal = vaultCheck;
 
         new android.app.AlertDialog.Builder(this)
             .setTitle("Join Mesh")
-            .setMessage("Enter the invite code from your Lion.")
+            .setMessage("Enter the invite code from your Lion, or paste the QR code text.")
             .setView(layout)
             .setPositiveButton("Join", (d, w) -> {
                 String code = inviteInput.getText().toString().trim().toUpperCase();
