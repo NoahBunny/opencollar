@@ -21,6 +21,7 @@ public class BunnyService extends Service {
     private String lastPinnedMessage = "";
     private String lastPaywall = "0";
     private long lastSubNotifyTime = 0;
+    private long lastPaywallPingTime = 0;
 
     @Override
     public void onCreate() {
@@ -94,6 +95,11 @@ public class BunnyService extends Service {
                         }
                         // Always maintain persistent paywall notification
                         showPaywallPersistent(paywall);
+                        // Hourly paywall reminder — can't ignore the debt
+                        if (System.currentTimeMillis() - lastPaywallPingTime > 3600000) {
+                            lastPaywallPingTime = System.currentTimeMillis();
+                            showPaywallReminder(paywall);
+                        }
                     } else {
                         if (!lastPaywall.equals("0") && !lastPaywall.isEmpty()) {
                             // Paywall cleared — notify
@@ -111,8 +117,8 @@ public class BunnyService extends Service {
                     if (!subTierForReminder.isEmpty() && subDue > 0) {
                         long msUntilDue = subDue - System.currentTimeMillis();
                         long hoursUntilDue = msUntilDue / 3600000;
-                        // Notify at 48h, 24h, 6h, and 1h before due
-                        if (hoursUntilDue <= 48 && hoursUntilDue > 0 &&
+                        // Notify starting 6h before due (max once/hr)
+                        if (hoursUntilDue <= 6 && hoursUntilDue > 0 &&
                             System.currentTimeMillis() - lastSubNotifyTime > 3600000) {
                             int amt = "bronze".equals(subTierForReminder) ? 25 : "silver".equals(subTierForReminder) ? 35 : 50;
                             showSubReminder(subTierForReminder, amt, hoursUntilDue);
@@ -290,9 +296,9 @@ public class BunnyService extends Service {
         try {
             NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
             NotificationChannel ch = new NotificationChannel(
-                "paywall_ongoing", "Outstanding Balance", NotificationManager.IMPORTANCE_LOW);
+                "paywall_ongoing", "Outstanding Balance", NotificationManager.IMPORTANCE_HIGH);
             ch.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
-            ch.setSound(null, null);
+            try { ch.setBlockable(false); } catch (Exception e) {} // Cannot be disabled (API 34+)
             nm.createNotificationChannel(ch);
             Notification n = new Notification.Builder(this, "paywall_ongoing")
                 .setContentTitle("Outstanding balance: $" + amount)
@@ -304,6 +310,26 @@ public class BunnyService extends Service {
                 .build();
             nm.notify(310, n);
         } catch (Exception e) { Log.e(TAG, "Paywall persistent", e); }
+    }
+
+    private void showPaywallReminder(String amount) {
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            NotificationChannel ch = new NotificationChannel(
+                "paywall_reminder", "Paywall Reminders", NotificationManager.IMPORTANCE_HIGH);
+            ch.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+            try { ch.setBlockable(false); } catch (Exception e) {} // API 34+
+            nm.createNotificationChannel(ch);
+            Notification n = new Notification.Builder(this, "paywall_reminder")
+                .setContentTitle("You owe $" + amount)
+                .setContentText("Pay your Lion. This won't stop until you do.")
+                .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                .setVisibility(Notification.VISIBILITY_PUBLIC)
+                .setAutoCancel(false)
+                .setOngoing(true)
+                .build();
+            nm.notify(313, n);
+        } catch (Exception e) { Log.e(TAG, "Paywall reminder", e); }
     }
 
     private void showPaywallCleared() {

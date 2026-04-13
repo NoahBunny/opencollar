@@ -1291,6 +1291,11 @@ label {
     if (meshPollId) clearInterval(meshPollId);
     if (qrPollId) clearInterval(qrPollId);
     if (timerInterval) clearInterval(timerInterval);
+    // Revoke session token server-side so it can't be reused
+    if (PIN && MODE === 'relay') {
+      fetch('/api/logout', { method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ token: PIN }) }).catch(() => {});
+    }
     PIN = '';
     MODE = 'lan';
     status = {};
@@ -1713,7 +1718,7 @@ label {
       toast('No devices in mesh', true);
       return;
     }
-    const btns = keys.map(k => `<button class="btn btn-full" style="margin-bottom:0.4rem" onclick="document.dispatchEvent(new CustomEvent('release-device',{detail:'${k}'}))">${nodes[k].hostname || k}</button>`).join('');
+    const btns = keys.map(k => `<button class="btn btn-full" style="margin-bottom:0.4rem" onclick="document.dispatchEvent(new CustomEvent('release-device',{detail:'${esc(k)}'}))">${esc(nodes[k].hostname || k)}</button>`).join('');
     showFormModal('Release Device', btns, 'Cancel', () => {});
     const handler = (e) => {
       hideModal();

@@ -131,8 +131,8 @@ def get_lion_pubkey():
                 _lion_pubkey = f.read().strip()
             if _lion_pubkey:
                 print(f"[mesh] Loaded Lion's Share pubkey")
-        except:
-            pass
+        except Exception:
+            print(f"[warn] Failed to load Lion pubkey from {LION_PUBKEY_FILE}")
     return _lion_pubkey
 
 
@@ -381,8 +381,8 @@ def first_run_check():
             print(f"  Mesh reachable via {url}, will get pubkey via gossip")
             reached = True
             break
-        except:
-            pass
+        except Exception:
+            print(f"[warn] Mesh unreachable at {url}")
     if not reached:
         print("  Pegasus unreachable — pubkey will be fetched on first gossip")
 
@@ -695,8 +695,8 @@ def generate_lock_wallpaper():
             paste_x = W // 2 - icon_size // 2
             paste_y = H // 2 - icon_size // 2 - 60
             img.paste(alpha_icon, (paste_x, paste_y), alpha_icon)
-        except:
-            pass
+        except Exception:
+            print(f"[warn] Failed to load collar icon from {icon_path}")
 
     # Try to load a nice font, fall back to default
     font_msg = None
@@ -708,7 +708,7 @@ def generate_lock_wallpaper():
             font_pinned = ImageFont.truetype(font_name, 40)
             font_paywall = ImageFont.truetype(font_name, 56)
             break
-        except:
+        except Exception:
             continue
     if not font_msg:
         font_msg = ImageFont.load_default()
@@ -789,8 +789,8 @@ def hide_lock():
             if orig and os.path.exists(orig):
                 ctypes.windll.user32.SystemParametersInfoW(20, 0, orig, 3)
                 print(f"[collar] Wallpaper restored: {orig}")
-        except:
-            pass
+        except Exception:
+            print("[warn] Failed to restore original wallpaper on unlock")
 
 
 # ── Liberation (Permanent Removal) ──
@@ -811,16 +811,16 @@ def execute_liberation():
             if "focuslock" in f.lower() or "collar" in f.lower():
                 os.remove(os.path.join(startup, f))
                 print(f"  Removed startup entry: {f}")
-    except:
-        pass
+    except Exception:
+        print("[warn] Failed to remove startup entries during liberation")
 
     # Clean config
     import shutil
     try:
         shutil.rmtree(CONFIG_DIR, ignore_errors=True)
         print("  Config directory removed")
-    except:
-        pass
+    except Exception:
+        print("[warn] Failed to remove config directory during liberation")
 
     # Show farewell
     ctypes.windll.user32.MessageBoxW(
@@ -1312,8 +1312,8 @@ def create_tray_icon():
                 if new_title != _prev[1]:
                     _prev[1] = new_title
                     icon.title = new_title
-            except:
-                pass
+            except Exception:
+                print("[warn] Tray icon update failed")
             time.sleep(3)
 
     threading.Thread(target=_update_loop, daemon=True).start()
@@ -1328,7 +1328,7 @@ INSTALL_DIR_SYSTEM = r"C:\focuslock"
 def is_admin():
     try:
         return ctypes.windll.shell32.IsUserAnAdmin() != 0
-    except:
+    except Exception:
         return False
 
 def get_exe_path():
@@ -1350,7 +1350,7 @@ def needs_install():
     # Update if different size (new build)
     try:
         return os.path.getsize(exe) != os.path.getsize(installed_exe)
-    except:
+    except Exception:
         return True
 
 def self_install():
@@ -1446,8 +1446,8 @@ Register-ScheduledTask -TaskName "FocusLockWatchdog" -Action $a -Trigger $t -Set
         winreg.SetValueEx(key, "FocusLockCollar", 0, winreg.REG_SZ, f'"{installed_exe}"')
         winreg.CloseKey(key)
         print("[install] Registry Run key set")
-    except:
-        pass
+    except Exception:
+        print("[warn] Failed to set Registry Run key for autostart")
 
     # ACL lockdown — user gets Read+Execute only
     subprocess.run([
@@ -1471,10 +1471,10 @@ Register-ScheduledTask -TaskName "FocusLockWatchdog" -Action $a -Trigger $t -Set
                     with open(os.path.join(claude_dir, filename), "w", encoding="utf-8") as f:
                         f.write(content)
                     print(f"[install] Standing orders: {filename}")
-            except:
-                pass
-    except:
-        pass
+            except Exception:
+                print(f"[warn] Failed to fetch standing orders: {endpoint}")
+    except Exception:
+        print("[warn] Failed to set up standing orders sync")
 
     # Remove old startup entries (from legacy installers)
     startup = os.path.join(os.environ.get("APPDATA", ""),
@@ -1484,8 +1484,8 @@ Register-ScheduledTask -TaskName "FocusLockWatchdog" -Action $a -Trigger $t -Set
             try:
                 os.remove(os.path.join(startup, f))
                 print(f"[install] Removed legacy startup: {f}")
-            except:
-                pass
+            except Exception:
+                print(f"[warn] Failed to remove legacy startup entry: {f}")
 
     print("[install] Installation complete — launching from install dir")
 
@@ -1616,8 +1616,8 @@ def main():
                 with open(ORIGINAL_WALLPAPER_FILE, "w") as f:
                     f.write(buf.value)
                 print(f"[collar] Saved original wallpaper: {buf.value}")
-        except:
-            pass
+        except Exception:
+            print("[warn] Failed to save original wallpaper")
 
     # Start mesh HTTP server
     threading.Thread(target=start_mesh_server, daemon=True).start()
@@ -1671,8 +1671,8 @@ def main():
             while True:
                 try:
                     _vault_poll()
-                except:
-                    pass
+                except Exception:
+                    print("[warn] Vault poll loop error")
                 time.sleep(POLL_INTERVAL)
         threading.Thread(target=_vault_poll_loop, daemon=True).start()
         print("[collar] Vault poll started (replaces plaintext sync to server)")
@@ -1682,8 +1682,8 @@ def main():
             while True:
                 try:
                     direct_sync_poll()
-                except:
-                    pass
+                except Exception:
+                    print("[warn] Direct sync loop error")
                 time.sleep(POLL_INTERVAL)
         threading.Thread(target=_direct_sync_loop, daemon=True).start()
 

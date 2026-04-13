@@ -85,6 +85,14 @@ def _is_valid_admin_auth(token):
         return True
 
 
+def _revoke_session_token(token):
+    """Revoke a session token immediately (logout)."""
+    with _session_tokens_lock:
+        if token in _active_session_tokens:
+            del _active_session_tokens[token]
+            return True
+        return False
+
 def _compute_source_sha256():
     """sha256 of this module's source file (the running mail service).
 
@@ -479,7 +487,7 @@ def mesh_apply_order(action, params, orders):
         current = orders.get("paywall", "0")
         try:
             current = int(current)
-        except:
+        except Exception:
             current = 0
         orders.set("paywall", str(current + int(params.get("amount", 0))))
     elif action == "clear-paywall":
@@ -545,6 +553,31 @@ def mesh_apply_order(action, params, orders):
         orders.set("body_check_last", int(t2.time() * 1000))
     elif action == "stop-body-check":
         orders.set("body_check_active", 0)
+    elif action == "subscribe":
+        tier = params.get("tier", "bronze").lower()
+        if tier not in ("bronze", "silver", "gold"):
+            return {"error": "invalid tier"}
+        import time as t_sub
+        due = params.get("due", 0)
+        if not due or str(due) == "now":
+            due = int(t_sub.time() * 1000)
+        else:
+            due = int(due)
+            if due == 0:
+                due = int(t_sub.time() * 1000) + 7 * 24 * 3600 * 1000
+        orders.set("sub_tier", tier)
+        orders.set("sub_due", due)
+        amounts = {"bronze": 25, "silver": 35, "gold": 50}
+        return {"applied": action, "tier": tier, "due": due, "amount": amounts[tier]}
+    elif action == "set-sub-due":
+        import time as t_sd
+        due = params.get("due", 0)
+        if str(due) == "now":
+            due = int(t_sd.time() * 1000)
+        else:
+            due = int(due)
+        orders.set("sub_due", due)
+        return {"applied": action, "due": due}
     elif action == "set-countdown":
         import time as t_cd
         minutes = int(params.get("minutes", 30))
@@ -696,8 +729,8 @@ def check_desktop_heartbeats():
                             pw = 0
                             try:
                                 pw = int(pw_str) if pw_str and pw_str != "null" else 0
-                            except:
-                                pass
+                            except Exception:
+                                print(f"[warn] failed to parse paywall value: {pw_str!r}")
                             pw += 50
                             adb.put("focus_lock_paywall", str(pw))
                             adb.put_str("focus_lock_message",
@@ -746,7 +779,7 @@ def check_tributes_and_fines():
                         mesh.push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
                         if ntfy_fn:
                             try: ntfy_fn(mesh_orders.version)
-                            except: pass
+                            except Exception: print(f"[warn] ntfy push failed after daily tribute")
                         print(f"[{now()}] Daily tribute: +${amount} (unlocked for 24h+)")
 
             # Recurring fine — accrues regardless of lock state
@@ -768,7 +801,7 @@ def check_tributes_and_fines():
                     push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
                     if ntfy_fn:
                         try: ntfy_fn(mesh_orders.version)
-                        except: pass
+                        except Exception: print(f"[warn] ntfy push failed after fine")
                     print(f"[{now()}] Fine applied: +${fine_amount}")
 
             # Streak bonuses — 7d clean = -$5, 30d clean = -$25
@@ -839,7 +872,7 @@ class PairingRegistry:
             if os.path.exists(self.path):
                 with open(self.path) as f:
                     self.entries = json.load(f)
-        except: pass
+        except Exception: print(f"[warn] failed to load pairing registry from {self.path}")
 
     def _save(self):
         try:
@@ -848,7 +881,7 @@ class PairingRegistry:
             with open(tmp, "w") as f:
                 json.dump(self.entries, f)
             os.replace(tmp, self.path)
-        except: pass
+        except Exception: print(f"[warn] failed to save pairing registry to {self.path}")
 
     def register(self, passphrase, bunny_pubkey, node_id):
         with self.lock:
@@ -1666,8 +1699,8 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             pw = 0
             try:
                 pw = int(pw_str) if pw_str and pw_str != "null" else 0
-            except:
-                pass
+            except Exception:
+                print(f"[warn] failed to parse paywall value: {pw_str!r}")
             pw += amount
             adb.put("focus_lock_paywall", str(pw))
             adb.put_str("focus_lock_message", f"{reason}. ${amount} added.")
@@ -1715,15 +1748,27 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             # the new blob when it wakes up (fixes ntfy race condition).
             action = data.get("action", "")
             params = data.get("params", {})
+            vault_ok = True
+            target_mesh = req_mesh_id or OPERATOR_MESH_ID
             if action:
                 try:
-                    _admin_order_to_vault_blob(action, params, req_mesh_id or OPERATOR_MESH_ID)
+                    _admin_order_to_vault_blob(action, params, target_mesh)
                 except Exception as e:
                     print(f"[admin] vault blob write failed: {e}")
+                    vault_ok = False
             if ntfy_fn:
                 try: ntfy_fn(mesh_orders.version)
                 except Exception: pass
+            if not vault_ok and _mesh_accounts.is_vault_only(target_mesh):
+                result["warning"] = "vault blob write failed — vault-only slaves will not receive this order"
             self.respond(200, result)
+
+        # ── Session Logout ──
+        elif self.path == "/api/logout":
+            token = data.get("token", "")
+            if token:
+                _revoke_session_token(token)
+            self.respond(200, {"ok": True})
 
         # ── Account-Based Mesh API ──
         elif self.path == "/api/mesh/create":

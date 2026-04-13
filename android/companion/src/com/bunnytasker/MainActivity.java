@@ -533,6 +533,13 @@ public class MainActivity extends Activity {
         String meshUrl = gstr("focus_lock_mesh_url");
         String pin = gstr("focus_lock_pin");
         if (meshUrl.isEmpty() || pin.isEmpty()) return;
+        // SECURITY: reject non-HTTPS mesh relay URLs to prevent credential/order interception
+        if (!meshUrl.startsWith("https://") && !meshUrl.startsWith("http://192.168.")
+                && !meshUrl.startsWith("http://10.") && !meshUrl.startsWith("http://127.")
+                && !meshUrl.startsWith("http://100.")) {
+            android.util.Log.w("BunnyTasker", "Mesh sync refused: non-HTTPS relay URL");
+            return;
+        }
         // Multi-tenant mesh: when joined via /api/mesh/join, the server requires the
         // account-based path /api/mesh/{mesh_id}/sync. Legacy /mesh/sync only works for
         // single-tenant deployments.
@@ -549,53 +556,74 @@ public class MainActivity extends Activity {
 
             java.net.URL url = new java.net.URL(meshUrl + syncPath);
             java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("POST");
-            conn.setRequestProperty("Content-Type", "application/json");
-            conn.setDoOutput(true);
-            conn.setConnectTimeout(8000);
-            conn.setReadTimeout(8000);
-            conn.getOutputStream().write(payload.getBytes());
+            try {
+                conn.setRequestMethod("POST");
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setDoOutput(true);
+                conn.setConnectTimeout(8000);
+                conn.setReadTimeout(8000);
+                conn.getOutputStream().write(payload.getBytes());
 
-            if (conn.getResponseCode() == 200) {
-                java.io.BufferedReader br = new java.io.BufferedReader(
-                    new java.io.InputStreamReader(conn.getInputStream()));
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = br.readLine()) != null) sb.append(line);
-                String body = sb.toString();
+                if (conn.getResponseCode() == 200) {
+                    try (java.io.BufferedReader br = new java.io.BufferedReader(
+                            new java.io.InputStreamReader(conn.getInputStream()))) {
+                        StringBuilder sb = new StringBuilder();
+                        String line;
+                        while ((line = br.readLine()) != null) sb.append(line);
+                        String body = sb.toString();
 
-                // Check if remote version is higher
-                String remVerStr = jsonVal(body, "orders_version");
-                long remVer = 0;
-                try { remVer = Long.parseLong(remVerStr); } catch (Exception e) {}
+                        // Check if remote version is higher
+                        String remVerStr = jsonVal(body, "orders_version");
+                        long remVer = 0;
+                        try { remVer = Long.parseLong(remVerStr); } catch (Exception e) {}
 
-                if (remVer > localVersion) {
-                    // Extract orders object and apply each key to Settings.Global
-                    int ordersStart = body.indexOf("\"orders\"");
-                    if (ordersStart >= 0) {
-                        int braceStart = body.indexOf("{", ordersStart + 8);
-                        if (braceStart >= 0) {
-                            int depth = 0; int braceEnd = braceStart;
-                            for (int i = braceStart; i < body.length(); i++) {
-                                if (body.charAt(i) == '{') depth++;
-                                else if (body.charAt(i) == '}') { depth--; if (depth == 0) { braceEnd = i; break; } }
+                        if (remVer > localVersion) {
+                            // Extract orders object and apply each key to Settings.Global
+                            int ordersStart = body.indexOf("\"orders\"");
+                            if (ordersStart >= 0) {
+                                int braceStart = body.indexOf("{", ordersStart + 8);
+                                if (braceStart >= 0) {
+                                    int depth = 0; int braceEnd = braceStart;
+                                    for (int i = braceStart; i < body.length(); i++) {
+                                        if (body.charAt(i) == '{') depth++;
+                                        else if (body.charAt(i) == '}') { depth--; if (depth == 0) { braceEnd = i; break; } }
+                                    }
+                                    String ordersJson = body.substring(braceStart, braceEnd + 1);
+                                    applyMeshOrders(ordersJson);
+                                    Settings.Global.putLong(getContentResolver(),
+                                        "focus_lock_mesh_version", remVer);
+                                    android.util.Log.i("BunnyTasker", "Mesh sync: applied v" + remVer);
+                                }
                             }
-                            String ordersJson = body.substring(braceStart, braceEnd + 1);
-                            applyMeshOrders(ordersJson);
-                            Settings.Global.putLong(getContentResolver(),
-                                "focus_lock_mesh_version", remVer);
-                            android.util.Log.i("BunnyTasker", "Mesh sync: applied v" + remVer);
                         }
                     }
                 }
+            } finally {
+                conn.disconnect();
             }
-            conn.disconnect();
         } catch (Exception e) {
             android.util.Log.w("BunnyTasker", "Mesh sync failed: " + e.getMessage());
         }
     }
 
-    /** Apply mesh orders JSON to Settings.Global. Keys are mapped to focus_lock_ prefix. */
+    // SECURITY: BunnyTasker only applies DISPLAY keys from mesh sync.
+    // Enforcement keys (lock_active, paywall, penalties, etc.) are owned by the Collar.
+    // This prevents mesh injection attacks from locking the phone or clearing the paywall
+    // via BunnyTasker's unauthenticated legacy sync path.
+    private static final java.util.Set<String> MESH_DISPLAY_KEYS = new java.util.HashSet<>(
+        java.util.Arrays.asList(
+            "sub_tier", "sub_due", "sub_total_owed", "free_unlocks",
+            "pinned_message", "lion_pinned_message", "message",
+            "mode", "offer", "offer_status",
+            "streak_enabled", "streak_start", "streak_escapes_at_start",
+            "tribute_active", "tribute_amount",
+            "checkin_deadline",
+            "curfew_enabled", "bedtime_enabled",
+            "body_check_active", "body_check_area", "body_check_interval_h",
+            "screen_time_quota_minutes"
+        ));
+
+    /** Apply mesh orders JSON to Settings.Global — DISPLAY KEYS ONLY. */
     private void applyMeshOrders(String ordersJson) {
         try {
             JSONObject orders = new JSONObject(ordersJson);
@@ -603,9 +631,8 @@ public class MainActivity extends Activity {
             java.util.Iterator<String> keys = orders.keys();
             while (keys.hasNext()) {
                 String key = keys.next();
-                // Skip internal mesh keys
-                if ("version".equals(key) || "signature".equals(key) || "signed_by".equals(key)) continue;
-                String adbKey = "lock_active".equals(key) ? "focus_lock_active" : "focus_lock_" + key;
+                if (!MESH_DISPLAY_KEYS.contains(key)) continue;
+                String adbKey = "focus_lock_" + key;
                 Object val = orders.get(key);
                 if (val instanceof Integer || val instanceof Long) {
                     Settings.Global.putLong(cr, adbKey, ((Number) val).longValue());
@@ -656,7 +683,8 @@ public class MainActivity extends Activity {
         String lanIp = "";
         try {
             android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager) getSystemService(WIFI_SERVICE);
-            int ip = wm.getConnectionInfo().getIpAddress();
+            android.net.wifi.WifiInfo wi = wm != null ? wm.getConnectionInfo() : null;
+            int ip = wi != null ? wi.getIpAddress() : 0;
             if (ip != 0) {
                 lanIp = (ip & 0xff) + "." + ((ip >> 8) & 0xff) + "."
                     + ((ip >> 16) & 0xff) + "." + ((ip >> 24) & 0xff);

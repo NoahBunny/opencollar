@@ -1382,8 +1382,8 @@ class CollarApp(Gtk.Application):
                 method="POST"
             )
             urllib.request.urlopen(req, timeout=5)
-        except:
-            pass
+        except Exception:
+            print("[warn] failed to send consent-decline penalty webhook")
         win.close()
 
     def poll_status(self):
@@ -1614,8 +1614,8 @@ class CollarApp(Gtk.Application):
         try:
             import subprocess
             subprocess.run(["loginctl", "lock-session"], capture_output=True, timeout=5)
-        except:
-            pass
+        except Exception:
+            print("[warn] loginctl lock-session failed")
         return True
 
     def generate_lock_wallpaper(self):
@@ -1657,8 +1657,8 @@ class CollarApp(Gtk.Application):
                     ctx.set_source_surface(icon_surface)
                     ctx.paint_with_alpha(0.45)
                     ctx.restore()
-                except:
-                    pass
+                except Exception:
+                    print("[warn] failed to render lock wallpaper icon")
 
             # Message — below icon (icon bottom is ~H/2 + 515)
             # Truncate for wallpaper; GTK label + HTML page show full text.
@@ -1909,8 +1909,8 @@ for (var i = 0; i < c.length; i++) {
                     self.pinned_label.set_label(state.pinned or "")
                 if hasattr(self, 'taunt_label') and self.taunt_label:
                     self.taunt_label.set_label(state.current_taunt)
-            except:
-                pass
+            except Exception:
+                print("[warn] failed to update lock window labels")
 
             # Show/hide webview based on paywall
             if self.webview and not state.paywall:

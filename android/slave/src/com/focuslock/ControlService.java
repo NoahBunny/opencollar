@@ -489,17 +489,22 @@ public class ControlService extends Service {
                             }
                         } catch (Exception e) {}
 
-                        // Subscription auto-charge check
+                        // Subscription auto-charge check (with dedup guard)
                         try {
                             String subTier = gstr("focus_lock_sub_tier");
                             long subDue = Settings.Global.getLong(getContentResolver(), "focus_lock_sub_due", 0);
-                            if (!subTier.isEmpty() && subDue > 0 && System.currentTimeMillis() >= subDue) {
+                            long lastCharged = Settings.Global.getLong(getContentResolver(), "focus_lock_sub_last_charged", 0);
+                            if (!subTier.isEmpty() && subDue > 0 && System.currentTimeMillis() >= subDue
+                                    && System.currentTimeMillis() - lastCharged > 60000) {
                                 // Tribute is due — add to paywall
                                 int amount = 0;
                                 if ("bronze".equals(subTier)) amount = 25;
                                 else if ("silver".equals(subTier)) amount = 35;
                                 else if ("gold".equals(subTier)) amount = 50;
                                 if (amount > 0) {
+                                    // Stamp dedup guard FIRST to prevent double-charge from poll loop
+                                    Settings.Global.putLong(getContentResolver(), "focus_lock_sub_last_charged",
+                                        System.currentTimeMillis());
                                     String pw = gstr("focus_lock_paywall");
                                     int currentPw = 0;
                                     try { currentPw = Integer.parseInt(pw); } catch (Exception e2) {}
@@ -512,6 +517,8 @@ public class ControlService extends Service {
                                     long totalOwed = Settings.Global.getLong(getContentResolver(), "focus_lock_sub_total_owed", 0);
                                     Settings.Global.putLong(getContentResolver(), "focus_lock_sub_total_owed", totalOwed + amount);
                                     Log.i(TAG, "Subscription auto-charge: $" + amount + " (" + subTier + ")");
+                                    // Propagate to mesh so server/desktops see updated paywall + due
+                                    meshBumpAndPush();
                                     // Notify homelab
                                     reportSubscriptionCharge(subTier, amount);
                                 }
@@ -986,7 +993,7 @@ public class ControlService extends Service {
         // Mode-specific settings
         String wordMin = jval(body, "word_min");
         Settings.Global.putInt(getContentResolver(), "focus_lock_word_min",
-            wordMin != null && !wordMin.isEmpty() ? Integer.parseInt(wordMin) : 50);
+            safeInt(wordMin, 50));
         String exercise = jval(body, "exercise");
         Settings.Global.putString(getContentResolver(), "focus_lock_exercise",
             exercise != null && !exercise.isEmpty() ? exercise : "Do 20 pushups");
@@ -1184,7 +1191,7 @@ public class ControlService extends Service {
         Settings.Global.putString(getContentResolver(), "focus_lock_task_text",
             doRandCaps ? randomizeCaps(text) : text);
         Settings.Global.putInt(getContentResolver(), "focus_lock_task_reps",
-            reps != null ? Integer.parseInt(reps) : 1);
+            safeInt(reps, 1));
         Settings.Global.putInt(getContentResolver(), "focus_lock_task_done", 0);
         Settings.Global.putInt(getContentResolver(), "focus_lock_escapes", 0);
         Settings.Global.putString(getContentResolver(), "focus_lock_message",
@@ -1453,8 +1460,17 @@ public class ControlService extends Service {
         }
 
         Settings.Global.putString(getContentResolver(), "focus_lock_sub_tier", tier);
-        // Set first due date: 7 days from now
-        long dueDate = System.currentTimeMillis() + 7L * 24 * 3600 * 1000;
+        // Optional due param: "now" or epoch ms; default 7 days from now
+        String dueParam = jval(body, "due");
+        long dueDate;
+        if ("now".equals(dueParam)) {
+            dueDate = System.currentTimeMillis();
+        } else if (dueParam != null && !"0".equals(dueParam)) {
+            try { dueDate = Long.parseLong(dueParam); }
+            catch (Exception e) { dueDate = System.currentTimeMillis() + 7L * 24 * 3600 * 1000; }
+        } else {
+            dueDate = System.currentTimeMillis() + 7L * 24 * 3600 * 1000;
+        }
         Settings.Global.putLong(getContentResolver(), "focus_lock_sub_due", dueDate);
         return "{\"ok\":true,\"action\":\"subscribed\",\"tier\":\"" + tier + "\",\"amount\":" + amount +
             ",\"due\":\"" + new java.text.SimpleDateFormat("yyyy-MM-dd").format(new Date(dueDate)) + "\"}";
@@ -1678,12 +1694,12 @@ public class ControlService extends Service {
         if ("stop".equals(action)) {
             lovenseStop();
         } else if ("vibrate".equals(action)) {
-            int i = intensity != null ? Integer.parseInt(intensity) : 10;
-            int d = duration != null ? Integer.parseInt(duration) : 5;
+            int i = safeInt(intensity, 10);
+            int d = safeInt(duration, 5);
             lovenseCommand("{\"command\":\"Function\",\"action\":\"Vibrate:" + i + "\",\"timeSec\":" + d + ",\"apiVer\":1}");
         } else if ("pattern".equals(action)) {
             String pattern = jval(body, "pattern");
-            int d = duration != null ? Integer.parseInt(duration) : 5;
+            int d = safeInt(duration, 5);
             if (pattern != null) {
                 lovenseCommand("{\"command\":\"Pattern\",\"rule\":\"V:1;F:v;S:300#\",\"strength\":\"" + pattern + "\",\"timeSec\":" + d + ",\"apiVer\":1}");
             }
@@ -2065,6 +2081,14 @@ public class ControlService extends Service {
     private String gstr(String key) {
         String v = Settings.Global.getString(getContentResolver(), key);
         return (v == null || v.equals("null")) ? "" : v;
+    }
+    private static int safeInt(String s, int def) {
+        if (s == null) return def;
+        try { return Integer.parseInt(s.trim()); } catch (NumberFormatException e) { return def; }
+    }
+    private static long safeLong(String s, long def) {
+        if (s == null) return def;
+        try { return Long.parseLong(s.trim()); } catch (NumberFormatException e) { return def; }
     }
     private String esc(String s) {
         if (s == null || s.isEmpty()) return "";
@@ -2578,6 +2602,23 @@ public class ControlService extends Service {
             case "entrap": result = doEntrap(body); break;
             case "task": result = doTask(body); break;
             case "subscribe": result = doSubscribe(body); break;
+            case "set-sub-due": {
+                String dueVal = jval(body, "due");
+                if (dueVal == null) dueVal = jval("{\"due\":" + jval(body, "params") + "}", "due");
+                long newDue = 0;
+                if ("now".equals(dueVal)) {
+                    newDue = System.currentTimeMillis();
+                } else {
+                    try { newDue = Long.parseLong(dueVal); } catch (Exception e) {}
+                }
+                if (newDue > 0) {
+                    Settings.Global.putLong(getContentResolver(), "focus_lock_sub_due", newDue);
+                    result = "{\"ok\":true,\"action\":\"sub_due_set\",\"due\":" + newDue + "}";
+                } else {
+                    result = "{\"error\":\"invalid due value\"}";
+                }
+                break;
+            }
             case "set-curfew": {
                 String confine = jval(body, "confine_hour");
                 String release = jval(body, "release_hour");
@@ -2602,8 +2643,8 @@ public class ControlService extends Service {
                 Settings.Global.putInt(getContentResolver(), "focus_lock_bedtime_enabled", 1);
                 String lh = jval(body, "lock_hour");
                 String uh = jval(body, "unlock_hour");
-                if (lh != null) Settings.Global.putInt(getContentResolver(), "focus_lock_bedtime_lock_hour", Integer.parseInt(lh));
-                if (uh != null) Settings.Global.putInt(getContentResolver(), "focus_lock_bedtime_unlock_hour", Integer.parseInt(uh));
+                if (lh != null) Settings.Global.putInt(getContentResolver(), "focus_lock_bedtime_lock_hour", safeInt(lh, -1));
+                if (uh != null) Settings.Global.putInt(getContentResolver(), "focus_lock_bedtime_unlock_hour", safeInt(uh, -1));
                 result = "{\"ok\":true,\"action\":\"bedtime_set\"}";
                 break;
             }
@@ -2616,8 +2657,8 @@ public class ControlService extends Service {
             case "set-screen-time": {
                 String qt = jval(body, "quota_minutes");
                 String rh = jval(body, "reset_hour");
-                if (qt != null) Settings.Global.putInt(getContentResolver(), "focus_lock_screen_time_quota_minutes", Integer.parseInt(qt));
-                if (rh != null) Settings.Global.putInt(getContentResolver(), "focus_lock_screen_time_reset_hour", Integer.parseInt(rh));
+                if (qt != null) Settings.Global.putInt(getContentResolver(), "focus_lock_screen_time_quota_minutes", safeInt(qt, 0));
+                if (rh != null) Settings.Global.putInt(getContentResolver(), "focus_lock_screen_time_reset_hour", safeInt(rh, 0));
                 result = "{\"ok\":true,\"action\":\"screen_time_set\"}";
                 break;
             }
@@ -2630,8 +2671,8 @@ public class ControlService extends Service {
                 String amt = jval(body, "amount");
                 String intv = jval(body, "interval");
                 Settings.Global.putInt(getContentResolver(), "focus_lock_fine_active", 1);
-                Settings.Global.putInt(getContentResolver(), "focus_lock_fine_amount", amt != null ? Integer.parseInt(amt) : 10);
-                Settings.Global.putInt(getContentResolver(), "focus_lock_fine_interval_m", intv != null ? Integer.parseInt(intv) : 60);
+                Settings.Global.putInt(getContentResolver(), "focus_lock_fine_amount", safeInt(amt, 10));
+                Settings.Global.putInt(getContentResolver(), "focus_lock_fine_interval_m", safeInt(intv, 60));
                 Settings.Global.putLong(getContentResolver(), "focus_lock_fine_last_applied", System.currentTimeMillis());
                 result = "{\"ok\":true,\"action\":\"fine_started\"}";
                 break;
@@ -2675,7 +2716,7 @@ public class ControlService extends Service {
                 String intH = jval(body, "interval_h");
                 Settings.Global.putInt(getContentResolver(), "focus_lock_body_check_active", 1);
                 Settings.Global.putString(getContentResolver(), "focus_lock_body_check_area", area != null ? area : "body");
-                Settings.Global.putInt(getContentResolver(), "focus_lock_body_check_interval_h", intH != null ? Integer.parseInt(intH) : 12);
+                Settings.Global.putInt(getContentResolver(), "focus_lock_body_check_interval_h", safeInt(intH, 12));
                 Settings.Global.putLong(getContentResolver(), "focus_lock_body_check_last", System.currentTimeMillis());
                 result = "{\"ok\":true,\"action\":\"body_check_started\"}";
                 break;
