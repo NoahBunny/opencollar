@@ -271,6 +271,11 @@ Auditors can: read source on GitHub -> compute hash -> `curl /version` -> verify
 
 The relay also serves a human-readable **Trust & Transparency page** at `/trust` (P8): live build info fetched from `/version`, threat model, cryptographic design, step-by-step verification instructions, self-host and P2P alternatives, and a warrant canary. See `web/trust.html`.
 
+## Disclaimer
+
+This software is for consensual use between adults only. Real money, real
+devices, real responsibility. Read `DISCLAIMER.md` before deploying.
+
 ## License
 
 GPL-3.0-or-later. See `LICENSE`.

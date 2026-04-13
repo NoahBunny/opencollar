@@ -205,7 +205,7 @@ In vault mode, the server cannot read or write the orders directly — so these 
 | Workload | Vault-mode home | Notes |
 |---|---|---|
 | Payment detection | Lion's Share | The Lion's phone polls IMAP via the existing `focuslock-mail.py` IMAP creds, OR Lion confirms payments manually in-app. Manual is fine for v1. |
-| Photo verification | Lion's Share + Pegasus | The slave uploads encrypted photo to the server's blob store; Lion's Share fetches+decrypts+sends to a *user-controlled* Ollama (could still be Pegasus, but as a user-side resource) |
+| Photo verification | Lion's Share + homelab | The slave uploads encrypted photo to the server's blob store; Lion's Share fetches+decrypts+sends to a *user-controlled* Ollama (could still be the homelab, but as a user-side resource) |
 | Subscription auto-charge | Lion's Share | Schedule a daily check on the controller; Lion confirms or rejects |
 | Compound interest | Slave (Collar) | The Collar already runs continuously and can compute interest locally on `paywall_original` + elapsed_hours. No server involvement needed. |
 
@@ -240,7 +240,7 @@ In vault mode, the server cannot read or write the orders directly — so these 
 1. ✅ `vault_only` flag per mesh
 2. ✅ Legacy `/mesh/{sync,order,status}` + `/api/mesh/{id}/{sync,order,status}` return 410 when vault_only
 3. ✅ Enforcement admin API (`/admin/status`, `/admin/order`) with admin_token auth
-4. ✅ E2E verified on pegasus + umbreon (Pixel 10), 2100+ vault versions in production
+4. ✅ E2E verified on homelab + test device, 2100+ vault versions in production
 
 ### Phase E — Vault-only (SHIPPED 2026-04-10, P6)
 

@@ -22,7 +22,7 @@
 #
 # Usage:
 #   ./qa-vault-mode.sh                  # check all phones in re-enslave.config
-#   ./qa-vault-mode.sh --phone umbreon  # check one phone
+#   ./qa-vault-mode.sh --phone myphone  # check one phone
 #   ./qa-vault-mode.sh --marker MAGIC1  # also poll for a Lion-sent pinned-message marker
 #
 # Exit codes:
@@ -204,12 +204,12 @@ order ACTUALLY survives the vault path on real hardware, do this once:
   1. On Jace's phone, open Lion's Share → INBOX or wherever pinned messages are set
   2. Set a unique marker as the pinned message, e.g.: VAULT-QA-XYZ123
   3. Within 60s, run:
-       ./qa-vault-mode.sh --phone umbreon --marker VAULT-QA-XYZ123
+       ./qa-vault-mode.sh --phone myphone --marker VAULT-QA-XYZ123
   4. Last check should show: ✓ marker 'VAULT-QA-XYZ123' reached the slave
 
 If the marker check fails after waiting 60s, the round-trip is broken — flip
-vault_only=false on pegasus immediately:
-  ssh pegasus 'sudo python3 /tmp/flip_vault_only.py false && sudo systemctl restart focuslock-mail.service'
+vault_only=false on the homelab immediately:
+  ssh homelab 'sudo python3 /tmp/flip_vault_only.py false && sudo systemctl restart focuslock-mail.service'
 
 Then escalate.
 EOF

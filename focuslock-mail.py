@@ -2436,7 +2436,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             # Memory bundle endpoint for sync-standing-orders.sh.
             #
             # Resolution order: $MEMORY_DIR env var → ~/.claude/enforcement-memory.
-            # The env var override exists because the systemd unit on pegasus sets
+            # The env var override exists because the systemd unit on the homelab sets
             # HOME=/opt/focuslock for sandboxing, which would otherwise resolve
             # the tilde to a non-existent dir under /opt and silently 404 the
             # endpoint (forcing sync clients onto the slower rsync fallback).
