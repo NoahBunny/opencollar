@@ -250,13 +250,16 @@ def check_payment_emails(*, imap_host, mail_user, mail_pass,
 
     while True:
         try:
+            # Check when locked OR when paywall > 0 (subscription charges
+            # add to paywall without locking — still need to detect payment)
             lock_active = adb.get("focus_lock_active")
-            if lock_active != "1":
+            paywall_str = str(mesh_orders.get("paywall", "0"))
+            has_paywall = paywall_str and paywall_str != "0" and paywall_str != "null"
+            if lock_active != "1" and not has_paywall:
                 time.sleep(check_interval)
                 continue
 
-            paywall_str = str(mesh_orders.get("paywall", "0"))
-            if not paywall_str or paywall_str == "0" or paywall_str == "null":
+            if not has_paywall:
                 time.sleep(check_interval)
                 continue
 
