@@ -12,6 +12,7 @@ import android.util.Log;
 import android.app.PendingIntent;
 import android.app.admin.DevicePolicyManager;
 import android.content.ComponentName;
+import android.os.UserManager;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -57,6 +58,62 @@ public class ControlService extends Service {
     private ServerSocket serverSocket;
     private boolean running = false;
     private android.speech.tts.TextToSpeech tts;
+
+    // ── Device Owner (DPM) helpers ──
+
+    /** Cached device-owner check — set once in onCreate, avoids repeated IPC. */
+    private boolean cachedIsDeviceOwner = false;
+
+    private boolean isDeviceOwner() { return cachedIsDeviceOwner; }
+
+    private ComponentName adminComponent() {
+        return new ComponentName(this, AdminReceiver.class);
+    }
+
+    private DevicePolicyManager dpm() {
+        return (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
+    }
+
+    /**
+     * Apply persistent device-owner restrictions on service start.
+     * These survive reboots once set; calling them on each boot is idempotent.
+     * Only runs when the app holds device owner — otherwise a no-op.
+     */
+    private void applyDeviceOwnerRestrictions() {
+        if (!isDeviceOwner()) return;
+        DevicePolicyManager dpm = dpm();
+        ComponentName admin = adminComponent();
+        try {
+            // Block uninstalling the collar
+            dpm.setUninstallBlocked(admin, getPackageName(), true);
+            // Block safe mode boot
+            dpm.addUserRestriction(admin, UserManager.DISALLOW_SAFE_BOOT);
+            // Block factory reset from Settings (Jace can still release via
+            // Release Forever which calls clearDeviceOwnerApp first)
+            dpm.addUserRestriction(admin, UserManager.DISALLOW_FACTORY_RESET);
+            Log.i(TAG, "Device owner restrictions applied (uninstall blocked, safe boot blocked, factory reset blocked)");
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to apply device owner restrictions", e);
+        }
+    }
+
+    /**
+     * Clear device-owner restrictions. Called during authorized release (Release
+     * Forever) before clearDeviceOwnerApp().
+     */
+    private void clearDeviceOwnerRestrictions() {
+        if (!isDeviceOwner()) return;
+        DevicePolicyManager dpm = dpm();
+        ComponentName admin = adminComponent();
+        try {
+            dpm.setUninstallBlocked(admin, getPackageName(), false);
+            dpm.clearUserRestriction(admin, UserManager.DISALLOW_SAFE_BOOT);
+            dpm.clearUserRestriction(admin, UserManager.DISALLOW_FACTORY_RESET);
+            Log.i(TAG, "Device owner restrictions cleared for release");
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to clear device owner restrictions", e);
+        }
+    }
 
     // ── Mesh State ──
     private final java.util.concurrent.atomic.AtomicLong meshVersion = new java.util.concurrent.atomic.AtomicLong(0);
@@ -146,6 +203,15 @@ public class ControlService extends Service {
         try {
             Runtime.getRuntime().exec(new String[]{"setprop", "service.adb.tcp.port", "5555"});
         } catch (Exception e) {}
+
+        // Cache device-owner status once at startup — avoids repeated binder IPC.
+        try {
+            cachedIsDeviceOwner = dpm().isDeviceOwnerApp(getPackageName());
+            Log.w(TAG, "Device owner: " + cachedIsDeviceOwner);
+        } catch (Exception e) {
+            cachedIsDeviceOwner = false;
+        }
+        applyDeviceOwnerRestrictions();
 
         startServer();
         startJailWatcher();
@@ -944,11 +1010,20 @@ public class ControlService extends Service {
             Settings.Global.putInt(getContentResolver(), "focus_lock_saved_volume_notif",
                 am.getStreamVolume(android.media.AudioManager.STREAM_NOTIFICATION));
         } catch (Exception e) {}
-        // Disable escape hatches: notification shade via policy_control (works with
-        // WRITE_SECURE_SETTINGS), launcher packages (best-effort from app UID)
+        // Disable escape hatches
+        if (isDeviceOwner()) {
+            // Device owner path — DPM APIs, no shell needed
+            try {
+                dpm().setStatusBarDisabled(adminComponent(), true);
+            } catch (Exception e) { Log.w(TAG, "DPM setStatusBarDisabled failed", e); }
+        }
+        // Always set policy_control + shell fallback (belt and suspenders —
+        // DPM handles statusbar, these handle launchers and immersive mode)
         Settings.Global.putString(getContentResolver(), "policy_control", "immersive.full=*");
         try {
-            Runtime.getRuntime().exec(new String[]{"cmd", "statusbar", "disable-for-setup", "true"});
+            if (!isDeviceOwner()) {
+                Runtime.getRuntime().exec(new String[]{"cmd", "statusbar", "disable-for-setup", "true"});
+            }
             for (String pkg : ESCAPE_HATCH_PACKAGES) {
                 Runtime.getRuntime().exec(new String[]{"pm", "disable-user", "--user", "0", pkg});
             }
@@ -978,11 +1053,17 @@ public class ControlService extends Service {
         Settings.Global.putInt(getContentResolver(), "focus_lock_dim", 0);
         Settings.Global.putInt(getContentResolver(), "focus_lock_mute", 0);
         Settings.Global.putInt(getContentResolver(), "focus_lock_vibrate", 0);
-        // Try to restore statusbar + launcher via shell (best effort — bridge also does this).
-        // Restore notification shade + system UI
+        // Restore statusbar + launcher
+        if (isDeviceOwner()) {
+            try {
+                dpm().setStatusBarDisabled(adminComponent(), false);
+            } catch (Exception e) { Log.w(TAG, "DPM setStatusBarDisabled(false) failed", e); }
+        }
         Settings.Global.putString(getContentResolver(), "policy_control", "");
         try {
-            Runtime.getRuntime().exec(new String[]{"cmd", "statusbar", "disable-for-setup", "false"});
+            if (!isDeviceOwner()) {
+                Runtime.getRuntime().exec(new String[]{"cmd", "statusbar", "disable-for-setup", "false"});
+            }
             for (String pkg : ESCAPE_HATCH_PACKAGES) {
                 Runtime.getRuntime().exec(new String[]{"pm", "enable", "--user", "0", pkg});
             }
@@ -1470,6 +1551,20 @@ public class ControlService extends Service {
         Settings.Global.putString(getContentResolver(), "focus_lock_message", "");
         Settings.Global.putInt(getContentResolver(), "focus_lock_consented", 0);
 
+        // Clear device-owner restrictions + status bar BEFORE revoking device owner
+        if (isDeviceOwner()) {
+            try {
+                dpm().setStatusBarDisabled(adminComponent(), false);
+            } catch (Exception e) {}
+            clearDeviceOwnerRestrictions();
+            try {
+                dpm().clearDeviceOwnerApp(getPackageName());
+                cachedIsDeviceOwner = false;
+                Log.w(TAG, "Device owner cleared for release");
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to clear device owner", e);
+            }
+        }
         // Restore UI (best-effort — bridge handles this reliably via ADB)
         try {
             Runtime.getRuntime().exec(new String[]{"cmd", "statusbar", "disable-for-setup", "false"});
@@ -1827,11 +1922,17 @@ public class ControlService extends Service {
 
     /** Disable all escape hatches — called on lock AND every 2s while locked. */
     private void enforceEscapeHatches() {
-        // Force immersive mode system-wide — blocks notification shade pull-down.
-        // Works because the slave holds WRITE_SECURE_SETTINGS.
+        if (isDeviceOwner()) {
+            try {
+                dpm().setStatusBarDisabled(adminComponent(), true);
+            } catch (Exception e) {}
+        }
+        // Always enforce immersive + launcher disable (belt and suspenders)
         Settings.Global.putString(getContentResolver(), "policy_control", "immersive.full=*");
         try {
-            Runtime.getRuntime().exec(new String[]{"cmd", "statusbar", "disable-for-setup", "true"});
+            if (!isDeviceOwner()) {
+                Runtime.getRuntime().exec(new String[]{"cmd", "statusbar", "disable-for-setup", "true"});
+            }
             for (String pkg : ESCAPE_HATCH_PACKAGES) {
                 Runtime.getRuntime().exec(new String[]{"pm", "disable-user", "--user", "0", pkg});
             }
@@ -3208,6 +3309,7 @@ public class ControlService extends Service {
         body.put("desktops", gstr("focus_lock_desktops"));
         body.put("entrapped",
             Settings.Global.getInt(getContentResolver(), "focus_lock_entrapped", 0) == 1);
+        body.put("device_owner", isDeviceOwner());
         // Screen time leash
         body.put("screen_time_quota_minutes",
             (long) Settings.Global.getInt(getContentResolver(), "focus_lock_screen_time_quota_minutes", 0));
