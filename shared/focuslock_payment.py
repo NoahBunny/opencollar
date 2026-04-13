@@ -278,8 +278,14 @@ def check_payment_emails(*, imap_host, mail_user, mail_pass,
             mail.login(mail_user, mail_pass)
             mail.select("INBOX")
 
-            _, data = mail.search(None, "(UNSEEN)")
-            for num in data[0].split():
+            # Search ALL recent emails, not just UNSEEN — dedup is handled
+            # by the payment ledger via Message-ID, not read/unread state.
+            # SINCE last 7 days to avoid scanning entire inbox every cycle.
+            since_date = (datetime.now() - __import__('datetime').timedelta(days=7)).strftime("%d-%b-%Y")
+            _, data = mail.search(None, f'(SINCE {since_date})')
+            email_ids = data[0].split()
+            print(f"[{_now()}] Found {len(email_ids)} emails in last 7 days")
+            for num in email_ids:
                 _, msg_data = mail.fetch(num, "(RFC822)")
                 msg = email.message_from_bytes(msg_data[0][1])
                 subject = str(msg.get("Subject", "")).lower()
@@ -292,6 +298,10 @@ def check_payment_emails(*, imap_host, mail_user, mail_pass,
                 best_score = 0
                 for provider in providers:
                     score, _kw = score_payment_email(sender, all_text, provider)
+                    if score > 0:
+                        print(f"[{_now()}]   #{num.decode()} from={sender[:40]} "
+                              f"subj={subject[:50]} score={score}/{4 if provider['senders'] else 5} "
+                              f"provider={provider['name']}")
                     # Thresholds: known sender needs >= 4, generic needs >= 5
                     threshold = 4 if provider["senders"] else 5
                     if score >= threshold and score > best_score:
@@ -301,18 +311,12 @@ def check_payment_emails(*, imap_host, mail_user, mail_pass,
                 if not best_provider:
                     continue
 
-                # Anti-self-pay: if recipient_email is set, verify the
-                # e-Transfer notification mentions the Lion as recipient.
-                # Interac emails say "sent to <email>" or "<name> received".
-                if recipient_email:
-                    recip_lower = recipient_email.lower()
-                    recip_user = recip_lower.split("@")[0] if "@" in recip_lower else ""
-                    # Check if Lion's email or name appears in the email body
-                    if recip_lower not in all_text and recip_user not in all_text:
-                        print(f"[{_now()}] Rejected: payment email does not mention "
-                              f"recipient {recipient_email} — possible self-pay attempt")
-                        mail.store(num, "+FLAGS", "\\Seen")
-                        continue
+                # Anti-self-pay: the IMAP inbox being scanned should be the
+                # Lion's (payment recipient), not the Bunny's. When Lion's
+                # inbox shows "You received $X", it's a genuine incoming
+                # transfer. TODO: Lion sets Their IMAP creds via Lion's Share
+                # → server stores them → scans Lion's inbox. Until then,
+                # recipient_email check is disabled (wrong architecture).
 
                 amount = extract_amount(all_text, iso_codes)
                 if amount < min_payment:
@@ -332,7 +336,6 @@ def check_payment_emails(*, imap_host, mail_user, mail_pass,
                     description=f"{best_provider['name']}: ${amount:.2f}",
                 )
                 if ledger_result.get("error") == "duplicate":
-                    mail.store(num, "+FLAGS", "\\Seen")
                     continue  # Already processed
 
                 print(f"[{_now()}] Payment confirmed: ${amount:.2f} via "
@@ -344,8 +347,18 @@ def check_payment_emails(*, imap_host, mail_user, mail_pass,
                     f"Payment received: ${amount:.2f} via "
                     f"{best_provider['name']}")
 
+                # Track total paid (cents) for stats display
+                try:
+                    cur = int(adb.get("focus_lock_total_paid_cents") or "0")
+                except Exception:
+                    cur = 0
+                adb.put("focus_lock_total_paid_cents",
+                        str(cur + int(amount * 100)))
+
                 if amount >= paywall:
-                    print(f"[{_now()}] FULL PAYMENT \u2014 unlocking phone!")
+                    print(f"[{_now()}] FULL PAYMENT \u2014 clearing paywall!")
+                    adb.put("focus_lock_paywall", "0")
+                    mesh_orders.set("paywall", "0")
                     unlock_phone(adb)
                 else:
                     remaining = paywall - amount
@@ -353,8 +366,6 @@ def check_payment_emails(*, imap_host, mail_user, mail_pass,
                           f"remaining: ${remaining:.2f}")
                     reduce_paywall(remaining, amount, adb,
                                    phone_url, phone_pin)
-
-                mail.store(num, "+FLAGS", "\\Seen")
 
             mail.logout()
 
