@@ -75,7 +75,10 @@ done
 # Shared Python modules
 for src in "$LS"/shared/focuslock_*.py; do
     [ -f "$src" ] || continue
+    # Deploy to both root and shared/ — server imports from shared/ but some
+    # modules are also imported at top level
     DEPLOY_PAIRS+=("$src|/opt/focuslock/$(basename "$src")")
+    DEPLOY_PAIRS+=("$src|/opt/focuslock/shared/$(basename "$src")")
 done
 # Banks file (used by payment detection)
 if [ -f "$LS/shared/banks.json" ]; then
