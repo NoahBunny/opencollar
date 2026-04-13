@@ -2643,6 +2643,7 @@ if __name__ == "__main__":
             "providers": DEFAULT_PAYMENT_PROVIDERS, "iso_codes": _ISO_CODES,
             "min_payment": MIN_PAYMENT, "max_payment": MAX_PAYMENT,
             "phone_url": PHONE_URL, "phone_pin": str(_cfg.get("pin", "")),
+            "recipient_email": PARTNER_EMAIL,
         },
         daemon=True,
     )

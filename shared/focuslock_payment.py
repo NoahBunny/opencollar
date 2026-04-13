@@ -217,7 +217,8 @@ def check_payment_emails(*, imap_host, mail_user, mail_pass,
                          check_interval, adb, mesh_orders,
                          payment_ledger, providers, iso_codes,
                          min_payment=0.01, max_payment=10000,
-                         phone_url="", phone_pin=""):
+                         phone_url="", phone_pin="",
+                         recipient_email=""):
     """Main IMAP polling loop for payment email detection.
 
     This function blocks forever (meant for threading).  It checks for
@@ -225,9 +226,14 @@ def check_payment_emails(*, imap_host, mail_user, mail_pass,
     amounts, deduplicates via the ledger, and triggers unlock or
     partial paywall reduction.
 
+    SECURITY: The inbox being scanned should be the Lion's (payment
+    recipient), NOT the Bunny's. If scanning the Bunny's inbox,
+    set recipient_email to the Lion's email so the checker verifies
+    the e-Transfer was sent TO the Lion, not to the Bunny themselves.
+
     Args:
         imap_host: IMAP server hostname.
-        mail_user: IMAP login username.
+        mail_user: IMAP login username (should be Lion's email).
         mail_pass: IMAP login password.
         check_interval: Seconds between IMAP checks.
         adb: ADBBridge instance for device communication.
@@ -239,6 +245,8 @@ def check_payment_emails(*, imap_host, mail_user, mail_pass,
         max_payment: Maximum payment amount to accept.
         phone_url: Phone HTTP endpoint for message relay.
         phone_pin: PIN for phone API auth.
+        recipient_email: If set, reject e-Transfers where this email is
+            NOT mentioned in the body (anti-self-pay protection).
     """
     if not imap_host or not mail_user or not mail_pass:
         print("[payment] IMAP not configured \u2014 payment email detection disabled")
@@ -292,6 +300,19 @@ def check_payment_emails(*, imap_host, mail_user, mail_pass,
 
                 if not best_provider:
                     continue
+
+                # Anti-self-pay: if recipient_email is set, verify the
+                # e-Transfer notification mentions the Lion as recipient.
+                # Interac emails say "sent to <email>" or "<name> received".
+                if recipient_email:
+                    recip_lower = recipient_email.lower()
+                    recip_user = recip_lower.split("@")[0] if "@" in recip_lower else ""
+                    # Check if Lion's email or name appears in the email body
+                    if recip_lower not in all_text and recip_user not in all_text:
+                        print(f"[{_now()}] Rejected: payment email does not mention "
+                              f"recipient {recipient_email} — possible self-pay attempt")
+                        mail.store(num, "+FLAGS", "\\Seen")
+                        continue
 
                 amount = extract_amount(all_text, iso_codes)
                 if amount < min_payment:
