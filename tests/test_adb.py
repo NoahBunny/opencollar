@@ -40,8 +40,14 @@ class TestADBBridgeGet:
         assert out == "some_value"
         # Verify args — no shell=True, literal key not interpolated
         assert captured["args"] == [
-            "adb", "-s", "10.0.0.1:5555", "shell",
-            "settings", "get", "global", "focus_lock_paywall",
+            "adb",
+            "-s",
+            "10.0.0.1:5555",
+            "shell",
+            "settings",
+            "get",
+            "global",
+            "focus_lock_paywall",
         ]
 
     def test_exception_swallowed_returns_empty(self, monkeypatch):

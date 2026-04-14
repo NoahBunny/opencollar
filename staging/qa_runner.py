@@ -52,11 +52,15 @@ def _get(relay, path, timeout=5):
 
 
 def _admin_order(relay, token, action, params=None):
-    return _post(relay, "/admin/order", {
-        "admin_token": token,
-        "action": action,
-        "params": params or {},
-    })
+    return _post(
+        relay,
+        "/admin/order",
+        {
+            "admin_token": token,
+            "action": action,
+            "params": params or {},
+        },
+    )
 
 
 def _status(relay, token):
@@ -67,7 +71,7 @@ def _status(relay, token):
 
 
 class _Result:
-    __slots__ = ("name", "ok", "detail")
+    __slots__ = ("detail", "name", "ok")
 
     def __init__(self, name, ok, detail=""):
         self.name = name
@@ -83,7 +87,7 @@ def _run_test(name, fn):
     try:
         ok, detail = fn()
         return _Result(name, ok, detail)
-    except Exception as e:  # noqa: BLE001 — test runner top-level
+    except Exception as e:
         return _Result(name, False, f"raised {type(e).__name__}: {e}")
 
 
@@ -110,7 +114,7 @@ def tests_relay_health(relay, token):
         return True, f"orders v{body.get('orders_version')}"
 
     def t_admin_status_unauthenticated():
-        code, body = _get(relay, "/admin/status?admin_token=wrong")
+        code, _body = _get(relay, "/admin/status?admin_token=wrong")
         if code != 403:
             return False, f"expected 403, got {code}"
         return True, "unauthenticated correctly rejected"
@@ -213,7 +217,7 @@ def tests_subscription(relay, token):
         # sub_due should be ~now + 7d (in ms)
         if not sub_due or sub_due < int(time.time() * 1000):
             return False, f"sub_due not set or in the past: {sub_due}"
-        return True, f"tier=gold, sub_due in {(sub_due - int(time.time()*1000)) // (1000*86400)}d"
+        return True, f"tier=gold, sub_due in {(sub_due - int(time.time() * 1000)) // (1000 * 86400)}d"
 
     return [
         _run_test("6.1 subscribe to gold", t_subscribe_gold),
@@ -274,10 +278,14 @@ def tests_release_safety(relay, token):
 
 def main():
     ap = argparse.ArgumentParser(description="Staging QA runner — scripted Lion driver")
-    ap.add_argument("--relay", default="http://127.0.0.1:18435",
-                    help="Staging relay base URL (default: http://127.0.0.1:18435)")
-    ap.add_argument("--config", default=os.path.join(os.path.dirname(__file__), "config.json"),
-                    help="Path to staging/config.json (for admin_token)")
+    ap.add_argument(
+        "--relay", default="http://127.0.0.1:18435", help="Staging relay base URL (default: http://127.0.0.1:18435)"
+    )
+    ap.add_argument(
+        "--config",
+        default=os.path.join(os.path.dirname(__file__), "config.json"),
+        help="Path to staging/config.json (for admin_token)",
+    )
     args = ap.parse_args()
 
     # Load admin_token from config — never accept it as a CLI arg (avoids ps leakage)
@@ -296,11 +304,11 @@ def main():
     print()
 
     sections = [
-        ("0. Relay health",   tests_relay_health),
-        ("2. Lock / unlock",  tests_lock_unlock),
-        ("3. Paywall",        tests_paywall),
-        ("6. Subscription",   tests_subscription),
-        ("13. Messaging",     tests_messaging),
+        ("0. Relay health", tests_relay_health),
+        ("2. Lock / unlock", tests_lock_unlock),
+        ("3. Paywall", tests_paywall),
+        ("6. Subscription", tests_subscription),
+        ("13. Messaging", tests_messaging),
         ("12. Release safety", tests_release_safety),
     ]
 

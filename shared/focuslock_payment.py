@@ -353,9 +353,7 @@ def check_payment_emails(
                 if amount < min_payment:
                     continue
                 if amount > max_payment:
-                    logger.warning(
-                        "Ignoring suspicious amount: $%.2f (max: $%s)", amount, max_payment
-                    )
+                    logger.warning("Ignoring suspicious amount: $%.2f (max: $%s)", amount, max_payment)
                     continue
 
                 # Deduplicate via ledger using email Message-ID

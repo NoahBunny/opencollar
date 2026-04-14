@@ -90,8 +90,14 @@ class TestApplyEnvOverrides:
         assert cfg["mesh_port"] == 1234  # unchanged
 
     def test_bool_coercion(self, monkeypatch):
-        for val, expected in [("1", True), ("true", True), ("yes", True),
-                               ("0", False), ("no", False), ("anything-else", False)]:
+        for val, expected in [
+            ("1", True),
+            ("true", True),
+            ("yes", True),
+            ("0", False),
+            ("no", False),
+            ("anything-else", False),
+        ]:
             monkeypatch.setenv("FOCUSLOCK_NTFY_ENABLED", val)
             cfg = {"ntfy_enabled": False}
             _apply_env_overrides(cfg)
@@ -147,8 +153,7 @@ class TestLoadConfig:
         for k in list(os.environ):
             if k.startswith("FOCUSLOCK_") and k != "FOCUSLOCK_CONFIG":
                 monkeypatch.delenv(k, raising=False)
-            if k in ("MAIL_HOST", "SMTP_HOST", "MAIL_USER", "MAIL_PASS",
-                     "PARTNER_EMAIL", "PHONE_PIN", "PHONE_URL"):
+            if k in ("MAIL_HOST", "SMTP_HOST", "MAIL_USER", "MAIL_PASS", "PARTNER_EMAIL", "PHONE_PIN", "PHONE_URL"):
                 monkeypatch.delenv(k, raising=False)
         cfg = load_config()
         assert cfg["pin"] == DEFAULTS["pin"]
@@ -157,11 +162,15 @@ class TestLoadConfig:
 
     def test_loads_from_explicit_path(self, tmp_path):
         path = tmp_path / "cfg.json"
-        path.write_text(json.dumps({
-            "pin": "1234",
-            "mesh_url": "https://example.com",
-            "mail": {"imap_host": "imap.test"},
-        }))
+        path.write_text(
+            json.dumps(
+                {
+                    "pin": "1234",
+                    "mesh_url": "https://example.com",
+                    "mail": {"imap_host": "imap.test"},
+                }
+            )
+        )
         cfg = load_config(config_path=str(path))
         assert cfg["pin"] == "1234"
         assert cfg["mesh_url"] == "https://example.com"

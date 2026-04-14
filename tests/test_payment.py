@@ -38,10 +38,14 @@ class TestLoadPaymentProviders:
 
     def test_generic_fallback_merges_all_language_keywords(self, tmp_path):
         path = tmp_path / "banks.json"
-        path.write_text(json.dumps({
-            "payment_providers": [{"name": "Foo", "senders": ["foo.com"], "keywords": ["paid"]}],
-            "transfer_keywords": {"en": ["deposit"], "fr": ["virement"], "es": ["transferencia"]},
-        }))
+        path.write_text(
+            json.dumps(
+                {
+                    "payment_providers": [{"name": "Foo", "senders": ["foo.com"], "keywords": ["paid"]}],
+                    "transfer_keywords": {"en": ["deposit"], "fr": ["virement"], "es": ["transferencia"]},
+                }
+            )
+        )
         providers = load_payment_providers(str(path))
         generic = next(p for p in providers if p["name"] == "Generic")
         assert set(generic["keywords"]) == {"deposit", "virement", "transferencia"}
@@ -89,10 +93,14 @@ class TestLoadIsoCodes:
 
 class TestScorePaymentEmail:
     INTERAC: ClassVar[dict] = {
-        "name": "Interac", "senders": ["interac.ca"], "keywords": ["e-transfer", "autodeposit"],
+        "name": "Interac",
+        "senders": ["interac.ca"],
+        "keywords": ["e-transfer", "autodeposit"],
     }
     GENERIC: ClassVar[dict] = {
-        "name": "Generic", "senders": [], "keywords": ["deposit", "received"],
+        "name": "Generic",
+        "senders": [],
+        "keywords": ["deposit", "received"],
     }
 
     def test_known_sender_and_keywords_scores_high(self):
@@ -265,6 +273,7 @@ class TestReducePaywall:
             return FakeResponse()
 
         import urllib.request
+
         monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
 
         adb = MagicMock()
@@ -352,10 +361,12 @@ class _StopLoop(Exception):
     """Sentinel used to break out of check_payment_emails' while True."""
 
 
-def _make_imap_email(sender="notify@payments.interac.ca",
-                     subject="INTERAC e-Transfer",
-                     body="You received $50.00 via e-transfer. autodeposit complete.",
-                     msg_id="<msg-1@example>"):
+def _make_imap_email(
+    sender="notify@payments.interac.ca",
+    subject="INTERAC e-Transfer",
+    body="You received $50.00 via e-transfer. autodeposit complete.",
+    msg_id="<msg-1@example>",
+):
     """Build a raw email matching what imap.fetch(..., '(RFC822)') returns."""
     msg = MIMEText(body, "plain")
     msg["Subject"] = subject
@@ -435,9 +446,15 @@ class TestCheckPaymentEmails:
 
         with pytest.raises(_StopLoop):
             check_payment_emails(
-                imap_host="imap.example.com", mail_user="lion@x", mail_pass="p",
-                check_interval=1, adb=adb, mesh_orders=mesh, payment_ledger=ledger,
-                providers=_HARDCODED_FALLBACK, iso_codes="USD|CAD",
+                imap_host="imap.example.com",
+                mail_user="lion@x",
+                mail_pass="p",
+                check_interval=1,
+                adb=adb,
+                mesh_orders=mesh,
+                payment_ledger=ledger,
+                providers=_HARDCODED_FALLBACK,
+                iso_codes="USD|CAD",
             )
         # Full payment → paywall cleared via ADB + mesh
         calls = {c.args[0]: c.args[1] for c in adb.put.call_args_list}
@@ -449,16 +466,20 @@ class TestCheckPaymentEmails:
         mesh = self._make_mesh_orders(paywall="100")
         ledger = self._make_ledger()
         adb = self._make_adb()
-        _install_fake_imap(monkeypatch, [_make_imap_email(
-            body="You received $40.00 via e-transfer. autodeposit."
-        )])
+        _install_fake_imap(monkeypatch, [_make_imap_email(body="You received $40.00 via e-transfer. autodeposit.")])
         monkeypatch.setattr("focuslock_payment.time.sleep", _make_sleep_stop(1))
 
         with pytest.raises(_StopLoop):
             check_payment_emails(
-                imap_host="imap.x", mail_user="u", mail_pass="p",
-                check_interval=1, adb=adb, mesh_orders=mesh, payment_ledger=ledger,
-                providers=_HARDCODED_FALLBACK, iso_codes="USD|CAD",
+                imap_host="imap.x",
+                mail_user="u",
+                mail_pass="p",
+                check_interval=1,
+                adb=adb,
+                mesh_orders=mesh,
+                payment_ledger=ledger,
+                providers=_HARDCODED_FALLBACK,
+                iso_codes="USD|CAD",
             )
         calls = {c.args[0]: c.args[1] for c in adb.put.call_args_list}
         assert calls.get("focus_lock_paywall") == "60"  # 100 - 40
@@ -473,9 +494,15 @@ class TestCheckPaymentEmails:
 
         with pytest.raises(_StopLoop):
             check_payment_emails(
-                imap_host="imap.x", mail_user="u", mail_pass="p",
-                check_interval=1, adb=adb, mesh_orders=mesh, payment_ledger=ledger,
-                providers=_HARDCODED_FALLBACK, iso_codes="USD|CAD",
+                imap_host="imap.x",
+                mail_user="u",
+                mail_pass="p",
+                check_interval=1,
+                adb=adb,
+                mesh_orders=mesh,
+                payment_ledger=ledger,
+                providers=_HARDCODED_FALLBACK,
+                iso_codes="USD|CAD",
             )
         # Duplicate → no paywall mutation
         assert mesh._store["paywall"] == "50"
@@ -484,16 +511,20 @@ class TestCheckPaymentEmails:
         mesh = self._make_mesh_orders(paywall="50")
         ledger = self._make_ledger()
         adb = self._make_adb()
-        _install_fake_imap(monkeypatch, [_make_imap_email(
-            body="You received $99999.00 via e-transfer. autodeposit."
-        )])
+        _install_fake_imap(monkeypatch, [_make_imap_email(body="You received $99999.00 via e-transfer. autodeposit.")])
         monkeypatch.setattr("focuslock_payment.time.sleep", _make_sleep_stop(1))
 
         with pytest.raises(_StopLoop):
             check_payment_emails(
-                imap_host="imap.x", mail_user="u", mail_pass="p",
-                check_interval=1, adb=adb, mesh_orders=mesh, payment_ledger=ledger,
-                providers=_HARDCODED_FALLBACK, iso_codes="USD|CAD",
+                imap_host="imap.x",
+                mail_user="u",
+                mail_pass="p",
+                check_interval=1,
+                adb=adb,
+                mesh_orders=mesh,
+                payment_ledger=ledger,
+                providers=_HARDCODED_FALLBACK,
+                iso_codes="USD|CAD",
                 max_payment=10000,
             )
         # Rejected → ledger never called, paywall unchanged
@@ -504,16 +535,20 @@ class TestCheckPaymentEmails:
         mesh = self._make_mesh_orders(paywall="50")
         ledger = self._make_ledger()
         adb = self._make_adb()
-        _install_fake_imap(monkeypatch, [_make_imap_email(
-            body="You received $0.001 via e-transfer. autodeposit."
-        )])
+        _install_fake_imap(monkeypatch, [_make_imap_email(body="You received $0.001 via e-transfer. autodeposit.")])
         monkeypatch.setattr("focuslock_payment.time.sleep", _make_sleep_stop(1))
 
         with pytest.raises(_StopLoop):
             check_payment_emails(
-                imap_host="imap.x", mail_user="u", mail_pass="p",
-                check_interval=1, adb=adb, mesh_orders=mesh, payment_ledger=ledger,
-                providers=_HARDCODED_FALLBACK, iso_codes="USD|CAD",
+                imap_host="imap.x",
+                mail_user="u",
+                mail_pass="p",
+                check_interval=1,
+                adb=adb,
+                mesh_orders=mesh,
+                payment_ledger=ledger,
+                providers=_HARDCODED_FALLBACK,
+                iso_codes="USD|CAD",
                 min_payment=1.0,
             )
         ledger.add_entry.assert_not_called()
@@ -526,15 +561,22 @@ class TestCheckPaymentEmails:
         adb.get.return_value = "0"  # not locked
 
         import imaplib
+
         imap_ctor = MagicMock()
         monkeypatch.setattr(imaplib, "IMAP4_SSL", imap_ctor)
         monkeypatch.setattr("focuslock_payment.time.sleep", _make_sleep_stop(2))
 
         with pytest.raises(_StopLoop):
             check_payment_emails(
-                imap_host="imap.x", mail_user="u", mail_pass="p",
-                check_interval=1, adb=adb, mesh_orders=mesh, payment_ledger=ledger,
-                providers=_HARDCODED_FALLBACK, iso_codes="USD|CAD",
+                imap_host="imap.x",
+                mail_user="u",
+                mail_pass="p",
+                check_interval=1,
+                adb=adb,
+                mesh_orders=mesh,
+                payment_ledger=ledger,
+                providers=_HARDCODED_FALLBACK,
+                iso_codes="USD|CAD",
             )
         imap_ctor.assert_not_called()
 
@@ -542,7 +584,9 @@ class TestCheckPaymentEmails:
         """When mesh_orders has payment_imap_* set, those win over static args."""
         mesh = self._make_mesh_orders(
             paywall="50",
-            imap_host="dyn.host", imap_user="dyn@x", imap_pass="dynpass",
+            imap_host="dyn.host",
+            imap_user="dyn@x",
+            imap_pass="dynpass",
         )
         ledger = self._make_ledger()
         adb = self._make_adb()
@@ -550,6 +594,7 @@ class TestCheckPaymentEmails:
         monkeypatch.setattr("focuslock_payment.time.sleep", _make_sleep_stop(1))
 
         import imaplib
+
         ctor_calls = []
         real_ctor = imaplib.IMAP4_SSL
 
@@ -561,9 +606,15 @@ class TestCheckPaymentEmails:
 
         with pytest.raises(_StopLoop):
             check_payment_emails(
-                imap_host="static.host", mail_user="static@x", mail_pass="staticpass",
-                check_interval=1, adb=adb, mesh_orders=mesh, payment_ledger=ledger,
-                providers=_HARDCODED_FALLBACK, iso_codes="USD|CAD",
+                imap_host="static.host",
+                mail_user="static@x",
+                mail_pass="staticpass",
+                check_interval=1,
+                adb=adb,
+                mesh_orders=mesh,
+                payment_ledger=ledger,
+                providers=_HARDCODED_FALLBACK,
+                iso_codes="USD|CAD",
             )
         assert ctor_calls == ["dyn.host"]  # dynamic creds used
 
@@ -584,9 +635,15 @@ class TestCheckPaymentEmails:
 
         with pytest.raises(_StopLoop):
             check_payment_emails(
-                imap_host="imap.x", mail_user="u", mail_pass="p",
-                check_interval=1, adb=adb, mesh_orders=mesh, payment_ledger=ledger,
-                providers=_HARDCODED_FALLBACK, iso_codes="USD|CAD",
+                imap_host="imap.x",
+                mail_user="u",
+                mail_pass="p",
+                check_interval=1,
+                adb=adb,
+                mesh_orders=mesh,
+                payment_ledger=ledger,
+                providers=_HARDCODED_FALLBACK,
+                iso_codes="USD|CAD",
             )
         # If we got to _StopLoop, the loop handled the exception + kept iterating.
 
@@ -599,16 +656,20 @@ class TestCheckPaymentEmails:
             "focus_lock_active": "1",
             "focus_lock_total_paid_cents": "1234",
         }.get(k, "0")
-        _install_fake_imap(monkeypatch, [_make_imap_email(
-            body="You received $40.00 via e-transfer. autodeposit."
-        )])
+        _install_fake_imap(monkeypatch, [_make_imap_email(body="You received $40.00 via e-transfer. autodeposit.")])
         monkeypatch.setattr("focuslock_payment.time.sleep", _make_sleep_stop(1))
 
         with pytest.raises(_StopLoop):
             check_payment_emails(
-                imap_host="imap.x", mail_user="u", mail_pass="p",
-                check_interval=1, adb=adb, mesh_orders=mesh, payment_ledger=ledger,
-                providers=_HARDCODED_FALLBACK, iso_codes="USD|CAD",
+                imap_host="imap.x",
+                mail_user="u",
+                mail_pass="p",
+                check_interval=1,
+                adb=adb,
+                mesh_orders=mesh,
+                payment_ledger=ledger,
+                providers=_HARDCODED_FALLBACK,
+                iso_codes="USD|CAD",
             )
         calls = {c.args[0]: c.args[1] for c in adb.put.call_args_list}
         # 1234 + 4000 = 5234
@@ -620,14 +681,21 @@ class TestCheckPaymentEmails:
         adb = self._make_adb()
 
         import imaplib
+
         imap_ctor = MagicMock()
         monkeypatch.setattr(imaplib, "IMAP4_SSL", imap_ctor)
         monkeypatch.setattr("focuslock_payment.time.sleep", _make_sleep_stop(1))
 
         with pytest.raises(_StopLoop):
             check_payment_emails(
-                imap_host="", mail_user="", mail_pass="",  # all empty
-                check_interval=1, adb=adb, mesh_orders=mesh, payment_ledger=ledger,
-                providers=_HARDCODED_FALLBACK, iso_codes="USD|CAD",
+                imap_host="",
+                mail_user="",
+                mail_pass="",  # all empty
+                check_interval=1,
+                adb=adb,
+                mesh_orders=mesh,
+                payment_ledger=ledger,
+                providers=_HARDCODED_FALLBACK,
+                iso_codes="USD|CAD",
             )
         imap_ctor.assert_not_called()

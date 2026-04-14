@@ -289,20 +289,26 @@ class TestPeerRegistry:
     def test_prune_stale_removes_non_whitelisted_on_load(self, tmp_path):
         """If the persist file has a non-whitelisted node, it's pruned on load."""
         path = tmp_path / "peers.json"
-        path.write_text(json.dumps({
-            "phone": {"node_id": "phone", "addresses": ["10.0.0.1"], "port": 8432},
-            "rogue": {"node_id": "rogue", "addresses": ["6.6.6.6"], "port": 8432},
-        }))
+        path.write_text(
+            json.dumps(
+                {
+                    "phone": {"node_id": "phone", "addresses": ["10.0.0.1"], "port": 8432},
+                    "rogue": {"node_id": "rogue", "addresses": ["6.6.6.6"], "port": 8432},
+                }
+            )
+        )
         reg = PeerRegistry(persist_path=str(path))
         assert "phone" in reg.peers
         assert "rogue" not in reg.peers
 
     def test_learn_from_known_nodes_skips_non_whitelisted(self):
         reg = PeerRegistry()
-        reg.learn_from_known_nodes({
-            "phone": {"type": "phone", "addresses": ["10.0.0.1"], "port": 8432},
-            "rogue": {"type": "evil", "addresses": ["6.6.6.6"], "port": 8432},
-        })
+        reg.learn_from_known_nodes(
+            {
+                "phone": {"type": "phone", "addresses": ["10.0.0.1"], "port": 8432},
+                "rogue": {"type": "evil", "addresses": ["6.6.6.6"], "port": 8432},
+            }
+        )
         assert "phone" in reg.peers
         assert "rogue" not in reg.peers
 
@@ -553,9 +559,14 @@ class TestHandleMeshSync:
             "port": 8432,
         }
         resp = handle_mesh_sync(
-            body=body, my_id="homelab", my_type="server",
-            my_addresses=["10.0.0.2"], my_port=8435,
-            orders=doc, peers=peers, local_status={},
+            body=body,
+            my_id="homelab",
+            my_type="server",
+            my_addresses=["10.0.0.2"],
+            my_port=8435,
+            orders=doc,
+            peers=peers,
+            local_status={},
             lion_pubkey=lion_keypair["pub_pem"],
         )
         assert doc.version == 5
@@ -572,9 +583,14 @@ class TestHandleMeshSync:
         peers = PeerRegistry()
         body = {"node_id": "phone", "orders_version": 3, "addresses": [], "port": 8432}
         resp = handle_mesh_sync(
-            body=body, my_id="homelab", my_type="server",
-            my_addresses=[], my_port=8435,
-            orders=doc, peers=peers, local_status={},
+            body=body,
+            my_id="homelab",
+            my_type="server",
+            my_addresses=[],
+            my_port=8435,
+            orders=doc,
+            peers=peers,
+            local_status={},
             lion_pubkey="",
         )
         assert resp["orders_version"] == 10
@@ -596,9 +612,14 @@ class TestHandleMeshSync:
             "port": 8432,
         }
         handle_mesh_sync(
-            body=body, my_id="homelab", my_type="server",
-            my_addresses=[], my_port=8435,
-            orders=doc, peers=peers, local_status={},
+            body=body,
+            my_id="homelab",
+            my_type="server",
+            my_addresses=[],
+            my_port=8435,
+            orders=doc,
+            peers=peers,
+            local_status={},
             lion_pubkey=lion_keypair["pub_pem"],
         )
         # Orders not applied
@@ -613,13 +634,22 @@ class TestHandleMeshSync:
         remote_orders["paywall"] = "33"
         sig = sign_orders(remote_orders, lion_keypair["priv_pem"])
         body = {
-            "node_id": "phone", "orders_version": 1, "signature": sig,
-            "orders": remote_orders, "addresses": [], "port": 8432,
+            "node_id": "phone",
+            "orders_version": 1,
+            "signature": sig,
+            "orders": remote_orders,
+            "addresses": [],
+            "port": 8432,
         }
         handle_mesh_sync(
-            body=body, my_id="homelab", my_type="server",
-            my_addresses=[], my_port=8435,
-            orders=doc, peers=peers, local_status={},
+            body=body,
+            my_id="homelab",
+            my_type="server",
+            my_addresses=[],
+            my_port=8435,
+            orders=doc,
+            peers=peers,
+            local_status={},
             lion_pubkey=lion_keypair["pub_pem"],
             on_orders_applied=lambda o: calls.append(o),
         )
@@ -693,7 +723,10 @@ class TestHandleMeshOrder:
         doc = OrdersDocument()
         peers = PeerRegistry()
         r = __import__("focuslock_mesh").handle_mesh_order(
-            body={}, orders=doc, peers=peers, my_id="homelab",
+            body={},
+            orders=doc,
+            peers=peers,
+            my_id="homelab",
         )
         assert "error" in r
 
@@ -703,9 +736,12 @@ class TestHandleMeshOrder:
         doc.set("pin", "1234")
         peers = PeerRegistry()
         import focuslock_mesh
+
         r = focuslock_mesh.handle_mesh_order(
             body={"action": "lock", "params": {}},  # no pin, no sig
-            orders=doc, peers=peers, my_id="homelab",
+            orders=doc,
+            peers=peers,
+            my_id="homelab",
             lion_pubkey=lion_keypair["pub_pem"],
         )
         assert "error" in r
@@ -715,10 +751,13 @@ class TestHandleMeshOrder:
         doc.set("pin", "1234")
         peers = PeerRegistry()
         import focuslock_mesh
+
         with patch.object(focuslock_mesh, "push_to_peers"):
             r = focuslock_mesh.handle_mesh_order(
                 body={"action": "lock", "params": {"minutes": 5}, "pin": "1234"},
-                orders=doc, peers=peers, my_id="homelab",
+                orders=doc,
+                peers=peers,
+                my_id="homelab",
                 apply_fn=lambda action, params, orders: {"applied": action},
                 lion_pubkey=lion_keypair["pub_pem"],
             )
@@ -732,10 +771,13 @@ class TestHandleMeshOrder:
         sig_payload = {"action": "lock", "params": {"minutes": 5}}
         sig = sign_orders(sig_payload, lion_keypair["priv_pem"])
         import focuslock_mesh
+
         with patch.object(focuslock_mesh, "push_to_peers"):
             r = focuslock_mesh.handle_mesh_order(
                 body={"action": "lock", "params": {"minutes": 5}, "signature": sig},
-                orders=doc, peers=peers, my_id="homelab",
+                orders=doc,
+                peers=peers,
+                my_id="homelab",
                 apply_fn=lambda a, p, o: {},
                 lion_pubkey=lion_keypair["pub_pem"],
             )
@@ -748,9 +790,12 @@ class TestHandleMeshOrder:
         sig_payload = {"action": "lock", "params": {}}
         bad_sig = sign_orders(sig_payload, slave_keypair["priv_pem"])
         import focuslock_mesh
+
         r = focuslock_mesh.handle_mesh_order(
             body={"action": "lock", "params": {}, "signature": bad_sig},
-            orders=doc, peers=peers, my_id="homelab",
+            orders=doc,
+            peers=peers,
+            my_id="homelab",
             lion_pubkey=lion_keypair["pub_pem"],
         )
         assert "error" in r
@@ -760,10 +805,13 @@ class TestHandleMeshOrder:
         doc = OrdersDocument()  # no pin set
         peers = PeerRegistry()
         import focuslock_mesh
+
         with patch.object(focuslock_mesh, "push_to_peers"):
             r = focuslock_mesh.handle_mesh_order(
                 body={"action": "lock", "params": {}},
-                orders=doc, peers=peers, my_id="homelab",
+                orders=doc,
+                peers=peers,
+                my_id="homelab",
                 apply_fn=lambda a, p, o: {},
                 lion_pubkey="",  # uninitialized
             )
@@ -775,10 +823,13 @@ class TestHandleMeshOrder:
         peers = PeerRegistry()
         ntfy_calls = []
         import focuslock_mesh
+
         with patch.object(focuslock_mesh, "push_to_peers"):
             focuslock_mesh.handle_mesh_order(
                 body={"action": "unlock", "params": {}, "pin": "1234"},
-                orders=doc, peers=peers, my_id="homelab",
+                orders=doc,
+                peers=peers,
+                my_id="homelab",
                 apply_fn=lambda a, p, o: {},
                 lion_pubkey=lion_keypair["pub_pem"],
                 ntfy_fn=lambda v: ntfy_calls.append(v),
@@ -790,10 +841,13 @@ class TestHandleMeshOrder:
         doc = OrdersDocument()
         peers = PeerRegistry()
         import focuslock_mesh
+
         with patch.object(focuslock_mesh, "push_to_peers"):
             r = focuslock_mesh.handle_mesh_order(
                 body={"action": "noop", "params": {}},
-                orders=doc, peers=peers, my_id="homelab",
+                orders=doc,
+                peers=peers,
+                my_id="homelab",
                 apply_fn=lambda a, p, o: {},
                 lion_pubkey="",
                 ntfy_fn=lambda v: (_ for _ in ()).throw(RuntimeError("ntfy down")),
@@ -808,6 +862,7 @@ class TestHandleMeshOrder:
 class TestVerifySignatureCryptoMissing:
     def test_returns_false_when_crypto_unavailable(self, lion_keypair, monkeypatch):
         import focuslock_mesh
+
         monkeypatch.setattr(focuslock_mesh, "HAS_CRYPTO", False)
         assert focuslock_mesh.verify_signature({"x": 1}, "sig", lion_keypair["pub_pem"]) is False
         # sign_orders also guarded
@@ -852,15 +907,20 @@ class TestVoucherHandlers:
 
     def test_handle_redeem_add_paywall(self, tmp_path):
         pool = VoucherPool(persist_path=str(tmp_path / "v.json"))
-        pool.store([{
-            "id": "v1",
-            "expires": int(time.time() * 1000) + 60000,
-            "action": "add-paywall",
-            "amount": 25,
-        }])
+        pool.store(
+            [
+                {
+                    "id": "v1",
+                    "expires": int(time.time() * 1000) + 60000,
+                    "action": "add-paywall",
+                    "amount": 25,
+                }
+            ]
+        )
         doc = OrdersDocument()
         peers = PeerRegistry()
         import focuslock_mesh
+
         with patch.object(focuslock_mesh, "push_to_peers"):
             r = handle_redeem_voucher({"id": "v1"}, pool, doc, peers, "homelab")
         assert r["ok"] is True
@@ -873,10 +933,14 @@ class TestLedgerHandlers:
         doc = OrdersDocument()
         peers = PeerRegistry()
         import focuslock_mesh
+
         with patch.object(focuslock_mesh, "push_to_peers"):
             r = handle_ledger_entry(
                 {"type": "charge", "amount": 30, "source": "s1"},
-                ledger, doc, peers, "homelab",
+                ledger,
+                doc,
+                peers,
+                "homelab",
             )
         assert r["ok"] is True
         assert doc.orders["paywall"] == "30"
@@ -886,14 +950,21 @@ class TestLedgerHandlers:
         doc = OrdersDocument()
         peers = PeerRegistry()
         import focuslock_mesh
+
         with patch.object(focuslock_mesh, "push_to_peers"):
             handle_ledger_entry(
                 {"type": "charge", "amount": 50, "source": "s1"},
-                ledger, doc, peers, "homelab",
+                ledger,
+                doc,
+                peers,
+                "homelab",
             )
             handle_ledger_entry(
                 {"type": "payment", "amount": 20, "source": "p1"},
-                ledger, doc, peers, "homelab",
+                ledger,
+                doc,
+                peers,
+                "homelab",
             )
         assert doc.orders["paywall"] == "30"
 
@@ -902,14 +973,21 @@ class TestLedgerHandlers:
         doc = OrdersDocument()
         peers = PeerRegistry()
         import focuslock_mesh
+
         with patch.object(focuslock_mesh, "push_to_peers"):
             handle_ledger_entry(
                 {"type": "charge", "amount": 10, "source": "x"},
-                ledger, doc, peers, "homelab",
+                ledger,
+                doc,
+                peers,
+                "homelab",
             )
             r = handle_ledger_entry(
                 {"type": "charge", "amount": 10, "source": "x"},
-                ledger, doc, peers, "homelab",
+                ledger,
+                doc,
+                peers,
+                "homelab",
             )
         assert r.get("error") == "duplicate"
 
@@ -978,6 +1056,7 @@ class TestMessageHandlers:
 class TestPushToPeers:
     def test_push_to_peers_iterates_over_non_self(self):
         import focuslock_mesh
+
         doc = OrdersDocument()
         doc.set("paywall", "5")
         doc.bump_version()
@@ -997,6 +1076,7 @@ class TestPushToPeers:
 
     def test_bump_and_broadcast_version_increment_and_push(self):
         import focuslock_mesh
+
         doc = OrdersDocument()
         peers = PeerRegistry()
         peers.update_peer("phone", addresses=["10.0.0.1"])
@@ -1011,6 +1091,7 @@ class TestPushToPeers:
 class TestGossipTick:
     def test_gossip_tick_contacts_non_self_peers(self, lion_keypair):
         import focuslock_mesh
+
         doc = OrdersDocument()
         peers = PeerRegistry()
         peers.update_peer("phone", addresses=["10.0.0.1"], port=8432, orders_version=0)
@@ -1022,10 +1103,14 @@ class TestGossipTick:
 
         with patch.object(focuslock_mesh, "_gossip_one_peer", side_effect=fake_gossip_one):
             focuslock_mesh.gossip_tick(
-                my_id="homelab", my_type="server",
-                my_addresses=["10.0.0.2"], my_port=8435,
-                orders=doc, peers=peers,
-                local_status={}, lion_pubkey=lion_keypair["pub_pem"],
+                my_id="homelab",
+                my_type="server",
+                my_addresses=["10.0.0.2"],
+                my_port=8435,
+                orders=doc,
+                peers=peers,
+                local_status={},
+                lion_pubkey=lion_keypair["pub_pem"],
             )
         assert "phone" in contacted
         assert "homelab" not in contacted
@@ -1040,9 +1125,13 @@ class TestHandleMeshSyncEdges:
         peers = PeerRegistry()
         resp = handle_mesh_sync(
             body={},  # no node_id
-            my_id="homelab", my_type="server",
-            my_addresses=[], my_port=8435,
-            orders=doc, peers=peers, local_status={},
+            my_id="homelab",
+            my_type="server",
+            my_addresses=[],
+            my_port=8435,
+            orders=doc,
+            peers=peers,
+            local_status={},
             lion_pubkey="",
         )
         # No peers added
@@ -1055,9 +1144,13 @@ class TestHandleMeshSyncEdges:
         peers = PeerRegistry()
         resp = handle_mesh_sync(
             body={"node_id": "phone", "orders_version": 5, "addresses": [], "port": 8432},
-            my_id="homelab", my_type="server",
-            my_addresses=[], my_port=8435,
-            orders=doc, peers=peers, local_status={},
+            my_id="homelab",
+            my_type="server",
+            my_addresses=[],
+            my_port=8435,
+            orders=doc,
+            peers=peers,
+            local_status={},
             lion_pubkey="",
         )
         assert "orders" not in resp  # requester is current
@@ -1102,6 +1195,7 @@ class TestHttpHelpers:
 
     def test_http_get_failure_returns_none(self, monkeypatch):
         import focuslock_mesh
+
         monkeypatch.setattr("urllib.request.urlopen", MagicMock(side_effect=TimeoutError()))
         assert focuslock_mesh._http_get("http://x/y") is None
 
@@ -1109,6 +1203,7 @@ class TestHttpHelpers:
 class TestTryPeerAddrs:
     def test_first_address_succeeds_promotes_to_front(self, monkeypatch):
         import focuslock_mesh
+
         peer = PeerInfo("phone", addresses=["10.0.0.1", "10.0.0.2", "10.0.0.3"], port=8432)
         # First address works
         monkeypatch.setattr(focuslock_mesh, "_http_post", lambda url, data, timeout=3.0: {"ok": True})
@@ -1120,6 +1215,7 @@ class TestTryPeerAddrs:
 
     def test_second_address_succeeds_gets_promoted(self, monkeypatch):
         import focuslock_mesh
+
         peer = PeerInfo("phone", addresses=["bad.addr", "10.0.0.5"], port=8432)
         # First address fails (_http_post returns None), second succeeds
         results = [None, {"ok": True}]
@@ -1136,6 +1232,7 @@ class TestTryPeerAddrs:
 
     def test_all_addresses_fail_returns_none(self, monkeypatch):
         import focuslock_mesh
+
         peer = PeerInfo("phone", addresses=["10.0.0.1", "10.0.0.2"], port=8432)
         monkeypatch.setattr(focuslock_mesh, "_http_post", lambda url, data, timeout=3.0: None)
         monkeypatch.setattr(focuslock_mesh, "get_tailscale_ip_for_node", lambda nid: "")
@@ -1143,6 +1240,7 @@ class TestTryPeerAddrs:
 
     def test_tailscale_ip_appended_as_fallback(self, monkeypatch):
         import focuslock_mesh
+
         peer = PeerInfo("phone", addresses=["10.0.0.1"], port=8432)
         # LAN address fails, Tailscale succeeds
         tried_urls = []
@@ -1162,12 +1260,19 @@ class TestTryPeerAddrs:
 
     def test_get_mode_uses_http_get(self, monkeypatch):
         import focuslock_mesh
+
         peer = PeerInfo("phone", addresses=["10.0.0.1"], port=8432)
         called = {"get": 0, "post": 0}
-        monkeypatch.setattr(focuslock_mesh, "_http_get",
-                           lambda url, timeout=3.0: called.__setitem__("get", called["get"] + 1) or {"ok": True})
-        monkeypatch.setattr(focuslock_mesh, "_http_post",
-                           lambda url, data, timeout=3.0: called.__setitem__("post", called["post"] + 1) or {"ok": True})
+        monkeypatch.setattr(
+            focuslock_mesh,
+            "_http_get",
+            lambda url, timeout=3.0: called.__setitem__("get", called["get"] + 1) or {"ok": True},
+        )
+        monkeypatch.setattr(
+            focuslock_mesh,
+            "_http_post",
+            lambda url, data, timeout=3.0: called.__setitem__("post", called["post"] + 1) or {"ok": True},
+        )
         monkeypatch.setattr(focuslock_mesh, "get_tailscale_ip_for_node", lambda nid: "")
         focuslock_mesh._try_peer_addrs(peer, "/mesh/status", data=None)
         assert called["get"] == 1
@@ -1175,6 +1280,7 @@ class TestTryPeerAddrs:
 
     def test_address_list_capped(self, monkeypatch):
         import focuslock_mesh
+
         # Simulate 8 addresses, only the working one + first 3 of others should remain
         peer = PeerInfo("phone", addresses=[f"10.0.0.{i}" for i in range(1, 9)], port=8432)
         # Only the 5th succeeds
@@ -1196,6 +1302,7 @@ class TestTryPeerAddrs:
 class TestGossipOnePeer:
     def test_no_response_noops(self, monkeypatch):
         import focuslock_mesh
+
         peer = PeerInfo("phone", addresses=["10.0.0.1"], port=8432)
         peers = PeerRegistry()
         doc = OrdersDocument()
@@ -1206,6 +1313,7 @@ class TestGossipOnePeer:
 
     def test_learns_peer_and_known_nodes(self, monkeypatch):
         import focuslock_mesh
+
         peer = PeerInfo("phone", addresses=["10.0.0.1"], port=8432)
         peers = PeerRegistry()
         doc = OrdersDocument()
@@ -1226,6 +1334,7 @@ class TestGossipOnePeer:
 
     def test_applies_newer_orders_from_response(self, monkeypatch, lion_keypair):
         import focuslock_mesh
+
         peer = PeerInfo("phone", addresses=["10.0.0.1"], port=8432)
         peers = PeerRegistry()
         doc = OrdersDocument()
@@ -1233,13 +1342,23 @@ class TestGossipOnePeer:
         new_orders["paywall"] = "42"
         sig = sign_orders(new_orders, lion_keypair["priv_pem"])
         fake_resp = {
-            "node_id": "phone", "type": "phone", "addresses": [], "port": 8432,
-            "orders_version": 5, "signature": sig, "orders": new_orders,
+            "node_id": "phone",
+            "type": "phone",
+            "addresses": [],
+            "port": 8432,
+            "orders_version": 5,
+            "signature": sig,
+            "orders": new_orders,
         }
         monkeypatch.setattr(focuslock_mesh, "_try_peer_addrs", lambda *a, **kw: fake_resp)
         calls = []
         focuslock_mesh._gossip_one_peer(
-            peer, {}, doc, peers, lion_keypair["pub_pem"], lambda o: calls.append(o),
+            peer,
+            {},
+            doc,
+            peers,
+            lion_keypair["pub_pem"],
+            lambda o: calls.append(o),
         )
         assert doc.version == 5
         assert doc.orders["paywall"] == "42"
@@ -1252,6 +1371,7 @@ class TestGossipOnePeer:
 class TestTailscaleResolution:
     def test_set_tailscale_node_map_lowercases(self):
         import focuslock_mesh
+
         focuslock_mesh.set_tailscale_node_map({"MyPhone": "Pixel-8"})
         assert focuslock_mesh._ts_node_overrides == {"myphone": "pixel-8"}
         # Cleanup to avoid polluting other tests
@@ -1259,12 +1379,14 @@ class TestTailscaleResolution:
 
     def test_direct_match(self, monkeypatch):
         import focuslock_mesh
+
         monkeypatch.setattr(focuslock_mesh, "_ts_hostname_map", {"phone": "100.64.0.5"})
         monkeypatch.setattr(focuslock_mesh, "_refresh_tailscale_hosts", lambda: None)
         assert focuslock_mesh.get_tailscale_ip_for_node("phone") == "100.64.0.5"
 
     def test_strip_win_suffix(self, monkeypatch):
         import focuslock_mesh
+
         monkeypatch.setattr(focuslock_mesh, "_ts_hostname_map", {"desktop": "100.64.0.7"})
         monkeypatch.setattr(focuslock_mesh, "_refresh_tailscale_hosts", lambda: None)
         # mesh id 'desktop-win' → tailscale hostname 'desktop'
@@ -1272,6 +1394,7 @@ class TestTailscaleResolution:
 
     def test_prefix_match(self, monkeypatch):
         import focuslock_mesh
+
         monkeypatch.setattr(focuslock_mesh, "_ts_hostname_map", {"pixel 10": "100.64.0.9"})
         monkeypatch.setattr(focuslock_mesh, "_refresh_tailscale_hosts", lambda: None)
         # normalized: "pixel10" and "pixel" → prefix match
@@ -1279,12 +1402,14 @@ class TestTailscaleResolution:
 
     def test_no_match_returns_empty(self, monkeypatch):
         import focuslock_mesh
+
         monkeypatch.setattr(focuslock_mesh, "_ts_hostname_map", {})
         monkeypatch.setattr(focuslock_mesh, "_refresh_tailscale_hosts", lambda: None)
         assert focuslock_mesh.get_tailscale_ip_for_node("unknown") == ""
 
     def test_override_to_hostname(self, monkeypatch):
         import focuslock_mesh
+
         monkeypatch.setattr(focuslock_mesh, "_ts_hostname_map", {"actual-host": "100.64.0.11"})
         monkeypatch.setattr(focuslock_mesh, "_refresh_tailscale_hosts", lambda: None)
         focuslock_mesh._ts_node_overrides = {"mesh-alias": "actual-host"}

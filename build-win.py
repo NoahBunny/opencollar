@@ -80,6 +80,7 @@ def convert_icon():
         return None
 
     from PIL import Image
+
     os.makedirs(BUILD_ROOT, exist_ok=True)
     ico_path = os.path.join(BUILD_ROOT, "crown-gold.ico")
     img = Image.open(png_path)
@@ -93,11 +94,10 @@ def write_build_config(variant, homelab_url=None, mesh_pin=None, pubkey_pem=None
     """Generate _build_config.py in BUILD_ROOT for PyInstaller to bundle."""
     os.makedirs(BUILD_ROOT, exist_ok=True)
     content = f'BUILD_VARIANT = "{variant}"\n'
-    content += f'BUILD_HOMELAB_URL = "{homelab_url}"\n' if homelab_url else 'BUILD_HOMELAB_URL = None\n'
-    content += f'BUILD_MESH_PIN = "{mesh_pin}"\n' if mesh_pin else 'BUILD_MESH_PIN = None\n'
-    content += f'BUILD_LION_PUBKEY = """{pubkey_pem}"""\n' if pubkey_pem else 'BUILD_LION_PUBKEY = None\n'
-    for path in [os.path.join(BUILD_ROOT, "_build_config.py"),
-                 os.path.join(SCRIPT_DIR, "_build_config.py")]:
+    content += f'BUILD_HOMELAB_URL = "{homelab_url}"\n' if homelab_url else "BUILD_HOMELAB_URL = None\n"
+    content += f'BUILD_MESH_PIN = "{mesh_pin}"\n' if mesh_pin else "BUILD_MESH_PIN = None\n"
+    content += f'BUILD_LION_PUBKEY = """{pubkey_pem}"""\n' if pubkey_pem else "BUILD_LION_PUBKEY = None\n"
+    for path in [os.path.join(BUILD_ROOT, "_build_config.py"), os.path.join(SCRIPT_DIR, "_build_config.py")]:
         with open(path, "w") as f:
             f.write(content)
     print(f"  _build_config.py written (variant={variant})")
@@ -132,7 +132,9 @@ def pyinstaller_build(name, script, ico_path=None, windowed=True):
     os.makedirs(DIST_DIR, exist_ok=True)
 
     cmd = [
-        sys.executable, "-m", "PyInstaller",
+        sys.executable,
+        "-m",
+        "PyInstaller",
         "--onefile",
         "--noconfirm",
         "--clean",
@@ -152,7 +154,14 @@ def pyinstaller_build(name, script, ico_path=None, windowed=True):
         cmd.extend(["--add-data", f"{ico_path}{os.pathsep}."])
 
     # Bundle assets from the staged build dir
-    for asset in ["collar-icon.png", "collar-icon-gold.png", "crown-gold.png", "crown-gray.png", "Lexend.ttf", "focuslock_mesh.py"]:
+    for asset in [
+        "collar-icon.png",
+        "collar-icon-gold.png",
+        "crown-gold.png",
+        "crown-gray.png",
+        "Lexend.ttf",
+        "focuslock_mesh.py",
+    ]:
         asset_path = os.path.join(BUILD_ROOT, asset)
         if os.path.exists(asset_path):
             cmd.extend(["--add-data", f"{asset_path}{os.pathsep}."])
@@ -174,9 +183,7 @@ def pyinstaller_build(name, script, ico_path=None, windowed=True):
 
 def find_signtool():
     """Find signtool.exe from Windows SDK."""
-    candidates = glob.glob(
-        r"C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe"
-    )
+    candidates = glob.glob(r"C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe")
     if candidates:
         return sorted(candidates)[-1]  # Latest version
     # Also check PATH
@@ -188,12 +195,17 @@ def find_signtool():
 def find_or_create_cert():
     """Find existing or create self-signed code signing cert for FocusLock."""
     # Check for existing cert
-    result = subprocess.run([
-        "powershell", "-Command",
-        "Get-ChildItem Cert:\\CurrentUser\\My -CodeSigningCert | "
-        "Where-Object {$_.Subject -like '*CN=FocusLock*'} | "
-        "Select-Object -First 1 -ExpandProperty Thumbprint"
-    ], capture_output=True, text=True)
+    result = subprocess.run(
+        [
+            "powershell",
+            "-Command",
+            "Get-ChildItem Cert:\\CurrentUser\\My -CodeSigningCert | "
+            "Where-Object {$_.Subject -like '*CN=FocusLock*'} | "
+            "Select-Object -First 1 -ExpandProperty Thumbprint",
+        ],
+        capture_output=True,
+        text=True,
+    )
 
     thumbprint = result.stdout.strip()
     if thumbprint:
@@ -202,16 +214,21 @@ def find_or_create_cert():
 
     # Create new self-signed cert
     print("  Creating self-signed code signing certificate (CN=FocusLock, O=FocusLock)...")
-    result = subprocess.run([
-        "powershell", "-Command",
-        "$cert = New-SelfSignedCertificate "
-        "-Subject 'CN=FocusLock, O=FocusLock' "
-        "-Type CodeSigningCert "
-        "-CertStoreLocation Cert:\\CurrentUser\\My "
-        "-NotAfter (Get-Date).AddYears(5) "
-        "-KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256; "
-        "$cert.Thumbprint"
-    ], capture_output=True, text=True)
+    result = subprocess.run(
+        [
+            "powershell",
+            "-Command",
+            "$cert = New-SelfSignedCertificate "
+            "-Subject 'CN=FocusLock, O=FocusLock' "
+            "-Type CodeSigningCert "
+            "-CertStoreLocation Cert:\\CurrentUser\\My "
+            "-NotAfter (Get-Date).AddYears(5) "
+            "-KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256; "
+            "$cert.Thumbprint",
+        ],
+        capture_output=True,
+        text=True,
+    )
 
     thumbprint = result.stdout.strip()
     if thumbprint:
@@ -240,14 +257,23 @@ def sign_executables(skip=False):
 
     for exe in glob.glob(os.path.join(DIST_DIR, "*.exe")):
         name = os.path.basename(exe)
-        result = subprocess.run([
-            signtool, "sign",
-            "/fd", "SHA256",
-            "/sha1", thumbprint,
-            "/t", "http://timestamp.digicert.com",
-            "/d", "FocusLock Desktop",
-            exe,
-        ], capture_output=True, text=True)
+        result = subprocess.run(
+            [
+                signtool,
+                "sign",
+                "/fd",
+                "SHA256",
+                "/sha1",
+                thumbprint,
+                "/t",
+                "http://timestamp.digicert.com",
+                "/d",
+                "FocusLock Desktop",
+                exe,
+            ],
+            capture_output=True,
+            text=True,
+        )
         if result.returncode == 0:
             print(f"  Signed: {name}")
         else:
@@ -273,6 +299,7 @@ def print_summary():
 
 def main():
     import argparse
+
     parser = argparse.ArgumentParser(description="FocusLock Desktop — Windows Build")
     parser.add_argument("--paired-only", action="store_true", help="Build Paired variant only")
     parser.add_argument("--generic-only", action="store_true", help="Build generic variant only")
@@ -319,8 +346,7 @@ def main():
     pyinstaller_build("FocusLock-Watchdog", "watchdog-win.pyw", ico_path)
 
     # Clean up generated config
-    for p in [os.path.join(SCRIPT_DIR, "_build_config.py"),
-              os.path.join(BUILD_ROOT, "_build_config.py")]:
+    for p in [os.path.join(SCRIPT_DIR, "_build_config.py"), os.path.join(BUILD_ROOT, "_build_config.py")]:
         if os.path.exists(p):
             os.remove(p)
 

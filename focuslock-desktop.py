@@ -1697,9 +1697,7 @@ class CollarApp(Gtk.Application):
                     self.original_wallpaper = _get_kde_default_wallpaper()
                     if self.original_wallpaper:
                         _save_original_wallpaper(self.original_wallpaper)
-                        logger.info(
-                            "Using KDE default wallpaper as restore target: %s", self.original_wallpaper
-                        )
+                        logger.info("Using KDE default wallpaper as restore target: %s", self.original_wallpaper)
 
                 # Find and update the Image= line in the right section
                 in_section = False
@@ -2121,9 +2119,7 @@ for (var i = 0; i < c.length; i++) {
                 self.lock_active = False
                 logger.info("Session unlocked via loginctl")
             else:
-                logger.warning(
-                    "loginctl unlock-session failed (rc=%s), scheduling retry", result.returncode
-                )
+                logger.warning("loginctl unlock-session failed (rc=%s), scheduling retry", result.returncode)
                 self._unlock_retries = 0
                 GLib.timeout_add(2000, self._retry_unlock)
         except Exception as e:

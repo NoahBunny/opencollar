@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ruff + mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install lint tools
+        run: pip install ruff mypy
+
+      - name: ruff check
+        run: ruff check .
+
+      - name: ruff format --check
+        run: ruff format --check .
+
+      - name: mypy (shared/)
+        run: mypy shared
+
+  test:
+    name: Test (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install test dependencies
+        run: pip install pytest pytest-cov cryptography
+
+      - name: Run tests with coverage
+        run: pytest tests/ --cov --cov-report=xml --cov-report=term
+
+      - name: Upload coverage to Codecov
+        if: matrix.python == '3.12'
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+        continue-on-error: true
+
+  build-android:
+    name: Build Android APKs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "build-tools;35.0.0 platforms;android-36"
+
+      - name: Resolve ANDROID_SDK
+        run: echo "ANDROID_SDK=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+
+      - name: Build slave APK (The Collar)
+        working-directory: android/slave
+        run: bash build.sh
+
+      - name: Build companion APK (Bunny Tasker)
+        working-directory: android/companion
+        run: bash build.sh
+
+      - name: Build controller APK (Lion's Share)
+        working-directory: android/controller
+        run: bash build.sh
+
+      - name: Verify APK signatures
+        run: |
+          BT="$ANDROID_SDK/build-tools/35.0.0"
+          for apk in android/slave/*-signed.apk android/companion/*-signed.apk android/controller/*-signed.apk; do
+            [ -f "$apk" ] || continue
+            echo "Verifying $apk"
+            "$BT/apksigner" verify --verbose "$apk"
+          done
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apks
+          path: |
+            android/slave/*-signed.apk
+            android/companion/*-signed.apk
+            android/controller/*-signed.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  build-win:
+    name: Build Windows EXEs
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Run build-win.py (skip signing in CI)
+        run: python build-win.py --skip-sign
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-exes
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 14

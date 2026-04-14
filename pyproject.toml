@@ -54,7 +54,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"build-win.py" = ["E402"]           # late imports after sys.path setup are intentional
+"build-win.py" = ["E402", "RUF005"] # late imports after sys.path setup are intentional; list concat is clearer than unpack for pip-install args
 "focuslock-desktop.py" = ["E402"]   # module-level dir setup before shared/ imports
 "focuslock-desktop-win.py" = ["E402"]
 "focuslock-mail.py" = ["E402"]

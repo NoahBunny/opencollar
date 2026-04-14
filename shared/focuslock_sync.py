@@ -90,9 +90,7 @@ def try_sync(
         # Apply newer orders if available
         remote_ver = data.get("orders_version", 0)
         has_orders = "orders" in data
-        logger.debug(
-            "%s responded v%s, has_orders=%s, local v%s", name, remote_ver, has_orders, mesh_orders.version
-        )
+        logger.debug("%s responded v%s, has_orders=%s, local v%s", name, remote_ver, has_orders, mesh_orders.version)
         if remote_ver > mesh_orders.version and has_orders:
             logger.info("Applying v%s from %s (local was v%s)", remote_ver, name, mesh_orders.version)
             applied = mesh_orders.apply_remote(
@@ -105,9 +103,7 @@ def try_sync(
                 lion_pubkey,
             )
             if applied:
-                logger.info(
-                    "Now at v%s lock_active=%s", mesh_orders.version, mesh_orders.orders.get("lock_active")
-                )
+                logger.info("Now at v%s lock_active=%s", mesh_orders.version, mesh_orders.orders.get("lock_active"))
                 if on_orders_applied:
                     on_orders_applied(mesh_orders.orders)
                 return True

@@ -1,0 +1,152 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    name: Build Android APKs
+    runs-on: ubuntu-latest
+    outputs:
+      slave: ${{ steps.collect.outputs.slave }}
+      companion: ${{ steps.collect.outputs.companion }}
+      controller: ${{ steps.collect.outputs.controller }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "build-tools;35.0.0 platforms;android-36"
+
+      - name: Resolve ANDROID_SDK
+        run: echo "ANDROID_SDK=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+
+      - name: Restore release keystore (optional)
+        if: env.RELEASE_KEYSTORE_B64 != ''
+        env:
+          RELEASE_KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+        run: |
+          echo "$RELEASE_KEYSTORE_B64" | base64 -d > release.keystore
+          echo "FOCUSLOCK_KEYSTORE=$PWD/release.keystore" >> "$GITHUB_ENV"
+
+      - name: Build all three APKs
+        env:
+          FOCUSLOCK_KEYSTORE_PASS: ${{ secrets.RELEASE_KEYSTORE_PASS }}
+        run: |
+          for m in slave companion controller; do
+            (cd android/$m && bash build.sh)
+          done
+
+      - name: Collect artifacts
+        id: collect
+        run: |
+          mkdir -p staged
+          cp android/slave/*-signed.apk      staged/focuslock-${{ github.ref_name }}.apk
+          cp android/companion/*-signed.apk  staged/bunnytasker-${{ github.ref_name }}.apk
+          cp android/controller/*-signed.apk staged/focusctl-${{ github.ref_name }}.apk
+          ls -la staged/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apks
+          path: staged/*.apk
+          if-no-files-found: error
+
+  windows:
+    name: Build Windows EXEs
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Build (skip signing — users code-sign locally)
+        run: python build-win.py --skip-sign
+
+      - name: Stage artifacts with version in name
+        shell: bash
+        run: |
+          mkdir -p staged
+          for f in dist/*.exe; do
+            base=$(basename "$f" .exe)
+            cp "$f" "staged/${base}-${{ github.ref_name }}.exe"
+          done
+          ls -la staged/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-exes
+          path: staged/*.exe
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [android, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifact tree
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.apk' -o -name '*.exe' \) -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Generate SHA256SUMS.txt
+        working-directory: release
+        run: sha256sum * > SHA256SUMS.txt
+
+      - name: Extract changelog section
+        id: changelog
+        run: |
+          python - <<'PY' > body.md
+          import re, os, pathlib
+          tag = os.environ["GITHUB_REF_NAME"]
+          version = tag.lstrip("v")
+          text = pathlib.Path("CHANGELOG.md").read_text()
+          # Try to match "## [version]" block; fall back to Unreleased
+          patterns = [
+              rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|\Z)",
+              r"^## \[Unreleased\][^\n]*\n(.*?)(?=^## \[|\Z)",
+          ]
+          for pat in patterns:
+              m = re.search(pat, text, flags=re.MULTILINE | re.DOTALL)
+              if m:
+                  print(m.group(1).strip())
+                  break
+          else:
+              print(f"Release {tag}")
+          PY
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: body.md
+          files: |
+            release/*.apk
+            release/*.exe
+            release/SHA256SUMS.txt
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

@@ -790,9 +790,7 @@ def check_desktop_heartbeats():
                         last_penalty = info.get("last_penalty_ts", 0)
                         days_since_penalty = (now_ts - last_penalty) / 86400 if last_penalty else 999
                         if days_since_penalty >= DESKTOP_ESCALATE_DAYS:
-                            logger.warning(
-                                "DESKTOP PENALTY: %s silent %.0f days — adding $50", hostname, silence_days
-                            )
+                            logger.warning("DESKTOP PENALTY: %s silent %.0f days — adding $50", hostname, silence_days)
                             # Add $50 to paywall
                             pw_str = adb.get("focus_lock_paywall")
                             pw = 0
@@ -911,9 +909,7 @@ def check_tributes_and_fines():
                         mesh_orders.set("streak_7d_claimed", 1)
                         mesh_orders.bump_version()
                         mesh.push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
-                        logger.info(
-                            "Streak bonus: 7d clean → -$5 (paywall $%s → $%s)", current_pw, new_pw
-                        )
+                        logger.info("Streak bonus: 7d clean → -$5 (paywall $%s → $%s)", current_pw, new_pw)
 
                     if elapsed_days >= 30 and str(mesh_orders.get("streak_30d_claimed", 0)) != "1":
                         current_pw = 0
@@ -926,9 +922,7 @@ def check_tributes_and_fines():
                         mesh_orders.set("streak_30d_claimed", 1)
                         mesh_orders.bump_version()
                         mesh.push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
-                        logger.info(
-                            "Streak bonus: 30d clean → -$25 (paywall $%s → $%s)", current_pw, new_pw
-                        )
+                        logger.info("Streak bonus: 30d clean → -$25 (paywall $%s → $%s)", current_pw, new_pw)
 
         except Exception:
             logger.exception("Tribute/fine/streak checker error")
@@ -2083,9 +2077,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 _vault_store.add_rejected_node(mesh_id, node_id, node_pubkey, reason)
                 if node_id:
                     _vault_store.remove_pending_node(mesh_id, node_id)
-                logger.info(
-                    "Vault reject-node-request: mesh=%s node=%s reason=%r", mesh_id, node_id, reason
-                )
+                logger.info("Vault reject-node-request: mesh=%s node=%s reason=%r", mesh_id, node_id, reason)
                 self.respond(200, {"ok": True})
 
             elif action == "register-node-request":
@@ -2098,9 +2090,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     self.respond(400, {"error": "node_id and node_pubkey required"})
                     return
                 if _vault_store.is_rejected(mesh_id, node_pubkey):
-                    logger.warning(
-                        "Vault register-node-request DENIED (rejected): mesh=%s node=%s", mesh_id, node_id
-                    )
+                    logger.warning("Vault register-node-request DENIED (rejected): mesh=%s node=%s", mesh_id, node_id)
                     self.respond(403, {"error": "node rejected"})
                     return
                 # Security: key rotation (same node_id, new pubkey) goes to pending
@@ -2116,9 +2106,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         "requested_at": int(time.time()),
                     },
                 )
-                logger.info(
-                    "Vault register-node-request (pending): mesh=%s node=%s", mesh_id, node_id
-                )
+                logger.info("Vault register-node-request (pending): mesh=%s node=%s", mesh_id, node_id)
                 self.respond(200, {"ok": True, "status": "pending"})
 
             else:

@@ -57,9 +57,7 @@ for _p in [
 try:
     import focuslock_mesh as mesh
 except ImportError:
-    logger.error(
-        "focuslock_mesh.py not found. Place it next to this script or in %%APPDATA%%\\focuslock\\"
-    )
+    logger.error("focuslock_mesh.py not found. Place it next to this script or in %%APPDATA%%\\focuslock\\")
     sys.exit(1)
 
 from focuslock_http import JSONResponseMixin

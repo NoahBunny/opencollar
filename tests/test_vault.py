@@ -221,7 +221,10 @@ class TestRoundTrip:
 
     def test_signature_present_after_encrypt(self, lion_keypair, slave_keypair):
         blob = encrypt_body(
-            mesh_id="m", version=1, created_at=0, body={},
+            mesh_id="m",
+            version=1,
+            created_at=0,
+            body={},
             recipients=[("slave", slave_keypair["pub_pem"])],
             signer_privkey_pem=lion_keypair["priv_pem"],
         )
@@ -230,7 +233,10 @@ class TestRoundTrip:
 
     def test_tampered_ciphertext_fails_decrypt(self, lion_keypair, slave_keypair):
         blob = encrypt_body(
-            mesh_id="m", version=1, created_at=0, body={"secret": "hello"},
+            mesh_id="m",
+            version=1,
+            created_at=0,
+            body={"secret": "hello"},
             recipients=[("slave", slave_keypair["pub_pem"])],
             signer_privkey_pem=lion_keypair["priv_pem"],
         )
@@ -244,7 +250,10 @@ class TestRoundTrip:
 class TestDecryptFailureModes:
     def _make_blob(self, lion_kp, slave_kp):
         return encrypt_body(
-            mesh_id="m", version=1, created_at=0, body={"a": 1},
+            mesh_id="m",
+            version=1,
+            created_at=0,
+            body={"a": 1},
             recipients=[("slave", slave_kp["pub_pem"])],
             signer_privkey_pem=lion_kp["priv_pem"],
         )
@@ -314,8 +323,7 @@ class TestMgf1Fallback:
             "mesh_id": "legacy",
             "version": 1,
             "created_at": 0,
-            "slots": {sid: {"encrypted_key": base64.b64encode(wrapped).decode(),
-                            "iv": base64.b64encode(iv).decode()}},
+            "slots": {sid: {"encrypted_key": base64.b64encode(wrapped).decode(), "iv": base64.b64encode(iv).decode()}},
             "ciphertext": base64.b64encode(ciphertext).decode(),
         }
         blob["signature"] = sign_blob(blob, lion_keypair["priv_pem"])
@@ -332,7 +340,10 @@ class TestKeyRotation:
     def test_old_key_still_decrypts_until_reencrypt(self, lion_keypair, slave_keypair):
         """A blob encrypted to an old pubkey is unreadable by a rotated key."""
         blob = encrypt_body(
-            mesh_id="m", version=1, created_at=0, body={"x": 1},
+            mesh_id="m",
+            version=1,
+            created_at=0,
+            body={"x": 1},
             recipients=[("slave", slave_keypair["pub_pem"])],
             signer_privkey_pem=lion_keypair["priv_pem"],
         )
@@ -346,7 +357,10 @@ class TestKeyRotation:
         """If Lion rotates, old Lion-signed blobs no longer verify under the new pubkey."""
         _new_priv, new_pub, _ = generate_keypair()
         blob = encrypt_body(
-            mesh_id="m", version=1, created_at=0, body={},
+            mesh_id="m",
+            version=1,
+            created_at=0,
+            body={},
             recipients=[("slave", slave_keypair["pub_pem"])],
             signer_privkey_pem=lion_keypair["priv_pem"],
         )
