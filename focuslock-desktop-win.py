@@ -57,7 +57,9 @@ for _p in [
 try:
     import focuslock_mesh as mesh
 except ImportError:
-    print("[collar] ERROR: focuslock_mesh.py not found. Place it next to this script or in %APPDATA%\\focuslock\\")
+    logger.error(
+        "focuslock_mesh.py not found. Place it next to this script or in %%APPDATA%%\\focuslock\\"
+    )
     sys.exit(1)
 
 from focuslock_http import JSONResponseMixin
@@ -151,9 +153,9 @@ def get_lion_pubkey():
             with open(LION_PUBKEY_FILE, "r") as f:
                 _lion_pubkey = f.read().strip()
             if _lion_pubkey:
-                print("[mesh] Loaded Lion's Share pubkey")
+                logger.info("Loaded Lion's Share pubkey")
         except Exception:
-            print(f"[warn] Failed to load Lion pubkey from {LION_PUBKEY_FILE}")
+            logger.warning("Failed to load Lion pubkey from %s", LION_PUBKEY_FILE)
     return _lion_pubkey
 
 
@@ -191,7 +193,7 @@ def _vault_init_keypair():
             serialization.Encoding.DER,
             serialization.PublicFormat.SubjectPublicKeyInfo,
         )
-        print(f"[vault] Loaded keypair (slot={vault_slot_id(_vault_pubkey_der)})")
+        logger.info("Loaded vault keypair (slot=%s)", vault_slot_id(_vault_pubkey_der))
     else:
         priv, pub, der = vault_keygen()
         with open(VAULT_PRIVKEY_FILE, "w") as f:
@@ -200,7 +202,7 @@ def _vault_init_keypair():
             f.write(pub)
         _vault_privkey_pem = priv
         _vault_pubkey_der = der
-        print(f"[vault] Generated new keypair (slot={vault_slot_id(der)})")
+        logger.info("Generated new vault keypair (slot=%s)", vault_slot_id(der))
 
 
 # P6.5: approved node pubkeys cache for multi-signer verification
@@ -225,9 +227,9 @@ def _vault_fetch_nodes():
             return
         _approved_node_pubkeys = [n.get("node_pubkey", "") for n in nodes if n.get("node_pubkey")]
         _nodes_last_fetch = time.time()
-        print(f"[vault] Fetched {len(_approved_node_pubkeys)} approved node pubkeys")
+        logger.info("Fetched %d approved node pubkeys", len(_approved_node_pubkeys))
     except Exception as e:
-        print(f"[vault] Fetch nodes error: {e}")
+        logger.warning("Fetch vault nodes error: %s", e)
 
 
 _lazy_refresh_done_this_poll = False
@@ -280,9 +282,9 @@ def _vault_register_node():
                 result = json.loads(resp.read())
         if result.get("ok") or result.get("status") in ("approved", "pending"):
             _vault_node_registered = True
-            print(f"[vault] Node registered: {result}")
+            logger.info("Vault node registered: %s", result)
     except Exception as e:
-        print(f"[vault] Register error (will retry): {e}")
+        logger.warning("Vault register error (will retry): %s", e)
 
 
 def _vault_poll():
@@ -316,7 +318,7 @@ def _vault_poll():
                 continue
             # P6.5: verify against Lion pubkey OR any approved node
             if not _vault_verify_any_signer(blob, lion_pub):
-                print(f"[vault] Signature verification FAILED for v{v} — skipping")
+                logger.warning("Vault signature verification FAILED for v%s — skipping", v)
                 continue
             plaintext = vault_decrypt(blob, _vault_privkey_pem, _vault_pubkey_der)
             if plaintext is None:
@@ -332,13 +334,13 @@ def _vault_poll():
                 if body:
                     mesh_orders.bump_version()
             _vault_last_version = v
-            print(f"[vault] Applied v{v} ({len(body)} fields)")
+            logger.info("Vault applied v%s (%d fields)", v, len(body))
         on_mesh_orders_applied(dict(mesh_orders.orders))
     except urllib.error.HTTPError as e:
         if e.code != 404:
-            print(f"[vault] Poll error: HTTP {e.code}")
+            logger.warning("Vault poll error: HTTP %s", e.code)
     except Exception as e:
-        print(f"[vault] Poll error: {e}")
+        logger.warning("Vault poll error: %s", e)
 
 
 # ── State ──
@@ -393,11 +395,11 @@ def first_run_check():
     if os.path.exists(FIRST_RUN_FILE):
         return  # Already initialized
 
-    print("[collar] First run detected — wiping stale config for fresh start")
+    logger.info("First run detected — wiping stale config for fresh start")
     for f in [ORDERS_FILE, PEERS_FILE, LION_PUBKEY_FILE, CONSENT_FILE, LOCK_WALLPAPER, ORIGINAL_WALLPAPER_FILE]:
         if os.path.exists(f):
             os.remove(f)
-            print(f"  Removed: {os.path.basename(f)}")
+            logger.info("Removed: %s", os.path.basename(f))
 
     # Re-initialize mesh objects with clean state
     global mesh_orders, mesh_peers
@@ -417,18 +419,18 @@ def first_run_check():
         try:
             req = urllib.request.Request(f"{url}/mesh/ping")
             urllib.request.urlopen(req, timeout=3)
-            print(f"  Mesh reachable via {url}, will get pubkey via gossip")
+            logger.info("Mesh reachable via %s, will get pubkey via gossip", url)
             reached = True
             break
         except Exception:
-            print(f"[warn] Mesh unreachable at {url}")
+            logger.warning("Mesh unreachable at %s", url)
     if not reached:
-        print("  Pegasus unreachable — pubkey will be fetched on first gossip")
+        logger.info("Pegasus unreachable — pubkey will be fetched on first gossip")
 
     # Mark initialized
     with open(FIRST_RUN_FILE, "w") as f:
         f.write(str(int(time.time())))
-    print("[collar] Fresh start complete")
+    logger.info("Fresh start complete")
 
 
 # ── First-Run Config ──
@@ -454,7 +456,7 @@ def show_first_run_config():
     except ImportError:
         # No tkinter — fall back to simple input box
         # Can't do text input with just MessageBox — save empty config and let user edit
-        print("[config] No tkinter available. Please edit config.json manually.")
+        logger.warning("No tkinter available. Please edit config.json manually.")
         return False
 
     root = tk.Tk()
@@ -496,7 +498,7 @@ def show_first_run_config():
     os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=2)
-    print(f"[config] Saved to {CONFIG_FILE}")
+    logger.info("Config saved to %s", CONFIG_FILE)
 
     # Reload config
     global _cfg, MESH_URL, HOMELAB_URL, PHONE_ADDRESSES
@@ -541,10 +543,10 @@ def show_consent():
     if result == IDYES:
         with open(CONSENT_FILE, "w") as f:
             f.write(str(int(time.time())))
-        print("[collar] Consent granted")
+        logger.info("Consent granted")
         return True
     else:
-        print("[collar] Consent declined")
+        logger.info("Consent declined")
         return False
 
 
@@ -626,9 +628,10 @@ def on_mesh_orders_applied(orders_dict):
     """Called when gossip applies new orders.
     Trigger an immediate poll so the UI refreshes within ~100ms instead of
     waiting up to POLL_INTERVAL (5s)."""
-    print(
-        f"[collar] Mesh orders applied: desktop_active={orders_dict.get('desktop_active')} "
-        f"lock_active={orders_dict.get('lock_active')}"
+    logger.info(
+        "Mesh orders applied: desktop_active=%s lock_active=%s",
+        orders_dict.get("desktop_active"),
+        orders_dict.get("lock_active"),
     )
     try:
         poll_status()
@@ -695,7 +698,7 @@ def get_local_addresses():
 def lock_workstation():
     """Lock the Windows session."""
     ctypes.windll.user32.LockWorkStation()
-    print("[collar] Windows session locked")
+    logger.info("Windows session locked")
 
 
 def set_lock_wallpaper():
@@ -714,13 +717,13 @@ def set_lock_wallpaper():
             )
             winreg.SetValueEx(key, "LockScreenImage", 0, winreg.REG_SZ, LOCK_WALLPAPER)
             winreg.CloseKey(key)
-            print("[collar] Lock screen wallpaper set via registry")
+            logger.info("Lock screen wallpaper set via registry")
         except PermissionError:
             # Fallback: set desktop wallpaper (visible after unlock attempt)
             ctypes.windll.user32.SystemParametersInfoW(20, 0, LOCK_WALLPAPER, 3)
-            print("[collar] Set as desktop wallpaper (no admin for lock screen registry)")
+            logger.info("Set as desktop wallpaper (no admin for lock screen registry)")
     except Exception as e:
-        print(f"[collar] Wallpaper error: {e}")
+        logger.warning("Wallpaper error: %s", e)
 
 
 def generate_lock_wallpaper():
@@ -728,7 +731,7 @@ def generate_lock_wallpaper():
     try:
         from PIL import Image, ImageDraw, ImageFont
     except ImportError:
-        print("[collar] Pillow not installed, skipping wallpaper generation")
+        logger.warning("Pillow not installed, skipping wallpaper generation")
         return
 
     W, H = 3840, 2160
@@ -760,7 +763,7 @@ def generate_lock_wallpaper():
             paste_y = H // 2 - icon_size // 2 - 60
             img.paste(alpha_icon, (paste_x, paste_y), alpha_icon)
         except Exception:
-            print(f"[warn] Failed to load collar icon from {icon_path}")
+            logger.warning("Failed to load collar icon from %s", icon_path)
 
     # Try to load a nice font, fall back to default
     font_msg = None
@@ -804,7 +807,7 @@ def generate_lock_wallpaper():
         draw.text((W // 2 - tw // 2, H // 2 + 710), pw_text, fill=(204, 19, 19), font=font_paywall)
 
     img.save(LOCK_WALLPAPER, "PNG")
-    print(f"[collar] Lock wallpaper generated: {LOCK_WALLPAPER}")
+    logger.info("Lock wallpaper generated: %s", LOCK_WALLPAPER)
 
 
 # ── Lock Enforcement ──
@@ -833,7 +836,7 @@ def show_lock():
     """Lock the session."""
     if state.locked:
         return
-    print(f"[collar] SHOW LOCK: {state.message}")
+    logger.info("SHOW LOCK: %s", state.message)
     state.locked = True
     set_lock_wallpaper()
     lock_workstation()
@@ -844,7 +847,7 @@ def hide_lock():
     """Unlock — stop enforcement."""
     if not state.locked:
         return
-    print("[collar] HIDE LOCK — session released")
+    logger.info("HIDE LOCK — session released")
     state.locked = False
     # Restore original wallpaper
     if os.path.exists(ORIGINAL_WALLPAPER_FILE):
@@ -853,9 +856,9 @@ def hide_lock():
                 orig = f.read().strip()
             if orig and os.path.exists(orig):
                 ctypes.windll.user32.SystemParametersInfoW(20, 0, orig, 3)
-                print(f"[collar] Wallpaper restored: {orig}")
+                logger.info("Wallpaper restored: %s", orig)
         except Exception:
-            print("[warn] Failed to restore original wallpaper on unlock")
+            logger.warning("Failed to restore original wallpaper on unlock")
 
 
 # ── Liberation (Permanent Removal) ──
@@ -863,7 +866,7 @@ def hide_lock():
 
 def execute_liberation():
     """Permanent removal — clean up everything and exit."""
-    print("[collar] LIBERATION — removing collar permanently")
+    logger.warning("LIBERATION — removing collar permanently")
     state.locked = False
 
     # Restore wallpaper
@@ -875,18 +878,18 @@ def execute_liberation():
         for f in os.listdir(startup):
             if "focuslock" in f.lower() or "collar" in f.lower():
                 os.remove(os.path.join(startup, f))
-                print(f"  Removed startup entry: {f}")
+                logger.info("Removed startup entry: %s", f)
     except Exception:
-        print("[warn] Failed to remove startup entries during liberation")
+        logger.warning("Failed to remove startup entries during liberation")
 
     # Clean config
     import shutil
 
     try:
         shutil.rmtree(CONFIG_DIR, ignore_errors=True)
-        print("  Config directory removed")
+        logger.info("Config directory removed")
     except Exception:
-        print("[warn] Failed to remove config directory during liberation")
+        logger.warning("Failed to remove config directory during liberation")
 
     # Show farewell
     ctypes.windll.user32.MessageBoxW(
@@ -938,7 +941,7 @@ def poll_status():
     unlock_at = int(snap.get("unlock_at") or 0)
     if unlock_at > 0 and int(time.time() * 1000) >= unlock_at:
         if lock_active == "1" or desktop_active == "1":
-            print("[collar] Timer expired — auto-unlocking")
+            logger.info("Timer expired — auto-unlocking")
             mesh_orders.set("lock_active", 0)
             mesh_orders.set("desktop_active", 0)
             mesh_orders.set("desktop_locked_devices", "")
@@ -973,15 +976,15 @@ def poll_status():
                     mesh_orders.set("desktop_message", "Bedtime. Go to sleep.")
                     desktop_locked = True
                     state._bedtime_locked = True
-                    print(f"[collar] BEDTIME: Auto-locked at hour {cur_h}")
+                    logger.info("BEDTIME: Auto-locked at hour %s", cur_h)
                 elif not in_bed and desktop_locked and getattr(state, "_bedtime_locked", False):
                     mesh_orders.set("desktop_active", 0)
                     mesh_orders.set("desktop_message", "")
                     desktop_locked = False
                     state._bedtime_locked = False
-                    print(f"[collar] BEDTIME: Auto-unlocked at hour {cur_h}")
+                    logger.info("BEDTIME: Auto-unlocked at hour %s", cur_h)
     except Exception as e:
-        print(f"[collar] Bedtime check error: {e}")
+        logger.warning("Bedtime check error: %s", e)
 
     was_locked = state.locked
     state.locked = desktop_locked
@@ -1024,7 +1027,7 @@ def _handle_countdown(lock_at_ms: int, message: str):
     # Countdown expired — trigger the lock
     if remaining_ms <= 0:
         if state.countdown_lock_at > 0:
-            print("[collar] Countdown expired — locking")
+            logger.info("Countdown expired — locking")
             mesh_orders.set("desktop_active", 1)
             mesh_orders.set("countdown_lock_at", 0)
             mesh_orders.set("countdown_message", "")
@@ -1101,9 +1104,9 @@ def _show_countdown_warning(remaining_ms: int, message: str):
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
     except Exception as e:
-        print(f"[collar] Toast notification failed: {e}")
+        logger.debug("Toast notification failed: %s", e)
 
-    print(f"[collar] Countdown: {time_str} remaining" + (f" — {message}" if message else ""))
+    logger.debug("Countdown: %s remaining%s", time_str, f" — {message}" if message else "")
 
 
 # ── Mesh HTTP Server ──
@@ -1139,7 +1142,7 @@ def _create_pairing_code(body):
     os.makedirs(code_dir, exist_ok=True)
     with open(os.path.join(code_dir, f"{code}.json"), "w") as f:
         json.dump(config, f, indent=2)
-    print(f"[collar] Pairing code created: {code}")
+    logger.info("Pairing code created: %s", code)
     return {"ok": True, "code": code, "url": f"/api/pair/{code}", "expires_minutes": expires_min}
 
 
@@ -1293,13 +1296,13 @@ def start_mesh_server():
     try:
         health_server = HTTPServer(("127.0.0.1", HEALTH_PORT), HealthHandler)
         threading.Thread(target=health_server.serve_forever, daemon=True).start()
-        print(f"[collar] Health endpoint on :{HEALTH_PORT}")
+        logger.info("Health endpoint on :%s", HEALTH_PORT)
     except Exception as e:
-        print(f"[collar] Health endpoint failed (port {HEALTH_PORT} in use?): {e}")
+        logger.warning("Health endpoint failed (port %s in use?): %s", HEALTH_PORT, e)
 
     # Main mesh server (port 8435)
     server = HTTPServer(("0.0.0.0", MESH_PORT), MeshHandler)
-    print(f"[collar] Mesh HTTP server listening on port {MESH_PORT}")
+    logger.info("Mesh HTTP server listening on port %s", MESH_PORT)
     server.serve_forever()
 
 
@@ -1312,7 +1315,7 @@ def create_tray_icon():
         import pystray
         from PIL import Image
     except ImportError:
-        print("[collar] pystray or Pillow not installed — no tray icon")
+        logger.warning("pystray or Pillow not installed — no tray icon")
         return None
 
     # Load or generate crown icons
@@ -1383,7 +1386,7 @@ def create_tray_icon():
                 )
                 urllib.request.urlopen(req, timeout=5)
             except Exception as e:
-                print(f"[tray] Self-lock failed: {e}")
+                logger.warning("Self-lock failed: %s", e)
 
         return _lock
 
@@ -1420,7 +1423,7 @@ def create_tray_icon():
                     _prev[1] = new_title
                     icon.title = new_title
             except Exception:
-                print("[warn] Tray icon update failed")
+                logger.warning("Tray icon update failed")
             time.sleep(3)
 
     threading.Thread(target=_update_loop, daemon=True).start()
@@ -1474,19 +1477,19 @@ def self_install():
     exe_dir = os.path.dirname(exe)
     installed_exe = os.path.join(INSTALL_DIR_SYSTEM, exe_name)
 
-    print(f"[install] Installing to {INSTALL_DIR_SYSTEM}...")
+    logger.info("Installing to %s...", INSTALL_DIR_SYSTEM)
     os.makedirs(INSTALL_DIR_SYSTEM, exist_ok=True)
 
     # Copy collar exe
     shutil.copy2(exe, installed_exe)
-    print(f"[install] Copied {exe_name}")
+    logger.info("Copied %s", exe_name)
 
     # Copy watchdog if next to the exe
     for wd_name in ["FocusLock-Watchdog.exe"]:
         wd_src = os.path.join(exe_dir, wd_name)
         if os.path.exists(wd_src):
             shutil.copy2(wd_src, os.path.join(INSTALL_DIR_SYSTEM, wd_name))
-            print(f"[install] Copied {wd_name}")
+            logger.info("Copied %s", wd_name)
 
     # Copy icons to appdata
     os.makedirs(ICONS_DIR, exist_ok=True)
@@ -1507,7 +1510,7 @@ def self_install():
             src = os.path.join(search_dir, "index.html")
         if os.path.exists(src) and os.path.getsize(src) > 1000:
             shutil.copy2(src, os.path.join(web_dest, "index.html"))
-            print("[install] Web UI copied")
+            logger.info("Web UI copied")
             break
 
     # Firewall rule for mesh port
@@ -1529,7 +1532,7 @@ def self_install():
         ],
         capture_output=True,
     )
-    print("[install] Firewall rule set")
+    logger.info("Firewall rule set")
 
     # Scheduled tasks via PowerShell (restart on failure, no time limit, admin)
     ps_collar = f'''
@@ -1541,7 +1544,7 @@ Unregister-ScheduledTask -TaskName "FocusLockCollar" -Confirm:$false -ErrorActio
 Register-ScheduledTask -TaskName "FocusLockCollar" -Action $a -Trigger $t -Settings $s -Principal $p -Description "FocusLock Desktop Collar"
 '''
     subprocess.run(["powershell", "-Command", ps_collar], capture_output=True)
-    print("[install] Scheduled task: FocusLockCollar")
+    logger.info("Scheduled task: FocusLockCollar")
 
     watchdog_exe = os.path.join(INSTALL_DIR_SYSTEM, "FocusLock-Watchdog.exe")
     if os.path.exists(watchdog_exe):
@@ -1554,7 +1557,7 @@ Unregister-ScheduledTask -TaskName "FocusLockWatchdog" -Confirm:$false -ErrorAct
 Register-ScheduledTask -TaskName "FocusLockWatchdog" -Action $a -Trigger $t -Settings $s -Principal $p -Description "FocusLock Watchdog"
 '''
         subprocess.run(["powershell", "-Command", ps_watchdog], capture_output=True)
-        print("[install] Scheduled task: FocusLockWatchdog")
+        logger.info("Scheduled task: FocusLockWatchdog")
 
     # Registry Run key as fallback
     try:
@@ -1563,9 +1566,9 @@ Register-ScheduledTask -TaskName "FocusLockWatchdog" -Action $a -Trigger $t -Set
         )
         winreg.SetValueEx(key, "FocusLockCollar", 0, winreg.REG_SZ, f'"{installed_exe}"')
         winreg.CloseKey(key)
-        print("[install] Registry Run key set")
+        logger.info("Registry Run key set")
     except Exception:
-        print("[warn] Failed to set Registry Run key for autostart")
+        logger.warning("Failed to set Registry Run key for autostart")
 
     # ACL lockdown — user gets Read+Execute only
     subprocess.run(
@@ -1582,7 +1585,7 @@ Register-ScheduledTask -TaskName "FocusLockWatchdog" -Action $a -Trigger $t -Set
         ],
         capture_output=True,
     )
-    print("[install] ACL lockdown applied")
+    logger.info("ACL lockdown applied")
 
     # Standing orders sync
     try:
@@ -1596,11 +1599,11 @@ Register-ScheduledTask -TaskName "FocusLockWatchdog" -Action $a -Trigger $t -Set
                 if len(content) > 50:
                     with open(os.path.join(claude_dir, filename), "w", encoding="utf-8") as f:
                         f.write(content)
-                    print(f"[install] Standing orders: {filename}")
+                    logger.info("Standing orders: %s", filename)
             except Exception:
-                print(f"[warn] Failed to fetch standing orders: {endpoint}")
+                logger.warning("Failed to fetch standing orders: %s", endpoint)
     except Exception:
-        print("[warn] Failed to set up standing orders sync")
+        logger.warning("Failed to set up standing orders sync")
 
     # Remove old startup entries (from legacy installers)
     startup = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs\Startup")
@@ -1608,11 +1611,11 @@ Register-ScheduledTask -TaskName "FocusLockWatchdog" -Action $a -Trigger $t -Set
         if "focuslock" in f.lower() or "collar" in f.lower():
             try:
                 os.remove(os.path.join(startup, f))
-                print(f"[install] Removed legacy startup: {f}")
+                logger.info("Removed legacy startup: %s", f)
             except Exception:
-                print(f"[warn] Failed to remove legacy startup entry: {f}")
+                logger.warning("Failed to remove legacy startup entry: %s", f)
 
-    print("[install] Installation complete — launching from install dir")
+    logger.info("Installation complete — launching from install dir")
 
     # Launch collar + watchdog from installed location
     subprocess.Popen([installed_exe], creationflags=subprocess.DETACHED_PROCESS)
@@ -1654,7 +1657,7 @@ def _kill_old_processes():
                     if pid != my_pid:
                         try:
                             subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=5)
-                            print(f"[collar] Killed old {exe_name} (PID {pid})")
+                            logger.info("Killed old %s (PID %s)", exe_name, pid)
                         except Exception:
                             pass
         except Exception:
@@ -1678,13 +1681,18 @@ def _is_another_instance_running() -> bool:
 
 
 def main():
-    print("[collar] FocusLock Desktop Collar (Windows) starting")
-    print(f"[collar] Node ID: {MESH_NODE_ID}")
-    print(f"[collar] Config: {CONFIG_DIR}")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    logger.info("FocusLock Desktop Collar (Windows) starting")
+    logger.info("Node ID: %s", MESH_NODE_ID)
+    logger.info("Config: %s", CONFIG_DIR)
 
     # Instance guard — if another collar is already running and healthy, exit
     if _is_another_instance_running():
-        print("[collar] Another instance is already running — exiting")
+        logger.warning("Another instance is already running — exiting")
         sys.exit(0)
 
     # Check persisted orders BEFORE killing old processes — if the desktop
@@ -1693,7 +1701,7 @@ def main():
     # detect the transition and call show_lock() with full enforcement.
     was_collared = _should_be_locked()
     if was_collared:
-        print("[collar] Desktop was locked — locking session immediately")
+        logger.info("Desktop was locked — locking session immediately")
         lock_workstation()
 
     # Kill stale collar/watchdog processes from previous versions
@@ -1705,13 +1713,13 @@ def main():
     # Consent (before elevation — runs in user session)
     if not has_consent():
         if not show_consent():
-            print("[collar] No consent — exiting")
+            logger.info("No consent — exiting")
             sys.exit(0)
 
     # First-run config (collect PIN, homelab URL, phone IP)
     if needs_first_run_config():
         if not show_first_run_config():
-            print("[collar] No config — exiting")
+            logger.info("No config — exiting")
             sys.exit(0)
 
     # Self-install if needed (exe mode only)
@@ -1721,7 +1729,7 @@ def main():
         else:
             # UAC elevate — re-launch same exe as admin
             exe = get_exe_path()
-            print("[collar] Requesting admin for installation...")
+            logger.info("Requesting admin for installation...")
             ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, "", os.path.dirname(exe), 0)
             sys.exit(0)
 
@@ -1731,7 +1739,7 @@ def main():
     # Initialize vault keypair if vault mode enabled
     if VAULT_MODE:
         _vault_init_keypair()
-        print(f"[collar] Vault mode enabled for mesh {MESH_ID}")
+        logger.info("Vault mode enabled for mesh %s", MESH_ID)
 
     # Save original wallpaper
     if not os.path.exists(ORIGINAL_WALLPAPER_FILE):
@@ -1741,9 +1749,9 @@ def main():
             if buf.value:
                 with open(ORIGINAL_WALLPAPER_FILE, "w") as f:
                     f.write(buf.value)
-                print(f"[collar] Saved original wallpaper: {buf.value}")
+                logger.info("Saved original wallpaper: %s", buf.value)
         except Exception:
-            print("[warn] Failed to save original wallpaper")
+            logger.warning("Failed to save original wallpaper")
 
     # Start mesh HTTP server
     threading.Thread(target=start_mesh_server, daemon=True).start()
@@ -1772,13 +1780,13 @@ def main():
         peers=mesh_peers,
     )
     lan_discovery.start()
-    print("[collar] LAN discovery started (UDP beacon on :21027)")
+    logger.info("LAN discovery started (UDP beacon on :21027)")
 
     # Start ntfy subscribe thread for instant order wake-ups
     if _ntfy_enabled:
 
         def _ntfy_wake(version):
-            print(f"[ntfy] Wake-up v{version} — triggering immediate sync")
+            logger.debug("Wake-up v%s — triggering immediate sync", version)
             try:
                 if VAULT_MODE:
                     _vault_poll()
@@ -1789,7 +1797,7 @@ def main():
 
         ntfy_sub = ntfy_mod.NtfySubscribeThread(_ntfy_topic, on_wake=_ntfy_wake, server=_ntfy_server)
         ntfy_sub.start()
-        print(f"[ntfy] Subscribed to {_ntfy_server}/{_ntfy_topic}")
+        logger.info("Subscribed to ntfy %s/%s", _ntfy_server, _ntfy_topic)
 
     if VAULT_MODE:
         # Vault poll replaces plaintext direct sync for server communication
@@ -1798,11 +1806,11 @@ def main():
                 try:
                     _vault_poll()
                 except Exception:
-                    print("[warn] Vault poll loop error")
+                    logger.exception("Vault poll loop error")
                 time.sleep(POLL_INTERVAL)
 
         threading.Thread(target=_vault_poll_loop, daemon=True).start()
-        print("[collar] Vault poll started (replaces plaintext sync to server)")
+        logger.info("Vault poll started (replaces plaintext sync to server)")
     else:
         # Start direct sync fallback loop
         def _direct_sync_loop():
@@ -1810,7 +1818,7 @@ def main():
                 try:
                     direct_sync_poll()
                 except Exception:
-                    print("[warn] Direct sync loop error")
+                    logger.exception("Direct sync loop error")
                 time.sleep(POLL_INTERVAL)
 
         threading.Thread(target=_direct_sync_loop, daemon=True).start()
@@ -1821,7 +1829,7 @@ def main():
             try:
                 poll_status()
             except Exception as e:
-                print(f"[collar] Poll error: {e}")
+                logger.warning("Poll error: %s", e)
             time.sleep(POLL_INTERVAL)
 
     threading.Thread(target=_poll_loop, daemon=True).start()
@@ -1829,11 +1837,11 @@ def main():
     # Create and run tray icon (blocks on main thread)
     icon = create_tray_icon()
     if icon:
-        print("[collar] Tray icon started — gold crown visible in system tray")
+        logger.info("Tray icon started — gold crown visible in system tray")
         icon.run()
     else:
         # No pystray — just run forever
-        print("[collar] Running without tray icon (install pystray for crown)")
+        logger.info("Running without tray icon (install pystray for crown)")
         try:
             while True:
                 time.sleep(60)

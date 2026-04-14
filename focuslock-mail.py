@@ -269,9 +269,9 @@ def _init_orders_registry():
     if not os.path.exists(target_path) and os.path.exists(MESH_ORDERS_FILE):
         try:
             os.rename(MESH_ORDERS_FILE, target_path)
-            print(f"[orders] Migrated legacy {MESH_ORDERS_FILE} → {target_path}")
+            logger.info("Migrated legacy %s → %s", MESH_ORDERS_FILE, target_path)
         except OSError as e:
-            print(f"[orders] WARN: legacy migration failed: {e}")
+            logger.warning("legacy migration failed: %s", e)
     elif os.path.exists(target_path) and os.path.exists(MESH_ORDERS_FILE):
         # Both exist — compare updated_at/version and keep the newer one.
         # This avoids the 2026-04-11 deploy incident where the per-mesh file
@@ -289,17 +289,21 @@ def _init_orders_registry():
                 import shutil
 
                 shutil.copy2(MESH_ORDERS_FILE, target_path)
-                print(
-                    f"[orders] WARN: legacy file is NEWER (legacy={_leg_ts} vs per-mesh={_pm_ts})"
-                    f" — copied legacy → per-mesh to preserve authoritative state"
+                logger.warning(
+                    "legacy file is NEWER (legacy=%s vs per-mesh=%s) — copied legacy → per-mesh"
+                    " to preserve authoritative state",
+                    _leg_ts,
+                    _pm_ts,
                 )
             else:
-                print(
-                    f"[orders] legacy {MESH_ORDERS_FILE} is orphaned "
-                    f"(per-mesh is newer: {_pm_ts} >= {_leg_ts}) — ignoring"
+                logger.info(
+                    "legacy %s is orphaned (per-mesh is newer: %s >= %s) — ignoring",
+                    MESH_ORDERS_FILE,
+                    _pm_ts,
+                    _leg_ts,
                 )
         except Exception as _e:
-            print(f"[orders] WARN: could not compare both-exist files: {_e} — keeping per-mesh as-is")
+            logger.warning("could not compare both-exist files: %s — keeping per-mesh as-is", _e)
 
     # Get (from registry's _load_all) or create the per-mesh doc, and rebind
     # the global. Every subsequent reference to ``mesh_orders`` — including
@@ -365,9 +369,9 @@ def get_lion_pubkey():
 def init_mesh_from_adb():
     """Bootstrap mesh orders from phone's current ADB state on startup."""
     if mesh_orders.version > 0:
-        print(f"[mesh] Orders already loaded (v{mesh_orders.version}), skipping ADB bootstrap")
+        logger.info("Orders already loaded (v%s), skipping ADB bootstrap", mesh_orders.version)
         return
-    print("[mesh] Bootstrapping orders from ADB...")
+    logger.info("Bootstrapping orders from ADB...")
     # Map mesh order keys to focus_lock_* ADB keys
     key_map = {k: f"focus_lock_{k}" for k in mesh.ORDER_KEYS}
     # Also bootstrap lock_active (not a mesh order key, but homelab needs it for status)
@@ -386,7 +390,7 @@ def init_mesh_from_adb():
             mesh_orders.set(mesh_key, val)
 
     mesh_orders.bump_version()
-    print(f"[mesh] Bootstrapped orders v{mesh_orders.version} from ADB")
+    logger.info("Bootstrapped orders v%s from ADB", mesh_orders.version)
 
 
 def mesh_local_status():
@@ -403,7 +407,7 @@ def _admin_order_to_vault_blob(action, params, mesh_id=None):
     Uses the RELAY's private key (P6.5 zero-knowledge compliance — Lion's key never on server).
     Only works for the operator's mesh (admin API is operator-scoped)."""
     if not RELAY_PRIVKEY_PEM:
-        print("[admin] vault blob write skipped: no relay keypair")
+        logger.info("vault blob write skipped: no relay keypair")
         return
     try:
         from focuslock_vault import encrypt_body
@@ -412,7 +416,7 @@ def _admin_order_to_vault_blob(action, params, mesh_id=None):
             sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "shared"))
             from focuslock_vault import encrypt_body
         except ImportError:
-            print("[admin] vault blob write skipped: focuslock_vault not available")
+            logger.info("vault blob write skipped: focuslock_vault not available")
             return
     mid = mesh_id or OPERATOR_MESH_ID
     if not mid:
@@ -420,7 +424,7 @@ def _admin_order_to_vault_blob(action, params, mesh_id=None):
     # Get registered nodes (recipients for encryption)
     nodes = _vault_store.get_nodes(mid)
     if not nodes:
-        print("[admin] vault blob write skipped: no registered vault nodes")
+        logger.info("vault blob write skipped: no registered vault nodes")
         return
     recipients = [(n.get("node_id", ""), n.get("node_pubkey", "")) for n in nodes if n.get("node_pubkey")]
     if not recipients:
@@ -432,9 +436,9 @@ def _admin_order_to_vault_blob(action, params, mesh_id=None):
     blob = encrypt_body(mid, version, created_at, body, recipients, RELAY_PRIVKEY_PEM)
     ver, err = _vault_store.append(mid, blob)
     if err:
-        print(f"[admin] vault blob append error: {err}")
+        logger.warning("vault blob append error: %s", err)
     else:
-        print(f"[admin] vault blob written: v{ver} action={action} (relay-signed)")
+        logger.info("vault blob written: v%s action=%s (relay-signed)", ver, action)
 
 
 def on_mesh_orders_applied(orders_dict):
@@ -442,7 +446,7 @@ def on_mesh_orders_applied(orders_dict):
     Do NOT write back to phone via ADB — the phone is its own source of truth
     and has the mesh endpoints to receive orders directly. Writing via ADB
     creates a feedback loop that can overwrite the phone's current state."""
-    print(f"[mesh] Orders applied locally: desktop={orders_dict.get('desktop_active')}")
+    logger.info("Orders applied locally: desktop=%s", orders_dict.get("desktop_active"))
 
 
 def mesh_apply_order(action, params, orders):
@@ -470,9 +474,9 @@ def mesh_apply_order(action, params, orders):
                 headers={"Content-Type": "application/json"},
             )
             urllib.request.urlopen(req, timeout=3)
-            print("[mesh] Direct push succeeded (lock)")
+            logger.info("Direct push succeeded (lock)")
         except Exception as e:
-            print(f"[mesh] Direct push failed (gossip will deliver): {e}")
+            logger.warning("Direct push failed (gossip will deliver): %s", e)
     elif action == "unlock":
         orders.set("lock_active", 0)
         orders.set("message", params.get("message", "Unlocked"))
@@ -486,9 +490,9 @@ def mesh_apply_order(action, params, orders):
                 headers={"Content-Type": "application/json"},
             )
             urllib.request.urlopen(req, timeout=3)
-            print("[mesh] Direct push succeeded (unlock)")
+            logger.info("Direct push succeeded (unlock)")
         except Exception as e:
-            print(f"[mesh] Direct push failed (gossip will deliver): {e}")
+            logger.warning("Direct push failed (gossip will deliver): %s", e)
     elif action == "set-geofence":
         orders.set("geofence_lat", params.get("lat", ""))
         orders.set("geofence_lon", params.get("lon", ""))
@@ -646,15 +650,15 @@ def mesh_apply_order(action, params, orders):
                     headers={"Content-Type": "application/json"},
                 )
                 urllib.request.urlopen(req, timeout=3)
-                print("[mesh] Direct push succeeded (release)")
+                logger.info("Direct push succeeded (release)")
             except Exception as e:
-                print(f"[mesh] Direct push failed (gossip will deliver): {e}")
+                logger.warning("Direct push failed (gossip will deliver): %s", e)
         # Clean up bridge device registry
         if target == "all":
             for reg in ["/run/focuslock/devices.json", "/run/focuslock/controller.json"]:
                 try:
                     os.remove(reg)
-                    print(f"[mesh] Removed: {reg}")
+                    logger.info("Removed: %s", reg)
                 except FileNotFoundError:
                     pass
         elif target:
@@ -666,14 +670,14 @@ def mesh_apply_order(action, params, orders):
                     del devices[target]
                     with open(reg, "w") as f:
                         json.dump(devices, f)
-                    print(f"[mesh] Removed {target} from device registry")
+                    logger.info("Removed %s from device registry", target)
             except Exception:
                 pass
     elif action == "set-payment-email":
         orders.set("payment_imap_host", params.get("imap_host", ""))
         orders.set("payment_imap_user", params.get("user", ""))
         orders.set("payment_imap_pass", params.get("pass", ""))
-        print(f"[mesh] Payment email configured: {params.get('user', '(empty)')}")
+        logger.info("Payment email configured: %s", params.get("user", "(empty)"))
     return {"applied": action}
 
 
@@ -710,7 +714,7 @@ payment_ledger = mesh.PaymentLedger(persist_path=_LEDGER_PATH)
 
 def enforce_jail():
     """Immediately enforce jail via ADB — called on entrap webhook."""
-    print(f"[{now()}] ENTRAP — enforcing jail immediately via ADB")
+    logger.info("ENTRAP — enforcing jail immediately via ADB")
     cmds = [
         "cmd statusbar disable-for-setup true",
         "pm disable-user --user 0 com.android.launcher3",
@@ -720,7 +724,7 @@ def enforce_jail():
     ]
     for cmd in cmds:
         adb.shell_all(cmd)
-    print(f"[{now()}] Jail enforced")
+    logger.info("Jail enforced")
 
 
 # ── SMTP: Compliment Evidence ──
@@ -766,7 +770,7 @@ def check_desktop_heartbeats():
 
                     # 1 week — warn Lion via pinned message on phone
                     if silence_days >= DESKTOP_WARN_DAYS and not info.get("warned", False):
-                        print(f"[{now()}] DESKTOP WARNING: {hostname} silent for {silence_days:.0f} days")
+                        logger.warning("DESKTOP WARNING: %s silent for %.0f days", hostname, silence_days)
                         adb.put(
                             "focus_lock_pinned_message", f"Desktop collar offline: {hostname} ({silence_days:.0f} days)"
                         )
@@ -778,7 +782,9 @@ def check_desktop_heartbeats():
                         last_penalty = info.get("last_penalty_ts", 0)
                         days_since_penalty = (now_ts - last_penalty) / 86400 if last_penalty else 999
                         if days_since_penalty >= DESKTOP_ESCALATE_DAYS:
-                            print(f"[{now()}] DESKTOP PENALTY: {hostname} silent {silence_days:.0f} days — adding $50")
+                            logger.warning(
+                                "DESKTOP PENALTY: %s silent %.0f days — adding $50", hostname, silence_days
+                            )
                             # Add $50 to paywall
                             pw_str = adb.get("focus_lock_paywall")
                             pw = 0
@@ -800,8 +806,8 @@ def check_desktop_heartbeats():
                         json.dump(registry, f, indent=2)
                     os.rename(tmp, DESKTOP_REGISTRY_FILE)
 
-        except Exception as e:
-            print(f"[{now()}] Desktop heartbeat checker error: {e}")
+        except Exception:
+            logger.exception("Desktop heartbeat checker error")
 
         time.sleep(3600)  # Check hourly
 
@@ -839,7 +845,7 @@ def check_tributes_and_fines():
                                 ntfy_fn(mesh_orders.version)
                             except Exception as e:
                                 logger.warning("ntfy push failed after daily tribute: %s", e)
-                        print(f"[{now()}] Daily tribute: +${amount} (unlocked for 24h+)")
+                        logger.info("Daily tribute: +$%s (unlocked for 24h+)", amount)
 
             # Recurring fine — accrues regardless of lock state
             fine_active = mesh_orders.get("fine_active", 0)
@@ -863,7 +869,7 @@ def check_tributes_and_fines():
                             ntfy_fn(mesh_orders.version)
                         except Exception as e:
                             logger.warning("ntfy push failed after fine: %s", e)
-                    print(f"[{now()}] Fine applied: +${fine_amount}")
+                    logger.info("Fine applied: +$%s", fine_amount)
 
             # Streak bonuses — 7d clean = -$5, 30d clean = -$25
             streak_enabled = mesh_orders.get("streak_enabled", 0)
@@ -882,7 +888,7 @@ def check_tributes_and_fines():
                     mesh_orders.set("streak_enabled", 0)
                     mesh_orders.bump_version()
                     mesh.push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
-                    print(f"[{now()}] Streak broken: escapes {escapes_at_start} → {current_escapes}")
+                    logger.info("Streak broken: escapes %s → %s", escapes_at_start, current_escapes)
                 elif streak_start > 0:
                     elapsed_days = (now_ms - streak_start) / 86400000
 
@@ -897,7 +903,9 @@ def check_tributes_and_fines():
                         mesh_orders.set("streak_7d_claimed", 1)
                         mesh_orders.bump_version()
                         mesh.push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
-                        print(f"[{now()}] Streak bonus: 7d clean → -$5 (paywall ${current_pw} → ${new_pw})")
+                        logger.info(
+                            "Streak bonus: 7d clean → -$5 (paywall $%s → $%s)", current_pw, new_pw
+                        )
 
                     if elapsed_days >= 30 and str(mesh_orders.get("streak_30d_claimed", 0)) != "1":
                         current_pw = 0
@@ -910,10 +918,12 @@ def check_tributes_and_fines():
                         mesh_orders.set("streak_30d_claimed", 1)
                         mesh_orders.bump_version()
                         mesh.push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
-                        print(f"[{now()}] Streak bonus: 30d clean → -$25 (paywall ${current_pw} → ${new_pw})")
+                        logger.info(
+                            "Streak bonus: 30d clean → -$25 (paywall $%s → $%s)", current_pw, new_pw
+                        )
 
-        except Exception as e:
-            print(f"[{now()}] Tribute/fine/streak checker error: {e}")
+        except Exception:
+            logger.exception("Tribute/fine/streak checker error")
 
         time.sleep(300)  # Check every 5 minutes
 
@@ -1233,7 +1243,7 @@ def _init_relay_keypair():
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric import rsa
     except ImportError:
-        print("[relay] cryptography not available — relay keypair disabled")
+        logger.warning("cryptography not available — relay keypair disabled")
         return
     config_dir = os.path.expanduser("~/.config/focuslock")
     os.makedirs(config_dir, mode=0o700, exist_ok=True)
@@ -1243,7 +1253,7 @@ def _init_relay_keypair():
         # Enforce private key file permissions on load
         mode = os.stat(priv_path).st_mode & 0o777
         if mode & 0o077:
-            print(f"[relay] WARNING: {priv_path} is group/world-readable (mode {oct(mode)}), fixing")
+            logger.warning("%s is group/world-readable (mode %s), fixing", priv_path, oct(mode))
             os.chmod(priv_path, 0o600)
         with open(priv_path) as f:
             RELAY_PRIVKEY_PEM = f.read().strip()
@@ -1269,15 +1279,15 @@ def _init_relay_keypair():
         os.chmod(priv_path, 0o600)
         with open(pub_path, "w") as f:
             f.write(RELAY_PUBKEY_PEM)
-        print(f"[relay] Generated new RSA-2048 keypair at {priv_path}")
+        logger.info("Generated new RSA-2048 keypair at %s", priv_path)
     # Compute base64 DER for node registration
     try:
         pk = serialization.load_pem_public_key(RELAY_PUBKEY_PEM.encode())
         der = pk.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
         RELAY_PUBKEY_DER_B64 = base64.b64encode(der).decode()
-        print(f"[relay] Keypair loaded (pubkey {len(der)} bytes)")
-    except Exception as e:
-        print(f"[relay] Keypair DER export failed: {e}")
+        logger.info("Keypair loaded (pubkey %d bytes)", len(der))
+    except Exception:
+        logger.exception("Keypair DER export failed")
 
 
 _init_relay_keypair()
@@ -1369,7 +1379,7 @@ class VaultStore:
             try:
                 self.gc(mesh_id)
             except Exception as e:
-                print(f"[vault] lazy gc error: {e}")
+                logger.warning("lazy gc error: %s", e)
             return version, None
 
     def since(self, mesh_id, version):
@@ -1390,7 +1400,7 @@ class VaultStore:
                     with open(os.path.join(blobs_dir, f"{v:08d}.json")) as f:
                         result.append(json.load(f))
                 except Exception as e:
-                    print(f"[vault] read error v{v}: {e}")
+                    logger.warning("vault read error v%s: %s", v, e)
         return result, versions[-1]
 
     def gc(self, mesh_id, retention_days=None):
@@ -1418,7 +1428,7 @@ class VaultStore:
             except FileNotFoundError:
                 pass
             except Exception as e:
-                print(f"[vault] gc error v{v}: {e}")
+                logger.warning("vault gc error v%s: %s", v, e)
         return removed
 
     def _read_json(self, mesh_id, fname, default):
@@ -1541,9 +1551,9 @@ def _relay_self_register():
         if n.get("node_id") == "relay":
             # Already registered — check if pubkey changed (key rotation)
             if n.get("node_pubkey") == RELAY_PUBKEY_DER_B64:
-                print(f"[relay] Already registered as vault node for {OPERATOR_MESH_ID}")
+                logger.info("Already registered as vault node for %s", OPERATOR_MESH_ID)
                 return
-            print("[relay] Key rotated — re-registering vault node")
+            logger.info("Key rotated — re-registering vault node")
             break
     _vault_store.add_node(
         OPERATOR_MESH_ID,
@@ -1554,7 +1564,7 @@ def _relay_self_register():
             "registered_at": int(time.time()),
         },
     )
-    print(f"[relay] Registered as vault node for operator mesh {OPERATOR_MESH_ID}")
+    logger.info("Registered as vault node for operator mesh %s", OPERATOR_MESH_ID)
 
 
 _relay_self_register()
@@ -1600,7 +1610,7 @@ def _load_lion_pubkey_obj(key_str):
         der = base64.b64decode(cleaned)
         return serialization.load_der_public_key(der)
     except Exception as e:
-        print(f"[vault] pubkey load error: {e}")
+        logger.warning("vault pubkey load error: %s", e)
         return None
 
 
@@ -1623,7 +1633,7 @@ def _verify_signed_payload(payload, signature_b64, lion_pubkey_str, quiet=False)
         return True
     except Exception as e:
         if not quiet:
-            print(f"[vault] sig verify failed: {e}")
+            logger.warning("vault sig verify failed: %s", e)
         return False
 
 
@@ -1704,14 +1714,14 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         elif self.path == "/webhook/location":
             lat = data.get("lat", 0)
             lon = data.get("lon", 0)
-            print(f"[{now()}] Location: {lat}, {lon}")
+            logger.info("Location: %s, %s", lat, lon)
             self.respond(200, {"ok": True})
 
         elif self.path == "/webhook/geofence-breach":
             lat = data.get("lat", 0)
             lon = data.get("lon", 0)
             distance = data.get("distance", 0)
-            print(f"[{now()}] GEOFENCE BREACH: {distance:.0f}m from center at {lat},{lon}")
+            logger.warning("GEOFENCE BREACH: %.0fm from center at %s,%s", distance, lat, lon)
             send_evidence(
                 f"GEOFENCE BREACH\n\nDistance from center: {distance:.0f}m\n"
                 f"Location: {lat}, {lon}\n"
@@ -1725,7 +1735,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             photo_b64 = data.get("photo", "")
             evidence_type = data.get("type", "obedience")
             text = data.get("text", "")
-            print(f"[{now()}] Evidence photo received ({evidence_type})")
+            logger.info("Evidence photo received (%s)", evidence_type)
             if photo_b64 and PARTNER_EMAIL:
                 try:
                     photo_bytes = base64.b64decode(photo_b64)
@@ -1755,9 +1765,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         server.starttls()
                         server.login(MAIL_USER, MAIL_PASS)
                         server.send_message(msg)
-                    print(f"[{now()}] Evidence photo email sent to {PARTNER_EMAIL}")
-                except Exception as e:
-                    print(f"[{now()}] Evidence photo email error: {e}")
+                    logger.info("Evidence photo email sent to %s", PARTNER_EMAIL)
+                except Exception:
+                    logger.exception("Evidence photo email error")
             elif not photo_b64:
                 send_evidence(text or "Photo capture failed", evidence_type)
             self.respond(200, {"ok": True})
@@ -1765,21 +1775,21 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         elif self.path == "/webhook/verify-photo":
             photo_b64 = data.get("photo", "")
             task_text = data.get("task", "")
-            print(f"[{now()}] Photo verification: {task_text[:50]}")
+            logger.info("Photo verification: %s", task_text[:50])
             result = verify_photo_with_llm(photo_b64, task_text, on_evidence=send_evidence)
-            print(f"[{now()}] Verification result: {result}")
+            logger.info("Verification result: %s", result)
             self.respond(200, result)
 
         elif self.path == "/webhook/generate-task":
             category = data.get("category", "general")
             result = generate_task_with_llm(category)
-            print(f"[{now()}] Generated task: {result}")
+            logger.info("Generated task: %s", result)
             self.respond(200, result)
 
         elif self.path == "/webhook/subscription-charge":
             tier = data.get("tier", "unknown")
             amount = data.get("amount", 0)
-            print(f"[{now()}] Subscription charge: ${amount} ({tier})")
+            logger.info("Subscription charge: $%s (%s)", amount, tier)
             send_evidence(
                 f"Weekly subscription charge: ${amount} ({tier.upper()})\n"
                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -1791,7 +1801,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         elif self.path == "/webhook/bunny-message":
             text = data.get("text", "")
             msg_type = data.get("type", "message")
-            print(f"[{now()}] Bunny message ({msg_type}): {text}")
+            logger.info("Bunny message (%s): %s", msg_type, text)
             if msg_type == "self-lock":
                 send_evidence(f"Bunny self-locked: {text}", "self-lock")
             else:
@@ -1801,7 +1811,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         elif self.path == "/webhook/desktop-penalty":
             amount = data.get("amount", 30)
             reason = data.get("reason", "Desktop penalty")
-            print(f"[{now()}] DESKTOP PENALTY: ${amount} — {reason}")
+            logger.warning("DESKTOP PENALTY: $%s — %s", amount, reason)
             pw_str = adb.get("focus_lock_paywall")
             pw = 0
             try:
@@ -1867,7 +1877,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 try:
                     _admin_order_to_vault_blob(action, params, target_mesh)
                 except Exception as e:
-                    print(f"[admin] vault blob write failed: {e}")
+                    logger.warning("vault blob write failed: %s", e)
                     vault_ok = False
             if ntfy_fn:
                 try:
@@ -1905,7 +1915,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             global _lion_pubkey
             if lion_pubkey and not _lion_pubkey:
                 _lion_pubkey = lion_pubkey
-            print(f"[{now()}] Mesh created: {new_mesh_id} invite={account['invite_code']}")
+            logger.info("Mesh created: %s invite=%s", new_mesh_id, account["invite_code"])
             self.respond(
                 200,
                 {
@@ -1936,7 +1946,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             port = data.get("port", 8432 if node_type == "phone" else 8435)
             if addrs:
                 mesh_peers.update_peer(node_id, node_type=node_type, addresses=addrs, port=port)
-            print(f"[{now()}] Node joined mesh: {node_id} ({node_type}) mesh={account['mesh_id']}")
+            logger.info("Node joined mesh: %s (%s) mesh=%s", node_id, node_type, account["mesh_id"])
             self.respond(
                 200,
                 {
@@ -2005,10 +2015,14 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     self.respond(409, {"error": err, "current_version": version})
                     return
                 _daily_blob_increment(mesh_id)
-                print(
-                    f"[{now()}] Vault append: mesh={mesh_id} v={version} "
-                    f"writer={writer_role}:{writer_id} "
-                    f"slots={len(blob.get('slots', {}))} ct_bytes={len(blob.get('ciphertext', ''))}"
+                logger.info(
+                    "Vault append: mesh=%s v=%s writer=%s:%s slots=%s ct_bytes=%s",
+                    mesh_id,
+                    version,
+                    writer_role,
+                    writer_id,
+                    len(blob.get("slots", {})),
+                    len(blob.get("ciphertext", "")),
                 )
                 self.respond(200, {"ok": True, "version": version})
 
@@ -2038,7 +2052,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 _vault_store.remove_pending_node(mesh_id, node_id)
                 # Lion explicitly approving a previously rejected key clears the rejection
                 _vault_store.clear_rejection(mesh_id, node_pubkey)
-                print(f"[{now()}] Vault register-node: mesh={mesh_id} node={node_id} ({node_type})")
+                logger.info("Vault register-node: mesh=%s node=%s (%s)", mesh_id, node_id, node_type)
                 self.respond(200, {"ok": True})
 
             elif action == "reject-node-request":
@@ -2061,7 +2075,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 _vault_store.add_rejected_node(mesh_id, node_id, node_pubkey, reason)
                 if node_id:
                     _vault_store.remove_pending_node(mesh_id, node_id)
-                print(f"[{now()}] Vault reject-node-request: mesh={mesh_id} node={node_id} reason={reason!r}")
+                logger.info(
+                    "Vault reject-node-request: mesh=%s node=%s reason=%r", mesh_id, node_id, reason
+                )
                 self.respond(200, {"ok": True})
 
             elif action == "register-node-request":
@@ -2074,7 +2090,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     self.respond(400, {"error": "node_id and node_pubkey required"})
                     return
                 if _vault_store.is_rejected(mesh_id, node_pubkey):
-                    print(f"[{now()}] Vault register-node-request DENIED (rejected): mesh={mesh_id} node={node_id}")
+                    logger.warning(
+                        "Vault register-node-request DENIED (rejected): mesh=%s node=%s", mesh_id, node_id
+                    )
                     self.respond(403, {"error": "node rejected"})
                     return
                 # Security: key rotation (same node_id, new pubkey) goes to pending
@@ -2090,7 +2108,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         "requested_at": int(time.time()),
                     },
                 )
-                print(f"[{now()}] Vault register-node-request (pending): mesh={mesh_id} node={node_id}")
+                logger.info(
+                    "Vault register-node-request (pending): mesh=%s node=%s", mesh_id, node_id
+                )
                 self.respond(200, {"ok": True, "status": "pending"})
 
             else:
@@ -2110,7 +2130,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     # Also update mesh peers so other nodes know about the controller
                     mesh_peers.update_peer("lions-share", node_type="controller", addresses=[ts_ip], port=0)
                 except Exception as e:
-                    print(f"[{now()}] Controller register error: {e}")
+                    logger.warning("Controller register error: %s", e)
             self.respond(200, {"ok": True})
 
         elif self.path == "/api/pair/register":
@@ -2122,7 +2142,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(400, {"error": "passphrase required"})
                 return
             _pairing_registry.register(passphrase, bunny_pubkey, node_id)
-            print(f"[{now()}] Pair register: {passphrase.upper()} node={node_id}")
+            logger.info("Pair register: %s node=%s", passphrase.upper(), node_id)
             self.respond(200, {"ok": True, "passphrase": passphrase.upper()})
 
         elif self.path == "/api/pair/claim":
@@ -2137,7 +2157,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if not entry:
                 self.respond(404, {"error": "passphrase not found or expired"})
                 return
-            print(f"[{now()}] Pair claimed: {passphrase.upper()} by {lion_node_id}")
+            logger.info("Pair claimed: %s by %s", passphrase.upper(), lion_node_id)
             self.respond(200, {"ok": True, "paired": True, "bunny_pubkey": entry.get("bunny_pubkey", "")})
 
         elif self.path == "/api/pair/lookup":
@@ -2191,7 +2211,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             with open(pair_file, "w") as f:
                 json.dump({"config": config, "expires_at": time.time() + expires_min * 60}, f)
             pair_url = f"http://{homelab_ip}:{WEBHOOK_PORT}/api/pair/{code}"
-            print(f"[{now()}] Pairing code created: {code} (expires {expires_min}min)")
+            logger.info("Pairing code created: %s (expires %smin)", code, expires_min)
             self.respond(200, {"ok": True, "code": code, "url": pair_url, "expires_minutes": expires_min})
 
         elif self.path in ("/api/web-session", "/admin/web-session"):
@@ -2238,18 +2258,18 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 except Exception:
                     verified = False
                 if not verified:
-                    print(f"[{now()}] Web session approve DENIED (bad signature): {session_id[:8]}...")
+                    logger.warning("Web session approve DENIED (bad signature): %s...", session_id[:8])
                     self.respond(403, {"error": "invalid signature — must be signed by Lion's private key"})
                     return
                 session["approved"] = True
-                print(f"[{now()}] Web session approved (signature verified): {session_id[:8]}...")
+                logger.info("Web session approved (signature verified): %s...", session_id[:8])
                 self.respond(200, {"ok": True, "status": "approved"})
             else:
                 self.respond(400, {"error": "unknown action"})
 
         elif self.path == "/webhook/desktop-heartbeat":
             hostname = data.get("hostname", "unknown")
-            print(f"[{now()}] Desktop heartbeat: {hostname}")
+            logger.debug("Desktop heartbeat: %s", hostname)
             try:
                 registry = {}
                 if os.path.exists(DESKTOP_REGISTRY_FILE):
@@ -2294,7 +2314,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         capture_output=True,
                     )
             except Exception as e:
-                print(f"[{now()}] Desktop heartbeat registry error: {e}")
+                logger.warning("Desktop heartbeat registry error: %s", e)
             self.respond(200, {"ok": True})
 
         elif self.path == "/webhook/register":
@@ -2302,7 +2322,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             lan_ip = data.get("lan_ip", "")
             tailscale_ip = data.get("tailscale_ip", "")
             device_id = data.get("device_id", "unknown")
-            print(f"[{now()}] Phone registered: LAN={lan_ip} TS={tailscale_ip} device={device_id}")
+            logger.info("Phone registered: LAN=%s TS=%s device=%s", lan_ip, tailscale_ip, device_id)
             try:
                 registry = {}
                 if os.path.exists(IP_REGISTRY_FILE):
@@ -2318,7 +2338,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     json.dump(registry, f, indent=2)
                 os.rename(tmp, IP_REGISTRY_FILE)
             except Exception as e:
-                print(f"[{now()}] Registry write error: {e}")
+                logger.warning("Registry write error: %s", e)
             self.respond(200, {"ok": True})
 
         # ── Legacy plaintext mesh endpoints (removed Phase D) ──
@@ -2530,7 +2550,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 else:
                     self.respond(404, {"error": "no controller registered yet"})
             except Exception as e:
-                print(f"[{now()}] /controller error: {e}")
+                logger.warning("/controller error: %s", e)
                 self.respond(500, {"error": "internal error"})
 
         elif self.path == "/standing-orders":
@@ -2552,7 +2572,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 else:
                     self.respond(404, {"error": "no standing orders found"})
             except Exception as e:
-                print(f"[{now()}] /standing-orders error: {e}")
+                logger.warning("/standing-orders error: %s", e)
                 self.respond(500, {"error": "internal error"})
 
         elif self.path == "/settings":
@@ -2572,7 +2592,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 else:
                     self.respond(404, {"error": "no settings found"})
             except Exception as e:
-                print(f"[{now()}] /settings error: {e}")
+                logger.warning("/settings error: %s", e)
                 self.respond(500, {"error": "internal error"})
 
         elif self.path == "/pubkey":
@@ -2623,7 +2643,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         os.remove(pair_file)
                         self.respond(410, {"error": "pairing code expired"})
                 except Exception as e:
-                    print(f"[{now()}] /api/pair/{code} error: {e}")
+                    logger.warning("/api/pair/%s error: %s", code, e)
                     self.respond(500, {"error": "internal error"})
             else:
                 self.respond(404, {"error": "invalid pairing code"})
@@ -2760,7 +2780,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         self.respond_json(code, data, cors=not is_admin)
 
     def log_message(self, format, *args):
-        print(f"[{now()}] Webhook: {args[0]}")
+        logger.debug("Webhook: %s", args[0])
 
 
 def now():
@@ -2770,17 +2790,22 @@ def now():
 # ── Main ──
 
 if __name__ == "__main__":
-    print("FocusLock Mail Service")
-    print(f"  IMAP: {MAIL_USER}@{IMAP_HOST} (check every {IMAP_CHECK_INTERVAL}s)")
-    print(f"  SMTP: {SMTP_HOST}")
-    print(f"  Partner: {PARTNER_EMAIL}")
-    print(f"  Phone: {PHONE_URL}")
-    print(f"  Webhook: port {WEBHOOK_PORT}")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    logger.info("FocusLock Mail Service")
+    logger.info("IMAP: %s@%s (check every %ss)", MAIL_USER, IMAP_HOST, IMAP_CHECK_INTERVAL)
+    logger.info("SMTP: %s", SMTP_HOST)
+    logger.info("Partner: %s", PARTNER_EMAIL)
+    logger.info("Phone: %s", PHONE_URL)
+    logger.info("Webhook: port %s", WEBHOOK_PORT)
 
     # Initialize mesh — bootstrap from ADB if no persisted state
     seed_mesh_peers()
     init_mesh_from_adb()
-    print(f"  Mesh: node={MESH_NODE_ID} v{mesh_orders.version} peers={len(mesh_peers.peers)}")
+    logger.info("Mesh: node=%s v%s peers=%s", MESH_NODE_ID, mesh_orders.version, len(mesh_peers.peers))
 
     # Start mesh gossip thread (10s interval)
     gossip = mesh.GossipThread(
@@ -2806,7 +2831,7 @@ if __name__ == "__main__":
         peers=mesh_peers,
     )
     lan_discovery.start()
-    print(f"  LAN discovery started (UDP beacon on :{mesh.LAN_DISCOVERY_PORT})")
+    logger.info("LAN discovery started (UDP beacon on :%s)", mesh.LAN_DISCOVERY_PORT)
 
     # Start IMAP checker in background
     imap_thread = threading.Thread(
@@ -2841,5 +2866,5 @@ if __name__ == "__main__":
 
     # Start webhook server
     server = HTTPServer(("0.0.0.0", WEBHOOK_PORT), WebhookHandler)
-    print(f"[{now()}] Listening on port {WEBHOOK_PORT}")
+    logger.info("Listening on port %s", WEBHOOK_PORT)
     server.serve_forever()

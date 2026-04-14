@@ -185,7 +185,7 @@ def unlock_phone(adb):
     Args:
         adb: ADBBridge instance.
     """
-    print("[payment] Unlocking via ADB")
+    logger.info("Unlocking via ADB")
     adb.put("focus_lock_active", "0")
     adb.put_str("focus_lock_message", "Payment received. Good boy.")
 
@@ -269,7 +269,7 @@ def check_payment_emails(
         return datetime.now().strftime("%H:%M:%S")
 
     if not imap_host or not mail_user or not mail_pass:
-        print("[payment] No static IMAP creds — waiting for Lion to configure via mesh")
+        logger.info("No static IMAP creds — waiting for Lion to configure via mesh")
 
     while True:
         try:
@@ -300,7 +300,7 @@ def check_payment_emails(
                 continue
 
             paywall = float(paywall_str)
-            print(f"[{_now()}] Checking IMAP ({active_user}) for payment >= ${paywall}")
+            logger.info("Checking IMAP (%s) for payment >= $%s", active_user, paywall)
 
             mail = imaplib.IMAP4_SSL(active_host)
             mail.login(active_user, active_pass)
@@ -312,7 +312,7 @@ def check_payment_emails(
             since_date = (datetime.now() - __import__("datetime").timedelta(days=7)).strftime("%d-%b-%Y")
             _, data = mail.search(None, f"(SINCE {since_date})")
             email_ids = data[0].split()
-            print(f"[{_now()}] Found {len(email_ids)} emails in last 7 days")
+            logger.info("Found %d emails in last 7 days", len(email_ids))
             for num in email_ids:
                 _, msg_data = mail.fetch(num, "(RFC822)")
                 msg = email.message_from_bytes(msg_data[0][1])
@@ -327,10 +327,14 @@ def check_payment_emails(
                 for provider in providers:
                     score, _kw = score_payment_email(sender, all_text, provider)
                     if score > 0:
-                        print(
-                            f"[{_now()}]   #{num.decode()} from={sender[:40]} "
-                            f"subj={subject[:50]} score={score}/{4 if provider['senders'] else 5} "
-                            f"provider={provider['name']}"
+                        logger.debug(
+                            "#%s from=%s subj=%s score=%s/%s provider=%s",
+                            num.decode(),
+                            sender[:40],
+                            subject[:50],
+                            score,
+                            4 if provider["senders"] else 5,
+                            provider["name"],
                         )
                     # Thresholds: known sender needs >= 4, generic needs >= 5
                     threshold = 4 if provider["senders"] else 5
@@ -349,7 +353,9 @@ def check_payment_emails(
                 if amount < min_payment:
                     continue
                 if amount > max_payment:
-                    print(f"[{_now()}] Ignoring suspicious amount: ${amount:.2f} (max: ${max_payment})")
+                    logger.warning(
+                        "Ignoring suspicious amount: $%.2f (max: $%s)", amount, max_payment
+                    )
                     continue
 
                 # Deduplicate via ledger using email Message-ID
@@ -363,10 +369,12 @@ def check_payment_emails(
                 if ledger_result.get("error") == "duplicate":
                     continue  # Already processed
 
-                print(
-                    f"[{_now()}] Payment confirmed: ${amount:.2f} via "
-                    f"{best_provider['name']} "
-                    f"(score: {best_score}, need: ${paywall:.2f})"
+                logger.info(
+                    "Payment confirmed: $%.2f via %s (score: %s, need: $%.2f)",
+                    amount,
+                    best_provider["name"],
+                    best_score,
+                    paywall,
                 )
 
                 # Notify Lion via mesh pinned message
@@ -381,13 +389,13 @@ def check_payment_emails(
                 adb.put("focus_lock_total_paid_cents", str(cur + int(amount * 100)))
 
                 if amount >= paywall:
-                    print(f"[{_now()}] FULL PAYMENT \u2014 clearing paywall!")
+                    logger.info("FULL PAYMENT — clearing paywall!")
                     adb.put("focus_lock_paywall", "0")
                     mesh_orders.set("paywall", "0")
                     unlock_phone(adb)
                 else:
                     remaining = paywall - amount
-                    print(f"[{_now()}] Partial: ${amount:.2f}, remaining: ${remaining:.2f}")
+                    logger.info("Partial: $%.2f, remaining: $%.2f", amount, remaining)
                     reduce_paywall(remaining, amount, adb, phone_url, phone_pin)
 
             mail.logout()

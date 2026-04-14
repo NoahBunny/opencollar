@@ -187,7 +187,7 @@ def _vault_init_keypair():
             serialization.Encoding.DER,
             serialization.PublicFormat.SubjectPublicKeyInfo,
         )
-        print(f"[vault] Loaded keypair (slot={vault_slot_id(_vault_pubkey_der)})")
+        logger.info("Loaded vault keypair (slot=%s)", vault_slot_id(_vault_pubkey_der))
     else:
         priv, pub, der = vault_keygen()
         os.makedirs(MESH_CONFIG_DIR, exist_ok=True)
@@ -198,7 +198,7 @@ def _vault_init_keypair():
             f.write(pub)
         _vault_privkey_pem = priv
         _vault_pubkey_der = der
-        print(f"[vault] Generated new keypair (slot={vault_slot_id(der)})")
+        logger.info("Generated new vault keypair (slot=%s)", vault_slot_id(der))
 
 
 # P6.5: approved node pubkeys cache for multi-signer verification
@@ -223,9 +223,9 @@ def _vault_fetch_nodes():
             return
         _approved_node_pubkeys = [n.get("node_pubkey", "") for n in nodes if n.get("node_pubkey")]
         _nodes_last_fetch = time.time()
-        print(f"[vault] Fetched {len(_approved_node_pubkeys)} approved node pubkeys")
+        logger.info("Fetched %d approved node pubkeys", len(_approved_node_pubkeys))
     except Exception as e:
-        print(f"[vault] Fetch nodes error: {e}")
+        logger.warning("Fetch vault nodes error: %s", e)
 
 
 _lazy_refresh_done_this_poll = False
@@ -280,9 +280,9 @@ def _vault_register_node():
                 result = json.loads(resp.read())
         if result.get("ok") or result.get("status") in ("approved", "pending"):
             _vault_node_registered = True
-            print(f"[vault] Node registered: {result}")
+            logger.info("Vault node registered: %s", result)
     except Exception as e:
-        print(f"[vault] Register error (will retry): {e}")
+        logger.warning("Vault register error (will retry): %s", e)
 
 
 def _vault_poll():
@@ -316,7 +316,7 @@ def _vault_poll():
                 continue
             # P6.5: verify against Lion pubkey OR any approved node (relay, etc.)
             if not _vault_verify_any_signer(blob, lion_pub):
-                print(f"[vault] Signature verification FAILED for v{v} — skipping")
+                logger.warning("Vault signature verification FAILED for v%s — skipping", v)
                 continue
             # Decrypt
             plaintext = vault_decrypt(blob, _vault_privkey_pem, _vault_pubkey_der)
@@ -337,15 +337,15 @@ def _vault_poll():
                 if body:
                     mesh_orders.bump_version()
             _vault_last_version = v
-            print(f"[vault] Applied v{v} ({len(body)} fields)")
+            logger.info("Vault applied v%s (%d fields)", v, len(body))
         on_mesh_orders_applied(dict(mesh_orders.orders))
     except urllib.error.HTTPError as e:
         if e.code == 404:
             pass  # Vault not set up yet for this mesh
         else:
-            print(f"[vault] Poll error: HTTP {e.code}")
+            logger.warning("Vault poll error: HTTP %s", e.code)
     except Exception as e:
-        print(f"[vault] Poll error: {e}")
+        logger.warning("Vault poll error: %s", e)
 
 
 _vault_poll_running = False
@@ -380,7 +380,7 @@ def get_lion_pubkey():
             with open(LION_PUBKEY_FILE, "r") as f:
                 _lion_pubkey = f.read().strip()
             if _lion_pubkey:
-                print(f"[mesh] Loaded Lion's Share pubkey from {LION_PUBKEY_FILE}")
+                logger.info("Loaded Lion's Share pubkey from %s", LION_PUBKEY_FILE)
         except Exception:
             pass
     return _lion_pubkey
@@ -438,7 +438,7 @@ def _try_sync(url, name, my_addrs, lion_pubkey):
 
 def direct_sync_poll():
     """Poll mesh — try configured endpoints in priority order, then discovered peers."""
-    print(f"[collar] Direct sync: polling (local v{mesh_orders.version})")
+    logger.debug("Direct sync: polling (local v%s)", mesh_orders.version)
     _shared_direct_sync_poll(
         mesh_url=MESH_URL,
         homelab_url=HOMELAB_URL,
@@ -494,7 +494,7 @@ def _handle_countdown(lock_at_ms: int, message: str):
     # Countdown expired — trigger the lock
     if remaining_ms <= 0:
         if state.countdown_lock_at > 0:
-            print("[collar] Countdown expired — locking")
+            logger.info("Countdown expired — locking")
             mesh_orders.set("desktop_active", 1)
             mesh_orders.set("countdown_lock_at", 0)
             mesh_orders.set("countdown_message", "")
@@ -563,7 +563,7 @@ def _show_countdown_warning(remaining_ms: int, message: str):
     except Exception:
         pass
 
-    print(f"[collar] Countdown: {time_str} remaining" + (f" — {message}" if message else ""))
+    logger.debug("Countdown: %s remaining%s", time_str, f" — {message}" if message else "")
 
 
 _poll_status_fn = None  # Set by CollarApp.do_activate so gossip can trigger immediate refresh
@@ -594,9 +594,9 @@ def _adb_statusbar_enforce(lock_active):
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                print(f"[collar] ADB statusbar disable-for-setup {cmd} → {dev}")
+                logger.debug("ADB statusbar disable-for-setup %s → %s", cmd, dev)
     except Exception as e:
-        print(f"[collar] ADB statusbar enforce skipped: {e}")
+        logger.debug("ADB statusbar enforce skipped: %s", e)
 
 
 def _phone_statusbar_loop():
@@ -628,9 +628,10 @@ def on_mesh_orders_applied(orders_dict):
     sole writer so it can detect transitions and call show_lock/hide_lock.
     Schedule an immediate poll so the UI refreshes within ~100ms instead of
     waiting up to POLL_INTERVAL (5s)."""
-    print(
-        f"[collar] Mesh orders applied: desktop_active={orders_dict.get('desktop_active')} "
-        f"lock_active={orders_dict.get('lock_active')}"
+    logger.info(
+        "Mesh orders applied: desktop_active=%s lock_active=%s",
+        orders_dict.get("desktop_active"),
+        orders_dict.get("lock_active"),
     )
     # ADB statusbar enforcement is handled by _phone_statusbar_loop (HTTP poll),
     # NOT gossip — gossip lock_active can be stale when vault node is pending.
@@ -698,7 +699,7 @@ def _execute_liberation():
     """Permanently remove the desktop collar. Called on GTK main thread."""
     import subprocess
 
-    print("[collar] LIBERATION — permanently removing collar")
+    logger.warning("LIBERATION — permanently removing collar")
 
     # 1. Unlock the session
     try:
@@ -737,7 +738,7 @@ def _execute_liberation():
                 with open(cfg_path, "w") as f:
                     f.writelines(new_lines)
     except Exception as e:
-        print(f"[collar] Wallpaper restore error: {e}")
+        logger.warning("Wallpaper restore error: %s", e)
 
     # 3. Show liberation notice
     _show_liberation_dialog()
@@ -797,7 +798,7 @@ def _show_liberation_dialog():
         win.present()
         GLib.timeout_add_seconds(10, lambda: (win.close(), False)[1])
     except Exception as e:
-        print(f"[collar] Liberation dialog error: {e}")
+        logger.warning("Liberation dialog error: %s", e)
 
 
 def _check_dual_boot_and_mark():
@@ -816,10 +817,10 @@ def _check_dual_boot_and_mark():
 
     windows_boot = os.path.join(efi_path, "EFI", "Microsoft", "Boot")
     if not os.path.isdir(windows_boot):
-        print("[collar] No Windows dual-boot detected — skipping")
+        logger.info("No Windows dual-boot detected — skipping")
         return
 
-    print("[collar] Windows dual-boot detected — dropping liberation marker")
+    logger.info("Windows dual-boot detected — dropping liberation marker")
 
     # Find NTFS partitions and look for Windows Startup folders
     try:
@@ -862,7 +863,7 @@ def _check_dual_boot_and_mark():
                 if not was_mounted:
                     subprocess.run(["sudo", "umount", mountpoint], capture_output=True, timeout=10)
     except Exception as e:
-        print(f"[collar] Windows partition scan error: {e}")
+        logger.warning("Windows partition scan error: %s", e)
 
 
 def _write_windows_liberation_ps1(startup_dir):
@@ -908,9 +909,9 @@ Remove-Item -Path $MyInvocation.MyCommand.Path -Force
     try:
         with open(ps1_path, "w") as f:
             f.write(script)
-        print(f"[collar] Windows liberation notice dropped: {ps1_path}")
+        logger.info("Windows liberation notice dropped: %s", ps1_path)
     except Exception as e:
-        print(f"[collar] Failed to write Windows notice: {e}")
+        logger.warning("Failed to write Windows notice: %s", e)
 
 
 def _liberation_cleanup():
@@ -941,9 +942,9 @@ def _liberation_cleanup():
                 shutil.rmtree(p)
             elif os.path.isfile(p):
                 os.remove(p)
-            print(f"[collar] Removed: {p}")
+            logger.info("Removed: %s", p)
         except Exception as e:
-            print(f"[collar] Could not remove {p}: {e}")
+            logger.warning("Could not remove %s: %s", p, e)
 
     # Reload systemd
     try:
@@ -951,7 +952,7 @@ def _liberation_cleanup():
     except Exception:
         pass
 
-    print("[collar] Liberation complete. Exiting.")
+    logger.info("Liberation complete. Exiting.")
     import sys
 
     sys.exit(0)
@@ -991,7 +992,7 @@ def _create_pairing_code(body):
     os.makedirs(code_dir, exist_ok=True)
     with open(os.path.join(code_dir, f"{code}.json"), "w") as f:
         json.dump(config, f, indent=2)
-    print(f"[collar] Pairing code created: {code}")
+    logger.info("Pairing code created: %s", code)
     return {"ok": True, "code": code, "url": f"/api/pair/{code}", "expires_minutes": expires_min}
 
 
@@ -1131,10 +1132,10 @@ def start_mesh_server():
     """Start HTTP server for mesh on port 8435 in a background thread."""
     try:
         server = HTTPServer(("0.0.0.0", MESH_PORT), MeshHandler)
-        print(f"[collar] Mesh HTTP server listening on port {MESH_PORT}")
+        logger.info("Mesh HTTP server listening on port %s", MESH_PORT)
         server.serve_forever()
     except Exception as e:
-        print(f"[collar] Mesh server error: {e}")
+        logger.warning("Mesh server error: %s", e)
 
 
 # ── State ──
@@ -1189,7 +1190,7 @@ def send_heartbeat():
         )
         urllib.request.urlopen(req, timeout=5)
     except Exception as e:
-        print(f"[collar] Heartbeat failed: {e}")
+        logger.debug("Heartbeat failed: %s", e)
 
 
 def sync_standing_orders():
@@ -1210,9 +1211,9 @@ def sync_standing_orders():
             if content != existing:
                 with open(target, "w") as f:
                     f.write(content)
-                print(f"[collar] Standing orders synced ({len(content)} bytes)")
+                logger.info("Standing orders synced (%d bytes)", len(content))
     except Exception as e:
-        print(f"[collar] Standing orders sync failed: {e}")
+        logger.debug("Standing orders sync failed: %s", e)
 
 
 # ── Wallpaper Persistence ──
@@ -1343,7 +1344,7 @@ class CollarApp(Gtk.Application):
         # Initialize vault keypair if vault mode enabled
         if VAULT_MODE:
             _vault_init_keypair()
-            print(f"[collar] Vault mode enabled for mesh {MESH_ID}")
+            logger.info("Vault mode enabled for mesh %s", MESH_ID)
 
         # Start mesh gossip (10s interval, replaces heartbeat)
         self.gossip_thread = mesh.GossipThread(
@@ -1369,13 +1370,13 @@ class CollarApp(Gtk.Application):
             peers=mesh_peers,
         )
         self.lan_discovery.start()
-        print("[collar] LAN discovery started (UDP beacon on :21027)")
+        logger.info("LAN discovery started (UDP beacon on :21027)")
 
         # Start ntfy subscribe thread for instant order wake-ups
         if _ntfy_enabled:
 
             def _ntfy_wake(version):
-                print(f"[ntfy] Wake-up v{version} — triggering immediate sync")
+                logger.debug("Wake-up v%s — triggering immediate sync", version)
                 # Schedule sync on GLib main loop (thread-safe)
                 if VAULT_MODE:
                     GLib.idle_add(_vault_poll_tick)
@@ -1384,11 +1385,11 @@ class CollarApp(Gtk.Application):
 
             self.ntfy_sub = ntfy_mod.NtfySubscribeThread(_ntfy_topic, on_wake=_ntfy_wake, server=_ntfy_server)
             self.ntfy_sub.start()
-            print(f"[ntfy] Subscribed to {_ntfy_server}/{_ntfy_topic}")
+            logger.info("Subscribed to ntfy %s/%s", _ntfy_server, _ntfy_topic)
 
         # ADB statusbar enforcement — poll phone lock state every 10s
         threading.Thread(target=_phone_statusbar_loop, daemon=True).start()
-        print("[collar] Phone statusbar enforcement thread started")
+        logger.info("Phone statusbar enforcement thread started")
 
         # Keep polling to update GTK lock state from mesh orders
         GLib.timeout_add_seconds(POLL_INTERVAL, self.poll_status)
@@ -1396,7 +1397,7 @@ class CollarApp(Gtk.Application):
         if VAULT_MODE:
             # Vault poll replaces plaintext direct sync for server communication
             GLib.timeout_add_seconds(POLL_INTERVAL, _vault_poll_tick)
-            print("[collar] Vault poll started (replaces plaintext sync to server)")
+            logger.info("Vault poll started (replaces plaintext sync to server)")
         else:
             # Direct sync fallback — outbound poll to phone/homelab every 5s
             GLib.timeout_add_seconds(POLL_INTERVAL, _direct_sync_tick)
@@ -1490,7 +1491,7 @@ class CollarApp(Gtk.Application):
             )
             urllib.request.urlopen(req, timeout=5)
         except Exception:
-            print("[warn] failed to send consent-decline penalty webhook")
+            logger.warning("failed to send consent-decline penalty webhook")
         win.close()
 
     def poll_status(self):
@@ -1576,7 +1577,7 @@ class CollarApp(Gtk.Application):
         unlock_at = int(snap.get("unlock_at") or 0)
         if unlock_at > 0 and int(time.time() * 1000) >= unlock_at:
             if lock_active == "1" or desktop_active == "1":
-                print("[collar] Timer expired — auto-unlocking")
+                logger.info("Timer expired — auto-unlocking")
                 mesh_orders.set("lock_active", 0)
                 mesh_orders.set("desktop_active", 0)
                 mesh_orders.set("desktop_locked_devices", "")
@@ -1611,15 +1612,15 @@ class CollarApp(Gtk.Application):
                         desktop_locked = True
                         desktop_msg = "Bedtime. Go to sleep."
                         state._bedtime_locked = True
-                        print(f"[collar] BEDTIME: Auto-locked at hour {cur_h}")
+                        logger.info("BEDTIME: Auto-locked at hour %s", cur_h)
                     elif not in_bed and desktop_locked and getattr(state, "_bedtime_locked", False):
                         mesh_orders.set("desktop_active", 0)
                         mesh_orders.set("desktop_message", "")
                         desktop_locked = False
                         state._bedtime_locked = False
-                        print(f"[collar] BEDTIME: Auto-unlocked at hour {cur_h}")
+                        logger.info("BEDTIME: Auto-unlocked at hour %s", cur_h)
         except Exception as e:
-            print(f"[collar] Bedtime check error: {e}")
+            logger.warning("Bedtime check error: %s", e)
 
         was_locked = state.locked
         state.locked = desktop_locked
@@ -1632,14 +1633,14 @@ class CollarApp(Gtk.Application):
         state.sub_tier = str(snap.get("sub_tier") or "")
 
         if state.locked != was_locked:
-            print(f"[collar] State change: locked={state.locked} paywall={state.paywall}")
+            logger.info("State change: locked=%s paywall=%s", state.locked, state.paywall)
         if state.locked and not was_locked:
             self.show_lock()
         elif state.locked and was_locked:
             self.update_lock()
             # Auto-relaunch if browser was killed while locked
             if self.lock_process and self.lock_process.poll() is not None:
-                print("[collar] Browser was killed! Relaunching...")
+                logger.warning("Browser was killed! Relaunching...")
                 self.lock_active = False
                 self.lock_process = None
                 self.show_lock()
@@ -1660,7 +1661,7 @@ class CollarApp(Gtk.Application):
         if self.lock_active:
             return
 
-        print("[collar] SHOW LOCK — generating wallpaper + locking session")
+        logger.info("SHOW LOCK — generating wallpaper + locking session")
         self.lock_active = True
         try:
             import subprocess
@@ -1696,7 +1697,9 @@ class CollarApp(Gtk.Application):
                     self.original_wallpaper = _get_kde_default_wallpaper()
                     if self.original_wallpaper:
                         _save_original_wallpaper(self.original_wallpaper)
-                        print(f"[collar] Using KDE default wallpaper as restore target: {self.original_wallpaper}")
+                        logger.info(
+                            "Using KDE default wallpaper as restore target: %s", self.original_wallpaper
+                        )
 
                 # Find and update the Image= line in the right section
                 in_section = False
@@ -1725,14 +1728,14 @@ class CollarApp(Gtk.Application):
                     new_lines.append(f"PreviewImage={img_path}\n")
                 with open(cfg_path, "w") as f:
                     f.writelines(new_lines)
-                print(f"[collar] Lock wallpaper set: {img_path}")
+                logger.info("Lock wallpaper set: %s", img_path)
             except Exception as e:
-                print(f"[collar] Wallpaper config error: {e}")
+                logger.warning("Wallpaper config error: %s", e)
             # Lock the session
             subprocess.run(["loginctl", "lock-session"], capture_output=True, timeout=5)
-            print("[collar] Session locked via loginctl")
+            logger.info("Session locked via loginctl")
         except Exception as e:
-            print(f"[collar] Session lock error: {e}")
+            logger.warning("Session lock error: %s", e)
         # Re-lock every 1s in case user enters their password
         GLib.timeout_add(1000, self.enforce_session_lock)
 
@@ -1745,7 +1748,7 @@ class CollarApp(Gtk.Application):
 
             subprocess.run(["loginctl", "lock-session"], capture_output=True, timeout=5)
         except Exception:
-            print("[warn] loginctl lock-session failed")
+            logger.warning("loginctl lock-session failed")
         return True
 
     def generate_lock_wallpaper(self):
@@ -1789,7 +1792,7 @@ class CollarApp(Gtk.Application):
                     ctx.paint_with_alpha(0.45)
                     ctx.restore()
                 except Exception:
-                    print("[warn] failed to render lock wallpaper icon")
+                    logger.warning("failed to render lock wallpaper icon")
 
             # Message — below icon (icon bottom is ~H/2 + 515)
             # Truncate for wallpaper; GTK label + HTML page show full text.
@@ -1828,9 +1831,9 @@ class CollarApp(Gtk.Application):
             os.makedirs(out_dir, exist_ok=True)
             out_path = os.path.join(out_dir, "lock-wallpaper.png")
             surface.write_to_png(out_path)
-            print(f"[collar] Lock wallpaper generated: {out_path}")
+            logger.info("Lock wallpaper generated: %s", out_path)
         except Exception as e:
-            print(f"[collar] Wallpaper generation error: {e}")
+            logger.warning("Wallpaper generation error: %s", e)
 
     def force_lock_fullscreen(self):
         """Force ONLY the lock window fullscreen + above, minimize everything else."""
@@ -1896,9 +1899,9 @@ for (var i = 0; i < c.length; i++) {
                 capture_output=True,
                 timeout=3,
             )
-            print("[collar] KWin: lock window forced fullscreen + above")
+            logger.info("KWin: lock window forced fullscreen + above")
         except Exception as e:
-            print(f"[collar] KWin enforce error: {e}")
+            logger.warning("KWin enforce error: %s", e)
         return False
 
     def create_lock_window(self, primary=True):
@@ -2070,7 +2073,7 @@ for (var i = 0; i < c.length; i++) {
                 if hasattr(self, "taunt_label") and self.taunt_label:
                     self.taunt_label.set_label(state.current_taunt)
             except Exception:
-                print("[warn] failed to update lock window labels")
+                logger.warning("failed to update lock window labels")
 
             # Show/hide webview based on paywall
             if self.webview and not state.paywall:
@@ -2079,7 +2082,7 @@ for (var i = 0; i < c.length; i++) {
                 self.webview.set_visible(True)
 
     def hide_lock(self):
-        print("[collar] HIDE LOCK — unlocking session")
+        logger.info("HIDE LOCK — unlocking session")
         try:
             import subprocess
 
@@ -2110,19 +2113,21 @@ for (var i = 0; i < c.length; i++) {
                         new_lines.append(line)
                     with open(cfg_path, "w") as f:
                         f.writelines(new_lines)
-                    print(f"[collar] Lock wallpaper restored: {restore_to}")
+                    logger.info("Lock wallpaper restored: %s", restore_to)
                 except Exception as e:
-                    print(f"[collar] Wallpaper restore error: {e}")
+                    logger.warning("Wallpaper restore error: %s", e)
             result = subprocess.run(["loginctl", "unlock-session"], capture_output=True, timeout=5)
             if result.returncode == 0:
                 self.lock_active = False
-                print("[collar] Session unlocked via loginctl")
+                logger.info("Session unlocked via loginctl")
             else:
-                print(f"[collar] loginctl unlock-session failed (rc={result.returncode}), scheduling retry")
+                logger.warning(
+                    "loginctl unlock-session failed (rc=%s), scheduling retry", result.returncode
+                )
                 self._unlock_retries = 0
                 GLib.timeout_add(2000, self._retry_unlock)
         except Exception as e:
-            print(f"[collar] Session unlock error: {e}")
+            logger.warning("Session unlock error: %s", e)
             self.lock_active = False  # Don't get stuck if loginctl itself crashes
 
     def _retry_unlock(self):
@@ -2134,12 +2139,12 @@ for (var i = 0; i < c.length; i++) {
             result = subprocess.run(["loginctl", "unlock-session"], capture_output=True, timeout=5)
             if result.returncode == 0:
                 self.lock_active = False
-                print("[collar] Session unlocked via loginctl (retry)")
+                logger.info("Session unlocked via loginctl (retry)")
                 return False  # Stop retrying
         except Exception as e:
-            print(f"[collar] Retry unlock error: {e}")
+            logger.warning("Retry unlock error: %s", e)
         if self._unlock_retries >= 3:
-            print("[collar] loginctl unlock failed after 3 retries, forcing lock_active=False")
+            logger.warning("loginctl unlock failed after 3 retries, forcing lock_active=False")
             self.lock_active = False
             return False
         return True  # Keep retrying
@@ -2221,7 +2226,7 @@ document.addEventListener("keydown", function(e) {{
 </body></html>"""
         with open("/tmp/focuslock-lock.html", "w") as f:
             f.write(html)
-        print("[collar] Lock page written")
+        logger.info("Lock page written")
 
     def on_key_pressed(self, controller, keyval, keycode, mod):
         # Block Alt+F4, Alt+Tab, Super, Escape
@@ -2251,17 +2256,22 @@ document.addEventListener("keydown", function(e) {{
 
 
 def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
     # Handle SIGTERM gracefully (systemd stop)
     signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
 
-    print("[collar] FocusLock Desktop Collar starting")
-    print(f"[collar] Homelab: {HOMELAB_URL}")
-    print(f"[collar] Poll: {POLL_INTERVAL}s | Memory sync: {MEMORY_SYNC_INTERVAL}s")
+    logger.info("FocusLock Desktop Collar starting")
+    logger.info("Homelab: %s", HOMELAB_URL)
+    logger.info("Poll: %ss | Memory sync: %ss", POLL_INTERVAL, MEMORY_SYNC_INTERVAL)
 
     # Check if already released (from a previous session)
     released = mesh_orders.get("released", "")
     if released == "all" or released == MESH_NODE_ID:
-        print("[collar] This device was previously released. Executing cleanup.")
+        logger.info("This device was previously released. Executing cleanup.")
         import shutil
         import subprocess
 
@@ -2284,7 +2294,7 @@ def main():
             subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, timeout=10)
         except Exception:
             pass
-        print("[collar] Cleanup complete. Exiting.")
+        logger.info("Cleanup complete. Exiting.")
         sys.exit(0)
 
     # Initial standing orders sync (blocking, before GTK starts)
