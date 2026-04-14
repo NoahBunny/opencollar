@@ -11,14 +11,16 @@ Build: pyinstaller --onefile --noconsole --icon=crown-gold.ico focuslock-desktop
 """
 
 import ctypes
+import datetime
 import json
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 import winreg
 
 # ── Paths ──
@@ -52,15 +54,23 @@ except ImportError:
     sys.exit(1)
 
 from focuslock_http import JSONResponseMixin
-from focuslock_sync import try_sync as _shared_try_sync, \
-    direct_sync_poll as _shared_direct_sync_poll, \
-    relay_to_phones as _shared_relay_to_phones
+from focuslock_sync import direct_sync_poll as _shared_direct_sync_poll
+from focuslock_sync import relay_to_phones as _shared_relay_to_phones
+from focuslock_sync import try_sync as _shared_try_sync
 
 # Vault crypto for E2E encrypted mesh (Phase D desktop support)
 try:
     from focuslock_vault import (
-        decrypt_body as vault_decrypt, verify_signature as vault_verify,
-        slot_id_for_pubkey as vault_slot_id, generate_keypair as vault_keygen,
+        decrypt_body as vault_decrypt,
+    )
+    from focuslock_vault import (
+        generate_keypair as vault_keygen,
+    )
+    from focuslock_vault import (
+        slot_id_for_pubkey as vault_slot_id,
+    )
+    from focuslock_vault import (
+        verify_signature as vault_verify,
     )
     VAULT_CRYPTO_OK = True
 except ImportError:
@@ -130,7 +140,7 @@ def get_lion_pubkey():
             with open(LION_PUBKEY_FILE, "r") as f:
                 _lion_pubkey = f.read().strip()
             if _lion_pubkey:
-                print(f"[mesh] Loaded Lion's Share pubkey")
+                print("[mesh] Loaded Lion's Share pubkey")
         except Exception:
             print(f"[warn] Failed to load Lion pubkey from {LION_PUBKEY_FILE}")
     return _lion_pubkey
@@ -409,11 +419,9 @@ def show_first_run_config():
     """Show first-run config dialog to collect PIN and optional endpoints."""
     try:
         import tkinter as tk
-        from tkinter import simpledialog, messagebox
+        from tkinter import messagebox, simpledialog
     except ImportError:
         # No tkinter — fall back to simple input box
-        pin = ""
-        buf = ctypes.create_unicode_buffer(64)
         # Can't do text input with just MessageBox — save empty config and let user edit
         print("[config] No tkinter available. Please edit config.json manually.")
         return False
@@ -646,7 +654,7 @@ def set_lock_wallpaper():
                 0, winreg.KEY_SET_VALUE)
             winreg.SetValueEx(key, "LockScreenImage", 0, winreg.REG_SZ, LOCK_WALLPAPER)
             winreg.CloseKey(key)
-            print(f"[collar] Lock screen wallpaper set via registry")
+            print("[collar] Lock screen wallpaper set via registry")
         except PermissionError:
             # Fallback: set desktop wallpaper (visible after unlock attempt)
             ctypes.windll.user32.SystemParametersInfoW(20, 0, LOCK_WALLPAPER, 3)
@@ -669,7 +677,6 @@ def generate_lock_wallpaper():
 
     # Radial glow (approximation with ellipse)
     for r in range(600, 0, -2):
-        alpha = int(0.3 * 255 * (1 - r / 600))
         color = (int(0.05 * 255), int(0.04 * 255), int(0.02 * 255))
         draw.ellipse(
             [W//2 - r, H//2 - r, W//2 + r, H//2 + r],
@@ -859,7 +866,7 @@ def poll_status():
     unlock_at = int(snap.get("unlock_at") or 0)
     if unlock_at > 0 and int(time.time() * 1000) >= unlock_at:
         if lock_active == "1" or desktop_active == "1":
-            print(f"[collar] Timer expired — auto-unlocking")
+            print("[collar] Timer expired — auto-unlocking")
             mesh_orders.set("lock_active", 0)
             mesh_orders.set("desktop_active", 0)
             mesh_orders.set("desktop_locked_devices", "")
@@ -942,7 +949,7 @@ def _handle_countdown(lock_at_ms: int, message: str):
     # Countdown expired — trigger the lock
     if remaining_ms <= 0:
         if state.countdown_lock_at > 0:
-            print(f"[collar] Countdown expired — locking")
+            print("[collar] Countdown expired — locking")
             mesh_orders.set("desktop_active", 1)
             mesh_orders.set("countdown_lock_at", 0)
             mesh_orders.set("countdown_message", "")
@@ -1025,13 +1032,14 @@ def _show_countdown_warning(remaining_ms: int, message: str):
 
 # ── Mesh HTTP Server ──
 
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 
 def _create_pairing_code(body):
     """Generate a pairing code with config payload for new devices."""
+    import re as _re
     import secrets
     import string
-    import re as _re
     chars = string.ascii_uppercase + string.digits
     code = body.get("code") or "".join(secrets.choice(chars) for _ in range(6))
     code = str(code).upper().strip()
@@ -1454,7 +1462,7 @@ Register-ScheduledTask -TaskName "FocusLockWatchdog" -Action $a -Trigger $t -Set
         "icacls", INSTALL_DIR_SYSTEM, "/inheritance:r",
         "/grant:r", "SYSTEM:(OI)(CI)F",
         "/grant:r", "*S-1-5-32-544:(OI)(CI)F",  # BUILTIN\Administrators
-        f"/grant:r", f"{os.environ.get('USERNAME', 'User')}:(OI)(CI)RX"
+        "/grant:r", f"{os.environ.get('USERNAME', 'User')}:(OI)(CI)RX"
     ], capture_output=True)
     print("[install] ACL lockdown applied")
 
@@ -1552,7 +1560,7 @@ def _is_another_instance_running() -> bool:
 
 
 def main():
-    print(f"[collar] FocusLock Desktop Collar (Windows) starting")
+    print("[collar] FocusLock Desktop Collar (Windows) starting")
     print(f"[collar] Node ID: {MESH_NODE_ID}")
     print(f"[collar] Config: {CONFIG_DIR}")
 

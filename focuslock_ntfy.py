@@ -14,8 +14,8 @@ beyond timing and a monotonic counter.
 import json
 import threading
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 
 
 def ntfy_publish(topic: str, version: int,

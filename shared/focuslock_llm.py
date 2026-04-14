@@ -11,7 +11,6 @@ import json
 import urllib.request
 from datetime import datetime
 
-
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_VISION_MODEL = "minicpm-v"
 DEFAULT_TEXT_MODEL = "dolphin-llama3:8b"

@@ -11,16 +11,16 @@ gossip-replicated. Any node Lion's Share can reach is sufficient.
 Shared between server (focuslock-mail.py) and desktop collar (focuslock-desktop.py).
 """
 
+import base64
 import json
 import os
-import sys
-import time
-import threading
-import urllib.request
-import urllib.error
-import base64
 import socket
+import sys
+import threading
+import time
 import traceback
+import urllib.error
+import urllib.request
 
 # On Windows, subprocess calls need CREATE_NO_WINDOW to avoid console flashes
 _SUBPROCESS_FLAGS = {}
@@ -275,9 +275,9 @@ class OrdersDocument:
 
 class PeerInfo:
     def __init__(self, node_id: str, node_type: str = "unknown",
-                 addresses: list = None, port: int = 8434,
+                 addresses: list | None = None, port: int = 8434,
                  last_seen: float = 0, orders_version: int = 0,
-                 status: dict = None):
+                 status: dict | None = None):
         self.node_id = node_id
         self.node_type = node_type
         self.addresses = addresses or []
@@ -416,9 +416,9 @@ class PeerRegistry:
         except Exception as e:
             print(f"[mesh] Failed to save peers: {e}")
 
-    def update_peer(self, node_id: str, node_type: str = None,
-                    addresses: list = None, port: int = None,
-                    orders_version: int = None, status: dict = None):
+    def update_peer(self, node_id: str, node_type: str | None = None,
+                    addresses: list | None = None, port: int | None = None,
+                    orders_version: int | None = None, status: dict | None = None):
         if node_id not in WARREN_WHITELIST:
             return
         with self.lock:
@@ -508,7 +508,7 @@ def _http_get(url: str, timeout: float = 5.0) -> dict:
 MAX_PEER_ADDRESSES = 4  # Cap stored addresses per peer to avoid timeout storms
 
 
-def _try_peer_addrs(peer: PeerInfo, path: str, data: dict = None,
+def _try_peer_addrs(peer: PeerInfo, path: str, data: dict | None = None,
                     timeout: float = 3.0) -> dict:
     """Try all addresses for a peer until one works.
     Tries known addresses first, then falls back to Tailscale IP lookup.
@@ -1041,7 +1041,7 @@ def get_tailscale_ip_for_node(node_id: str) -> str:
     # Also check if override maps directly to an IP
     if node_id in _ts_node_overrides:
         override = _ts_node_overrides[node_id]
-        for ts_host, ts_ip in _ts_hostname_map.items():
+        for _ts_host, ts_ip in _ts_hostname_map.items():
             if override == ts_ip:
                 return ts_ip
     # Direct match
@@ -1169,7 +1169,7 @@ class LANDiscoveryThread(threading.Thread):
 
         while self.running:
             try:
-                data, (sender_ip, sender_port) = self._sock.recvfrom(4096)
+                data, (sender_ip, _sender_port) = self._sock.recvfrom(4096)
                 msg = _parse_beacon(data)
                 if msg is None:
                     continue
@@ -1192,7 +1192,7 @@ class LANDiscoveryThread(threading.Thread):
                 if ts_ip:
                     self.peers.update_peer(remote_id, addresses=[ts_ip])
 
-            except socket.timeout:
+            except TimeoutError:
                 continue
             except Exception as e:
                 if self.running:

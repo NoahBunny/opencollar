@@ -8,24 +8,23 @@ FocusLock Mail Service — runs on homelab
 3. HTTP server on port 8433 for webhooks from FocusLock
 """
 
-import smtplib
-import json
-import time
-import os
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email import encoders
-from datetime import datetime
 import base64
 import hmac
-import random
+import json
+import os
 import secrets
-import subprocess
+import smtplib
 import socket
+import subprocess
 import sys
+import threading
+import time
+from datetime import datetime
+from email import encoders
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # Add mesh module to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -158,6 +157,7 @@ PHONE_URL = os.environ.get("PHONE_URL",
 
 # ── Multi-device ADB targets ──
 from focuslock_adb import ADBBridge
+
 adb = ADBBridge(
     devices=[f"{addr}:5555" for addr in _phone_addrs] if _phone_addrs else [],
 )
@@ -376,7 +376,7 @@ def _admin_order_to_vault_blob(action, params, mesh_id=None):
     Uses the RELAY's private key (P6.5 zero-knowledge compliance — Lion's key never on server).
     Only works for the operator's mesh (admin API is operator-scoped)."""
     if not RELAY_PRIVKEY_PEM:
-        print(f"[admin] vault blob write skipped: no relay keypair")
+        print("[admin] vault blob write skipped: no relay keypair")
         return
     try:
         from focuslock_vault import encrypt_body
@@ -385,7 +385,7 @@ def _admin_order_to_vault_blob(action, params, mesh_id=None):
             sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "shared"))
             from focuslock_vault import encrypt_body
         except ImportError:
-            print(f"[admin] vault blob write skipped: focuslock_vault not available")
+            print("[admin] vault blob write skipped: focuslock_vault not available")
             return
     mid = mesh_id or OPERATOR_MESH_ID
     if not mid:
@@ -393,7 +393,7 @@ def _admin_order_to_vault_blob(action, params, mesh_id=None):
     # Get registered nodes (recipients for encryption)
     nodes = _vault_store.get_nodes(mid)
     if not nodes:
-        print(f"[admin] vault blob write skipped: no registered vault nodes")
+        print("[admin] vault blob write skipped: no registered vault nodes")
         return
     recipients = [(n.get("node_id", ""), n.get("node_pubkey", "")) for n in nodes if n.get("node_pubkey")]
     if not recipients:
@@ -438,7 +438,7 @@ def mesh_apply_order(action, params, orders):
                 data=json.dumps({"pin": PHONE_PIN, **params}).encode(),
                 headers={"Content-Type": "application/json"})
             urllib.request.urlopen(req, timeout=3)
-            print(f"[mesh] Direct push succeeded (lock)")
+            print("[mesh] Direct push succeeded (lock)")
         except Exception as e:
             print(f"[mesh] Direct push failed (gossip will deliver): {e}")
     elif action == "unlock":
@@ -452,7 +452,7 @@ def mesh_apply_order(action, params, orders):
                 data=json.dumps({"pin": PHONE_PIN, **params}).encode(),
                 headers={"Content-Type": "application/json"})
             urllib.request.urlopen(req, timeout=3)
-            print(f"[mesh] Direct push succeeded (unlock)")
+            print("[mesh] Direct push succeeded (unlock)")
         except Exception as e:
             print(f"[mesh] Direct push failed (gossip will deliver): {e}")
     elif action == "set-geofence":
@@ -602,7 +602,7 @@ def mesh_apply_order(action, params, orders):
                     data=json.dumps({"pin": PHONE_PIN}).encode(),
                     headers={"Content-Type": "application/json"})
                 urllib.request.urlopen(req, timeout=3)
-                print(f"[mesh] Direct push succeeded (release)")
+                print("[mesh] Direct push succeeded (release)")
             except Exception as e:
                 print(f"[mesh] Direct push failed (gossip will deliver): {e}")
         # Clean up bridge device registry
@@ -649,9 +649,9 @@ DESKTOP_ESCALATE_DAYS = 7     # every week after that — another $50
 # ── IMAP: Payment Verification ──
 
 from focuslock_payment import (
-    load_payment_providers, load_iso_codes,
-    check_payment_emails, extract_amount, get_body,
-    unlock_phone, reduce_paywall, score_payment_email,
+    check_payment_emails,
+    load_iso_codes,
+    load_payment_providers,
 )
 
 _banks_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shared", "banks.json")
@@ -681,7 +681,8 @@ def enforce_jail():
 
 # ── SMTP: Compliment Evidence ──
 
-from focuslock_evidence import send_evidence as _send_evidence_impl, get_notif_pref
+from focuslock_evidence import send_evidence as _send_evidence_impl
+
 
 def send_evidence(text, evidence_type="compliment"):
     """Convenience wrapper capturing module-level config."""
@@ -693,9 +694,8 @@ def send_evidence(text, evidence_type="compliment"):
     )
 
 
-from focuslock_llm import verify_photo_with_llm, generate_task_with_llm
 from focuslock_http import JSONResponseMixin
-
+from focuslock_llm import generate_task_with_llm, verify_photo_with_llm
 
 # ── Desktop Dead-Man's Switch ──
 
@@ -783,8 +783,10 @@ def check_tributes_and_fines():
                         mesh_orders.bump_version()
                         mesh.push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
                         if ntfy_fn:
-                            try: ntfy_fn(mesh_orders.version)
-                            except Exception: print(f"[warn] ntfy push failed after daily tribute")
+                            try:
+                                ntfy_fn(mesh_orders.version)
+                            except Exception:
+                                print("[warn] ntfy push failed after daily tribute")
                         print(f"[{now()}] Daily tribute: +${amount} (unlocked for 24h+)")
 
             # Recurring fine — accrues regardless of lock state
@@ -803,10 +805,12 @@ def check_tributes_and_fines():
                     mesh_orders.set("paywall", str(current_pw + fine_amount))
                     mesh_orders.set("fine_last_applied", now_ms)
                     mesh_orders.bump_version()
-                    push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
+                    mesh.push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
                     if ntfy_fn:
-                        try: ntfy_fn(mesh_orders.version)
-                        except Exception: print(f"[warn] ntfy push failed after fine")
+                        try:
+                            ntfy_fn(mesh_orders.version)
+                        except Exception:
+                            print("[warn] ntfy push failed after fine")
                     print(f"[{now()}] Fine applied: +${fine_amount}")
 
             # Streak bonuses — 7d clean = -$5, 30d clean = -$25
@@ -877,7 +881,8 @@ class PairingRegistry:
             if os.path.exists(self.path):
                 with open(self.path) as f:
                     self.entries = json.load(f)
-        except Exception: print(f"[warn] failed to load pairing registry from {self.path}")
+        except Exception:
+            print(f"[warn] failed to load pairing registry from {self.path}")
 
     def _save(self):
         try:
@@ -886,7 +891,8 @@ class PairingRegistry:
             with open(tmp, "w") as f:
                 json.dump(self.entries, f)
             os.replace(tmp, self.path)
-        except Exception: print(f"[warn] failed to save pairing registry to {self.path}")
+        except Exception:
+            print(f"[warn] failed to save pairing registry to {self.path}")
 
     def register(self, passphrase, bunny_pubkey, node_id):
         with self.lock:
@@ -915,7 +921,7 @@ class PairingRegistry:
     def get_pending_pairing(self, node_id):
         """Check if node_id has a pairing waiting (Lion claimed but Bunny hasn't received yet)."""
         with self.lock:
-            for phrase, entry in self.entries.items():
+            for _phrase, entry in self.entries.items():
                 if (entry.get("bunny_node_id") == node_id
                     and entry.get("lion_pubkey")
                     and not entry.get("delivered")):
@@ -1144,8 +1150,8 @@ def _init_relay_keypair():
     Stored alongside config at ~/.config/focuslock/relay_{priv,pub}key.pem."""
     global RELAY_PRIVKEY_PEM, RELAY_PUBKEY_PEM, RELAY_PUBKEY_DER_B64
     try:
-        from cryptography.hazmat.primitives.asymmetric import rsa
         from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
     except ImportError:
         print("[relay] cryptography not available — relay keypair disabled")
         return
@@ -1450,7 +1456,7 @@ def _relay_self_register():
             if n.get("node_pubkey") == RELAY_PUBKEY_DER_B64:
                 print(f"[relay] Already registered as vault node for {OPERATOR_MESH_ID}")
                 return
-            print(f"[relay] Key rotated — re-registering vault node")
+            print("[relay] Key rotated — re-registering vault node")
             break
     _vault_store.add_node(OPERATOR_MESH_ID, {
         "node_id": "relay",
@@ -1762,8 +1768,10 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     print(f"[admin] vault blob write failed: {e}")
                     vault_ok = False
             if ntfy_fn:
-                try: ntfy_fn(mesh_orders.version)
-                except Exception: pass
+                try:
+                    ntfy_fn(mesh_orders.version)
+                except Exception:
+                    pass
             if not vault_ok and _mesh_accounts.is_vault_only(target_mesh):
                 result["warning"] = "vault blob write failed — vault-only slaves will not receive this order"
             self.respond(200, result)
@@ -2035,7 +2043,8 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if not _is_valid_admin_auth(token):
                 self.respond(403, {"error": "invalid admin_token"})
                 return
-            import string, re
+            import re
+            import string
             code = data.get("code", "").upper().strip()
             if not code:
                 chars = string.ascii_uppercase + string.digits
@@ -2325,7 +2334,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if not _safe_mesh_id(mesh_id):
                 self.respond(400, {"error": "invalid mesh_id"})
                 return
-            account, lion_pubkey = _vault_resolve_mesh(mesh_id)
+            account, _lion_pubkey = _vault_resolve_mesh(mesh_id)
             if not account:
                 self.respond(404, {"error": "mesh not found"})
                 return
@@ -2600,7 +2609,7 @@ def now():
 # ── Main ──
 
 if __name__ == "__main__":
-    print(f"FocusLock Mail Service")
+    print("FocusLock Mail Service")
     print(f"  IMAP: {MAIL_USER}@{IMAP_HOST} (check every {IMAP_CHECK_INTERVAL}s)")
     print(f"  SMTP: {SMTP_HOST}")
     print(f"  Partner: {PARTNER_EMAIL}")

@@ -59,7 +59,7 @@ class ADBBridge:
             return
         try:
             subprocess.run(
-                ["adb", "-s", dev, "shell"] + cmd.split(),
+                ["adb", "-s", dev, "shell", *cmd.split()],
                 capture_output=True, timeout=10)
         except Exception:
             pass
@@ -69,7 +69,7 @@ class ADBBridge:
         for dev in self.devices:
             try:
                 subprocess.run(
-                    ["adb", "-s", dev, "shell"] + cmd.split(),
+                    ["adb", "-s", dev, "shell", *cmd.split()],
                     capture_output=True, timeout=10)
             except Exception:
                 pass

@@ -10,8 +10,8 @@ Respects per-type notification preferences from mesh orders or ADB.
 
 import smtplib
 from datetime import datetime
-from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 
 def get_notif_pref(key, mesh_orders, adb=None):

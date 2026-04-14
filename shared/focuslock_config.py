@@ -197,7 +197,7 @@ def load_config(config_path=None):
             with open(path, "r", encoding="utf-8") as f:
                 file_config = json.load(f)
             config = _deep_merge(config, file_config)
-        except (json.JSONDecodeError, IOError) as e:
+        except (OSError, json.JSONDecodeError) as e:
             print(f"[config] WARNING: Failed to load {path}: {e}")
 
     # Apply env var overrides

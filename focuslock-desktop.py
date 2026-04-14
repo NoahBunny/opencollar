@@ -7,6 +7,7 @@ Talks to homelab for lock state + standing orders sync.
 """
 
 import gi
+
 gi.require_version('Gtk', '4.0')
 
 WEBKIT_OK = False
@@ -22,7 +23,8 @@ except ValueError:
     except ValueError:
         pass
 
-from gi.repository import Gtk, GLib, Gdk, Pango
+from gi.repository import Gdk, GLib, Gtk
+
 if WEBKIT_OK:
     if WEBKIT_VER == 6:
         from gi.repository import WebKit
@@ -32,16 +34,16 @@ if WEBKIT_OK:
 import datetime
 import html as _html
 import json
-import time
-import urllib.request
 import os
 import random
+import signal
+import socket as _socket
 import subprocess
 import sys
-import signal
 import threading
-import socket as _socket
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import time
+import urllib.request
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # Add mesh module to path
 for _p in [os.path.dirname(os.path.abspath(__file__)), "/opt/focuslock",
@@ -49,18 +51,26 @@ for _p in [os.path.dirname(os.path.abspath(__file__)), "/opt/focuslock",
     if os.path.isfile(os.path.join(_p, "focuslock_mesh.py")):
         sys.path.insert(0, _p)
         break
-import focuslock_mesh as mesh
 from focuslock_http import JSONResponseMixin
-from focuslock_sync import try_sync as _shared_try_sync, \
-    direct_sync_poll as _shared_direct_sync_poll, \
-    relay_to_phones as _shared_relay_to_phones
+from focuslock_sync import direct_sync_poll as _shared_direct_sync_poll
+from focuslock_sync import relay_to_phones as _shared_relay_to_phones
+from focuslock_sync import try_sync as _shared_try_sync
+
+import focuslock_mesh as mesh
 
 # Vault crypto for E2E encrypted mesh (Phase D desktop support)
 try:
     from focuslock_vault import (
-        decrypt_body as vault_decrypt, verify_signature as vault_verify,
-        slot_id_for_pubkey as vault_slot_id, generate_keypair as vault_keygen,
-        encrypt_body as vault_encrypt, sign_blob as vault_sign,
+        decrypt_body as vault_decrypt,
+    )
+    from focuslock_vault import (
+        generate_keypair as vault_keygen,
+    )
+    from focuslock_vault import (
+        slot_id_for_pubkey as vault_slot_id,
+    )
+    from focuslock_vault import (
+        verify_signature as vault_verify,
     )
     VAULT_CRYPTO_OK = True
 except ImportError:
@@ -441,7 +451,7 @@ def _handle_countdown(lock_at_ms: int, message: str):
     # Countdown expired — trigger the lock
     if remaining_ms <= 0:
         if state.countdown_lock_at > 0:
-            print(f"[collar] Countdown expired — locking")
+            print("[collar] Countdown expired — locking")
             mesh_orders.set("desktop_active", 1)
             mesh_orders.set("countdown_lock_at", 0)
             mesh_orders.set("countdown_message", "")
@@ -625,7 +635,7 @@ def mesh_apply_order(action, params, orders):
 
 def _execute_liberation():
     """Permanently remove the desktop collar. Called on GTK main thread."""
-    import subprocess, shutil
+    import subprocess
 
     print("[collar] LIBERATION — permanently removing collar")
 
@@ -832,7 +842,8 @@ Remove-Item -Path $MyInvocation.MyCommand.Path -Force
 
 def _liberation_cleanup():
     """Delete all FocusLock config and disable the service."""
-    import subprocess, shutil
+    import shutil
+    import subprocess
 
     # Disable and stop systemd service
     try:
@@ -879,9 +890,9 @@ def _liberation_cleanup():
 
 def _create_pairing_code(body):
     """Generate a pairing code with config payload for new devices."""
+    import re as _re
     import secrets as _rnd
     import string as _str
-    import re as _re
     chars = _str.ascii_uppercase + _str.digits
     code = body.get("code") or "".join(_rnd.choice(chars) for _ in range(6))
     code = str(code).upper().strip()
@@ -1066,7 +1077,7 @@ def fetch_status():
             f"{HOMELAB_URL}/desktop-status?hostname={hostname}", method="GET")
         resp = urllib.request.urlopen(req, timeout=10)
         return json.loads(resp.read().decode())
-    except Exception as e:
+    except Exception:
         return None
 
 
@@ -1451,7 +1462,7 @@ class CollarApp(Gtk.Application):
         unlock_at = int(snap.get("unlock_at") or 0)
         if unlock_at > 0 and int(time.time() * 1000) >= unlock_at:
             if lock_active == "1" or desktop_active == "1":
-                print(f"[collar] Timer expired — auto-unlocking")
+                print("[collar] Timer expired — auto-unlocking")
                 mesh_orders.set("lock_active", 0)
                 mesh_orders.set("desktop_active", 0)
                 mesh_orders.set("desktop_locked_devices", "")
@@ -1899,7 +1910,7 @@ for (var i = 0; i < c.length; i++) {
             state.current_taunt = random.choice(TAUNTS)
             state.taunt_counter = 0
 
-        for win in self.windows:
+        for _win in self.windows:
             try:
                 if hasattr(self, 'msg_label') and self.msg_label:
                     self.msg_label.set_label(state.message or "No PC for now.")
@@ -2089,13 +2100,16 @@ def main():
     released = mesh_orders.get("released", "")
     if released == "all" or released == MESH_NODE_ID:
         print("[collar] This device was previously released. Executing cleanup.")
-        import shutil, subprocess
+        import shutil
+        import subprocess
         for p in [os.path.expanduser("~/.config/focuslock"),
                   os.path.expanduser("~/collar-files"),
                   os.path.expanduser("~/.config/systemd/user/focuslock-desktop.service")]:
             try:
-                if os.path.isdir(p): shutil.rmtree(p)
-                elif os.path.isfile(p): os.remove(p)
+                if os.path.isdir(p):
+                    shutil.rmtree(p)
+                elif os.path.isfile(p):
+                    os.remove(p)
             except Exception:
                 pass
         try:

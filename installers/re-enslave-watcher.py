@@ -16,7 +16,6 @@ Exit code 0 always — this is a best-effort daemon, the timer will retry next t
 from __future__ import annotations
 
 import json
-import os
 import shlex
 import socket
 import subprocess
@@ -106,7 +105,7 @@ def probe_reachable(addr: str) -> bool:
     try:
         with socket.create_connection((host, port), timeout=PROBE_TIMEOUT):
             return True
-    except (OSError, socket.timeout):
+    except (TimeoutError, OSError):
         return False
 
 

@@ -1,0 +1,75 @@
+# Tool configuration for The Collar / Lion's Share / Bunny Tasker.
+#
+# Runtime dependencies live in requirements.txt (hash-pinned).
+# Phase 7 of docs/PUBLISHABLE-ROADMAP.md adds full [project] metadata.
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = [
+    "android",
+    "web",
+    "dist",
+    "build",
+    "__pycache__",
+    "*.bak",
+    "*.bak.*",
+]
+
+[tool.ruff.lint]
+# Conservative starting set. Phase 1b adds S (bandit) after the
+# exception audit — enabling it now would flood with known silent-except
+# warnings we intend to fix deliberately.
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    "W",      # pycodestyle warnings
+    "I",      # isort — import ordering
+    "UP",     # pyupgrade — modernize syntax for py310+
+    "B",      # flake8-bugbear — real bug patterns
+    "RUF",    # ruff-specific
+]
+ignore = [
+    "E501",   # line-too-long — handled by formatter; long crypto/mesh strings are fine
+    "B008",   # function call in default arg — common in handlers
+    "B904",   # raise-from — will revisit in Phase 1b exception audit
+    "UP015",  # open() mode 'r' — explicit is fine
+]
+
+[tool.ruff.lint.per-file-ignores]
+"build-win.py" = ["E402"]           # late imports after sys.path setup are intentional
+"focuslock-desktop.py" = ["E402"]   # module-level dir setup before shared/ imports
+"focuslock-desktop-win.py" = ["E402"]
+"focuslock-mail.py" = ["E402"]
+"installers/*" = ["E402", "S"]      # installer scripts — deliberately loose
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_return_any = true
+ignore_missing_imports = true
+# Codebase is currently untyped. Phase 2+ tightens these.
+check_untyped_defs = false
+disallow_untyped_defs = false
+exclude = [
+    "^android/",
+    "^dist/",
+    "^build/",
+    "^web/",
+]
+
+# Stricter posture on shared security-critical modules.
+[[tool.mypy.overrides]]
+module = [
+    "shared.focuslock_vault",
+    "shared.focuslock_payment",
+    "shared.focuslock_config",
+]
+check_untyped_defs = true
+warn_unreachable = true

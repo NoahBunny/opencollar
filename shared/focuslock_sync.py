@@ -10,7 +10,6 @@ peer discovery, and order application with signature verification.
 """
 
 import json
-import time
 import urllib.request
 
 
