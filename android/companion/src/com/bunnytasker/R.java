@@ -91,5 +91,6 @@ public final class R {
   }
   public static final class xml {
     public static final int device_admin=0x7f080000;
+    public static final int network_security_config=0x7f080001;
   }
 }
