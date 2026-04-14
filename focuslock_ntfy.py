@@ -18,19 +18,20 @@ import urllib.error
 import urllib.request
 
 
-def ntfy_publish(topic: str, version: int,
-                 server: str = "https://ntfy.sh") -> None:
+def ntfy_publish(topic: str, version: int, server: str = "https://ntfy.sh") -> None:
     """Publish a wake-up signal to an ntfy topic. Fire-and-forget in a thread.
 
     Body is just {"v": <version>}. Runs asynchronously — never blocks the caller.
     No retry — gossip is the fallback.
     """
+
     def _post():
         url = f"{server.rstrip('/')}/{topic}"
         payload = json.dumps({"v": version}).encode("utf-8")
         try:
             req = urllib.request.Request(
-                url, data=payload,
+                url,
+                data=payload,
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )

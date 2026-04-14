@@ -56,10 +56,21 @@ DEFAULTS = {
         "min_payment": 0.01,
         "max_payment": 10000,
         "payment_keywords": [
-            "transfer", "deposit", "deposited", "received",
-            "sent you money", "payment", "credit", "incoming",
-            "e-transfer", "etransfer", "autodeposit", "direct deposit",
-            "virement", "déposé", "reçu",
+            "transfer",
+            "deposit",
+            "deposited",
+            "received",
+            "sent you money",
+            "payment",
+            "credit",
+            "incoming",
+            "e-transfer",
+            "etransfer",
+            "autodeposit",
+            "direct deposit",
+            "virement",
+            "déposé",
+            "reçu",
         ],
     },
 }
@@ -151,6 +162,7 @@ def _apply_env_overrides(config):
             # e.g. "http://192.168.1.50:8432" -> phone_addresses=["192.168.1.50"], phone_port=8432
             try:
                 from urllib.parse import urlparse
+
                 parsed = urlparse(val)
                 if parsed.hostname:
                     config["phone_addresses"] = [parsed.hostname]
@@ -186,6 +198,7 @@ def load_config(config_path=None):
         dict with all config values (defaults + file + env overrides)
     """
     import copy
+
     config = copy.deepcopy(DEFAULTS)
 
     # Determine config file path

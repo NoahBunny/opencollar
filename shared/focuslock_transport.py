@@ -82,7 +82,8 @@ class HttpVaultTransport(VaultTransport):
         url = f"{self.base_url}/vault/{mesh_id}/append"
         body = json.dumps(blob, separators=(",", ":")).encode()
         req = urllib.request.Request(
-            url, data=body,
+            url,
+            data=body,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
@@ -117,7 +118,8 @@ class HttpVaultTransport(VaultTransport):
         url = f"{self.base_url}/vault/{mesh_id}/register-node-request"
         body = json.dumps(payload).encode()
         req = urllib.request.Request(
-            url, data=body,
+            url,
+            data=body,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
@@ -213,8 +215,7 @@ class SyncthingVaultTransport(VaultTransport):
         if not version:
             # Scan for highest existing version
             try:
-                existing = [int(f[:-5]) for f in os.listdir(blobs_dir)
-                            if f.endswith(".json")]
+                existing = [int(f[:-5]) for f in os.listdir(blobs_dir) if f.endswith(".json")]
                 version = max(existing, default=0) + 1
                 blob["version"] = version
             except OSError:
@@ -225,8 +226,7 @@ class SyncthingVaultTransport(VaultTransport):
         if os.path.exists(path):
             # Conflict — scan for true max and retry
             try:
-                existing = [int(f[:-5]) for f in os.listdir(blobs_dir)
-                            if f.endswith(".json")]
+                existing = [int(f[:-5]) for f in os.listdir(blobs_dir) if f.endswith(".json")]
                 version = max(existing, default=0) + 1
                 blob["version"] = version
                 fname = f"{version:08d}.json"

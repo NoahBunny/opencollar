@@ -32,6 +32,7 @@ if sys.platform == "win32":
 try:
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
+
     HAS_CRYPTO = True
 except ImportError:
     HAS_CRYPTO = False
@@ -39,8 +40,7 @@ except ImportError:
 
 def canonical_json(orders: dict) -> bytes:
     """Deterministic JSON for consistent hashing — sorted keys, no whitespace."""
-    return json.dumps(orders, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=True).encode("utf-8")
+    return json.dumps(orders, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
 
 
 def verify_signature(orders: dict, signature_b64: str, pubkey_pem: str) -> bool:
@@ -121,8 +121,8 @@ ORDER_KEYS = {
     "photo_task": "",
     "photo_hint": "",
     # Countdown-to-lock
-    "countdown_lock_at": 0,     # epoch ms — when lock activates (0 = no countdown)
-    "countdown_message": "",    # optional message from Lion shown during countdown
+    "countdown_lock_at": 0,  # epoch ms — when lock activates (0 = no countdown)
+    "countdown_message": "",  # optional message from Lion shown during countdown
     # Curfew fields
     "curfew_enabled": 0,
     "curfew_confine_hour": -1,
@@ -132,7 +132,7 @@ ORDER_KEYS = {
     "curfew_lon": "",
     # Bedtime enforcement (separate from curfew — curfew=geofence, bedtime=lock)
     "bedtime_enabled": 0,
-    "bedtime_lock_hour": -1,    # hour of day (0-23), -1 = not set
+    "bedtime_lock_hour": -1,  # hour of day (0-23), -1 = not set
     "bedtime_unlock_hour": -1,  # auto-unlock hour
     # Body check
     "body_check_active": 0,
@@ -144,26 +144,26 @@ ORDER_KEYS = {
     "body_check_baseline": "",
     # Screen time leash
     "screen_time_quota_minutes": 0,  # 0 = disabled
-    "screen_time_reset_hour": 0,     # hour of day to reset counter (default midnight)
+    "screen_time_reset_hour": 0,  # hour of day to reset counter (default midnight)
     # Release
-    "released": "",                  # device target for release-forever
-    "release_timestamp": "",         # epoch ms string
-    "entrapped": 0,                  # scrambled PIN, no escape
+    "released": "",  # device target for release-forever
+    "release_timestamp": "",  # epoch ms string
+    "entrapped": 0,  # scrambled PIN, no escape
     # Daily tribute (cost of freedom — accrues while unlocked)
     "tribute_active": 0,
-    "tribute_amount": 0,             # $/day added to paywall while unlocked
-    "tribute_last_applied": 0,       # epoch ms when last applied
+    "tribute_amount": 0,  # $/day added to paywall while unlocked
+    "tribute_last_applied": 0,  # epoch ms when last applied
     # Fine (recurring penalty — accrues regardless of lock state)
     "fine_active": 0,
-    "fine_amount": 0,                # $ per interval
-    "fine_interval_m": 60,           # minutes between charges
-    "fine_last_applied": 0,          # epoch ms
+    "fine_amount": 0,  # $ per interval
+    "fine_interval_m": 60,  # minutes between charges
+    "fine_last_applied": 0,  # epoch ms
     # Streak bonuses (positive reinforcement — Lion enables, server tracks)
     "streak_enabled": 0,
-    "streak_start": 0,               # epoch ms when current streak began
-    "streak_escapes_at_start": 0,    # escape count when streak began
-    "streak_7d_claimed": 0,          # 1 if 7d bonus already applied this streak
-    "streak_30d_claimed": 0,         # 1 if 30d bonus already applied this streak
+    "streak_start": 0,  # epoch ms when current streak began
+    "streak_escapes_at_start": 0,  # escape count when streak began
+    "streak_7d_claimed": 0,  # 1 if 7d bonus already applied this streak
+    "streak_30d_claimed": 0,  # 1 if 30d bonus already applied this streak
     # Payment email — Lion's IMAP creds (set via Lion's Share)
     "payment_imap_host": "",
     "payment_imap_user": "",
@@ -273,11 +273,18 @@ class OrdersDocument:
 
 # ── Peer Registry ──
 
+
 class PeerInfo:
-    def __init__(self, node_id: str, node_type: str = "unknown",
-                 addresses: list | None = None, port: int = 8434,
-                 last_seen: float = 0, orders_version: int = 0,
-                 status: dict | None = None):
+    def __init__(
+        self,
+        node_id: str,
+        node_type: str = "unknown",
+        addresses: list | None = None,
+        port: int = 8434,
+        last_seen: float = 0,
+        orders_version: int = 0,
+        status: dict | None = None,
+    ):
         self.node_id = node_id
         self.node_type = node_type
         self.addresses = addresses or []
@@ -312,7 +319,8 @@ class PeerInfo:
 
 _DEFAULT_WHITELIST = {
     # Generic seed IDs (used by _seed_configured_peers in desktop collars)
-    "phone", "homelab",
+    "phone",
+    "homelab",
 }
 
 
@@ -324,6 +332,7 @@ def _load_warren_whitelist():
         if _cfg_dir not in sys.path:
             sys.path.insert(0, _cfg_dir)
         from focuslock_config import load_config
+
         cfg = load_config()
         custom = set(cfg.get("warren_whitelist", []))
         return _DEFAULT_WHITELIST | custom if custom else _DEFAULT_WHITELIST
@@ -416,9 +425,15 @@ class PeerRegistry:
         except Exception as e:
             print(f"[mesh] Failed to save peers: {e}")
 
-    def update_peer(self, node_id: str, node_type: str | None = None,
-                    addresses: list | None = None, port: int | None = None,
-                    orders_version: int | None = None, status: dict | None = None):
+    def update_peer(
+        self,
+        node_id: str,
+        node_type: str | None = None,
+        addresses: list | None = None,
+        port: int | None = None,
+        orders_version: int | None = None,
+        status: dict | None = None,
+    ):
         if node_id not in WARREN_WHITELIST:
             return
         with self.lock:
@@ -480,12 +495,14 @@ class PeerRegistry:
 
 # ── Gossip Protocol ──
 
+
 def _http_post(url: str, data: dict, timeout: float = 5.0) -> dict:
     """POST JSON to a URL, return parsed response or None."""
     try:
         body = json.dumps(data).encode("utf-8")
         req = urllib.request.Request(
-            url, data=body,
+            url,
+            data=body,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
@@ -508,8 +525,7 @@ def _http_get(url: str, timeout: float = 5.0) -> dict:
 MAX_PEER_ADDRESSES = 4  # Cap stored addresses per peer to avoid timeout storms
 
 
-def _try_peer_addrs(peer: PeerInfo, path: str, data: dict | None = None,
-                    timeout: float = 3.0) -> dict:
+def _try_peer_addrs(peer: PeerInfo, path: str, data: dict | None = None, timeout: float = 3.0) -> dict:
     """Try all addresses for a peer until one works.
     Tries known addresses first, then falls back to Tailscale IP lookup.
     Promotes working address to front; caps list to avoid timeout storms."""
@@ -532,8 +548,7 @@ def _try_peer_addrs(peer: PeerInfo, path: str, data: dict | None = None,
     return None
 
 
-def _gossip_one_peer(peer, sync_payload, orders, peers, lion_pubkey,
-                     on_orders_applied):
+def _gossip_one_peer(peer, sync_payload, orders, peers, lion_pubkey, on_orders_applied):
     """Contact a single peer for gossip. Called from parallel threads."""
     resp = _try_peer_addrs(peer, "/mesh/sync", sync_payload, timeout=5.0)
     if resp is None:
@@ -557,20 +572,29 @@ def _gossip_one_peer(peer, sync_payload, orders, peers, lion_pubkey,
     # Accept orders if remote has higher version
     if resp.get("orders_version", 0) > orders.version and "orders" in resp:
         applied = orders.apply_remote(
-            {"version": resp["orders_version"],
-             "updated_at": resp.get("updated_at", 0),
-             "signature": resp.get("signature", ""),
-             "orders": resp["orders"]},
+            {
+                "version": resp["orders_version"],
+                "updated_at": resp.get("updated_at", 0),
+                "signature": resp.get("signature", ""),
+                "orders": resp["orders"],
+            },
             lion_pubkey,
         )
         if applied and on_orders_applied:
             on_orders_applied(orders.orders)
 
 
-def gossip_tick(my_id: str, my_type: str, my_addresses: list, my_port: int,
-                orders: OrdersDocument, peers: PeerRegistry,
-                local_status: dict, lion_pubkey: str,
-                on_orders_applied=None):
+def gossip_tick(
+    my_id: str,
+    my_type: str,
+    my_addresses: list,
+    my_port: int,
+    orders: OrdersDocument,
+    peers: PeerRegistry,
+    local_status: dict,
+    lion_pubkey: str,
+    on_orders_applied=None,
+):
     """One round of gossip — contact all peers in parallel, exchange state.
 
     Args:
@@ -634,9 +658,9 @@ def push_to_peers(my_id: str, orders: OrdersDocument, peers: PeerRegistry):
         threading.Thread(target=_push, daemon=True).start()
 
 
-def bump_and_broadcast(orders: OrdersDocument, my_id: str, peers: PeerRegistry,
-                       privkey_pem: str = "", ntfy_fn=None,
-                       on_orders_applied=None):
+def bump_and_broadcast(
+    orders: OrdersDocument, my_id: str, peers: PeerRegistry, privkey_pem: str = "", ntfy_fn=None, on_orders_applied=None
+):
     """Bump version, push to peers, and optionally notify via ntfy.
 
     Consolidates the common bump_version() + push_to_peers() pattern.
@@ -655,10 +679,21 @@ def bump_and_broadcast(orders: OrdersDocument, my_id: str, peers: PeerRegistry,
 
 # ── Mesh HTTP Handler Helpers ──
 
-def handle_mesh_sync(body: dict, my_id: str, my_type: str, my_addresses: list,
-                     my_port: int, orders: OrdersDocument, peers: PeerRegistry,
-                     local_status: dict, lion_pubkey: str,
-                     on_orders_applied=None, ledger=None, messages=None) -> dict:
+
+def handle_mesh_sync(
+    body: dict,
+    my_id: str,
+    my_type: str,
+    my_addresses: list,
+    my_port: int,
+    orders: OrdersDocument,
+    peers: PeerRegistry,
+    local_status: dict,
+    lion_pubkey: str,
+    on_orders_applied=None,
+    ledger=None,
+    messages=None,
+) -> dict:
     """Handle POST /mesh/sync — the core gossip endpoint."""
     remote_id = body.get("node_id", "")
     remote_version = body.get("orders_version", 0)
@@ -677,10 +712,12 @@ def handle_mesh_sync(body: dict, my_id: str, my_type: str, my_addresses: list,
     # Accept orders if remote has higher version
     if remote_version > orders.version and "orders" in body:
         applied = orders.apply_remote(
-            {"version": remote_version,
-             "updated_at": body.get("updated_at", 0),
-             "signature": body.get("signature", ""),
-             "orders": body["orders"]},
+            {
+                "version": remote_version,
+                "updated_at": body.get("updated_at", 0),
+                "signature": body.get("signature", ""),
+                "orders": body["orders"],
+            },
             lion_pubkey,
         )
         if applied and on_orders_applied:
@@ -706,9 +743,16 @@ def handle_mesh_sync(body: dict, my_id: str, my_type: str, my_addresses: list,
     return response
 
 
-def handle_mesh_order(body: dict, orders: OrdersDocument, peers: PeerRegistry,
-                      my_id: str, apply_fn=None, lion_pubkey: str = "",
-                      on_orders_applied=None, ntfy_fn=None) -> dict:
+def handle_mesh_order(
+    body: dict,
+    orders: OrdersDocument,
+    peers: PeerRegistry,
+    my_id: str,
+    apply_fn=None,
+    lion_pubkey: str = "",
+    on_orders_applied=None,
+    ntfy_fn=None,
+) -> dict:
     """Handle POST /mesh/order — receive an order from Lion's Share.
 
     Args:
@@ -779,8 +823,7 @@ def handle_mesh_order(body: dict, orders: OrdersDocument, peers: PeerRegistry,
     }
 
 
-def handle_mesh_status(orders: OrdersDocument, peers: PeerRegistry,
-                       my_id: str, local_status: dict) -> dict:
+def handle_mesh_status(orders: OrdersDocument, peers: PeerRegistry, my_id: str, local_status: dict) -> dict:
     """Handle GET /mesh/status — aggregated mesh state for Lion's Share."""
     nodes = {}
     for nid, peer in peers.peers.items():
@@ -809,7 +852,9 @@ def handle_mesh_status(orders: OrdersDocument, peers: PeerRegistry,
         "locked": orders.get("lock_active") == 1 or str(orders.get("lock_active")) == "1",
         "escapes": orders.get("escapes", 0),
         "paywall": str(orders.get("paywall", "0")),
-        "timer_remaining_ms": max(0, int(orders.get("unlock_at", 0)) - int(time.time() * 1000)) if orders.get("unlock_at") else 0,
+        "timer_remaining_ms": max(0, int(orders.get("unlock_at", 0)) - int(time.time() * 1000))
+        if orders.get("unlock_at")
+        else 0,
         "task_reps": orders.get("task_reps", 0),
         "task_done": orders.get("task_done", 0),
         "offer": str(orders.get("offer", "")),
@@ -830,13 +875,25 @@ def handle_mesh_ping(my_id: str, orders: OrdersDocument) -> dict:
 
 # ── Gossip Loop Thread ──
 
+
 class GossipThread(threading.Thread):
     """Background thread that runs gossip on a fixed interval."""
 
-    def __init__(self, interval_seconds: int, my_id: str, my_type: str,
-                 my_addresses: list, my_port: int, orders: OrdersDocument,
-                 peers: PeerRegistry, status_fn=None, lion_pubkey_fn=None,
-                 on_orders_applied=None, ledger=None, messages=None):
+    def __init__(
+        self,
+        interval_seconds: int,
+        my_id: str,
+        my_type: str,
+        my_addresses: list,
+        my_port: int,
+        orders: OrdersDocument,
+        peers: PeerRegistry,
+        status_fn=None,
+        lion_pubkey_fn=None,
+        on_orders_applied=None,
+        ledger=None,
+        messages=None,
+    ):
         super().__init__(daemon=True)
         self.interval = interval_seconds
         self.my_id = my_id
@@ -857,9 +914,14 @@ class GossipThread(threading.Thread):
                 # Re-resolve addresses each tick (DHCP renewal, WiFi roaming, TS reconnect)
                 fresh_addrs = get_local_addresses()
                 gossip_tick(
-                    self.my_id, self.my_type, fresh_addrs, self.my_port,
-                    self.orders, self.peers,
-                    self.status_fn(), self.lion_pubkey_fn(),
+                    self.my_id,
+                    self.my_type,
+                    fresh_addrs,
+                    self.my_port,
+                    self.orders,
+                    self.peers,
+                    self.status_fn(),
+                    self.lion_pubkey_fn(),
                     self.on_orders_applied,
                 )
             except Exception as e:
@@ -873,10 +935,12 @@ class GossipThread(threading.Thread):
 
 # ── Utility: PIN Validation ──
 
+
 def validate_pin(body: dict, orders: OrdersDocument) -> bool:
     """Check PIN from request body against orders document.
     Uses timing-safe comparison to prevent pin guessing via response time."""
     import hmac
+
     pin = str(body.get("pin", ""))
     expected = str(orders.get("pin", ""))
     if not pin or not expected:
@@ -886,15 +950,20 @@ def validate_pin(body: dict, orders: OrdersDocument) -> bool:
 
 # ── Utility: Get Local Addresses ──
 
+
 def get_local_addresses() -> list:
     """Get this machine's non-loopback IP addresses (LAN + Tailscale)."""
     addrs = []
     # Method 1: Linux ip command
     try:
         import subprocess
+
         result = subprocess.run(
             ["ip", "-4", "-o", "addr", "show"],
-            capture_output=True, text=True, timeout=5, **_SUBPROCESS_FLAGS,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            **_SUBPROCESS_FLAGS,
         )
         for line in result.stdout.strip().split("\n"):
             parts = line.split()
@@ -936,9 +1005,13 @@ def _get_tailscale_addresses() -> list:
     """Get Tailscale IPs from the tailscale CLI."""
     try:
         import subprocess
+
         result = subprocess.run(
             ["tailscale", "ip", "-4"],
-            capture_output=True, text=True, timeout=5, **_SUBPROCESS_FLAGS,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            **_SUBPROCESS_FLAGS,
         )
         if result.returncode == 0:
             return [ip.strip() for ip in result.stdout.strip().split("\n") if ip.strip()]
@@ -964,9 +1037,13 @@ def _get_tailnet_name() -> str:
             return _tailnet_name
         try:
             import subprocess
+
             result = subprocess.run(
                 ["tailscale", "status", "--json"],
-                capture_output=True, text=True, timeout=5, **_SUBPROCESS_FLAGS,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                **_SUBPROCESS_FLAGS,
             )
             if result.returncode == 0:
                 data = json.loads(result.stdout)
@@ -1001,9 +1078,13 @@ def _refresh_tailscale_hosts():
             return
         try:
             import subprocess
+
             result = subprocess.run(
                 ["tailscale", "status", "--json"],
-                capture_output=True, text=True, timeout=5, **_SUBPROCESS_FLAGS,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                **_SUBPROCESS_FLAGS,
             )
             if result.returncode == 0:
                 data = json.loads(result.stdout)
@@ -1081,13 +1162,16 @@ LAN_BEACON_INTERVAL = 30  # seconds
 
 def _build_beacon(node_id: str, node_type: str, port: int, orders_version: int) -> bytes:
     """Build a UDP discovery beacon packet."""
-    payload = json.dumps({
-        "magic": "FOCUSLOCK-MESH-V1",
-        "node_id": node_id,
-        "type": node_type,
-        "port": port,
-        "orders_version": orders_version,
-    }, separators=(",", ":")).encode("utf-8")
+    payload = json.dumps(
+        {
+            "magic": "FOCUSLOCK-MESH-V1",
+            "node_id": node_id,
+            "type": node_type,
+            "port": port,
+            "orders_version": orders_version,
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
     return payload
 
 
@@ -1109,9 +1193,15 @@ class LANDiscoveryThread(threading.Thread):
     Listens for beacons from other nodes and adds them to the peer registry.
     """
 
-    def __init__(self, my_id: str, my_type: str, my_port: int,
-                 orders: OrdersDocument, peers: PeerRegistry,
-                 beacon_interval: int = LAN_BEACON_INTERVAL):
+    def __init__(
+        self,
+        my_id: str,
+        my_type: str,
+        my_port: int,
+        orders: OrdersDocument,
+        peers: PeerRegistry,
+        beacon_interval: int = LAN_BEACON_INTERVAL,
+    ):
         super().__init__(daemon=True)
         self.my_id = my_id
         self.my_type = my_type
@@ -1136,7 +1226,9 @@ class LANDiscoveryThread(threading.Thread):
         while self.running:
             try:
                 beacon = _build_beacon(
-                    self.my_id, self.my_type, self.my_port,
+                    self.my_id,
+                    self.my_type,
+                    self.my_port,
                     self.orders.version,
                 )
                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1210,6 +1302,7 @@ class LANDiscoveryThread(threading.Thread):
 
 # ── VoucherPool ──
 
+
 class VoucherPool:
     """Stores signed penalty vouchers for offline enforcement."""
 
@@ -1271,6 +1364,7 @@ class VoucherPool:
 
 # ── PaymentLedger ──
 
+
 class PaymentLedger:
     """Tracks payments and charges for paywall balance calculation."""
 
@@ -1314,8 +1408,7 @@ class PaymentLedger:
                     total += e.get("amount", 0)
             return total
 
-    def add_entry(self, entry_type: str, amount: float, source: str = "",
-                  description: str = "") -> dict:
+    def add_entry(self, entry_type: str, amount: float, source: str = "", description: str = "") -> dict:
         with self.lock:
             # Dedup by source
             if source:
@@ -1344,6 +1437,7 @@ class PaymentLedger:
 
 
 # ── MessageStore ──
+
 
 class MessageStore:
     """Stores messages between bunny and lion."""
@@ -1412,6 +1506,7 @@ class MessageStore:
 
 # ── Voucher/Ledger/Message Handlers ──
 
+
 def handle_store_vouchers(body: dict, pool: VoucherPool, lion_pubkey: str = "") -> dict:
     vouchers = body.get("vouchers", [])
     if not vouchers:
@@ -1424,9 +1519,16 @@ def handle_get_vouchers(pool: VoucherPool) -> dict:
     return {"vouchers": pool.get_available()}
 
 
-def handle_redeem_voucher(body: dict, pool: VoucherPool, orders: OrdersDocument,
-                          peers: PeerRegistry, my_id: str, lion_pubkey: str = "",
-                          on_orders_applied=None, ntfy_fn=None) -> dict:
+def handle_redeem_voucher(
+    body: dict,
+    pool: VoucherPool,
+    orders: OrdersDocument,
+    peers: PeerRegistry,
+    my_id: str,
+    lion_pubkey: str = "",
+    on_orders_applied=None,
+    ntfy_fn=None,
+) -> dict:
     vid = body.get("id", "")
     if not vid:
         return {"error": "id required"}
@@ -1439,15 +1541,19 @@ def handle_redeem_voucher(body: dict, pool: VoucherPool, orders: OrdersDocument,
     if action == "add-paywall" and amount > 0:
         current = int(float(orders.get("paywall", "0") or "0"))
         orders.set("paywall", str(current + amount))
-        bump_and_broadcast(orders, my_id, peers,
-                           on_orders_applied=on_orders_applied,
-                           ntfy_fn=ntfy_fn)
+        bump_and_broadcast(orders, my_id, peers, on_orders_applied=on_orders_applied, ntfy_fn=ntfy_fn)
     return {"ok": True, "redeemed": voucher}
 
 
-def handle_ledger_entry(body: dict, ledger: PaymentLedger, orders: OrdersDocument,
-                        peers: PeerRegistry, my_id: str,
-                        on_orders_applied=None, ntfy_fn=None) -> dict:
+def handle_ledger_entry(
+    body: dict,
+    ledger: PaymentLedger,
+    orders: OrdersDocument,
+    peers: PeerRegistry,
+    my_id: str,
+    on_orders_applied=None,
+    ntfy_fn=None,
+) -> dict:
     entry_type = body.get("type", "charge")
     amount = float(body.get("amount", 0))
     source = body.get("source", "")
@@ -1456,9 +1562,7 @@ def handle_ledger_entry(body: dict, ledger: PaymentLedger, orders: OrdersDocumen
     if "ok" in result:
         new_balance = max(0, ledger.balance())
         orders.set("paywall", str(int(new_balance)))
-        bump_and_broadcast(orders, my_id, peers,
-                           on_orders_applied=on_orders_applied,
-                           ntfy_fn=ntfy_fn)
+        bump_and_broadcast(orders, my_id, peers, on_orders_applied=on_orders_applied, ntfy_fn=ntfy_fn)
     return result
 
 
@@ -1499,5 +1603,4 @@ def handle_get_messages(store: MessageStore, reader: str = "", limit: int = 50) 
 
 
 def handle_get_ledger(ledger: PaymentLedger, limit: int = 50) -> dict:
-    return {"entries": ledger.get_entries(limit), "balance": ledger.balance(),
-            "imap_epoch": ledger.imap_epoch}
+    return {"entries": ledger.get_entries(limit), "balance": ledger.balance(), "imap_epoch": ledger.imap_epoch}

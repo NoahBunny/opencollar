@@ -53,9 +53,9 @@ _TYPE_TO_PREF = {
 }
 
 
-def send_evidence(text, evidence_type="compliment", *,
-                  mesh_orders, adb=None,
-                  partner_email, smtp_host, mail_user, mail_pass):
+def send_evidence(
+    text, evidence_type="compliment", *, mesh_orders, adb=None, partner_email, smtp_host, mail_user, mail_pass
+):
     """Send evidence email to Lion.  Respects notification preferences.
 
     Args:

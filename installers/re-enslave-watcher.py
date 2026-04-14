@@ -13,6 +13,7 @@ Designed to be run on a 5-minute systemd user timer. Each tick:
 
 Exit code 0 always — this is a best-effort daemon, the timer will retry next tick.
 """
+
 from __future__ import annotations
 
 import json
@@ -48,9 +49,11 @@ def load_phone_targets() -> list[tuple[str, str, str]]:
         return []
     try:
         out = subprocess.run(
-            ["bash", "-c", f'source {shlex.quote(str(CONFIG_PATH))} && '
-                           'printf "%s\\n" "${PHONE_TARGETS[@]}"'],
-            capture_output=True, text=True, check=True, timeout=5,
+            ["bash", "-c", f'source {shlex.quote(str(CONFIG_PATH))} && printf "%s\\n" "${{PHONE_TARGETS[@]}}"'],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
         ).stdout
     except subprocess.SubprocessError as e:
         log(f"Failed to read config: {e}")
@@ -116,7 +119,9 @@ def run_phone_script(name: str) -> tuple[int, str]:
     try:
         r = subprocess.run(
             [str(PHONES_SCRIPT), "--quiet", "--phone", name],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
         return r.returncode, (r.stdout + r.stderr).strip()
     except subprocess.TimeoutExpired:
@@ -138,13 +143,16 @@ def main() -> int:
     any_change = False
 
     for name, addr, role in targets:
-        phone_state = state["phones"].setdefault(name, {
-            "addr": addr,
-            "role": role,
-            "last_reachable": 0,
-            "last_updated": 0,
-            "last_status": "unknown",
-        })
+        phone_state = state["phones"].setdefault(
+            name,
+            {
+                "addr": addr,
+                "role": role,
+                "last_reachable": 0,
+                "last_updated": 0,
+                "last_status": "unknown",
+            },
+        )
         # Refresh addr/role in case the user edited the config
         phone_state["addr"] = addr
         phone_state["role"] = role

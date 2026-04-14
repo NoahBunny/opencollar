@@ -41,8 +41,12 @@ os.makedirs(ICONS_DIR, exist_ok=True)
 
 # ── Mesh Module ──
 # Import from bundled or local focuslock_mesh.py and config loader
-for _p in [os.path.dirname(os.path.abspath(__file__)), CONFIG_DIR, "C:\\focuslock",
-           os.path.join(os.path.dirname(os.path.abspath(__file__)), "shared")]:
+for _p in [
+    os.path.dirname(os.path.abspath(__file__)),
+    CONFIG_DIR,
+    "C:\\focuslock",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "shared"),
+]:
     mesh_path = os.path.join(_p, "focuslock_mesh.py")
     if os.path.isfile(mesh_path):
         sys.path.insert(0, _p)
@@ -72,6 +76,7 @@ try:
     from focuslock_vault import (
         verify_signature as vault_verify,
     )
+
     VAULT_CRYPTO_OK = True
 except ImportError:
     VAULT_CRYPTO_OK = False
@@ -119,10 +124,12 @@ _ntfy_server = _cfg.get("ntfy_server", "https://ntfy.sh")
 _ntfy_topic = _cfg.get("ntfy_topic") or (f"focuslock-{MESH_ID}" if MESH_ID else "")
 _ntfy_enabled = _cfg.get("ntfy_enabled", False) and bool(_ntfy_topic) and ntfy_mod is not None
 
+
 def _ntfy_fn(version):
     """Best-effort ntfy publish after local order mutations."""
     if _ntfy_enabled:
         ntfy_mod.ntfy_publish(_ntfy_topic, version, _ntfy_server)
+
 
 TRUST_STORE_FILE = os.path.join(CONFIG_DIR, "trusted_peers.json")
 _trust_store = mesh.TrustStore(persist_path=TRUST_STORE_FILE)
@@ -132,6 +139,7 @@ mesh_peers = mesh.PeerRegistry(persist_path=PEERS_FILE, trust_store=_trust_store
 # ── Lion's Share Pubkey ──
 
 _lion_pubkey = ""
+
 
 def get_lion_pubkey():
     global _lion_pubkey
@@ -153,6 +161,7 @@ VAULT_MODE = _cfg.get("vault_mode", False) and VAULT_CRYPTO_OK and bool(MESH_ID)
 # P7: Transport abstraction — pluggable vault blob read/write backend
 try:
     from focuslock_transport import transport_factory
+
     _vault_transport = transport_factory(_cfg)
 except ImportError:
     _vault_transport = None
@@ -165,6 +174,7 @@ VAULT_PUBKEY_FILE = os.path.join(CONFIG_DIR, "node_pubkey.pem")
 _vault_privkey_pem = ""
 _vault_pubkey_der = b""
 
+
 def _vault_init_keypair():
     """Load or generate RSA keypair for vault mode."""
     global _vault_privkey_pem, _vault_pubkey_der
@@ -172,6 +182,7 @@ def _vault_init_keypair():
         with open(VAULT_PRIVKEY_FILE) as f:
             _vault_privkey_pem = f.read()
         from cryptography.hazmat.primitives import serialization
+
         pk = serialization.load_pem_private_key(_vault_privkey_pem.encode(), password=None)
         _vault_pubkey_der = pk.public_key().public_bytes(
             serialization.Encoding.DER,
@@ -188,10 +199,12 @@ def _vault_init_keypair():
         _vault_pubkey_der = der
         print(f"[vault] Generated new keypair (slot={vault_slot_id(der)})")
 
+
 # P6.5: approved node pubkeys cache for multi-signer verification
 _approved_node_pubkeys = []
 _nodes_last_fetch = 0
 _NODES_REFRESH_SECS = 1800  # 30 minutes
+
 
 def _vault_fetch_nodes():
     """Fetch approved vault node pubkeys for multi-signer verification."""
@@ -213,7 +226,9 @@ def _vault_fetch_nodes():
     except Exception as e:
         print(f"[vault] Fetch nodes error: {e}")
 
+
 _lazy_refresh_done_this_poll = False
+
 
 def _vault_verify_any_signer(blob, lion_pub):
     """P6.5: Verify blob against Lion pubkey OR any approved node pubkey."""
@@ -231,6 +246,7 @@ def _vault_verify_any_signer(blob, lion_pub):
                 return True
     return False
 
+
 def _vault_register_node():
     """Register this desktop as a vault recipient if not already."""
     global _vault_node_registered
@@ -239,6 +255,7 @@ def _vault_register_node():
     if not _vault_transport and not MESH_URL:
         return
     import base64
+
     pubkey_b64 = base64.b64encode(_vault_pubkey_der).decode()
     payload = {
         "node_id": MESH_NODE_ID,
@@ -263,6 +280,7 @@ def _vault_register_node():
             print(f"[vault] Node registered: {result}")
     except Exception as e:
         print(f"[vault] Register error (will retry): {e}")
+
 
 def _vault_poll():
     """Fetch and decrypt vault blobs since last known version."""
@@ -322,6 +340,7 @@ def _vault_poll():
 
 # ── State ──
 
+
 class CollarState:
     locked = False
     paywall = ""
@@ -332,10 +351,11 @@ class CollarState:
     nodes_online = 0
     last_sync = 0
     missed_syncs = 0
-    countdown_lock_at = 0       # epoch ms — 0 means no countdown
+    countdown_lock_at = 0  # epoch ms — 0 means no countdown
     countdown_message = ""
-    countdown_last_warn = 0     # epoch ms of last warning beep
+    countdown_last_warn = 0  # epoch ms of last warning beep
     _bedtime_locked = False
+
 
 state = CollarState()
 
@@ -345,21 +365,25 @@ def _seed_configured_peers():
     if HOMELAB_URL:
         try:
             from urllib.parse import urlparse
+
             parsed = urlparse(HOMELAB_URL)
             if parsed.hostname:
                 _trust_store.trust(parsed.hostname, "config")
-                mesh_peers.update_peer("homelab", node_type="server",
-                                       addresses=[parsed.hostname],
-                                       port=parsed.port or _cfg.get("homelab_port", 8434))
+                mesh_peers.update_peer(
+                    "homelab",
+                    node_type="server",
+                    addresses=[parsed.hostname],
+                    port=parsed.port or _cfg.get("homelab_port", 8434),
+                )
         except Exception:
             pass
     for addr in PHONE_ADDRESSES:
         _trust_store.trust("phone", "config")
-        mesh_peers.update_peer("phone", node_type="phone",
-                               addresses=[addr], port=PHONE_PORT)
+        mesh_peers.update_peer("phone", node_type="phone", addresses=[addr], port=PHONE_PORT)
 
 
 # ── First Run: Unpair & Fresh Start ──
+
 
 def first_run_check():
     """On first run, wipe any stale config and start fresh."""
@@ -367,8 +391,7 @@ def first_run_check():
         return  # Already initialized
 
     print("[collar] First run detected — wiping stale config for fresh start")
-    for f in [ORDERS_FILE, PEERS_FILE, LION_PUBKEY_FILE, CONSENT_FILE,
-              LOCK_WALLPAPER, ORIGINAL_WALLPAPER_FILE]:
+    for f in [ORDERS_FILE, PEERS_FILE, LION_PUBKEY_FILE, CONSENT_FILE, LOCK_WALLPAPER, ORIGINAL_WALLPAPER_FILE]:
         if os.path.exists(f):
             os.remove(f)
             print(f"  Removed: {os.path.basename(f)}")
@@ -383,8 +406,11 @@ def first_run_check():
 
     # Try to reach any configured endpoint
     reached = False
-    for url in ([MESH_URL] if MESH_URL else []) + ([HOMELAB_URL] if HOMELAB_URL else []) + \
-               [f"http://{a}:{PHONE_PORT}" for a in PHONE_ADDRESSES]:
+    for url in (
+        ([MESH_URL] if MESH_URL else [])
+        + ([HOMELAB_URL] if HOMELAB_URL else [])
+        + [f"http://{a}:{PHONE_PORT}" for a in PHONE_ADDRESSES]
+    ):
         try:
             req = urllib.request.Request(f"{url}/mesh/ping")
             urllib.request.urlopen(req, timeout=3)
@@ -406,6 +432,7 @@ def first_run_check():
 
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
+
 def needs_first_run_config():
     """Check if we need to collect config from the user."""
     if os.path.exists(CONFIG_FILE):
@@ -414,6 +441,7 @@ def needs_first_run_config():
     if os.environ.get("FOCUSLOCK_PIN") or os.environ.get("PHONE_PIN"):
         return False
     return not _cfg.get("pin")
+
 
 def show_first_run_config():
     """Show first-run config dialog to collect PIN and optional endpoints."""
@@ -429,10 +457,12 @@ def show_first_run_config():
     root = tk.Tk()
     root.withdraw()
 
-    messagebox.showinfo("FocusLock Setup",
+    messagebox.showinfo(
+        "FocusLock Setup",
         "First-time setup.\n\n"
         "You need a mesh PIN (shared secret between all your devices).\n"
-        "Optionally configure your homelab URL or phone IP.")
+        "Optionally configure your homelab URL or phone IP.",
+    )
 
     pin = simpledialog.askstring("Mesh PIN", "Enter mesh PIN (required):", parent=root)
     if not pin:
@@ -440,15 +470,19 @@ def show_first_run_config():
         root.destroy()
         return False
 
-    homelab = simpledialog.askstring("Homelab URL",
-        "Homelab URL (optional — leave empty for P2P only):\n"
-        "e.g. http://192.168.1.100:8434",
-        parent=root) or ""
+    homelab = (
+        simpledialog.askstring(
+            "Homelab URL",
+            "Homelab URL (optional — leave empty for P2P only):\ne.g. http://192.168.1.100:8434",
+            parent=root,
+        )
+        or ""
+    )
 
-    phone_ip = simpledialog.askstring("Phone IP",
-        "Phone LAN IP (optional if homelab set):\n"
-        "e.g. 192.168.1.50",
-        parent=root) or ""
+    phone_ip = (
+        simpledialog.askstring("Phone IP", "Phone LAN IP (optional if homelab set):\ne.g. 192.168.1.50", parent=root)
+        or ""
+    )
 
     config = {
         "pin": pin,
@@ -474,12 +508,15 @@ def show_first_run_config():
 
 # ── Consent ──
 
+
 def has_consent():
     return os.path.exists(CONSENT_FILE)
+
 
 def show_consent():
     """Show consent dialog via Windows MessageBox."""
     import ctypes
+
     MB_YESNO = 0x04
     MB_ICONWARNING = 0x30
     IDYES = 6
@@ -510,6 +547,7 @@ def show_consent():
 
 # ── Mesh Local Status ──
 
+
 def mesh_local_status():
     return {
         "type": "desktop",
@@ -519,6 +557,7 @@ def mesh_local_status():
 
 
 # ── Mesh Order Handler ──
+
 
 def mesh_apply_order(action, params, orders):
     """Apply an order locally on this Windows desktop. Relay phone-targeted actions."""
@@ -571,8 +610,10 @@ def mesh_apply_order(action, params, orders):
 def _relay_to_phones(action, params):
     """Forward an order to all known phone peers via mesh push."""
     _shared_relay_to_phones(
-        action, params,
-        mesh_orders=mesh_orders, mesh_peers=mesh_peers,
+        action,
+        params,
+        mesh_orders=mesh_orders,
+        mesh_peers=mesh_peers,
         node_id=MESH_NODE_ID,
         pin=_cfg.get("pin", "") or str(mesh_orders.get("pin", "")),
     )
@@ -582,8 +623,10 @@ def on_mesh_orders_applied(orders_dict):
     """Called when gossip applies new orders.
     Trigger an immediate poll so the UI refreshes within ~100ms instead of
     waiting up to POLL_INTERVAL (5s)."""
-    print(f"[collar] Mesh orders applied: desktop_active={orders_dict.get('desktop_active')} "
-          f"lock_active={orders_dict.get('lock_active')}")
+    print(
+        f"[collar] Mesh orders applied: desktop_active={orders_dict.get('desktop_active')} "
+        f"lock_active={orders_dict.get('lock_active')}"
+    )
     try:
         poll_status()
     except Exception:
@@ -592,14 +635,20 @@ def on_mesh_orders_applied(orders_dict):
 
 # ── Direct Sync Fallback ──
 
+
 def _try_sync(url, name, my_addrs, lion_pubkey):
     """Attempt mesh sync with a single endpoint. Returns True on success."""
     ok = _shared_try_sync(
-        url, name,
-        node_id=MESH_NODE_ID, node_type=MESH_NODE_TYPE,
-        my_addrs=my_addrs, mesh_port=MESH_PORT,
-        mesh_orders=mesh_orders, mesh_peers=mesh_peers,
-        local_status=mesh_local_status(), lion_pubkey=lion_pubkey,
+        url,
+        name,
+        node_id=MESH_NODE_ID,
+        node_type=MESH_NODE_TYPE,
+        my_addrs=my_addrs,
+        mesh_port=MESH_PORT,
+        mesh_orders=mesh_orders,
+        mesh_peers=mesh_peers,
+        local_status=mesh_local_status(),
+        lion_pubkey=lion_pubkey,
         on_orders_applied=on_mesh_orders_applied,
         pin=_cfg.get("pin", "") or str(mesh_orders.get("pin", "")),
         mesh_id=MESH_ID,
@@ -612,11 +661,16 @@ def _try_sync(url, name, my_addrs, lion_pubkey):
 def direct_sync_poll():
     """Poll mesh — try configured endpoints in priority order, then discovered peers."""
     _shared_direct_sync_poll(
-        mesh_url=MESH_URL, homelab_url=HOMELAB_URL,
-        phone_addresses=PHONE_ADDRESSES, phone_port=PHONE_PORT,
-        node_id=MESH_NODE_ID, node_type=MESH_NODE_TYPE,
-        mesh_port=MESH_PORT, mesh_orders=mesh_orders,
-        mesh_peers=mesh_peers, local_status_fn=mesh_local_status,
+        mesh_url=MESH_URL,
+        homelab_url=HOMELAB_URL,
+        phone_addresses=PHONE_ADDRESSES,
+        phone_port=PHONE_PORT,
+        node_id=MESH_NODE_ID,
+        node_type=MESH_NODE_TYPE,
+        mesh_port=MESH_PORT,
+        mesh_orders=mesh_orders,
+        mesh_peers=mesh_peers,
+        local_status_fn=mesh_local_status,
         lion_pubkey_fn=get_lion_pubkey,
         on_orders_applied=on_mesh_orders_applied,
         get_local_addresses_fn=get_local_addresses,
@@ -633,6 +687,7 @@ def get_local_addresses():
 
 
 # ── Windows Session Lock ──
+
 
 def lock_workstation():
     """Lock the Windows session."""
@@ -651,7 +706,9 @@ def set_lock_wallpaper():
             key = winreg.CreateKeyEx(
                 winreg.HKEY_LOCAL_MACHINE,
                 r"SOFTWARE\Policies\Microsoft\Windows\Personalization",
-                0, winreg.KEY_SET_VALUE)
+                0,
+                winreg.KEY_SET_VALUE,
+            )
             winreg.SetValueEx(key, "LockScreenImage", 0, winreg.REG_SZ, LOCK_WALLPAPER)
             winreg.CloseKey(key)
             print("[collar] Lock screen wallpaper set via registry")
@@ -678,10 +735,7 @@ def generate_lock_wallpaper():
     # Radial glow (approximation with ellipse)
     for r in range(600, 0, -2):
         color = (int(0.05 * 255), int(0.04 * 255), int(0.02 * 255))
-        draw.ellipse(
-            [W//2 - r, H//2 - r, W//2 + r, H//2 + r],
-            fill=color
-        )
+        draw.ellipse([W // 2 - r, H // 2 - r, W // 2 + r, H // 2 + r], fill=color)
 
     # Icon overlay
     icon_path = os.path.join(CONFIG_DIR, "collar-icon-gold.png")
@@ -728,7 +782,7 @@ def generate_lock_wallpaper():
         msg = msg[:77] + "..."
     bbox = draw.textbbox((0, 0), msg, font=font_msg)
     tw = bbox[2] - bbox[0]
-    draw.text((W//2 - tw//2, H//2 + 560), msg, fill=(171, 136, 102), font=font_msg)
+    draw.text((W // 2 - tw // 2, H // 2 + 560), msg, fill=(171, 136, 102), font=font_msg)
 
     # Pinned message
     if state.pinned:
@@ -737,14 +791,14 @@ def generate_lock_wallpaper():
             pinned_wp = pinned_wp[:77] + "..."
         bbox = draw.textbbox((0, 0), pinned_wp, font=font_pinned)
         tw = bbox[2] - bbox[0]
-        draw.text((W//2 - tw//2, H//2 + 630), pinned_wp, fill=(204, 153, 0), font=font_pinned)
+        draw.text((W // 2 - tw // 2, H // 2 + 630), pinned_wp, fill=(204, 153, 0), font=font_pinned)
 
     # Paywall
     if state.paywall and state.paywall != "0":
         pw_text = f"${state.paywall} owed"
         bbox = draw.textbbox((0, 0), pw_text, font=font_paywall)
         tw = bbox[2] - bbox[0]
-        draw.text((W//2 - tw//2, H//2 + 710), pw_text, fill=(204, 19, 19), font=font_paywall)
+        draw.text((W // 2 - tw // 2, H // 2 + 710), pw_text, fill=(204, 19, 19), font=font_paywall)
 
     img.save(LOCK_WALLPAPER, "PNG")
     print(f"[collar] Lock wallpaper generated: {LOCK_WALLPAPER}")
@@ -753,6 +807,7 @@ def generate_lock_wallpaper():
 # ── Lock Enforcement ──
 
 _lock_enforcer_running = False
+
 
 def start_lock_enforcement():
     """Re-lock every 2 seconds while locked."""
@@ -802,6 +857,7 @@ def hide_lock():
 
 # ── Liberation (Permanent Removal) ──
 
+
 def execute_liberation():
     """Permanent removal — clean up everything and exit."""
     print("[collar] LIBERATION — removing collar permanently")
@@ -812,8 +868,7 @@ def execute_liberation():
 
     # Remove autostart
     try:
-        startup = os.path.join(os.environ.get("APPDATA", ""),
-            r"Microsoft\Windows\Start Menu\Programs\Startup")
+        startup = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs\Startup")
         for f in os.listdir(startup):
             if "focuslock" in f.lower() or "collar" in f.lower():
                 os.remove(os.path.join(startup, f))
@@ -823,6 +878,7 @@ def execute_liberation():
 
     # Clean config
     import shutil
+
     try:
         shutil.rmtree(CONFIG_DIR, ignore_errors=True)
         print("  Config directory removed")
@@ -834,12 +890,13 @@ def execute_liberation():
         0,
         "All restrictions lifted.\nThe collar is gone. You are free.",
         "LIBERATED",
-        0x40  # MB_ICONINFORMATION
+        0x40,  # MB_ICONINFORMATION
     )
     os._exit(0)
 
 
 # ── Poll Status (Main Loop) ──
+
 
 def poll_status():
     """Check mesh orders and enforce lock state."""
@@ -850,10 +907,22 @@ def poll_status():
     state.connected = state.nodes_online > 0
 
     snap = {}
-    for k in ["desktop_active", "desktop_locked_devices", "desktop_message",
-              "paywall", "message", "pinned_message", "sub_tier", "lock_active",
-              "unlock_at", "countdown_lock_at", "countdown_message",
-              "bedtime_enabled", "bedtime_lock_hour", "bedtime_unlock_hour"]:
+    for k in [
+        "desktop_active",
+        "desktop_locked_devices",
+        "desktop_message",
+        "paywall",
+        "message",
+        "pinned_message",
+        "sub_tier",
+        "lock_active",
+        "unlock_at",
+        "countdown_lock_at",
+        "countdown_message",
+        "bedtime_enabled",
+        "bedtime_lock_hour",
+        "bedtime_unlock_hour",
+    ]:
         snap[k] = mesh_orders.get(k, "")
 
     hostname = MESH_NODE_ID
@@ -872,8 +941,7 @@ def poll_status():
             mesh_orders.set("desktop_locked_devices", "")
             mesh_orders.set("unlock_at", 0)
             mesh_orders.set("message", "")
-            mesh.bump_and_broadcast(mesh_orders, MESH_NODE_ID, mesh_peers,
-                                    ntfy_fn=_ntfy_fn)
+            mesh.bump_and_broadcast(mesh_orders, MESH_NODE_ID, mesh_peers, ntfy_fn=_ntfy_fn)
             # Re-read after unlock
             lock_active = "0"
             desktop_active = "0"
@@ -892,14 +960,18 @@ def poll_status():
             unlock_h = int(snap.get("bedtime_unlock_hour") or -1)
             cur_h = datetime.datetime.now().hour
             if lock_h >= 0 and unlock_h >= 0:
-                in_bed = (cur_h >= lock_h or cur_h < unlock_h) if lock_h > unlock_h else (cur_h >= lock_h and cur_h < unlock_h)
+                in_bed = (
+                    (cur_h >= lock_h or cur_h < unlock_h)
+                    if lock_h > unlock_h
+                    else (cur_h >= lock_h and cur_h < unlock_h)
+                )
                 if in_bed and not desktop_locked:
                     mesh_orders.set("desktop_active", 1)
                     mesh_orders.set("desktop_message", "Bedtime. Go to sleep.")
                     desktop_locked = True
                     state._bedtime_locked = True
                     print(f"[collar] BEDTIME: Auto-locked at hour {cur_h}")
-                elif not in_bed and desktop_locked and getattr(state, '_bedtime_locked', False):
+                elif not in_bed and desktop_locked and getattr(state, "_bedtime_locked", False):
                     mesh_orders.set("desktop_active", 0)
                     mesh_orders.set("desktop_message", "")
                     desktop_locked = False
@@ -927,7 +999,7 @@ def poll_status():
     elif state.locked and was_locked:
         # Refresh wallpaper if message/pinned/paywall changed mid-lock
         _cur = (state.message, state.pinned, state.paywall)
-        if not hasattr(poll_status, '_prev_display') or poll_status._prev_display != _cur:
+        if not hasattr(poll_status, "_prev_display") or poll_status._prev_display != _cur:
             set_lock_wallpaper()
     if state.locked:
         poll_status._prev_display = (state.message, state.pinned, state.paywall)
@@ -953,8 +1025,7 @@ def _handle_countdown(lock_at_ms: int, message: str):
             mesh_orders.set("desktop_active", 1)
             mesh_orders.set("countdown_lock_at", 0)
             mesh_orders.set("countdown_message", "")
-            mesh.bump_and_broadcast(mesh_orders, MESH_NODE_ID, mesh_peers,
-                                    ntfy_fn=_ntfy_fn)
+            mesh.bump_and_broadcast(mesh_orders, MESH_NODE_ID, mesh_peers, ntfy_fn=_ntfy_fn)
             state.countdown_lock_at = 0
             state.countdown_message = ""
         return
@@ -964,11 +1035,11 @@ def _handle_countdown(lock_at_ms: int, message: str):
 
     # Determine warning interval based on time remaining
     if remaining_min <= 1:
-        warn_interval_ms = 10_000     # every 10s in last minute
+        warn_interval_ms = 10_000  # every 10s in last minute
     elif remaining_min <= 5:
-        warn_interval_ms = 30_000     # every 30s in last 5 minutes
+        warn_interval_ms = 30_000  # every 30s in last 5 minutes
     else:
-        warn_interval_ms = 60_000     # every 60s otherwise
+        warn_interval_ms = 60_000  # every 60s otherwise
 
     # Check if we should warn now
     since_last = now_ms - state.countdown_last_warn
@@ -991,14 +1062,15 @@ def _show_countdown_warning(remaining_ms: int, message: str):
 
     # System beep — escalating urgency
     import winsound
+
     if remaining_sec <= 60:
         winsound.Beep(1000, 300)  # high pitch, last minute
         time.sleep(0.1)
         winsound.Beep(1000, 300)
     elif remaining_sec <= 300:
-        winsound.Beep(800, 200)   # medium pitch, last 5 minutes
+        winsound.Beep(800, 200)  # medium pitch, last 5 minutes
     else:
-        winsound.Beep(600, 150)   # low pitch, normal warning
+        winsound.Beep(600, 150)  # low pitch, normal warning
 
     # Windows toast notification via PowerShell.
     # SECURITY: title/body come from mesh orders (user-controlled). We escape
@@ -1006,6 +1078,7 @@ def _show_countdown_warning(remaining_ms: int, message: str):
     # injection. PowerShell uses '' to escape a single quote inside a '...' string.
     def _ps_escape(s):
         return str(s).replace("'", "''")
+
     title_esc = _ps_escape(title)
     body_esc = _ps_escape(body)
     try:
@@ -1040,11 +1113,12 @@ def _create_pairing_code(body):
     import re as _re
     import secrets
     import string
+
     chars = string.ascii_uppercase + string.digits
     code = body.get("code") or "".join(secrets.choice(chars) for _ in range(6))
     code = str(code).upper().strip()
     # SECURITY: pairing code must be alphanumeric only (used as filename)
-    if not _re.match(r'^[A-Z0-9]{4,12}$', code):
+    if not _re.match(r"^[A-Z0-9]{4,12}$", code):
         return {"ok": False, "error": "invalid code format"}
     expires_min = body.get("expires_minutes", 60)
     my_addrs = get_local_addresses()
@@ -1092,15 +1166,22 @@ class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
 
         if path == "/mesh/sync":
             resp = mesh.handle_mesh_sync(
-                body, MESH_NODE_ID, MESH_NODE_TYPE,
-                get_local_addresses(), MESH_PORT,
-                mesh_orders, mesh_peers,
-                mesh_local_status(), get_lion_pubkey(),
+                body,
+                MESH_NODE_ID,
+                MESH_NODE_TYPE,
+                get_local_addresses(),
+                MESH_PORT,
+                mesh_orders,
+                mesh_peers,
+                mesh_local_status(),
+                get_lion_pubkey(),
                 on_orders_applied=on_mesh_orders_applied,
             )
         elif path == "/mesh/order":
             resp = mesh.handle_mesh_order(
-                body, mesh_orders, mesh_peers,
+                body,
+                mesh_orders,
+                mesh_peers,
                 MESH_NODE_ID,
                 apply_fn=mesh_apply_order,
                 lion_pubkey=get_lion_pubkey(),
@@ -1122,9 +1203,7 @@ class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         if path == "/mesh/ping":
             resp = mesh.handle_mesh_ping(MESH_NODE_ID, mesh_orders)
         elif path == "/mesh/status":
-            resp = mesh.handle_mesh_status(
-                mesh_orders, mesh_peers, MESH_NODE_ID, mesh_local_status()
-            )
+            resp = mesh.handle_mesh_status(mesh_orders, mesh_peers, MESH_NODE_ID, mesh_local_status())
         elif path in ("/", "/index.html"):
             self._serve_web_ui()
             return
@@ -1139,9 +1218,12 @@ class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
 
     def _serve_web_ui(self):
         """Serve Lion's Share web UI from install dir."""
-        for search_dir in [CONFIG_DIR, os.path.join(CONFIG_DIR, "web"),
-                           os.path.dirname(os.path.abspath(__file__)),
-                           INSTALL_DIR_SYSTEM]:
+        for search_dir in [
+            CONFIG_DIR,
+            os.path.join(CONFIG_DIR, "web"),
+            os.path.dirname(os.path.abspath(__file__)),
+            INSTALL_DIR_SYSTEM,
+        ]:
             index = os.path.join(search_dir, "index.html")
             if not os.path.exists(index):
                 index = os.path.join(search_dir, "web", "index.html")
@@ -1159,9 +1241,10 @@ class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
     def _serve_pairing_code(self, code):
         """Serve pairing config for a given code."""
         import re as _re
+
         code = str(code).upper().strip()
         # SECURITY: validate alphanumeric to prevent path traversal
-        if not _re.match(r'^[A-Z0-9]{4,12}$', code):
+        if not _re.match(r"^[A-Z0-9]{4,12}$", code):
             self.respond_json(400, {"error": "invalid code format"})
             return
         code_file = os.path.join(CONFIG_DIR, "pairing-codes", f"{code}.json")
@@ -1177,10 +1260,18 @@ HEALTH_PORT = 8436  # Watchdog checks this to know we're alive
 
 class HealthHandler(BaseHTTPRequestHandler):
     """Minimal health endpoint for the watchdog on port 8436."""
+
     def do_GET(self):
         if self.path == "/health":
-            data = json.dumps({"alive": True, "role": "collar", "pid": os.getpid(),
-                               "connected": state.connected, "nodes_online": state.nodes_online}).encode()
+            data = json.dumps(
+                {
+                    "alive": True,
+                    "role": "collar",
+                    "pid": os.getpid(),
+                    "connected": state.connected,
+                    "nodes_online": state.nodes_online,
+                }
+            ).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
@@ -1211,6 +1302,7 @@ def start_mesh_server():
 
 # ── Tray Icon (pystray) ──
 
+
 def create_tray_icon():
     """Create the system tray icon with gold/gray crown."""
     try:
@@ -1235,6 +1327,7 @@ def create_tray_icon():
                 src = os.path.join(src_dir, icon_name)
                 if os.path.exists(src):
                     import shutil
+
                     shutil.copy2(src, dest)
                     break
 
@@ -1271,22 +1364,24 @@ def create_tray_icon():
     def on_self_lock(mins):
         def _lock(icon, item):
             try:
-                data = json.dumps({
-                    "action": "lock",
-                    "params": {
-                        "message": f"Self-locked from desktop for {mins} minutes",
-                        "timer": str(mins),
-                        "mode": "basic",
-                        "target": "phone"
+                data = json.dumps(
+                    {
+                        "action": "lock",
+                        "params": {
+                            "message": f"Self-locked from desktop for {mins} minutes",
+                            "timer": str(mins),
+                            "mode": "basic",
+                            "target": "phone",
+                        },
                     }
-                }).encode()
+                ).encode()
                 req = urllib.request.Request(
-                    f"http://localhost:{MESH_PORT}/mesh/order",
-                    data=data,
-                    headers={"Content-Type": "application/json"})
+                    f"http://localhost:{MESH_PORT}/mesh/order", data=data, headers={"Content-Type": "application/json"}
+                )
                 urllib.request.urlopen(req, timeout=5)
             except Exception as e:
                 print(f"[tray] Self-lock failed: {e}")
+
         return _lock
 
     menu = pystray.Menu(
@@ -1308,6 +1403,7 @@ def create_tray_icon():
 
     # Background updater — only set icon when state changes to force Win32 redraw
     _prev = [None, None]  # [connected, title]
+
     def _update_loop():
         while True:
             try:
@@ -1333,17 +1429,20 @@ def create_tray_icon():
 
 INSTALL_DIR_SYSTEM = r"C:\focuslock"
 
+
 def is_admin():
     try:
         return ctypes.windll.shell32.IsUserAnAdmin() != 0
     except Exception:
         return False
 
+
 def get_exe_path():
     """Get path to current executable (None if running as script)."""
-    if getattr(sys, 'frozen', False):
+    if getattr(sys, "frozen", False):
         return os.path.abspath(sys.executable)
     return None
+
 
 def needs_install():
     """Check if self-installation is needed."""
@@ -1360,6 +1459,7 @@ def needs_install():
         return os.path.getsize(exe) != os.path.getsize(installed_exe)
     except Exception:
         return True
+
 
 def self_install():
     """Install collar to C:\\focuslock with scheduled tasks, firewall, ACLs."""
@@ -1388,8 +1488,7 @@ def self_install():
     # Copy icons to appdata
     os.makedirs(ICONS_DIR, exist_ok=True)
     for icon_name in ["crown-gold.png", "crown-gray.png", "collar-icon.png"]:
-        for search_dir in [exe_dir, os.path.join(exe_dir, "icons"),
-                           os.path.join(exe_dir, "..", "icons")]:
+        for search_dir in [exe_dir, os.path.join(exe_dir, "icons"), os.path.join(exe_dir, "..", "icons")]:
             src = os.path.join(search_dir, icon_name)
             if os.path.exists(src):
                 dest_dir = ICONS_DIR if "crown" in icon_name else CONFIG_DIR
@@ -1399,8 +1498,7 @@ def self_install():
     # Copy web UI if available
     web_dest = os.path.join(CONFIG_DIR, "web")
     os.makedirs(web_dest, exist_ok=True)
-    for search_dir in [exe_dir, os.path.join(exe_dir, ".."),
-                       os.path.join(exe_dir, "..", "web")]:
+    for search_dir in [exe_dir, os.path.join(exe_dir, ".."), os.path.join(exe_dir, "..", "web")]:
         src = os.path.join(search_dir, "web", "index.html")
         if not os.path.exists(src):
             src = os.path.join(search_dir, "index.html")
@@ -1410,15 +1508,24 @@ def self_install():
             break
 
     # Firewall rule for mesh port
-    subprocess.run([
-        "netsh", "advfirewall", "firewall", "delete", "rule",
-        "name=FocusLock Mesh (TCP 8435)"
-    ], capture_output=True)
-    subprocess.run([
-        "netsh", "advfirewall", "firewall", "add", "rule",
-        "name=FocusLock Mesh (TCP 8435)",
-        "dir=in", "protocol=tcp", "localport=8435", "action=allow"
-    ], capture_output=True)
+    subprocess.run(
+        ["netsh", "advfirewall", "firewall", "delete", "rule", "name=FocusLock Mesh (TCP 8435)"], capture_output=True
+    )
+    subprocess.run(
+        [
+            "netsh",
+            "advfirewall",
+            "firewall",
+            "add",
+            "rule",
+            "name=FocusLock Mesh (TCP 8435)",
+            "dir=in",
+            "protocol=tcp",
+            "localport=8435",
+            "action=allow",
+        ],
+        capture_output=True,
+    )
     print("[install] Firewall rule set")
 
     # Scheduled tasks via PowerShell (restart on failure, no time limit, admin)
@@ -1448,9 +1555,9 @@ Register-ScheduledTask -TaskName "FocusLockWatchdog" -Action $a -Trigger $t -Set
 
     # Registry Run key as fallback
     try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
-                             0, winreg.KEY_SET_VALUE)
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE
+        )
         winreg.SetValueEx(key, "FocusLockCollar", 0, winreg.REG_SZ, f'"{installed_exe}"')
         winreg.CloseKey(key)
         print("[install] Registry Run key set")
@@ -1458,12 +1565,20 @@ Register-ScheduledTask -TaskName "FocusLockWatchdog" -Action $a -Trigger $t -Set
         print("[warn] Failed to set Registry Run key for autostart")
 
     # ACL lockdown — user gets Read+Execute only
-    subprocess.run([
-        "icacls", INSTALL_DIR_SYSTEM, "/inheritance:r",
-        "/grant:r", "SYSTEM:(OI)(CI)F",
-        "/grant:r", "*S-1-5-32-544:(OI)(CI)F",  # BUILTIN\Administrators
-        "/grant:r", f"{os.environ.get('USERNAME', 'User')}:(OI)(CI)RX"
-    ], capture_output=True)
+    subprocess.run(
+        [
+            "icacls",
+            INSTALL_DIR_SYSTEM,
+            "/inheritance:r",
+            "/grant:r",
+            "SYSTEM:(OI)(CI)F",
+            "/grant:r",
+            "*S-1-5-32-544:(OI)(CI)F",  # BUILTIN\Administrators
+            "/grant:r",
+            f"{os.environ.get('USERNAME', 'User')}:(OI)(CI)RX",
+        ],
+        capture_output=True,
+    )
     print("[install] ACL lockdown applied")
 
     # Standing orders sync
@@ -1485,8 +1600,7 @@ Register-ScheduledTask -TaskName "FocusLockWatchdog" -Action $a -Trigger $t -Set
         print("[warn] Failed to set up standing orders sync")
 
     # Remove old startup entries (from legacy installers)
-    startup = os.path.join(os.environ.get("APPDATA", ""),
-                           r"Microsoft\Windows\Start Menu\Programs\Startup")
+    startup = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs\Startup")
     for f in os.listdir(startup):
         if "focuslock" in f.lower() or "collar" in f.lower():
             try:
@@ -1498,15 +1612,14 @@ Register-ScheduledTask -TaskName "FocusLockWatchdog" -Action $a -Trigger $t -Set
     print("[install] Installation complete — launching from install dir")
 
     # Launch collar + watchdog from installed location
-    subprocess.Popen([installed_exe],
-                     creationflags=subprocess.DETACHED_PROCESS)
+    subprocess.Popen([installed_exe], creationflags=subprocess.DETACHED_PROCESS)
     if os.path.exists(watchdog_exe):
-        subprocess.Popen([watchdog_exe],
-                         creationflags=subprocess.DETACHED_PROCESS)
+        subprocess.Popen([watchdog_exe], creationflags=subprocess.DETACHED_PROCESS)
     sys.exit(0)
 
 
 # ── Startup Cleanup ──
+
 
 def _should_be_locked() -> bool:
     """Check persisted orders to determine if desktop should be locked.
@@ -1525,7 +1638,9 @@ def _kill_old_processes():
         try:
             result = subprocess.run(
                 ["tasklist", "/FI", f"IMAGENAME eq {exe_name}", "/FO", "CSV", "/NH"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             for line in result.stdout.strip().split("\n"):
                 if not line.strip() or "INFO:" in line:
@@ -1535,8 +1650,7 @@ def _kill_old_processes():
                     pid = int(parts[1])
                     if pid != my_pid:
                         try:
-                            subprocess.run(["taskkill", "/F", "/PID", str(pid)],
-                                           capture_output=True, timeout=5)
+                            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=5)
                             print(f"[collar] Killed old {exe_name} (PID {pid})")
                         except Exception:
                             pass
@@ -1545,6 +1659,7 @@ def _kill_old_processes():
 
 
 # ── Main ──
+
 
 def _is_another_instance_running() -> bool:
     """Check if a healthy collar instance is already running on this machine."""
@@ -1658,6 +1773,7 @@ def main():
 
     # Start ntfy subscribe thread for instant order wake-ups
     if _ntfy_enabled:
+
         def _ntfy_wake(version):
             print(f"[ntfy] Wake-up v{version} — triggering immediate sync")
             try:
@@ -1668,8 +1784,7 @@ def main():
             except Exception:
                 pass
 
-        ntfy_sub = ntfy_mod.NtfySubscribeThread(
-            _ntfy_topic, on_wake=_ntfy_wake, server=_ntfy_server)
+        ntfy_sub = ntfy_mod.NtfySubscribeThread(_ntfy_topic, on_wake=_ntfy_wake, server=_ntfy_server)
         ntfy_sub.start()
         print(f"[ntfy] Subscribed to {_ntfy_server}/{_ntfy_topic}")
 
@@ -1682,6 +1797,7 @@ def main():
                 except Exception:
                     print("[warn] Vault poll loop error")
                 time.sleep(POLL_INTERVAL)
+
         threading.Thread(target=_vault_poll_loop, daemon=True).start()
         print("[collar] Vault poll started (replaces plaintext sync to server)")
     else:
@@ -1693,6 +1809,7 @@ def main():
                 except Exception:
                     print("[warn] Direct sync loop error")
                 time.sleep(POLL_INTERVAL)
+
         threading.Thread(target=_direct_sync_loop, daemon=True).start()
 
     # Start poll status loop
@@ -1703,6 +1820,7 @@ def main():
             except Exception as e:
                 print(f"[collar] Poll error: {e}")
             time.sleep(POLL_INTERVAL)
+
     threading.Thread(target=_poll_loop, daemon=True).start()
 
     # Create and run tray icon (blocks on main thread)

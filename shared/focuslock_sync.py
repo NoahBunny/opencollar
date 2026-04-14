@@ -13,9 +13,22 @@ import json
 import urllib.request
 
 
-def try_sync(url, name, *, node_id, node_type, my_addrs, mesh_port,
-             mesh_orders, mesh_peers, local_status, lion_pubkey,
-             on_orders_applied=None, pin="", mesh_id=""):
+def try_sync(
+    url,
+    name,
+    *,
+    node_id,
+    node_type,
+    my_addrs,
+    mesh_port,
+    mesh_orders,
+    mesh_peers,
+    local_status,
+    lion_pubkey,
+    on_orders_applied=None,
+    pin="",
+    mesh_id="",
+):
     """Attempt mesh sync with a single endpoint.
 
     Sends local state, receives remote state, updates peers, and applies
@@ -40,21 +53,20 @@ def try_sync(url, name, *, node_id, node_type, my_addrs, mesh_port,
         True if the endpoint responded (even if no new orders), False on error.
     """
     try:
-        payload = json.dumps({
-            "pin": pin,
-            "node_id": node_id,
-            "type": node_type,
-            "addresses": my_addrs,
-            "port": mesh_port,
-            "orders_version": mesh_orders.version,
-            "status": local_status,
-        }).encode()
+        payload = json.dumps(
+            {
+                "pin": pin,
+                "node_id": node_id,
+                "type": node_type,
+                "addresses": my_addrs,
+                "port": mesh_port,
+                "orders_version": mesh_orders.version,
+                "status": local_status,
+            }
+        ).encode()
         # Use account-based endpoint if mesh_id is configured
         sync_path = f"/api/mesh/{mesh_id}/sync" if mesh_id else "/mesh/sync"
-        req = urllib.request.Request(
-            f"{url}{sync_path}",
-            data=payload,
-            headers={"Content-Type": "application/json"})
+        req = urllib.request.Request(f"{url}{sync_path}", data=payload, headers={"Content-Type": "application/json"})
         resp = urllib.request.urlopen(req, timeout=5)
         data = json.loads(resp.read())
 
@@ -75,11 +87,9 @@ def try_sync(url, name, *, node_id, node_type, my_addrs, mesh_port,
         # Apply newer orders if available
         remote_ver = data.get("orders_version", 0)
         has_orders = "orders" in data
-        print(f"[sync] {name} responded v{remote_ver}, "
-              f"has_orders={has_orders}, local v{mesh_orders.version}")
+        print(f"[sync] {name} responded v{remote_ver}, has_orders={has_orders}, local v{mesh_orders.version}")
         if remote_ver > mesh_orders.version and has_orders:
-            print(f"[sync] Applying v{remote_ver} from {name} "
-                  f"(local was v{mesh_orders.version})")
+            print(f"[sync] Applying v{remote_ver} from {name} (local was v{mesh_orders.version})")
             applied = mesh_orders.apply_remote(
                 {
                     "version": remote_ver,
@@ -90,8 +100,7 @@ def try_sync(url, name, *, node_id, node_type, my_addrs, mesh_port,
                 lion_pubkey,
             )
             if applied:
-                print(f"[sync] Now at v{mesh_orders.version} "
-                      f"lock_active={mesh_orders.orders.get('lock_active')}")
+                print(f"[sync] Now at v{mesh_orders.version} lock_active={mesh_orders.orders.get('lock_active')}")
                 if on_orders_applied:
                     on_orders_applied(mesh_orders.orders)
                 return True
@@ -103,12 +112,25 @@ def try_sync(url, name, *, node_id, node_type, my_addrs, mesh_port,
         return False
 
 
-def direct_sync_poll(*, mesh_url, homelab_url, phone_addresses,
-                     phone_port, node_id, node_type, mesh_port,
-                     mesh_orders, mesh_peers, local_status_fn,
-                     lion_pubkey_fn, on_orders_applied=None,
-                     get_local_addresses_fn, pin="",
-                     get_tailscale_ip_fn=None, mesh_id=""):
+def direct_sync_poll(
+    *,
+    mesh_url,
+    homelab_url,
+    phone_addresses,
+    phone_port,
+    node_id,
+    node_type,
+    mesh_port,
+    mesh_orders,
+    mesh_peers,
+    local_status_fn,
+    lion_pubkey_fn,
+    on_orders_applied=None,
+    get_local_addresses_fn,
+    pin="",
+    get_tailscale_ip_fn=None,
+    mesh_id="",
+):
     """Poll mesh endpoints in priority order, then discovered peers.
 
     Tries endpoints in this order:
@@ -183,8 +205,7 @@ def direct_sync_poll(*, mesh_url, homelab_url, phone_addresses,
     return False
 
 
-def relay_to_phones(action, params, *, mesh_orders=None, mesh_peers,
-                    node_id, pin=""):
+def relay_to_phones(action, params, *, mesh_orders=None, mesh_peers, node_id, pin=""):
     """Forward an order to all known phone peers via mesh push.
 
     Args:
@@ -195,25 +216,24 @@ def relay_to_phones(action, params, *, mesh_orders=None, mesh_peers,
         node_id: This node's mesh ID (to exclude self from peers).
         pin: Mesh PIN.  If empty and mesh_orders provided, reads from orders.
     """
-    phone_peers = [p for p in mesh_peers.get_all_except(node_id)
-                   if p.node_type == "phone"]
+    phone_peers = [p for p in mesh_peers.get_all_except(node_id) if p.node_type == "phone"]
     if not pin and mesh_orders:
         pin = str(mesh_orders.get("pin", ""))
     for peer in phone_peers:
-        payload = json.dumps({
-            "action": action,
-            "params": params,
-            "pin": pin,
-        }).encode()
+        payload = json.dumps(
+            {
+                "action": action,
+                "params": params,
+                "pin": pin,
+            }
+        ).encode()
         for addr in peer.addresses:
             try:
                 req = urllib.request.Request(
-                    f"http://{addr}:{peer.port}/mesh/order",
-                    data=payload,
-                    headers={"Content-Type": "application/json"})
+                    f"http://{addr}:{peer.port}/mesh/order", data=payload, headers={"Content-Type": "application/json"}
+                )
                 urllib.request.urlopen(req, timeout=3)
-                print(f"[relay] Forwarded {action} to phone "
-                      f"{addr}:{peer.port}")
+                print(f"[relay] Forwarded {action} to phone {addr}:{peer.port}")
                 break
             except Exception:
                 continue

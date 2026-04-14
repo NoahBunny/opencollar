@@ -38,8 +38,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 def canonical_json(obj):
     """Canonical JSON bytes — matches Java and Python mesh canonical_json."""
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=True).encode("utf-8")
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
 
 
 def slot_id_for_pubkey(pubkey_der):
@@ -49,9 +48,14 @@ def slot_id_for_pubkey(pubkey_der):
 
 def _strip_pem(key_str):
     """Strip PEM headers and whitespace, return raw base64 string."""
-    for hdr in ("-----BEGIN PUBLIC KEY-----", "-----END PUBLIC KEY-----",
-                "-----BEGIN PRIVATE KEY-----", "-----END PRIVATE KEY-----",
-                "-----BEGIN RSA PRIVATE KEY-----", "-----END RSA PRIVATE KEY-----"):
+    for hdr in (
+        "-----BEGIN PUBLIC KEY-----",
+        "-----END PUBLIC KEY-----",
+        "-----BEGIN PRIVATE KEY-----",
+        "-----END PRIVATE KEY-----",
+        "-----BEGIN RSA PRIVATE KEY-----",
+        "-----END RSA PRIVATE KEY-----",
+    ):
         key_str = key_str.replace(hdr, "")
     return key_str.replace("\n", "").replace("\r", "").replace(" ", "")
 
@@ -68,13 +72,12 @@ def _load_privkey(privkey_pem):
     """Load an RSA private key from PEM string."""
     if "-----" not in privkey_pem:
         # Raw base64 — wrap as PKCS8 PEM
-        privkey_pem = (
-            "-----BEGIN PRIVATE KEY-----\n" + privkey_pem + "\n-----END PRIVATE KEY-----"
-        )
+        privkey_pem = "-----BEGIN PRIVATE KEY-----\n" + privkey_pem + "\n-----END PRIVATE KEY-----"
     return serialization.load_pem_private_key(privkey_pem.encode(), password=None)
 
 
 # ── Signature ──
+
 
 def verify_signature(blob, lion_pubkey_str):
     """Verify RSA-PKCS1v15-SHA256 signature on a vault blob.
@@ -104,6 +107,7 @@ def sign_blob(blob, privkey_pem):
 
 
 # ── Decryption ──
+
 
 def decrypt_body(blob, my_privkey_pem, my_pubkey_der):
     """Decrypt a vault blob's body using the node's RSA private key.
@@ -159,6 +163,7 @@ def decrypt_body(blob, my_privkey_pem, my_pubkey_der):
 
 # ── Encryption ──
 
+
 def encrypt_body(mesh_id, version, created_at, body, recipients, signer_privkey_pem):
     """Encrypt a body dict into a vault blob and sign it.
 
@@ -202,6 +207,7 @@ def encrypt_body(mesh_id, version, created_at, body, recipients, signer_privkey_
 
 
 # ── Key generation ──
+
 
 def generate_keypair():
     """Generate an RSA-2048 keypair. Returns (privkey_pem, pubkey_pem, pubkey_der)."""

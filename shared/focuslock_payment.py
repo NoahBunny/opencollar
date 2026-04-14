@@ -34,8 +34,13 @@ _HARDCODED_FALLBACK = [
         "name": "Generic",
         "senders": [],
         "keywords": [
-            "deposit", "deposited", "credited", "received",
-            "direct deposit", "transfer", "payment",
+            "deposit",
+            "deposited",
+            "credited",
+            "received",
+            "direct deposit",
+            "transfer",
+            "payment",
         ],
     },
 ]
@@ -59,15 +64,16 @@ def load_payment_providers(banks_path):
         for lang_keywords in data.get("transfer_keywords", {}).values():
             all_keywords.extend(lang_keywords)
         if all_keywords:
-            providers.append({
-                "name": "Generic",
-                "senders": [],
-                "keywords": list(set(all_keywords)),
-            })
+            providers.append(
+                {
+                    "name": "Generic",
+                    "senders": [],
+                    "keywords": list(set(all_keywords)),
+                }
+            )
         return providers if providers else _HARDCODED_FALLBACK
     except Exception as e:
-        print(f"[payment] WARNING: Failed to load banks.json: {e} "
-              f"\u2014 using hardcoded fallback")
+        print(f"[payment] WARNING: Failed to load banks.json: {e} \u2014 using hardcoded fallback")
         return _HARDCODED_FALLBACK
 
 
@@ -80,8 +86,7 @@ def load_iso_codes(banks_path):
     Returns:
         Pipe-separated string of ISO codes for regex alternation.
     """
-    _default = ("CAD|USD|EUR|GBP|AUD|NZD|SGD|INR|JPY|CHF"
-                "|SEK|NOK|DKK|BRL|MXN|ZAR|HKD|KRW")
+    _default = "CAD|USD|EUR|GBP|AUD|NZD|SGD|INR|JPY|CHF|SEK|NOK|DKK|BRL|MXN|ZAR|HKD|KRW"
     try:
         with open(banks_path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -102,15 +107,14 @@ def score_payment_email(sender, all_text, provider):
         Tuple of (score, keyword_match_count).
     """
     score = 0
-    sender_match = (not provider["senders"]
-                    or any(s in sender for s in provider["senders"]))
+    sender_match = not provider["senders"] or any(s in sender for s in provider["senders"])
     if provider["senders"] and sender_match:
         score += 3  # Known payment sender is a strong signal
     keyword_matches = sum(1 for kw in provider["keywords"] if kw in all_text)
     score += keyword_matches
     # Check for currency amount presence (adds 2 to score)
     # Note: caller should also run extract_amount(); this is a quick heuristic
-    if re.search(r'[$\u20ac\u00a3\u00a5\u20b9]\s?\d', all_text):
+    if re.search(r"[$\u20ac\u00a3\u00a5\u20b9]\s?\d", all_text):
         score += 2
     return score, keyword_matches
 
@@ -128,12 +132,11 @@ def extract_amount(text, iso_codes=None):
         Largest amount found as float, or 0.
     """
     if iso_codes is None:
-        iso_codes = ("CAD|USD|EUR|GBP|AUD|NZD|SGD|INR|JPY|CHF"
-                     "|SEK|NOK|DKK|BRL|MXN|ZAR|HKD|KRW")
+        iso_codes = "CAD|USD|EUR|GBP|AUD|NZD|SGD|INR|JPY|CHF|SEK|NOK|DKK|BRL|MXN|ZAR|HKD|KRW"
     patterns = [
-        r'[$\u20ac\u00a3\u00a5\u20b9]\s?(\d+[.,]?\d*)',        # Symbol-first: $50
-        r'(\d+[.,]\d{2})\s?[$\u20ac\u00a3\u00a5\u20b9]',       # Symbol-after: 50.00$
-        rf'(\d+[.,]\d{{2}})\s?(?:{iso_codes})',                  # ISO codes
+        r"[$\u20ac\u00a3\u00a5\u20b9]\s?(\d+[.,]?\d*)",  # Symbol-first: $50
+        r"(\d+[.,]\d{2})\s?[$\u20ac\u00a3\u00a5\u20b9]",  # Symbol-after: 50.00$
+        rf"(\d+[.,]\d{{2}})\s?(?:{iso_codes})",  # ISO codes
     ]
     max_amount = 0
     for pat in patterns:
@@ -211,12 +214,23 @@ def reduce_paywall(remaining, paid, adb, phone_url="", phone_pin=""):
         print(f"[payment] Reduce paywall failed: {e}")
 
 
-def check_payment_emails(*, imap_host, mail_user, mail_pass,
-                         check_interval, adb, mesh_orders,
-                         payment_ledger, providers, iso_codes,
-                         min_payment=0.01, max_payment=10000,
-                         phone_url="", phone_pin="",
-                         recipient_email=""):
+def check_payment_emails(
+    *,
+    imap_host,
+    mail_user,
+    mail_pass,
+    check_interval,
+    adb,
+    mesh_orders,
+    payment_ledger,
+    providers,
+    iso_codes,
+    min_payment=0.01,
+    max_payment=10000,
+    phone_url="",
+    phone_pin="",
+    recipient_email="",
+):
     """Main IMAP polling loop for payment email detection.
 
     This function blocks forever (meant for threading).  It checks for
@@ -246,6 +260,7 @@ def check_payment_emails(*, imap_host, mail_user, mail_pass,
         recipient_email: If set, reject e-Transfers where this email is
             NOT mentioned in the body (anti-self-pay protection).
     """
+
     def _now():
         return datetime.now().strftime("%H:%M:%S")
 
@@ -290,8 +305,8 @@ def check_payment_emails(*, imap_host, mail_user, mail_pass,
             # Search ALL recent emails, not just UNSEEN — dedup is handled
             # by the payment ledger via Message-ID, not read/unread state.
             # SINCE last 7 days to avoid scanning entire inbox every cycle.
-            since_date = (datetime.now() - __import__('datetime').timedelta(days=7)).strftime("%d-%b-%Y")
-            _, data = mail.search(None, f'(SINCE {since_date})')
+            since_date = (datetime.now() - __import__("datetime").timedelta(days=7)).strftime("%d-%b-%Y")
+            _, data = mail.search(None, f"(SINCE {since_date})")
             email_ids = data[0].split()
             print(f"[{_now()}] Found {len(email_ids)} emails in last 7 days")
             for num in email_ids:
@@ -308,9 +323,11 @@ def check_payment_emails(*, imap_host, mail_user, mail_pass,
                 for provider in providers:
                     score, _kw = score_payment_email(sender, all_text, provider)
                     if score > 0:
-                        print(f"[{_now()}]   #{num.decode()} from={sender[:40]} "
-                              f"subj={subject[:50]} score={score}/{4 if provider['senders'] else 5} "
-                              f"provider={provider['name']}")
+                        print(
+                            f"[{_now()}]   #{num.decode()} from={sender[:40]} "
+                            f"subj={subject[:50]} score={score}/{4 if provider['senders'] else 5} "
+                            f"provider={provider['name']}"
+                        )
                     # Thresholds: known sender needs >= 4, generic needs >= 5
                     threshold = 4 if provider["senders"] else 5
                     if score >= threshold and score > best_score:
@@ -328,13 +345,11 @@ def check_payment_emails(*, imap_host, mail_user, mail_pass,
                 if amount < min_payment:
                     continue
                 if amount > max_payment:
-                    print(f"[{_now()}] Ignoring suspicious amount: "
-                          f"${amount:.2f} (max: ${max_payment})")
+                    print(f"[{_now()}] Ignoring suspicious amount: ${amount:.2f} (max: ${max_payment})")
                     continue
 
                 # Deduplicate via ledger using email Message-ID
-                msg_id = msg.get("Message-ID",
-                                 f"imap-{int(time.time())}-{num.decode()}")
+                msg_id = msg.get("Message-ID", f"imap-{int(time.time())}-{num.decode()}")
                 ledger_result = payment_ledger.add_entry(
                     entry_type="payment",
                     amount=amount,
@@ -344,22 +359,21 @@ def check_payment_emails(*, imap_host, mail_user, mail_pass,
                 if ledger_result.get("error") == "duplicate":
                     continue  # Already processed
 
-                print(f"[{_now()}] Payment confirmed: ${amount:.2f} via "
-                      f"{best_provider['name']} "
-                      f"(score: {best_score}, need: ${paywall:.2f})")
+                print(
+                    f"[{_now()}] Payment confirmed: ${amount:.2f} via "
+                    f"{best_provider['name']} "
+                    f"(score: {best_score}, need: ${paywall:.2f})"
+                )
 
                 # Notify Lion via mesh pinned message
-                mesh_orders.set("pinned_message",
-                    f"Payment received: ${amount:.2f} via "
-                    f"{best_provider['name']}")
+                mesh_orders.set("pinned_message", f"Payment received: ${amount:.2f} via {best_provider['name']}")
 
                 # Track total paid (cents) for stats display
                 try:
                     cur = int(adb.get("focus_lock_total_paid_cents") or "0")
                 except Exception:
                     cur = 0
-                adb.put("focus_lock_total_paid_cents",
-                        str(cur + int(amount * 100)))
+                adb.put("focus_lock_total_paid_cents", str(cur + int(amount * 100)))
 
                 if amount >= paywall:
                     print(f"[{_now()}] FULL PAYMENT \u2014 clearing paywall!")
@@ -368,10 +382,8 @@ def check_payment_emails(*, imap_host, mail_user, mail_pass,
                     unlock_phone(adb)
                 else:
                     remaining = paywall - amount
-                    print(f"[{_now()}] Partial: ${amount:.2f}, "
-                          f"remaining: ${remaining:.2f}")
-                    reduce_paywall(remaining, amount, adb,
-                                   phone_url, phone_pin)
+                    print(f"[{_now()}] Partial: ${amount:.2f}, remaining: ${remaining:.2f}")
+                    reduce_paywall(remaining, amount, adb, phone_url, phone_pin)
 
             mail.logout()
 

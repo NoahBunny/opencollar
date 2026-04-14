@@ -25,7 +25,10 @@ class ADBBridge:
         try:
             result = subprocess.run(
                 ["adb", "-s", dev, "shell", "settings", "get", "global", key],
-                capture_output=True, text=True, timeout=10)
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
             return result.stdout.strip()
         except Exception:
             return ""
@@ -35,9 +38,10 @@ class ADBBridge:
         for dev in self.devices:
             try:
                 subprocess.run(
-                    ["adb", "-s", dev, "shell", "settings", "put", "global",
-                     key, str(value)],
-                    capture_output=True, timeout=10)
+                    ["adb", "-s", dev, "shell", "settings", "put", "global", key, str(value)],
+                    capture_output=True,
+                    timeout=10,
+                )
             except Exception:
                 pass
 
@@ -46,9 +50,10 @@ class ADBBridge:
         for dev in self.devices:
             try:
                 subprocess.run(
-                    ["adb", "-s", dev, "shell", "settings", "put", "global",
-                     key, str(value)],
-                    capture_output=True, timeout=10)
+                    ["adb", "-s", dev, "shell", "settings", "put", "global", key, str(value)],
+                    capture_output=True,
+                    timeout=10,
+                )
             except Exception:
                 pass
 
@@ -58,9 +63,7 @@ class ADBBridge:
         if not dev:
             return
         try:
-            subprocess.run(
-                ["adb", "-s", dev, "shell", *cmd.split()],
-                capture_output=True, timeout=10)
+            subprocess.run(["adb", "-s", dev, "shell", *cmd.split()], capture_output=True, timeout=10)
         except Exception:
             pass
 
@@ -68,8 +71,6 @@ class ADBBridge:
         """Run a shell command on ALL devices."""
         for dev in self.devices:
             try:
-                subprocess.run(
-                    ["adb", "-s", dev, "shell", *cmd.split()],
-                    capture_output=True, timeout=10)
+                subprocess.run(["adb", "-s", dev, "shell", *cmd.split()], capture_output=True, timeout=10)
             except Exception:
                 pass

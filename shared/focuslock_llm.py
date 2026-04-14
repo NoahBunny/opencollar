@@ -16,10 +16,9 @@ DEFAULT_VISION_MODEL = "minicpm-v"
 DEFAULT_TEXT_MODEL = "dolphin-llama3:8b"
 
 
-def verify_photo_with_llm(photo_b64, task_text, *,
-                           ollama_url=DEFAULT_OLLAMA_URL,
-                           vision_model=DEFAULT_VISION_MODEL,
-                           on_evidence=None):
+def verify_photo_with_llm(
+    photo_b64, task_text, *, ollama_url=DEFAULT_OLLAMA_URL, vision_model=DEFAULT_VISION_MODEL, on_evidence=None
+):
     """Verify a photo task submission via Ollama vision model.
 
     Args:
@@ -40,12 +39,12 @@ def verify_photo_with_llm(photo_b64, task_text, *,
         prompt = (
             f"You are a task verification assistant. The user was asked to "
             f"complete this task:\n\n"
-            f"\"{task_text}\"\n\n"
+            f'"{task_text}"\n\n'
             f"They have submitted a photo as proof. Evaluate whether the photo "
             f"shows the task has been completed. Be reasonable but not "
             f"gullible.\n\n"
             f"Respond with ONLY a JSON object: "
-            f"{{\"passed\": true/false, \"reason\": \"brief explanation\"}}"
+            f'{{"passed": true/false, "reason": "brief explanation"}}'
         )
         payload = {
             "model": vision_model,
@@ -59,8 +58,7 @@ def verify_photo_with_llm(photo_b64, task_text, *,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        resp = json.loads(
-            urllib.request.urlopen(req, timeout=120).read().decode())
+        resp = json.loads(urllib.request.urlopen(req, timeout=120).read().decode())
         response_text = resp.get("response", "")
 
         # Try to parse JSON from response
@@ -89,8 +87,7 @@ def verify_photo_with_llm(photo_b64, task_text, *,
 
         # Fallback: check for obvious pass/fail keywords
         lower = response_text.lower()
-        passed = any(kw in lower
-                     for kw in ("pass", "true", "completed", "yes"))
+        passed = any(kw in lower for kw in ("pass", "true", "completed", "yes"))
         return {"ok": True, "passed": passed, "reason": response_text[:200]}
 
     except Exception as e:
@@ -98,9 +95,7 @@ def verify_photo_with_llm(photo_b64, task_text, *,
         return {"ok": False, "passed": False, "reason": str(e)}
 
 
-def generate_task_with_llm(category="general", *,
-                            ollama_url=DEFAULT_OLLAMA_URL,
-                            text_model=DEFAULT_TEXT_MODEL):
+def generate_task_with_llm(category="general", *, ollama_url=DEFAULT_OLLAMA_URL, text_model=DEFAULT_TEXT_MODEL):
     """Generate a creative task via Ollama text model.
 
     Args:
@@ -149,8 +144,8 @@ def generate_task_with_llm(category="general", *,
         prompt = prompts.get(category, prompts["general"])
         prompt += (
             "\n\nRespond with ONLY a JSON object: "
-            "{\"task\": \"the task description\", "
-            "\"hint\": \"what the photo should show\"}"
+            '{"task": "the task description", '
+            '"hint": "what the photo should show"}'
         )
 
         payload = {
@@ -164,8 +159,7 @@ def generate_task_with_llm(category="general", *,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        resp = json.loads(
-            urllib.request.urlopen(req, timeout=60).read().decode())
+        resp = json.loads(urllib.request.urlopen(req, timeout=60).read().decode())
         response_text = resp.get("response", "")
 
         try:

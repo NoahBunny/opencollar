@@ -8,16 +8,16 @@ Talks to homelab for lock state + standing orders sync.
 
 import gi
 
-gi.require_version('Gtk', '4.0')
+gi.require_version("Gtk", "4.0")
 
 WEBKIT_OK = False
 try:
-    gi.require_version('WebKit', '6.0')
+    gi.require_version("WebKit", "6.0")
     WEBKIT_OK = True
     WEBKIT_VER = 6
 except ValueError:
     try:
-        gi.require_version('WebKit2', '4.1')
+        gi.require_version("WebKit2", "4.1")
         WEBKIT_OK = True
         WEBKIT_VER = 4
     except ValueError:
@@ -46,8 +46,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # Add mesh module to path
-for _p in [os.path.dirname(os.path.abspath(__file__)), "/opt/focuslock",
-           os.path.expanduser("~/Desktop/Focus")]:
+for _p in [os.path.dirname(os.path.abspath(__file__)), "/opt/focuslock", os.path.expanduser("~/Desktop/Focus")]:
     if os.path.isfile(os.path.join(_p, "focuslock_mesh.py")):
         sys.path.insert(0, _p)
         break
@@ -72,13 +71,14 @@ try:
     from focuslock_vault import (
         verify_signature as vault_verify,
     )
+
     VAULT_CRYPTO_OK = True
 except ImportError:
     VAULT_CRYPTO_OK = False
 
 # Force unbuffered output so journald sees our logs
-sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
-sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', buffering=1)
+sys.stdout = os.fdopen(sys.stdout.fileno(), "w", buffering=1)
+sys.stderr = os.fdopen(sys.stderr.fileno(), "w", buffering=1)
 
 # ── Config ──
 
@@ -86,12 +86,14 @@ try:
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "shared"))
     from focuslock_config import load_config
 except ImportError:
+
     def load_config(config_path=None):
         path = config_path or os.path.expanduser("~/.config/focuslock/config.json")
         if os.path.exists(path):
             with open(path, "r") as f:
                 return json.load(f)
         return {}
+
 
 _cfg = load_config()
 
@@ -132,10 +134,12 @@ _ntfy_server = _cfg.get("ntfy_server", "https://ntfy.sh")
 _ntfy_topic = _cfg.get("ntfy_topic") or (f"focuslock-{MESH_ID}" if MESH_ID else "")
 _ntfy_enabled = _cfg.get("ntfy_enabled", False) and bool(_ntfy_topic) and ntfy_mod is not None
 
+
 def _ntfy_fn(version):
     """Best-effort ntfy publish after local order mutations."""
     if _ntfy_enabled:
         ntfy_mod.ntfy_publish(_ntfy_topic, version, _ntfy_server)
+
 
 MESH_VOUCHERS_FILE = os.path.join(MESH_CONFIG_DIR, "vouchers.json")
 TRUST_STORE_FILE = os.path.join(MESH_CONFIG_DIR, "trusted_peers.json")
@@ -143,7 +147,7 @@ TRUST_STORE_FILE = os.path.join(MESH_CONFIG_DIR, "trusted_peers.json")
 _trust_store = mesh.TrustStore(persist_path=TRUST_STORE_FILE)
 mesh_orders = mesh.OrdersDocument(persist_path=MESH_ORDERS_FILE)
 mesh_peers = mesh.PeerRegistry(persist_path=MESH_PEERS_FILE, trust_store=_trust_store)
-mesh_vouchers = mesh.VoucherPool(persist_path=MESH_VOUCHERS_FILE) if hasattr(mesh, 'VoucherPool') else None
+mesh_vouchers = mesh.VoucherPool(persist_path=MESH_VOUCHERS_FILE) if hasattr(mesh, "VoucherPool") else None
 
 # ── Vault Mode (Phase D desktop support) ──
 
@@ -152,6 +156,7 @@ VAULT_MODE = _cfg.get("vault_mode", False) and VAULT_CRYPTO_OK and bool(MESH_ID)
 # P7: Transport abstraction — pluggable vault blob read/write backend
 try:
     from focuslock_transport import transport_factory
+
     _vault_transport = transport_factory(_cfg)
 except ImportError:
     _vault_transport = None
@@ -164,6 +169,7 @@ VAULT_PUBKEY_FILE = os.path.join(MESH_CONFIG_DIR, "node_pubkey.pem")
 _vault_privkey_pem = ""
 _vault_pubkey_der = b""
 
+
 def _vault_init_keypair():
     """Load or generate RSA keypair for vault mode."""
     global _vault_privkey_pem, _vault_pubkey_der
@@ -172,6 +178,7 @@ def _vault_init_keypair():
             _vault_privkey_pem = f.read()
         # Derive DER from PEM
         from cryptography.hazmat.primitives import serialization
+
         pk = serialization.load_pem_private_key(_vault_privkey_pem.encode(), password=None)
         _vault_pubkey_der = pk.public_key().public_bytes(
             serialization.Encoding.DER,
@@ -190,10 +197,12 @@ def _vault_init_keypair():
         _vault_pubkey_der = der
         print(f"[vault] Generated new keypair (slot={vault_slot_id(der)})")
 
+
 # P6.5: approved node pubkeys cache for multi-signer verification
 _approved_node_pubkeys = []
 _nodes_last_fetch = 0
 _NODES_REFRESH_SECS = 1800  # 30 minutes
+
 
 def _vault_fetch_nodes():
     """Fetch approved vault node pubkeys for multi-signer verification."""
@@ -215,7 +224,9 @@ def _vault_fetch_nodes():
     except Exception as e:
         print(f"[vault] Fetch nodes error: {e}")
 
+
 _lazy_refresh_done_this_poll = False
+
 
 def _vault_verify_any_signer(blob, lion_pub):
     """P6.5: Verify blob against Lion pubkey OR any approved node pubkey.
@@ -235,6 +246,7 @@ def _vault_verify_any_signer(blob, lion_pub):
                 return True
     return False
 
+
 def _vault_register_node():
     """Register this desktop as a vault recipient if not already."""
     global _vault_node_registered
@@ -243,6 +255,7 @@ def _vault_register_node():
     if not _vault_transport and not MESH_URL:
         return
     import base64
+
     pubkey_b64 = base64.b64encode(_vault_pubkey_der).decode()
     payload = {
         "node_id": MESH_NODE_ID,
@@ -267,6 +280,7 @@ def _vault_register_node():
             print(f"[vault] Node registered: {result}")
     except Exception as e:
         print(f"[vault] Register error (will retry): {e}")
+
 
 def _vault_poll():
     """Fetch and decrypt vault blobs since last known version."""
@@ -330,7 +344,9 @@ def _vault_poll():
     except Exception as e:
         print(f"[vault] Poll error: {e}")
 
+
 _vault_poll_running = False
+
 
 def _vault_poll_tick():
     """Non-blocking vault poll on a background thread."""
@@ -338,17 +354,21 @@ def _vault_poll_tick():
     if _vault_poll_running:
         return True
     _vault_poll_running = True
+
     def _run():
         global _vault_poll_running
         try:
             _vault_poll()
         finally:
             _vault_poll_running = False
+
     threading.Thread(target=_run, daemon=True).start()
     return True
 
+
 _lion_pubkey = ""
 LION_PUBKEY_FILE = os.path.join(MESH_CONFIG_DIR, "lion_pubkey.pem")
+
 
 def get_lion_pubkey():
     global _lion_pubkey
@@ -362,23 +382,28 @@ def get_lion_pubkey():
             pass
     return _lion_pubkey
 
+
 def seed_mesh_peers():
     """Seed mesh peers from config."""
     if HOMELAB_URL:
         try:
             from urllib.parse import urlparse
+
             parsed = urlparse(HOMELAB_URL)
             if parsed.hostname:
                 _trust_store.trust("homelab", "config")
-                mesh_peers.update_peer("homelab", node_type="server",
-                                       addresses=[parsed.hostname],
-                                       port=parsed.port or _cfg.get("homelab_port", 8434))
+                mesh_peers.update_peer(
+                    "homelab",
+                    node_type="server",
+                    addresses=[parsed.hostname],
+                    port=parsed.port or _cfg.get("homelab_port", 8434),
+                )
         except Exception:
             pass
     for addr in PHONE_ADDRESSES:
         _trust_store.trust("phone", "config")
-        mesh_peers.update_peer("phone", node_type="phone",
-                               addresses=[addr], port=PHONE_PORT)
+        mesh_peers.update_peer("phone", node_type="phone", addresses=[addr], port=PHONE_PORT)
+
 
 def mesh_local_status():
     """Build this desktop's status for gossip."""
@@ -388,14 +413,20 @@ def mesh_local_status():
         "locked": state.locked,
     }
 
+
 def _try_sync(url, name, my_addrs, lion_pubkey):
     """Attempt mesh sync with a single endpoint. Returns True on success."""
     return _shared_try_sync(
-        url, name,
-        node_id=MESH_NODE_ID, node_type=MESH_NODE_TYPE,
-        my_addrs=my_addrs, mesh_port=MESH_PORT,
-        mesh_orders=mesh_orders, mesh_peers=mesh_peers,
-        local_status=mesh_local_status(), lion_pubkey=lion_pubkey,
+        url,
+        name,
+        node_id=MESH_NODE_ID,
+        node_type=MESH_NODE_TYPE,
+        my_addrs=my_addrs,
+        mesh_port=MESH_PORT,
+        mesh_orders=mesh_orders,
+        mesh_peers=mesh_peers,
+        local_status=mesh_local_status(),
+        lion_pubkey=lion_pubkey,
         on_orders_applied=on_mesh_orders_applied,
         pin=_cfg.get("pin", "") or str(mesh_orders.get("pin", "")),
         mesh_id=MESH_ID,
@@ -406,11 +437,16 @@ def direct_sync_poll():
     """Poll mesh — try configured endpoints in priority order, then discovered peers."""
     print(f"[collar] Direct sync: polling (local v{mesh_orders.version})")
     _shared_direct_sync_poll(
-        mesh_url=MESH_URL, homelab_url=HOMELAB_URL,
-        phone_addresses=PHONE_ADDRESSES, phone_port=PHONE_PORT,
-        node_id=MESH_NODE_ID, node_type=MESH_NODE_TYPE,
-        mesh_port=MESH_PORT, mesh_orders=mesh_orders,
-        mesh_peers=mesh_peers, local_status_fn=mesh_local_status,
+        mesh_url=MESH_URL,
+        homelab_url=HOMELAB_URL,
+        phone_addresses=PHONE_ADDRESSES,
+        phone_port=PHONE_PORT,
+        node_id=MESH_NODE_ID,
+        node_type=MESH_NODE_TYPE,
+        mesh_port=MESH_PORT,
+        mesh_orders=mesh_orders,
+        mesh_peers=mesh_peers,
+        local_status_fn=mesh_local_status,
         lion_pubkey_fn=get_lion_pubkey,
         on_orders_applied=on_mesh_orders_applied,
         get_local_addresses_fn=mesh.get_local_addresses,
@@ -419,19 +455,23 @@ def direct_sync_poll():
         mesh_id=MESH_ID,
     )
 
+
 _direct_sync_running = False
+
 
 def _direct_sync_tick():
     global _direct_sync_running
     if _direct_sync_running:
         return True
     _direct_sync_running = True
+
     def _run():
         global _direct_sync_running
         try:
             direct_sync_poll()
         finally:
             _direct_sync_running = False
+
     threading.Thread(target=_run, daemon=True).start()
     return True
 
@@ -455,8 +495,7 @@ def _handle_countdown(lock_at_ms: int, message: str):
             mesh_orders.set("desktop_active", 1)
             mesh_orders.set("countdown_lock_at", 0)
             mesh_orders.set("countdown_message", "")
-            mesh.bump_and_broadcast(mesh_orders, MESH_NODE_ID, mesh_peers,
-                                    ntfy_fn=_ntfy_fn)
+            mesh.bump_and_broadcast(mesh_orders, MESH_NODE_ID, mesh_peers, ntfy_fn=_ntfy_fn)
             state.countdown_lock_at = 0
             state.countdown_message = ""
         return
@@ -493,9 +532,11 @@ def _show_countdown_warning(remaining_ms: int, message: str):
     # Use notify-send for desktop notification
     try:
         import subprocess
+
         subprocess.Popen(
             ["notify-send", "-u", "critical", "-i", "dialog-warning", title, body],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
     except Exception:
         pass
@@ -503,12 +544,19 @@ def _show_countdown_warning(remaining_ms: int, message: str):
     # System bell
     try:
         import subprocess
+
         if remaining_sec <= 60:
-            subprocess.Popen(["paplay", "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(
+                ["paplay", "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         else:
-            subprocess.Popen(["paplay", "/usr/share/sounds/freedesktop/stereo/bell.oga"],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(
+                ["paplay", "/usr/share/sounds/freedesktop/stereo/bell.oga"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
     except Exception:
         pass
 
@@ -519,6 +567,7 @@ _poll_status_fn = None  # Set by CollarApp.do_activate so gossip can trigger imm
 
 _last_phone_lock_active = None  # track for ADB statusbar enforcement
 
+
 def _adb_statusbar_enforce(lock_active):
     """Toggle phone statusbar via ADB shell when lock state changes.
     Only works from a machine with an active ADB connection to the phone
@@ -527,8 +576,11 @@ def _adb_statusbar_enforce(lock_active):
     adb_port = os.environ.get("ANDROID_ADB_SERVER_PORT", "15037")
     try:
         out = subprocess.check_output(
-            ["adb", "devices"], env={**os.environ, "ANDROID_ADB_SERVER_PORT": adb_port},
-            timeout=5, stderr=subprocess.DEVNULL).decode()
+            ["adb", "devices"],
+            env={**os.environ, "ANDROID_ADB_SERVER_PORT": adb_port},
+            timeout=5,
+            stderr=subprocess.DEVNULL,
+        ).decode()
         for line in out.strip().splitlines()[1:]:
             parts = line.split()
             if len(parts) >= 2 and parts[1] == "device":
@@ -536,7 +588,9 @@ def _adb_statusbar_enforce(lock_active):
                 subprocess.Popen(
                     ["adb", "-s", dev, "shell", "cmd", "statusbar", "disable-for-setup", cmd],
                     env={**os.environ, "ANDROID_ADB_SERVER_PORT": adb_port},
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
                 print(f"[collar] ADB statusbar disable-for-setup {cmd} → {dev}")
     except Exception as e:
         print(f"[collar] ADB statusbar enforce skipped: {e}")
@@ -571,8 +625,10 @@ def on_mesh_orders_applied(orders_dict):
     sole writer so it can detect transitions and call show_lock/hide_lock.
     Schedule an immediate poll so the UI refreshes within ~100ms instead of
     waiting up to POLL_INTERVAL (5s)."""
-    print(f"[collar] Mesh orders applied: desktop_active={orders_dict.get('desktop_active')} "
-          f"lock_active={orders_dict.get('lock_active')}")
+    print(
+        f"[collar] Mesh orders applied: desktop_active={orders_dict.get('desktop_active')} "
+        f"lock_active={orders_dict.get('lock_active')}"
+    )
     # ADB statusbar enforcement is handled by _phone_statusbar_loop (HTTP poll),
     # NOT gossip — gossip lock_active can be stale when vault node is pending.
     if _poll_status_fn:
@@ -582,8 +638,10 @@ def on_mesh_orders_applied(orders_dict):
 def _relay_to_phones(action, params):
     """Forward an order to all known phone peers via mesh push."""
     _shared_relay_to_phones(
-        action, params,
-        mesh_orders=mesh_orders, mesh_peers=mesh_peers,
+        action,
+        params,
+        mesh_orders=mesh_orders,
+        mesh_peers=mesh_peers,
         node_id=MESH_NODE_ID,
         pin=_cfg.get("pin", "") or str(mesh_orders.get("pin", "")),
     )
@@ -699,8 +757,8 @@ def _show_liberation_dialog():
             .liberation-win { background-color: #0a0a14; }
         """)
         Gtk.StyleContext.add_provider_for_display(
-            Gdk.Display.get_default(), css_provider,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            Gdk.Display.get_default(), css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
 
         win = Gtk.Window(title="Liberated")
         win.set_default_size(500, 300)
@@ -719,12 +777,14 @@ def _show_liberation_dialog():
         title.add_css_class("liberation-title")
         box.append(title)
 
-        body = Gtk.Label(label=(
-            "This device has been released from the FocusLock mesh.\n\n"
-            "All restrictions are lifted.\n"
-            "The collar is gone.\n\n"
-            "You are free."
-        ))
+        body = Gtk.Label(
+            label=(
+                "This device has been released from the FocusLock mesh.\n\n"
+                "All restrictions are lifted.\n"
+                "The collar is gone.\n\n"
+                "You are free."
+            )
+        )
         body.set_wrap(True)
         body.set_justify(Gtk.Justification.CENTER)
         body.add_css_class("liberation-body")
@@ -743,8 +803,9 @@ def _check_dual_boot_and_mark():
 
     efi_path = "/boot/efi"
     try:
-        result = subprocess.run(["findmnt", "-n", "-o", "TARGET", "/boot/efi"],
-                               capture_output=True, text=True, timeout=5)
+        result = subprocess.run(
+            ["findmnt", "-n", "-o", "TARGET", "/boot/efi"], capture_output=True, text=True, timeout=5
+        )
         if result.returncode == 0 and result.stdout.strip():
             efi_path = result.stdout.strip()
     except Exception:
@@ -759,8 +820,9 @@ def _check_dual_boot_and_mark():
 
     # Find NTFS partitions and look for Windows Startup folders
     try:
-        result = subprocess.run(["lsblk", "-f", "-n", "-o", "NAME,FSTYPE,MOUNTPOINT"],
-                               capture_output=True, text=True, timeout=5)
+        result = subprocess.run(
+            ["lsblk", "-f", "-n", "-o", "NAME,FSTYPE,MOUNTPOINT"], capture_output=True, text=True, timeout=5
+        )
         for line in result.stdout.strip().split("\n"):
             parts = line.split()
             if len(parts) >= 2 and parts[1] == "ntfs":
@@ -771,23 +833,31 @@ def _check_dual_boot_and_mark():
                 if not mountpoint:
                     mountpoint = "/tmp/focuslock-winmount"
                     os.makedirs(mountpoint, exist_ok=True)
-                    r = subprocess.run(["sudo", "mount", "-t", "ntfs3", "-o", "rw", dev, mountpoint],
-                                      capture_output=True, timeout=10)
+                    r = subprocess.run(
+                        ["sudo", "mount", "-t", "ntfs3", "-o", "rw", dev, mountpoint], capture_output=True, timeout=10
+                    )
                     if r.returncode != 0:
                         continue
 
                 users_dir = os.path.join(mountpoint, "Users")
                 if os.path.isdir(users_dir):
                     for user in os.listdir(users_dir):
-                        startup = os.path.join(users_dir, user, "AppData", "Roaming",
-                                              "Microsoft", "Windows", "Start Menu",
-                                              "Programs", "Startup")
+                        startup = os.path.join(
+                            users_dir,
+                            user,
+                            "AppData",
+                            "Roaming",
+                            "Microsoft",
+                            "Windows",
+                            "Start Menu",
+                            "Programs",
+                            "Startup",
+                        )
                         if os.path.isdir(startup):
                             _write_windows_liberation_ps1(startup)
 
                 if not was_mounted:
-                    subprocess.run(["sudo", "umount", mountpoint],
-                                  capture_output=True, timeout=10)
+                    subprocess.run(["sudo", "umount", mountpoint], capture_output=True, timeout=10)
     except Exception as e:
         print(f"[collar] Windows partition scan error: {e}")
 
@@ -795,7 +865,7 @@ def _check_dual_boot_and_mark():
 def _write_windows_liberation_ps1(startup_dir):
     """Write a self-deleting PowerShell notice to a Windows Startup folder."""
     ps1_path = os.path.join(startup_dir, "FocusLock-Liberation.ps1")
-    script = '''Add-Type -AssemblyName System.Windows.Forms
+    script = """Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 $form = New-Object System.Windows.Forms.Form
@@ -831,7 +901,7 @@ $form.Controls.Add($btn)
 
 $form.ShowDialog()
 Remove-Item -Path $MyInvocation.MyCommand.Path -Force
-'''
+"""
     try:
         with open(ps1_path, "w") as f:
             f.write(script)
@@ -847,8 +917,7 @@ def _liberation_cleanup():
 
     # Disable and stop systemd service
     try:
-        subprocess.run(["systemctl", "--user", "disable", "focuslock-desktop.service"],
-                      capture_output=True, timeout=10)
+        subprocess.run(["systemctl", "--user", "disable", "focuslock-desktop.service"], capture_output=True, timeout=10)
     except Exception:
         pass
 
@@ -875,32 +944,35 @@ def _liberation_cleanup():
 
     # Reload systemd
     try:
-        subprocess.run(["systemctl", "--user", "daemon-reload"],
-                      capture_output=True, timeout=10)
+        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, timeout=10)
     except Exception:
         pass
 
     print("[collar] Liberation complete. Exiting.")
     import sys
+
     sys.exit(0)
     return False
 
 
 # ── Pairing Code Generation ──
 
+
 def _create_pairing_code(body):
     """Generate a pairing code with config payload for new devices."""
     import re as _re
     import secrets as _rnd
     import string as _str
+
     chars = _str.ascii_uppercase + _str.digits
     code = body.get("code") or "".join(_rnd.choice(chars) for _ in range(6))
     code = str(code).upper().strip()
     # SECURITY: pairing code must be alphanumeric only (used as filename)
-    if not _re.match(r'^[A-Z0-9]{4,12}$', code):
+    if not _re.match(r"^[A-Z0-9]{4,12}$", code):
         return {"ok": False, "error": "invalid code format"}
     expires_min = body.get("expires_minutes", 60)
     import time as _t
+
     my_addrs = mesh.get_local_addresses()
     config = {
         "addresses": my_addrs,
@@ -921,6 +993,7 @@ def _create_pairing_code(body):
 
 
 # ── Mesh HTTP Server (port 8435) ──
+
 
 class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
     MAX_BODY_BYTES = 1_048_576  # 1 MB — matches server
@@ -945,16 +1018,25 @@ class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
 
         if self.path == "/mesh/sync":
             result = mesh.handle_mesh_sync(
-                data, MESH_NODE_ID, MESH_NODE_TYPE,
-                mesh.get_local_addresses(), MESH_PORT,
-                mesh_orders, mesh_peers, mesh_local_status(),
-                get_lion_pubkey(), on_mesh_orders_applied,
+                data,
+                MESH_NODE_ID,
+                MESH_NODE_TYPE,
+                mesh.get_local_addresses(),
+                MESH_PORT,
+                mesh_orders,
+                mesh_peers,
+                mesh_local_status(),
+                get_lion_pubkey(),
+                on_mesh_orders_applied,
             )
             self._respond(200, result)
 
         elif self.path == "/mesh/order":
             result = mesh.handle_mesh_order(
-                data, mesh_orders, mesh_peers, MESH_NODE_ID,
+                data,
+                mesh_orders,
+                mesh_peers,
+                MESH_NODE_ID,
                 apply_fn=mesh_apply_order,
                 lion_pubkey=get_lion_pubkey(),
                 on_orders_applied=on_mesh_orders_applied,
@@ -975,8 +1057,13 @@ class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
 
         elif self.path == "/mesh/redeem-voucher" and mesh_vouchers:
             result = mesh.handle_redeem_voucher(
-                data, mesh_vouchers, mesh_orders, mesh_peers,
-                MESH_NODE_ID, get_lion_pubkey(), on_mesh_orders_applied,
+                data,
+                mesh_vouchers,
+                mesh_orders,
+                mesh_peers,
+                MESH_NODE_ID,
+                get_lion_pubkey(),
+                on_mesh_orders_applied,
                 ntfy_fn=_ntfy_fn,
             )
             self._respond(200, result)
@@ -988,8 +1075,7 @@ class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         if path == "/mesh/ping":
             self._respond(200, mesh.handle_mesh_ping(MESH_NODE_ID, mesh_orders))
         elif path.startswith("/mesh/status"):
-            self._respond(200, mesh.handle_mesh_status(
-                mesh_orders, mesh_peers, MESH_NODE_ID, mesh_local_status()))
+            self._respond(200, mesh.handle_mesh_status(mesh_orders, mesh_peers, MESH_NODE_ID, mesh_local_status()))
         elif path == "/mesh/vouchers" and mesh_vouchers:
             self._respond(200, mesh.handle_get_vouchers(mesh_vouchers))
         elif path in ("/", "/index.html"):
@@ -1001,8 +1087,7 @@ class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
 
     def _serve_web_ui(self):
         """Serve Lion's Share web UI."""
-        for search_dir in [MESH_CONFIG_DIR, "/opt/focuslock",
-                           os.path.dirname(os.path.abspath(__file__))]:
+        for search_dir in [MESH_CONFIG_DIR, "/opt/focuslock", os.path.dirname(os.path.abspath(__file__))]:
             for sub in ["web/index.html", "index.html"]:
                 index = os.path.join(search_dir, sub)
                 if os.path.exists(index):
@@ -1019,9 +1104,10 @@ class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
     def _serve_pairing_code(self, code):
         """Serve pairing config for a given code."""
         import re as _re
+
         code = str(code).upper().strip()
         # SECURITY: validate alphanumeric to prevent path traversal
-        if not _re.match(r'^[A-Z0-9]{4,12}$', code):
+        if not _re.match(r"^[A-Z0-9]{4,12}$", code):
             self._respond(400, {"error": "invalid code format"})
             return
         code_file = os.path.join(MESH_CONFIG_DIR, "pairing-codes", f"{code}.json")
@@ -1047,7 +1133,9 @@ def start_mesh_server():
     except Exception as e:
         print(f"[collar] Mesh server error: {e}")
 
+
 # ── State ──
+
 
 class CollarState:
     locked = False
@@ -1058,23 +1146,25 @@ class CollarState:
     current_taunt = ""
     taunt_counter = 0
     unreachable_count = 0  # consecutive poll failures before locking
-    countdown_lock_at = 0       # epoch ms — 0 means no countdown
+    countdown_lock_at = 0  # epoch ms — 0 means no countdown
     _bedtime_locked = False
     countdown_message = ""
-    countdown_last_warn = 0     # epoch ms of last warning beep
+    countdown_last_warn = 0  # epoch ms of last warning beep
+
 
 state = CollarState()
 
 
 # ── Network ──
 
+
 def fetch_status():
     """Poll homelab for desktop lock state (checks per-device flags)."""
     try:
         import socket
+
         hostname = socket.gethostname()
-        req = urllib.request.Request(
-            f"{HOMELAB_URL}/desktop-status?hostname={hostname}", method="GET")
+        req = urllib.request.Request(f"{HOMELAB_URL}/desktop-status?hostname={hostname}", method="GET")
         resp = urllib.request.urlopen(req, timeout=10)
         return json.loads(resp.read().decode())
     except Exception:
@@ -1085,13 +1175,14 @@ def send_heartbeat():
     """Report alive to homelab. If this stops, dead-man's switch triggers penalties."""
     try:
         import socket
+
         hostname = socket.gethostname()
         data = json.dumps({"hostname": hostname, "type": "desktop"}).encode()
         req = urllib.request.Request(
             f"{HOMELAB_URL}/webhook/desktop-heartbeat",
             data=data,
             headers={"Content-Type": "application/json"},
-            method="POST"
+            method="POST",
         )
         urllib.request.urlopen(req, timeout=5)
     except Exception as e:
@@ -1182,8 +1273,10 @@ def _get_kde_default_wallpaper():
 
 CONSENT_FILE = os.path.expanduser("~/.config/focuslock/desktop-consent")
 
+
 def has_consent():
     return os.path.exists(CONSENT_FILE)
+
 
 def record_consent():
     os.makedirs(os.path.dirname(CONSENT_FILE), exist_ok=True)
@@ -1213,6 +1306,7 @@ You asked for this. You wanted this. This is what devotion looks like.
 
 
 # ── GTK4 Lock Screen ──
+
 
 class CollarApp(Gtk.Application):
     def __init__(self):
@@ -1276,6 +1370,7 @@ class CollarApp(Gtk.Application):
 
         # Start ntfy subscribe thread for instant order wake-ups
         if _ntfy_enabled:
+
             def _ntfy_wake(version):
                 print(f"[ntfy] Wake-up v{version} — triggering immediate sync")
                 # Schedule sync on GLib main loop (thread-safe)
@@ -1284,8 +1379,7 @@ class CollarApp(Gtk.Application):
                 else:
                     GLib.idle_add(_direct_sync_tick)
 
-            self.ntfy_sub = ntfy_mod.NtfySubscribeThread(
-                _ntfy_topic, on_wake=_ntfy_wake, server=_ntfy_server)
+            self.ntfy_sub = ntfy_mod.NtfySubscribeThread(_ntfy_topic, on_wake=_ntfy_wake, server=_ntfy_server)
             self.ntfy_sub.start()
             print(f"[ntfy] Subscribed to {_ntfy_server}/{_ntfy_topic}")
 
@@ -1329,7 +1423,8 @@ class CollarApp(Gtk.Application):
             .consent-decline { background-color: #0c0c0a; color: #333320; font-size: 12px; padding: 8px 24px; }
         """)
         Gtk.StyleContext.add_provider_for_display(
-            Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
         box.set_margin_start(48)
@@ -1382,15 +1477,13 @@ class CollarApp(Gtk.Application):
         """Declining costs $30. They can come back and accept later."""
         try:
             import socket
-            data = json.dumps({
-                "amount": 30,
-                "reason": f"Desktop consent declined ({socket.gethostname()})"
-            }).encode()
+
+            data = json.dumps({"amount": 30, "reason": f"Desktop consent declined ({socket.gethostname()})"}).encode()
             req = urllib.request.Request(
                 f"{HOMELAB_URL}/webhook/desktop-penalty",
                 data=data,
                 headers={"Content-Type": "application/json"},
-                method="POST"
+                method="POST",
             )
             urllib.request.urlopen(req, timeout=5)
         except Exception:
@@ -1399,11 +1492,23 @@ class CollarApp(Gtk.Application):
 
     def poll_status(self):
         # Atomic snapshot — prevents partial reads during concurrent apply_remote
-        _keys = ["desktop_active", "desktop_locked_devices", "desktop_message",
-                 "paywall", "message", "pinned_message", "sub_tier",
-                 "countdown_lock_at", "countdown_message", "lock_active", "unlock_at",
-                 "bedtime_enabled", "bedtime_lock_hour", "bedtime_unlock_hour"]
-        if hasattr(mesh_orders, 'get_snapshot'):
+        _keys = [
+            "desktop_active",
+            "desktop_locked_devices",
+            "desktop_message",
+            "paywall",
+            "message",
+            "pinned_message",
+            "sub_tier",
+            "countdown_lock_at",
+            "countdown_message",
+            "lock_active",
+            "unlock_at",
+            "bedtime_enabled",
+            "bedtime_lock_hour",
+            "bedtime_unlock_hour",
+        ]
+        if hasattr(mesh_orders, "get_snapshot"):
             snap = mesh_orders.get_snapshot(_keys)
         else:
             snap = {k: mesh_orders.get(k, "") for k in _keys}
@@ -1415,15 +1520,19 @@ class CollarApp(Gtk.Application):
         desktop_msg = str(snap.get("desktop_message") or "")
 
         # Check if we have any peers reachable (at least one gossip success recently)
-        any_peer_seen = any(
-            (datetime.datetime.now().timestamp() - p.last_seen) < 60
-            for p in mesh_peers.get_all_except(MESH_NODE_ID)
-        ) if mesh_peers.get_all_except(MESH_NODE_ID) else False
+        any_peer_seen = (
+            any(
+                (datetime.datetime.now().timestamp() - p.last_seen) < 60
+                for p in mesh_peers.get_all_except(MESH_NODE_ID)
+            )
+            if mesh_peers.get_all_except(MESH_NODE_ID)
+            else False
+        )
 
         if not any_peer_seen and mesh_orders.version == 0:
             # No peers reachable and no orders ever received — try legacy fetch
             # Run fetch in background thread to avoid blocking GTK main loop
-            if not hasattr(self, '_legacy_fetch_running'):
+            if not hasattr(self, "_legacy_fetch_running"):
                 self._legacy_fetch_running = False
                 self._legacy_result = None
                 self._legacy_lock = threading.Lock()
@@ -1446,11 +1555,13 @@ class CollarApp(Gtk.Application):
             elif not self._legacy_fetch_running:
                 # Kick off background fetch — result checked next poll cycle
                 self._legacy_fetch_running = True
+
                 def _bg_fetch():
                     result = fetch_status()
                     with self._legacy_lock:
                         self._legacy_result = result if result is not None else {"_failed": True}
                     self._legacy_fetch_running = False
+
                 threading.Thread(target=_bg_fetch, daemon=True).start()
                 return True  # Check result next cycle
             else:
@@ -1468,8 +1579,7 @@ class CollarApp(Gtk.Application):
                 mesh_orders.set("desktop_locked_devices", "")
                 mesh_orders.set("unlock_at", 0)
                 mesh_orders.set("message", "")
-                mesh.bump_and_broadcast(mesh_orders, MESH_NODE_ID, mesh_peers,
-                                        ntfy_fn=_ntfy_fn)
+                mesh.bump_and_broadcast(mesh_orders, MESH_NODE_ID, mesh_peers, ntfy_fn=_ntfy_fn)
                 lock_active = "0"
                 desktop_active = "0"
                 desktop_locked = False
@@ -1487,7 +1597,11 @@ class CollarApp(Gtk.Application):
                 unlock_h = int(snap.get("bedtime_unlock_hour") or -1)
                 cur_h = datetime.datetime.now().hour
                 if lock_h >= 0 and unlock_h >= 0:
-                    in_bed = (cur_h >= lock_h or cur_h < unlock_h) if lock_h > unlock_h else (cur_h >= lock_h and cur_h < unlock_h)
+                    in_bed = (
+                        (cur_h >= lock_h or cur_h < unlock_h)
+                        if lock_h > unlock_h
+                        else (cur_h >= lock_h and cur_h < unlock_h)
+                    )
                     if in_bed and not desktop_locked:
                         mesh_orders.set("desktop_active", 1)
                         mesh_orders.set("desktop_message", "Bedtime. Go to sleep.")
@@ -1495,7 +1609,7 @@ class CollarApp(Gtk.Application):
                         desktop_msg = "Bedtime. Go to sleep."
                         state._bedtime_locked = True
                         print(f"[collar] BEDTIME: Auto-locked at hour {cur_h}")
-                    elif not in_bed and desktop_locked and getattr(state, '_bedtime_locked', False):
+                    elif not in_bed and desktop_locked and getattr(state, "_bedtime_locked", False):
                         mesh_orders.set("desktop_active", 0)
                         mesh_orders.set("desktop_message", "")
                         desktop_locked = False
@@ -1547,6 +1661,7 @@ class CollarApp(Gtk.Application):
         self.lock_active = True
         try:
             import subprocess
+
             # Generate custom lock screen image
             self.generate_lock_wallpaper()
             # Set as KDE lock screen wallpaper — write directly to kscreenlockerrc
@@ -1624,6 +1739,7 @@ class CollarApp(Gtk.Application):
             return False
         try:
             import subprocess
+
             subprocess.run(["loginctl", "lock-session"], capture_output=True, timeout=5)
         except Exception:
             print("[warn] loginctl lock-session failed")
@@ -1633,6 +1749,7 @@ class CollarApp(Gtk.Application):
         """Generate a lock screen PNG using cairo — dark, minimal, elegant."""
         try:
             import cairo
+
             W, H = 3840, 2160  # 4K — scales down fine
             surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, W, H)
             ctx = cairo.Context(surface)
@@ -1642,7 +1759,7 @@ class CollarApp(Gtk.Application):
             ctx.paint()
 
             # Subtle radial glow in center
-            grad = cairo.RadialGradient(W/2, H/2, 0, W/2, H/2, 600)
+            grad = cairo.RadialGradient(W / 2, H / 2, 0, W / 2, H / 2, 600)
             grad.add_color_stop_rgba(0, 0.05, 0.04, 0.02, 0.3)
             grad.add_color_stop_rgba(1, 0, 0, 0, 0)
             ctx.set_source(grad)
@@ -1663,7 +1780,7 @@ class CollarApp(Gtk.Application):
                     icon_size = 1150
                     scale = icon_size / max(iw, ih)
                     ctx.save()
-                    ctx.translate(W/2 - icon_size/2, H/2 - icon_size/2 - 60)
+                    ctx.translate(W / 2 - icon_size / 2, H / 2 - icon_size / 2 - 60)
                     ctx.scale(scale, scale)
                     ctx.set_source_surface(icon_surface)
                     ctx.paint_with_alpha(0.45)
@@ -1680,7 +1797,7 @@ class CollarApp(Gtk.Application):
             ctx.set_font_size(52)
             ctx.set_source_rgba(0.67, 0.53, 0.4, 0.9)
             ext = ctx.text_extents(msg)
-            ctx.move_to(W/2 - ext.width/2, H/2 + 580)
+            ctx.move_to(W / 2 - ext.width / 2, H / 2 + 580)
             ctx.show_text(msg)
 
             # Pinned message
@@ -1691,7 +1808,7 @@ class CollarApp(Gtk.Application):
                 ctx.set_font_size(40)
                 ctx.set_source_rgba(0.8, 0.6, 0.0, 0.9)
                 ext = ctx.text_extents(pinned_wp)
-                ctx.move_to(W/2 - ext.width/2, H/2 + 650)
+                ctx.move_to(W / 2 - ext.width / 2, H / 2 + 650)
                 ctx.show_text(pinned_wp)
 
             # Paywall
@@ -1700,7 +1817,7 @@ class CollarApp(Gtk.Application):
                 ctx.set_source_rgba(0.8, 0.13, 0.13, 0.9)
                 pw_text = f"${state.paywall} owed"
                 ext = ctx.text_extents(pw_text)
-                ctx.move_to(W/2 - ext.width/2, H/2 + 730)
+                ctx.move_to(W / 2 - ext.width / 2, H / 2 + 730)
                 ctx.show_text(pw_text)
 
             # Save
@@ -1716,6 +1833,7 @@ class CollarApp(Gtk.Application):
         """Force ONLY the lock window fullscreen + above, minimize everything else."""
         try:
             import subprocess
+
             # Match by unique title set in HTML: "FOCUSLOCK-COLLAR-ACTIVE"
             script = """
 var c = workspace.stackingOrder;
@@ -1736,18 +1854,45 @@ for (var i = 0; i < c.length; i++) {
 """
             with open("/tmp/focuslock-kwin-enforce.js", "w") as f:
                 f.write(script)
-            subprocess.run(["dbus-send", "--session", "--dest=org.kde.KWin",
-                "--print-reply", "/Scripting",
-                "org.kde.kwin.Scripting.unloadScript", "string:focuslock-enforce"],
-                capture_output=True, timeout=3)
-            subprocess.run(["dbus-send", "--session", "--dest=org.kde.KWin",
-                "--print-reply", "/Scripting",
-                "org.kde.kwin.Scripting.loadScript",
-                "string:/tmp/focuslock-kwin-enforce.js", "string:focuslock-enforce"],
-                capture_output=True, timeout=3)
-            subprocess.run(["dbus-send", "--session", "--dest=org.kde.KWin",
-                "--print-reply", "/Scripting", "org.kde.kwin.Scripting.start"],
-                capture_output=True, timeout=3)
+            subprocess.run(
+                [
+                    "dbus-send",
+                    "--session",
+                    "--dest=org.kde.KWin",
+                    "--print-reply",
+                    "/Scripting",
+                    "org.kde.kwin.Scripting.unloadScript",
+                    "string:focuslock-enforce",
+                ],
+                capture_output=True,
+                timeout=3,
+            )
+            subprocess.run(
+                [
+                    "dbus-send",
+                    "--session",
+                    "--dest=org.kde.KWin",
+                    "--print-reply",
+                    "/Scripting",
+                    "org.kde.kwin.Scripting.loadScript",
+                    "string:/tmp/focuslock-kwin-enforce.js",
+                    "string:focuslock-enforce",
+                ],
+                capture_output=True,
+                timeout=3,
+            )
+            subprocess.run(
+                [
+                    "dbus-send",
+                    "--session",
+                    "--dest=org.kde.KWin",
+                    "--print-reply",
+                    "/Scripting",
+                    "org.kde.kwin.Scripting.start",
+                ],
+                capture_output=True,
+                timeout=3,
+            )
             print("[collar] KWin: lock window forced fullscreen + above")
         except Exception as e:
             print(f"[collar] KWin enforce error: {e}")
@@ -1782,7 +1927,8 @@ for (var i = 0; i < c.length; i++) {
             .collar-divider { background-color: rgba(200, 168, 78, 0.1); min-height: 1px; }
         """)
         Gtk.StyleContext.add_provider_for_display(
-            Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
 
         # Outer overlay to center the card
         overlay = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -1888,7 +2034,6 @@ for (var i = 0; i < c.length; i++) {
         win.set_child(overlay)
         return win
 
-
     def enforce_fullscreen_loop(self):
         """Re-enforce every 3s while locked — re-minimize other windows, keep lock above."""
         if not self.lock_active:
@@ -1898,8 +2043,9 @@ for (var i = 0; i < c.length; i++) {
 
     def update_clock(self):
         """Tick the clock every second."""
-        if self.windows and hasattr(self, 'clock_label') and self.clock_label:
+        if self.windows and hasattr(self, "clock_label") and self.clock_label:
             import datetime
+
             self.clock_label.set_label(datetime.datetime.now().strftime("%H:%M"))
         return len(self.windows) > 0  # Stop ticking when unlocked
 
@@ -1912,13 +2058,13 @@ for (var i = 0; i < c.length; i++) {
 
         for _win in self.windows:
             try:
-                if hasattr(self, 'msg_label') and self.msg_label:
+                if hasattr(self, "msg_label") and self.msg_label:
                     self.msg_label.set_label(state.message or "No PC for now.")
-                if hasattr(self, 'paywall_label') and self.paywall_label:
+                if hasattr(self, "paywall_label") and self.paywall_label:
                     self.paywall_label.set_label(f"${state.paywall} owed" if state.paywall else "")
-                if hasattr(self, 'pinned_label') and self.pinned_label:
+                if hasattr(self, "pinned_label") and self.pinned_label:
                     self.pinned_label.set_label(state.pinned or "")
-                if hasattr(self, 'taunt_label') and self.taunt_label:
+                if hasattr(self, "taunt_label") and self.taunt_label:
                     self.taunt_label.set_label(state.current_taunt)
             except Exception:
                 print("[warn] failed to update lock window labels")
@@ -1933,6 +2079,7 @@ for (var i = 0; i < c.length; i++) {
         print("[collar] HIDE LOCK — unlocking session")
         try:
             import subprocess
+
             # Restore original lock screen wallpaper
             restore_to = self.original_wallpaper or _get_kde_default_wallpaper()
             if restore_to:
@@ -1978,7 +2125,8 @@ for (var i = 0; i < c.length; i++) {
     def _retry_unlock(self):
         """Retry loginctl unlock-session up to 3 times."""
         import subprocess
-        self._unlock_retries = getattr(self, '_unlock_retries', 0) + 1
+
+        self._unlock_retries = getattr(self, "_unlock_retries", 0) + 1
         try:
             result = subprocess.run(["loginctl", "unlock-session"], capture_output=True, timeout=5)
             if result.returncode == 0:
@@ -1995,10 +2143,14 @@ for (var i = 0; i < c.length; i++) {
 
     def write_lock_page(self):
         """Generate the lock screen HTML."""
-        paywall_html = f'<div class="paywall">${_html.escape(state.paywall)} owed</div>' if state.paywall else ''
-        pinned_html = f'<div class="pinned">{_html.escape(state.pinned)}</div>' if state.pinned else ''
-        banking_html = f'''<div class="pay-label">PAY YOUR DEBT</div>
-            <iframe src="{BANKING_URL}" class="bank"></iframe>''' if state.paywall else ''
+        paywall_html = f'<div class="paywall">${_html.escape(state.paywall)} owed</div>' if state.paywall else ""
+        pinned_html = f'<div class="pinned">{_html.escape(state.pinned)}</div>' if state.pinned else ""
+        banking_html = (
+            f'''<div class="pay-label">PAY YOUR DEBT</div>
+            <iframe src="{BANKING_URL}" class="bank"></iframe>'''
+            if state.paywall
+            else ""
+        )
         icon_b64 = ""
         icon_path = os.path.expanduser("~/.local/share/focuslock/collar-icon.png")
         if not os.path.exists(icon_path):
@@ -2007,10 +2159,11 @@ for (var i = 0; i < c.length; i++) {
                 icon_path = "/opt/focuslock/collar-icon.png"
         if os.path.exists(icon_path):
             import base64
+
             with open(icon_path, "rb") as f:
                 icon_b64 = base64.b64encode(f.read()).decode()
 
-        html = f'''<!DOCTYPE html>
+        html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>FOCUSLOCK-COLLAR-ACTIVE</title>
 <link href="https://fonts.googleapis.com/css2?family=Lexend:wght@200;300;400;600;700&display=swap" rel="stylesheet">
 <style>
@@ -2055,14 +2208,14 @@ document.addEventListener("keydown", function(e) {{
 <div class="card">
     {"<img class='icon' src='data:image/png;base64," + icon_b64 + "'>" if icon_b64 else ""}
     <div id="clock" class="clock">00:00</div>
-    {f'<div class="tier">{_html.escape(state.sub_tier.upper())}</div>' if state.sub_tier else ''}
+    {f'<div class="tier">{_html.escape(state.sub_tier.upper())}</div>' if state.sub_tier else ""}
     <div class="divider"></div>
     <div class="message">{_html.escape(state.message or "No PC for now.")}</div>
     {pinned_html}
     {paywall_html}
 </div>
 {banking_html}
-</body></html>'''
+</body></html>"""
         with open("/tmp/focuslock-lock.html", "w") as f:
             f.write(html)
         print("[collar] Lock page written")
@@ -2070,8 +2223,13 @@ document.addEventListener("keydown", function(e) {{
     def on_key_pressed(self, controller, keyval, keycode, mod):
         # Block Alt+F4, Alt+Tab, Super, Escape
         blocked = [
-            Gdk.KEY_Escape, Gdk.KEY_Super_L, Gdk.KEY_Super_R,
-            Gdk.KEY_F4, Gdk.KEY_Tab, Gdk.KEY_F1, Gdk.KEY_F2,
+            Gdk.KEY_Escape,
+            Gdk.KEY_Super_L,
+            Gdk.KEY_Super_R,
+            Gdk.KEY_F4,
+            Gdk.KEY_Tab,
+            Gdk.KEY_F1,
+            Gdk.KEY_F2,
         ]
         if keyval in blocked:
             return True  # Consume the event
@@ -2088,6 +2246,7 @@ document.addEventListener("keydown", function(e) {{
 
 # ── Main ──
 
+
 def main():
     # Handle SIGTERM gracefully (systemd stop)
     signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
@@ -2102,9 +2261,12 @@ def main():
         print("[collar] This device was previously released. Executing cleanup.")
         import shutil
         import subprocess
-        for p in [os.path.expanduser("~/.config/focuslock"),
-                  os.path.expanduser("~/collar-files"),
-                  os.path.expanduser("~/.config/systemd/user/focuslock-desktop.service")]:
+
+        for p in [
+            os.path.expanduser("~/.config/focuslock"),
+            os.path.expanduser("~/collar-files"),
+            os.path.expanduser("~/.config/systemd/user/focuslock-desktop.service"),
+        ]:
             try:
                 if os.path.isdir(p):
                     shutil.rmtree(p)
@@ -2113,10 +2275,10 @@ def main():
             except Exception:
                 pass
         try:
-            subprocess.run(["systemctl", "--user", "disable", "focuslock-desktop.service"],
-                          capture_output=True, timeout=10)
-            subprocess.run(["systemctl", "--user", "daemon-reload"],
-                          capture_output=True, timeout=10)
+            subprocess.run(
+                ["systemctl", "--user", "disable", "focuslock-desktop.service"], capture_output=True, timeout=10
+            )
+            subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, timeout=10)
         except Exception:
             pass
         print("[collar] Cleanup complete. Exiting.")
