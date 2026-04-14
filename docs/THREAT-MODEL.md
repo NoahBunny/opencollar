@@ -89,6 +89,8 @@ These are tracked openly so contributors don't trip on them.
 - **No key rotation cadence** for the relay keypair. Manual rotation works (re-register the new pubkey on each node) but is operator-initiated, not automatic.
 - **ntfy push notifications** leak topic existence and message timing to the ntfy operator (payload is only `{"v":N}`, but presence is visible). Self-host ntfy if this matters to you.
 - **Android sideload only.** No Play Store, no F-Droid in v1. APK signature pinning is on the user. Verify `SHA256SUMS.txt` against the signed GitHub Release attestation.
+- **Bunny Tasker applies mesh display keys without per-blob signature verification.** The companion consumes the legacy `/mesh/sync` path (not vault). An in-scope `MESH_DISPLAY_KEYS` allowlist (`sub_tier`, `pinned_message`, `mode`, etc.) blocks enforcement-key writes — an attacker on the mesh cannot lock the phone, clear the paywall, or modify penalties via the companion. They *can* spoof display-only state (subscription info, pinned messages, streak counts, mode name). The Collar (invisible enforcer) continues to verify every vault blob by signature; it ignores the companion's mesh path. Full signature verification in the companion is a v1.1 follow-up.
+- **Cleartext traffic permitted** in all three Android manifests for LAN gossip (direct phone IPs on port 8432, homelab on port 8434). The relay URL should always be HTTPS; operator discipline enforces this. A misconfigured operator pointing `mesh_url` at an HTTP relay leaks the PIN and gossip metadata — vault content stays encrypted by the layer below.
 
 ---
 

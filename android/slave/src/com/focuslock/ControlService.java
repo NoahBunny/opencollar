@@ -2442,24 +2442,29 @@ public class ControlService extends Service {
             }
         }
 
-        // Accept orders if remote has higher version
-        if (remoteVersion > meshVersion.get()) {
-            String ordersStr = jval(body, "orders");
-            // The orders field is a JSON object — look for it differently
-            int ordersStart = body.indexOf("\"orders\"");
-            if (ordersStart >= 0) {
-                int braceStart = body.indexOf("{", ordersStart + 8);
-                if (braceStart >= 0) {
-                    int depth = 0; int braceEnd = braceStart;
-                    for (int i = braceStart; i < body.length(); i++) {
-                        if (body.charAt(i) == '{') depth++;
-                        else if (body.charAt(i) == '}') { depth--; if (depth == 0) { braceEnd = i; break; } }
+        // Accept orders if remote has higher version.
+        // TOCTOU-safe: synchronize check-apply-set on meshVersion so a
+        // concurrent gossip thread cannot double-apply or apply stale orders
+        // between our check and our set.
+        synchronized (meshVersion) {
+            if (remoteVersion > meshVersion.get()) {
+                String ordersStr = jval(body, "orders");
+                // The orders field is a JSON object — look for it differently
+                int ordersStart = body.indexOf("\"orders\"");
+                if (ordersStart >= 0) {
+                    int braceStart = body.indexOf("{", ordersStart + 8);
+                    if (braceStart >= 0) {
+                        int depth = 0; int braceEnd = braceStart;
+                        for (int i = braceStart; i < body.length(); i++) {
+                            if (body.charAt(i) == '{') depth++;
+                            else if (body.charAt(i) == '}') { depth--; if (depth == 0) { braceEnd = i; break; } }
+                        }
+                        String ordersJson = body.substring(braceStart, braceEnd + 1);
+                        Log.w(TAG, "Mesh: applying orders v" + remoteVersion + " from " + remoteId);
+                        applyOrdersFromMesh(ordersJson);
+                        meshVersion.set(remoteVersion);
+                        Settings.Global.putLong(getContentResolver(), "focus_lock_mesh_version", meshVersion.get());
                     }
-                    String ordersJson = body.substring(braceStart, braceEnd + 1);
-                    Log.w(TAG, "Mesh: applying orders v" + remoteVersion + " from " + remoteId);
-                    applyOrdersFromMesh(ordersJson);
-                    meshVersion.set(remoteVersion);
-                    Settings.Global.putLong(getContentResolver(), "focus_lock_mesh_version", meshVersion.get());
                 }
             }
         }

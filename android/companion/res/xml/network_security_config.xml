@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cleartext allowed globally because mesh gossip over LAN uses plain HTTP.
+     Relay URL (`mesh_url`) should always be HTTPS; operator discipline
+     enforces this. See docs/THREAT-MODEL.md. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

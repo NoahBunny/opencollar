@@ -9,10 +9,15 @@ starting with v1.0.0.
 ## [Unreleased]
 
 ### Added
+- `docs/THREAT-MODEL.md §Known weaknesses` — documented BunnyTasker display-keys-only mesh apply, cleartext-for-LAN posture.
+- Bunny Tasker now has an explicit `res/xml/network_security_config.xml` declaring the same cleartext-for-LAN intent as The Collar (was relying on the platform default).
 
 ### Changed
+- Android versions bumped for landmine fixes: The Collar v61 (was v60), Bunny Tasker v44 (was v43), Lion's Share v64 (was v63).
+- Lion's Share manifest dropped the deprecated `android:usesCleartextTraffic="true"` attribute — the `networkSecurityConfig` file is authoritative and already permits cleartext. Added inline comment in the config explaining the LAN-gossip rationale and the HTTPS-relay discipline requirement.
 
 ### Fixed
+- **The Collar (slave) TOCTOU race on meshVersion**: gossip-RX handler at `ControlService.java:2446` now wraps the `check-apply-set` on `meshVersion` in `synchronized (meshVersion) { ... }`, matching the pattern already used by the gossip-TX response handler at ~line 3676. Closes landmine #18 (was CRITICAL-for-correctness, LOW-practical).
 
 ### Security
 

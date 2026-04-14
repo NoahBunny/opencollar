@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Cleartext allowed globally because mesh gossip over LAN uses plain HTTP
+     (direct phone IPs on port 8432, homelab on port 8434). The relay URL
+     (`mesh_url`) should always be HTTPS; operator discipline enforces this.
+     Non-LAN HTTP relays are insecure — PIN and gossip metadata leak in
+     plaintext. See docs/THREAT-MODEL.md §Known weaknesses. -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
