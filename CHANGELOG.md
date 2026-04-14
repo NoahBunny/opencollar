@@ -20,6 +20,8 @@ starting with v1.0.0.
 - `logger = logging.getLogger(__name__)` module pattern in `shared/focuslock_vault.py`, `shared/focuslock_payment.py`, `focuslock_mesh.py`, `focuslock-mail.py` (Phase 1b-core)
 - `logger = logging.getLogger(__name__)` extended to the remaining 11 modules: `focuslock-desktop{,-win}.py`, `focuslock_ntfy.py`, `installers/re-enslave-watcher.py`, and the shared/ helpers (`focuslock_adb`, `focuslock_config`, `focuslock_evidence`, `focuslock_http`, `focuslock_llm`, `focuslock_sync`, `focuslock_transport`) (Phase 1b-tail)
 - `logging.basicConfig` wired at startup in the three entry-points (`focuslock-mail.py`, `focuslock-desktop.py`, `focuslock-desktop-win.py`) — format `%(asctime)s %(levelname)-7s %(name)s: %(message)s`, datefmt `%Y-%m-%d %H:%M:%S`. Library modules inherit from the root logger (Phase 1b-tail)
+- **Phase 2 — unit test suite.** `tests/` with 266 tests covering the shared/ security-critical surface. Coverage: `focuslock_vault.py` 100%, `focuslock_payment.py` 92%, `focuslock_mesh.py` 70%, `focuslock_config.py` 98%, `focuslock_http.py` 100%, `focuslock_adb.py` 96% — 78% combined (≥75% exit criterion met). `[tool.pytest.ini_options]` + `[tool.coverage.*]` added to `pyproject.toml`. Invoke with `uv run --with pytest --with pytest-cov --with cryptography pytest tests/`. Also documents a within-call dedup quirk in `VoucherPool.store` (cross-call dedup, which is what matters in production, works correctly).
+- **Phase 3 — QA infrastructure.** `docs/QA-CHECKLIST.md` (14-section regression matrix), `docs/STAGING.md` (isolated staging mesh setup with Waydroid), `docs/MANUAL-QA.md` (on-device checklist for radios Waydroid can't emulate). `staging/config.json.template` + `staging/start-staging.sh` for a scriptable staging relay bound to 127.0.0.1. `staging/qa_runner.py` — scripted Lion that drives the admin API through lock/unlock/paywall/subscribe/message flows and verifies state transitions. On first run, surfaced two real bugs in `focuslock-mail.py` (see Fixed).
 
 ### Changed
 - `focuslock-mail.py` — default `Host` header fallback changed from operator's personal domain to `localhost`
@@ -38,6 +40,9 @@ starting with v1.0.0.
   - `focuslock-desktop-win.py` was missing `import subprocess` (5 crash sites: bedtime check + 4 process-management paths) and `import datetime` (1 bedtime check site)
   - `focuslock-mail.py:806` called bare `push_to_peers(...)` instead of `mesh.push_to_peers(...)` — fine-application mesh push was broken
 - `set-payment-email` feature completed with missing `ORDER_KEYS` schema entries and `focuslock_payment.py` consumer (hot-swappable IMAP creds via Lion's Share app)
+- **QA-surfaced bugs (Phase 3):**
+  - `focuslock-mail.py:530` — `add-paywall` accepted negative amounts and allowed the paywall to go negative. Now clamps the result to `max(0, current + delta)` and catches non-integer amount values.
+  - `focuslock-mail.py:598-612` — `subscribe` with no explicit `due` param set `sub_due` to `now` instead of the documented `now + 7d`; the `now + 7d` branch was unreachable. Rewrote so the default is `now + 7d`, explicit `"now"` is still honored, and explicit ms values pass through — consistent with `project_sub_due_cap.md` ("pre-pay forfeits remainder").
 
 ### Security
 - Payment security: anti-self-pay + recipient verification (prior work)

@@ -3,6 +3,23 @@
 # Runtime dependencies live in requirements.txt (hash-pinned).
 # Phase 7 of docs/PUBLISHABLE-ROADMAP.md adds full [project] metadata.
 
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+pythonpath = ["shared", "."]
+addopts = "-ra --strict-markers"
+
+[tool.coverage.run]
+source = ["shared"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+
 [tool.ruff]
 line-length = 120
 target-version = "py310"
@@ -42,6 +59,7 @@ ignore = [
 "focuslock-desktop-win.py" = ["E402"]
 "focuslock-mail.py" = ["E402"]
 "installers/*" = ["E402", "S"]      # installer scripts — deliberately loose
+"tests/*" = ["E402", "S"]           # tests — path hacks + test crypto values
 
 [tool.ruff.format]
 quote-style = "double"

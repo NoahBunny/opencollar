@@ -527,7 +527,11 @@ def mesh_apply_order(action, params, orders):
             current = int(current)
         except Exception:
             current = 0
-        orders.set("paywall", str(current + int(params.get("amount", 0))))
+        try:
+            delta = int(params.get("amount", 0))
+        except (TypeError, ValueError):
+            delta = 0
+        orders.set("paywall", str(max(0, current + delta)))
     elif action == "clear-paywall":
         orders.set("paywall", "0")
     elif action == "send-message":
@@ -601,13 +605,17 @@ def mesh_apply_order(action, params, orders):
             return {"error": "invalid tier"}
         import time as t_sub
 
+        # Default to now+7d when no due param is passed (pre-pay forfeits remainder —
+        # sub_due is always now+7d, never currentDue+7d). "now" is an explicit override
+        # used by testing/admin ops; any other numeric value is taken as a literal ms.
         due = params.get("due", 0)
-        if not due or str(due) == "now":
-            due = int(t_sub.time() * 1000)
+        now_ms = int(t_sub.time() * 1000)
+        if str(due) == "now":
+            due = now_ms
+        elif not due:
+            due = now_ms + 7 * 24 * 3600 * 1000
         else:
             due = int(due)
-            if due == 0:
-                due = int(t_sub.time() * 1000) + 7 * 24 * 3600 * 1000
         orders.set("sub_tier", tier)
         orders.set("sub_due", due)
         amounts = {"bronze": 25, "silver": 35, "gold": 50}

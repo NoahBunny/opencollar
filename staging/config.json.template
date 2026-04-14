@@ -1,0 +1,41 @@
+{
+  "_comment": "Staging config template — copy to staging/config.json and fill in secrets. NEVER commit staging/config.json. NEVER reuse production secrets.",
+
+  "mesh_id": "REPLACE_WITH_RANDOM_BASE64URL_12_BYTES",
+  "mesh_url": "http://127.0.0.1:8435",
+  "mesh_port": 8435,
+
+  "admin_token": "REPLACE_WITH_RANDOM_TOKEN_32_BYTES",
+  "operator_mesh_id": "REPLACE_WITH_SAME_MESH_ID_AS_ABOVE",
+
+  "homelab_url": "http://127.0.0.1:8435",
+  "homelab_port": 8435,
+
+  "phone_addresses": [],
+  "phone_port": 8432,
+
+  "pin": "9999",
+
+  "vault_mode": true,
+  "vault_mode_allowed": true,
+  "vault_retention_days": 1,
+
+  "ntfy_enabled": false,
+  "ntfy_server": "https://ntfy.sh",
+  "ntfy_topic": "REPLACE_WITH_RANDOM_STAGING_ONLY_TOPIC",
+
+  "mail": {
+    "imap_host": "",
+    "smtp_host": "",
+    "user": "",
+    "pass": "",
+    "partner_email": ""
+  },
+
+  "warren_whitelist": ["phone", "homelab", "staging-desktop"],
+
+  "gossip_interval": 5,
+  "poll_interval": 3,
+
+  "_state_dir_override": "/tmp/focuslock-staging"
+}

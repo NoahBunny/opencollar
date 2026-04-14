@@ -36,6 +36,12 @@ __pycache__/
 *.swp
 *~
 
+# Test + coverage artifacts
+.coverage
+.pytest_cache/
+htmlcov/
+.tox/
+
 # OS
 .DS_Store
 Thumbs.db
