@@ -28,12 +28,15 @@ and Python json.dumps(sort_keys=True, separators=(",",":"), ensure_ascii=True).
 import base64
 import hashlib
 import json
+import logging
 import os
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+logger = logging.getLogger(__name__)
 
 
 def canonical_json(obj):
@@ -92,7 +95,8 @@ def verify_signature(blob, lion_pubkey_str):
         sig = base64.b64decode(sig_b64)
         pk.verify(sig, data, asym_padding.PKCS1v15(), hashes.SHA256())
         return True
-    except Exception:
+    except Exception as e:
+        logger.warning("Vault signature verify failed: %s", e)
         return False
 
 
@@ -142,7 +146,8 @@ def decrypt_body(blob, my_privkey_pem, my_pubkey_der):
                     label=None,
                 ),
             )
-        except Exception:
+        except Exception as e:
+            logger.debug("OAEP MGF1-SHA1 decrypt failed, trying SHA256 fallback: %s", e)
             aes_key = privkey.decrypt(
                 ek_bytes,
                 asym_padding.OAEP(
@@ -157,7 +162,8 @@ def decrypt_body(blob, my_privkey_pem, my_pubkey_der):
         aesgcm = AESGCM(aes_key)
         plaintext = aesgcm.decrypt(iv, ciphertext, None)
         return plaintext.decode("utf-8")
-    except Exception:
+    except Exception as e:
+        logger.warning("Vault decrypt failed: %s", e)
         return None
 
 

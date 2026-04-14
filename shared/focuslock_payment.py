@@ -12,10 +12,13 @@ on full payment.
 import email
 import imaplib
 import json
+import logging
 import re
 import time
 import urllib.request
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 # ── Hardcoded fallback providers (used when banks.json is missing) ──
 
@@ -73,7 +76,7 @@ def load_payment_providers(banks_path):
             )
         return providers if providers else _HARDCODED_FALLBACK
     except Exception as e:
-        print(f"[payment] WARNING: Failed to load banks.json: {e} \u2014 using hardcoded fallback")
+        logger.warning("Failed to load banks.json (%s) — using hardcoded fallback", e)
         return _HARDCODED_FALLBACK
 
 
@@ -91,7 +94,8 @@ def load_iso_codes(banks_path):
         with open(banks_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return data.get("currency_patterns", {}).get("iso_codes", _default)
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to load iso_codes from banks.json (%s) — using default set", e)
         return _default
 
 
@@ -165,13 +169,13 @@ def get_body(msg):
             if part.get_content_type() == "text/plain":
                 try:
                     return part.get_payload(decode=True).decode(errors="replace")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to decode multipart body: %s", e)
     else:
         try:
             return msg.get_payload(decode=True).decode(errors="replace")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to decode body: %s", e)
     return ""
 
 
@@ -211,7 +215,7 @@ def reduce_paywall(remaining, paid, adb, phone_url="", phone_pin=""):
         adb.put("focus_lock_paywall", f"{remaining:.0f}")
         adb.put_str("focus_lock_message", msg)
     except Exception as e:
-        print(f"[payment] Reduce paywall failed: {e}")
+        logger.warning("Reduce paywall failed: %s", e)
 
 
 def check_payment_emails(
@@ -371,7 +375,8 @@ def check_payment_emails(
                 # Track total paid (cents) for stats display
                 try:
                     cur = int(adb.get("focus_lock_total_paid_cents") or "0")
-                except Exception:
+                except Exception as e:
+                    logger.debug("focus_lock_total_paid_cents unreadable, resetting: %s", e)
                     cur = 0
                 adb.put("focus_lock_total_paid_cents", str(cur + int(amount * 100)))
 
@@ -388,6 +393,6 @@ def check_payment_emails(
             mail.logout()
 
         except Exception as e:
-            print(f"[{_now()}] IMAP error: {e}")
+            logger.error("IMAP error: %s", e)
 
         time.sleep(check_interval)
