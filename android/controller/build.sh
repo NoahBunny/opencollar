@@ -1,7 +1,24 @@
 #!/usr/bin/env bash
 # Build Lion's Share controller APK
 # Prerequisites: JDK 17+, Android SDK (build-tools 35.0.0, platform android-36)
+#
+# Usage:
+#   ./build.sh                 # debug build, auto-generates debug.keystore
+#   ./build.sh --release       # release build, requires:
+#                              #   FOCUSLOCK_KEYSTORE      — path to release keystore
+#                              #   FOCUSLOCK_KEYSTORE_PASS — keystore + key password
+#                              #   FOCUSLOCK_KEY_ALIAS     — key alias (default: focusctl)
+# See docs/BUILD.md for keystore generation.
 set -e
+
+RELEASE=0
+for arg in "$@"; do
+    case "$arg" in
+        --release) RELEASE=1 ;;
+        --debug)   RELEASE=0 ;;
+        *) echo "Unknown arg: $arg" >&2; exit 2 ;;
+    esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -31,13 +48,31 @@ fi
 # Clean
 rm -rf classes compiled.zip unaligned.apk app.apk classes.zip classes.dex aligned.apk
 
-# Generate keystore if missing
-if [ ! -f debug.keystore ]; then
-    echo "Generating debug keystore..."
-    keytool -genkey -v -keystore debug.keystore -alias focusctl \
-        -keyalg RSA -keysize 2048 -validity 10000 \
-        -storepass android -keypass android \
-        -dname "CN=FocusCtl,O=FocusLock,L=Unknown,ST=Unknown,C=US"
+if [ "$RELEASE" = "1" ]; then
+    if [ -z "${FOCUSLOCK_KEYSTORE:-}" ] || [ ! -f "$FOCUSLOCK_KEYSTORE" ]; then
+        echo "ERROR: --release requires FOCUSLOCK_KEYSTORE pointing to an existing keystore." >&2
+        echo "       See docs/BUILD.md to generate one." >&2
+        exit 1
+    fi
+    if [ -z "${FOCUSLOCK_KEYSTORE_PASS:-}" ]; then
+        echo "ERROR: --release requires FOCUSLOCK_KEYSTORE_PASS (keystore + key password)." >&2
+        exit 1
+    fi
+    KEYSTORE_PATH="$FOCUSLOCK_KEYSTORE"
+    KEYSTORE_PASS="$FOCUSLOCK_KEYSTORE_PASS"
+    KEY_ALIAS="${FOCUSLOCK_KEY_ALIAS:-focusctl}"
+else
+    # Generate debug keystore if missing
+    if [ ! -f debug.keystore ]; then
+        echo "Generating debug keystore..."
+        keytool -genkey -v -keystore debug.keystore -alias focusctl \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass android -keypass android \
+            -dname "CN=FocusCtl,O=FocusLock,L=Unknown,ST=Unknown,C=US"
+    fi
+    KEYSTORE_PATH="debug.keystore"
+    KEYSTORE_PASS="android"
+    KEY_ALIAS="focusctl"
 fi
 
 echo "Compiling resources..."
@@ -59,9 +94,10 @@ unzip -o classes.zip classes.dex
 zip -u app.apk classes.dex
 zipalign -f 4 app.apk aligned.apk
 
-echo "Signing..."
-apksigner sign --ks debug.keystore --ks-pass pass:android \
-    --key-pass pass:android --ks-key-alias focusctl --out focusctl-signed.apk aligned.apk
+echo "Signing ($([ "$RELEASE" = "1" ] && echo release || echo debug))..."
+apksigner sign --ks "$KEYSTORE_PATH" --ks-pass "pass:$KEYSTORE_PASS" \
+    --key-pass "pass:$KEYSTORE_PASS" --ks-key-alias "$KEY_ALIAS" \
+    --out focusctl-signed.apk aligned.apk
 
 # Cleanup intermediates
 rm -f unaligned.apk app.apk classes.zip classes.dex aligned.apk compiled.zip

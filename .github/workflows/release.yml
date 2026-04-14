@@ -34,19 +34,28 @@ jobs:
         run: echo "ANDROID_SDK=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
 
       - name: Restore release keystore (optional)
-        if: env.RELEASE_KEYSTORE_B64 != ''
+        if: ${{ secrets.RELEASE_KEYSTORE_B64 != '' }}
         env:
           RELEASE_KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
         run: |
-          echo "$RELEASE_KEYSTORE_B64" | base64 -d > release.keystore
+          echo "$RELEASE_KEYSTORE_B64" | base64 -d > "$PWD/release.keystore"
           echo "FOCUSLOCK_KEYSTORE=$PWD/release.keystore" >> "$GITHUB_ENV"
+          echo "BUILD_FLAG=--release" >> "$GITHUB_ENV"
 
       - name: Build all three APKs
         env:
           FOCUSLOCK_KEYSTORE_PASS: ${{ secrets.RELEASE_KEYSTORE_PASS }}
         run: |
+          # If no release keystore secret is configured, fall back to debug builds
+          # (still produces functional APKs — just signed with the debug keystore).
+          FLAG="${BUILD_FLAG:-}"
+          if [ -n "$FLAG" ]; then
+            echo "Building with release keystore"
+          else
+            echo "WARNING: RELEASE_KEYSTORE_B64 secret not set — falling back to debug signing"
+          fi
           for m in slave companion controller; do
-            (cd android/$m && bash build.sh)
+            (cd android/$m && bash build.sh $FLAG)
           done
 
       - name: Collect artifacts
@@ -75,6 +84,10 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+
+      - name: Set SOURCE_DATE_EPOCH from commit
+        shell: bash
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
 
       - name: Build (skip signing — users code-sign locally)
         run: python build-win.py --skip-sign
