@@ -9,6 +9,18 @@ starting with v1.0.0.
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Security
+
+## [1.0.0] — 2026-04-14
+
+First public release. Everything below landed in the run-up to v1.0 across Phases 0 → 7.5 (see `docs/PUBLISHABLE-ROADMAP.md` and the commit log for sequencing).
+
+### Added
 - `SECURITY.md` — vulnerability disclosure policy
 - `CODE_OF_CONDUCT.md` — custom code of conduct tailored to the power-exchange context
 - `.editorconfig` — shared editor conventions
@@ -66,4 +78,5 @@ Development history prior to v1.0.0 is recorded in the git log. Notable mileston
 
 See `git log` for full commit history since `0de5fd9` (initial public repo push, 2026-04-09).
 
-[Unreleased]: https://github.com/OWNER/REPO/compare/main...HEAD
+[Unreleased]: https://github.com/NoahBunny/openleash/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/NoahBunny/openleash/releases/tag/v1.0.0

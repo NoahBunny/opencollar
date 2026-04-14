@@ -11,7 +11,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "focuslock"
-version = "0.9.0"
+version = "1.0.0"
 description = "Consensual remote device restriction — Lion's Share, Bunny Tasker, The Collar"
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }
@@ -57,10 +57,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/OWNER/REPO"
-Documentation = "https://github.com/OWNER/REPO/tree/main/docs"
-Issues = "https://github.com/OWNER/REPO/issues"
-Changelog = "https://github.com/OWNER/REPO/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/NoahBunny/openleash"
+Documentation = "https://github.com/NoahBunny/openleash/tree/main/docs"
+Issues = "https://github.com/NoahBunny/openleash/issues"
+Changelog = "https://github.com/NoahBunny/openleash/blob/main/CHANGELOG.md"
 
 # This is a "metadata-only" project for now — the codebase is a mix of
 # top-level scripts and a shared/ helper directory without __init__.py,
