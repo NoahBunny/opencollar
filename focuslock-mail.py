@@ -671,8 +671,8 @@ def mesh_apply_order(action, params, orders):
                     with open(reg, "w") as f:
                         json.dump(devices, f)
                     logger.info("Removed %s from device registry", target)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Device registry update for %s failed: %s", reg, e)
     elif action == "set-payment-email":
         orders.set("payment_imap_host", params.get("imap_host", ""))
         orders.set("payment_imap_user", params.get("user", ""))
@@ -1081,8 +1081,8 @@ class MeshAccountStore:
                     with open(path) as f:
                         account = json.load(f)
                     self.meshes[account["mesh_id"]] = account
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Mesh account load failed: %s", e)
 
     def _save(self, mesh_id):
         account = self.meshes.get(mesh_id)
@@ -1883,7 +1883,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 try:
                     ntfy_fn(mesh_orders.version)
                 except Exception:
-                    pass
+                    pass  # ntfy is best-effort; gossip handles consistency
             if not vault_ok and _mesh_accounts.is_vault_only(target_mesh):
                 result["warning"] = "vault blob write failed — vault-only slaves will not receive this order"
             self.respond(200, result)

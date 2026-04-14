@@ -381,8 +381,8 @@ def get_lion_pubkey():
                 _lion_pubkey = f.read().strip()
             if _lion_pubkey:
                 logger.info("Loaded Lion's Share pubkey from %s", LION_PUBKEY_FILE)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Lion pubkey load failed: %s", e)
     return _lion_pubkey
 
 
@@ -401,8 +401,8 @@ def seed_mesh_peers():
                     addresses=[parsed.hostname],
                     port=parsed.port or _cfg.get("homelab_port", 8434),
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Homelab URL parse failed: %s", e)
     for addr in PHONE_ADDRESSES:
         _trust_store.trust("phone", "config")
         mesh_peers.update_peer("phone", node_type="phone", addresses=[addr], port=PHONE_PORT)

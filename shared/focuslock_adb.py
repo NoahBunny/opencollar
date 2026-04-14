@@ -45,8 +45,8 @@ class ADBBridge:
                     capture_output=True,
                     timeout=10,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("adb put %s=%s on %s failed: %s", key, value, dev, e)
 
     def put_str(self, key, value):
         """Write a string settings value (safe — no shell interpolation)."""
@@ -57,8 +57,8 @@ class ADBBridge:
                     capture_output=True,
                     timeout=10,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("adb put_str %s=%r on %s failed: %s", key, value, dev, e)
 
     def shell(self, cmd, device=None):
         """Run a shell command on one device (default: primary)."""
@@ -67,13 +67,13 @@ class ADBBridge:
             return
         try:
             subprocess.run(["adb", "-s", dev, "shell", *cmd.split()], capture_output=True, timeout=10)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("adb shell %r on %s failed: %s", cmd, dev, e)
 
     def shell_all(self, cmd):
         """Run a shell command on ALL devices."""
         for dev in self.devices:
             try:
                 subprocess.run(["adb", "-s", dev, "shell", *cmd.split()], capture_output=True, timeout=10)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("adb shell_all %r on %s failed: %s", cmd, dev, e)

@@ -360,8 +360,8 @@ class TrustStore:
             try:
                 with open(self.persist_path, "r") as f:
                     self.trusted = json.load(f)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Warren trust load failed: %s", e)
 
     def save(self):
         if not self.persist_path:
@@ -372,8 +372,8 @@ class TrustStore:
             with open(tmp, "w") as f:
                 json.dump(self.trusted, f, indent=2)
             os.replace(tmp, self.persist_path)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Warren trust save failed: %s", e)
 
     def trust(self, node_id: str, reason: str = ""):
         with self.lock:
@@ -817,7 +817,7 @@ def handle_mesh_order(
         try:
             ntfy_fn(orders.version)
         except Exception:
-            pass
+            pass  # ntfy is best-effort; gossip handles consistency
 
     return {
         "ok": True,

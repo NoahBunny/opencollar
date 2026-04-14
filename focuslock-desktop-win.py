@@ -380,8 +380,8 @@ def _seed_configured_peers():
                     addresses=[parsed.hostname],
                     port=parsed.port or _cfg.get("homelab_port", 8434),
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Homelab URL parse failed: %s", e)
     for addr in PHONE_ADDRESSES:
         _trust_store.trust("phone", "config")
         mesh_peers.update_peer("phone", node_type="phone", addresses=[addr], port=PHONE_PORT)
