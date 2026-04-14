@@ -228,6 +228,7 @@ public class MainActivity extends Activity {
         findViewById(getId("btn_pin_message")).setOnClickListener(v -> doPinMessage());
         findViewById(getId("btn_force_sub")).setOnClickListener(v -> doForceSub());
         try { findViewById(getId("btn_web_remote")).setOnClickListener(v -> doWebRemoteScan()); } catch (Exception e) {}
+        try { findViewById(getId("btn_payment_email")).setOnClickListener(v -> doPaymentEmail()); } catch (Exception e) {}
         try { findViewById(getId("btn_vault_nodes")).setOnClickListener(v -> doVaultNodes()); } catch (Exception e) {}
         try { findViewById(getId("btn_bunnies")).setOnClickListener(v -> doBunnies()); } catch (Exception e) {}
         findViewById(getId("btn_start_fine")).setOnClickListener(v -> doStartFine());
@@ -2734,6 +2735,78 @@ public class MainActivity extends Activity {
                     String json = "{\"message\":\"" + esc(msg) + "\"}";
                     String r = api("/api/pin-message", json);
                     setStatus(r.contains("ok") ? (msg.isEmpty() ? "Pin cleared" : "Message pinned") : "Failed");
+                });
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    private void doPaymentEmail() {
+        LinearLayout form = new LinearLayout(this);
+        form.setOrientation(LinearLayout.VERTICAL);
+        form.setPadding(32, 16, 32, 0);
+
+        EditText hostInput = new EditText(this);
+        hostInput.setHint("IMAP host (e.g. imap.gmail.com)");
+        hostInput.setTextColor(0xFFe0e0e0);
+        hostInput.setHintTextColor(0xFF555555);
+        hostInput.setBackgroundColor(0xFF111118);
+        hostInput.setPadding(24, 16, 24, 16);
+        hostInput.setText(prefs.getString("payment_imap_host", ""));
+        form.addView(hostInput);
+
+        EditText userInput = new EditText(this);
+        userInput.setHint("Email address");
+        userInput.setTextColor(0xFFe0e0e0);
+        userInput.setHintTextColor(0xFF555555);
+        userInput.setBackgroundColor(0xFF111118);
+        userInput.setPadding(24, 16, 24, 16);
+        userInput.setInputType(android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+        userInput.setText(prefs.getString("payment_imap_user", ""));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = 12;
+        userInput.setLayoutParams(lp);
+        form.addView(userInput);
+
+        EditText passInput = new EditText(this);
+        passInput.setHint("App password");
+        passInput.setTextColor(0xFFe0e0e0);
+        passInput.setHintTextColor(0xFF555555);
+        passInput.setBackgroundColor(0xFF111118);
+        passInput.setPadding(24, 16, 24, 16);
+        passInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        passInput.setText(prefs.getString("payment_imap_pass", ""));
+        LinearLayout.LayoutParams lp2 = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp2.topMargin = 12;
+        passInput.setLayoutParams(lp2);
+        form.addView(passInput);
+
+        new AlertDialog.Builder(this)
+            .setTitle("Payment Email")
+            .setMessage("Set the IMAP inbox to scan for incoming e-Transfers. Use an app-specific password.")
+            .setView(form)
+            .setPositiveButton("Save", (d, w) -> {
+                String host = hostInput.getText().toString().trim();
+                String user = userInput.getText().toString().trim();
+                String pass = passInput.getText().toString().trim();
+                if (host.isEmpty() || user.isEmpty() || pass.isEmpty()) {
+                    setStatus("All fields required");
+                    return;
+                }
+                prefs.edit()
+                    .putString("payment_imap_host", host)
+                    .putString("payment_imap_user", user)
+                    .putString("payment_imap_pass", pass)
+                    .apply();
+                setStatus("Sending payment email config...");
+                executor.execute(() -> {
+                    String json = "{\"imap_host\":\"" + esc(host) + "\","
+                        + "\"user\":\"" + esc(user) + "\","
+                        + "\"pass\":\"" + esc(pass) + "\"}";
+                    String r = api("/api/set-payment-email", json);
+                    setStatus(r.contains("ok") ? "Payment email configured" : "Failed: " + r);
                 });
             })
             .setNegativeButton("Cancel", null)

@@ -271,6 +271,9 @@
             <!-- Web Remote: scan QR to approve web session -->
             <Button android:id="@+id/btn_web_remote" android:layout_width="match_parent" android:layout_height="42dp" android:text="\uD83D\uDCF1 Web Remote" android:textSize="12sp" android:backgroundTint="#1a1408" android:textColor="#b8860b" android:minWidth="0dp" android:minHeight="0dp" android:layout_marginBottom="4dp" />
 
+            <!-- Payment Email: Lion sets IMAP creds for payment detection -->
+            <Button android:id="@+id/btn_payment_email" android:layout_width="match_parent" android:layout_height="42dp" android:text="\uD83D\uDCE7 Payment Email" android:textSize="12sp" android:backgroundTint="#1a1a08" android:textColor="#88cc44" android:minWidth="0dp" android:minHeight="0dp" android:layout_marginBottom="4dp" />
+
             <!-- Row 5: Vault Nodes (Phase B/C approval queue) | Bunnies (multi-bunny switcher) -->
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">
                 <Button android:id="@+id/btn_vault_nodes" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="\uD83D\uDD12 Vault Nodes" android:textSize="12sp" android:backgroundTint="#0a1a1a" android:textColor="#66cccc" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
