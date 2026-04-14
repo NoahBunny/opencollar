@@ -2078,7 +2078,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     "created_at": now_ts,
                 }
                 scheme = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
-                host = self.headers.get("Host", "focus.wildhome.ca")
+                host = self.headers.get("Host", "localhost")
                 qr_url = f"{scheme}://{host}/web-login?s={session_id}"
                 self.respond(200, {"session_id": session_id, "qr_url": qr_url})
             elif action == "approve":

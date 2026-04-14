@@ -746,7 +746,7 @@ public class MainActivity extends Activity {
         layout.addView(inviteInput);
 
         EditText serverInput = new EditText(this);
-        serverInput.setHint("Server URL (e.g. https://focus.wildhome.ca)");
+        serverInput.setHint("Server URL (e.g. https://your-relay.example)");
         serverInput.setTextSize(13);
         serverInput.setTextColor(0xFFaaaaaa);
         serverInput.setHintTextColor(0xFF444444);
