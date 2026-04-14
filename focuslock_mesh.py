@@ -49,7 +49,7 @@ def canonical_json(orders: dict) -> bytes:
 def verify_signature(orders: dict, signature_b64: str, pubkey_pem: str) -> bool:
     """Verify RSA-SHA256 signature on an orders document."""
     if not HAS_CRYPTO:
-        print("[mesh] WARNING: cryptography library unavailable — rejecting signed orders")
+        logger.warning("cryptography library unavailable — rejecting signed orders")
         return False
     if not pubkey_pem or not signature_b64:
         return False
@@ -198,7 +198,7 @@ class OrdersDocument:
                 for k in ORDER_KEYS:
                     if k in stored:
                         self.orders[k] = stored[k]
-                print(f"[mesh] Loaded orders v{self.version} from {self.persist_path}")
+                logger.info("Loaded orders v%s from %s", self.version, self.persist_path)
             except Exception as e:
                 logger.warning("Failed to load orders: %s", e)
 
@@ -239,10 +239,10 @@ class OrdersDocument:
         # permissive path so initial setup can complete.
         if lion_pubkey:
             if not remote_sig:
-                print(f"[mesh] REJECTED orders v{remote_version} — unsigned (lion_pubkey configured)")
+                logger.warning("REJECTED orders v%s — unsigned (lion_pubkey configured)", remote_version)
                 return False
             if not verify_signature(remote_orders, remote_sig, lion_pubkey):
-                print(f"[mesh] REJECTED orders v{remote_version} — invalid signature!")
+                logger.warning("REJECTED orders v%s — invalid signature", remote_version)
                 return False
 
         with self.lock:
@@ -254,7 +254,7 @@ class OrdersDocument:
                     self.orders[k] = remote_orders[k]
             self.save()
 
-        print(f"[mesh] Applied orders v{self.version}")
+        logger.info("Applied orders v%s", self.version)
         return True
 
     def bump_version(self, privkey_pem: str = ""):
@@ -402,7 +402,7 @@ class PeerRegistry:
                     data = json.load(f)
                 for node_id, info in data.items():
                     self.peers[node_id] = PeerInfo.from_dict(info)
-                print(f"[mesh] Loaded {len(self.peers)} peers from {self.persist_path}")
+                logger.info("Loaded %d peers from %s", len(self.peers), self.persist_path)
             except Exception as e:
                 logger.warning("Failed to load peers: %s", e)
 
@@ -413,7 +413,7 @@ class PeerRegistry:
             if stale:
                 for nid in stale:
                     del self.peers[nid]
-                print(f"[mesh] Pruned non-warren peers: {stale}")
+                logger.info("Pruned non-warren peers: %s", stale)
                 self.save()
 
     def save(self):
@@ -444,7 +444,7 @@ class PeerRegistry:
             if peer is None:
                 peer = PeerInfo(node_id)
                 self.peers[node_id] = peer
-                print(f"[mesh] Discovered new peer: {node_id}")
+                logger.info("Discovered new peer: %s", node_id)
             if node_type:
                 peer.node_type = node_type
             if addresses:
@@ -1056,7 +1056,7 @@ def _get_tailnet_name() -> str:
                 parts = dns_name.rstrip(".").split(".")
                 if len(parts) >= 3:
                     _tailnet_name = ".".join(parts[1:])  # "tail12345.ts.net"
-                    print(f"[mesh] Discovered tailnet: {_tailnet_name}")
+                    logger.info("Discovered tailnet: %s", _tailnet_name)
                     return _tailnet_name
         except Exception:
             pass
@@ -1258,7 +1258,7 @@ class LANDiscoveryThread(threading.Thread):
                 pass
             self._sock.bind(("0.0.0.0", LAN_DISCOVERY_PORT))
             self._sock.settimeout(5)
-            print(f"[mesh] LAN discovery listening on UDP :{LAN_DISCOVERY_PORT}")
+            logger.info("LAN discovery listening on UDP :%s", LAN_DISCOVERY_PORT)
         except Exception as e:
             logger.error("LAN discovery bind failed: %s", e)
             return
@@ -1387,7 +1387,7 @@ class PaymentLedger:
                 self.entries = data.get("entries", [])
                 self.imap_epoch = data.get("imap_epoch", 0)
             except Exception as e:
-                print(f"[mesh] Failed to load ledger: {e}")
+                logger.warning("Failed to load ledger: %s", e)
 
     def save(self):
         if not self.persist_path:
@@ -1399,7 +1399,7 @@ class PaymentLedger:
                 json.dump({"entries": self.entries, "imap_epoch": self.imap_epoch}, f)
             os.replace(tmp, self.persist_path)
         except Exception as e:
-            print(f"[mesh] Failed to save ledger: {e}")
+            logger.warning("Failed to save ledger: %s", e)
 
     def balance(self) -> float:
         """Net balance: positive = bunny owes, negative = credit."""
@@ -1458,7 +1458,7 @@ class MessageStore:
                 with open(self.persist_path, "r") as f:
                     self.messages = json.load(f)
             except Exception as e:
-                print(f"[mesh] Failed to load messages: {e}")
+                logger.warning("Failed to load messages: %s", e)
 
     def save(self):
         if not self.persist_path:
@@ -1470,7 +1470,7 @@ class MessageStore:
                 json.dump(self.messages, f)
             os.replace(tmp, self.persist_path)
         except Exception as e:
-            print(f"[mesh] Failed to save messages: {e}")
+            logger.warning("Failed to save messages: %s", e)
 
     def add(self, msg: dict) -> dict:
         with self.lock:

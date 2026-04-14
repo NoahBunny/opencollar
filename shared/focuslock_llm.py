@@ -94,7 +94,7 @@ def verify_photo_with_llm(
         return {"ok": True, "passed": passed, "reason": response_text[:200]}
 
     except Exception as e:
-        print(f"[llm] Verification error: {e}")
+        logger.exception("Verification error")
         return {"ok": False, "passed": False, "reason": str(e)}
 
 
@@ -180,8 +180,8 @@ def generate_task_with_llm(category="general", *, ollama_url=DEFAULT_OLLAMA_URL,
 
         return {"ok": True, "task": response_text[:200], "hint": ""}
 
-    except Exception as e:
-        print(f"[llm] Generation error: {e}")
+    except Exception:
+        logger.exception("Generation error")
         return {
             "ok": False,
             "task": "Clean the kitchen",

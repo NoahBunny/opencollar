@@ -90,9 +90,11 @@ def try_sync(
         # Apply newer orders if available
         remote_ver = data.get("orders_version", 0)
         has_orders = "orders" in data
-        print(f"[sync] {name} responded v{remote_ver}, has_orders={has_orders}, local v{mesh_orders.version}")
+        logger.debug(
+            "%s responded v%s, has_orders=%s, local v%s", name, remote_ver, has_orders, mesh_orders.version
+        )
         if remote_ver > mesh_orders.version and has_orders:
-            print(f"[sync] Applying v{remote_ver} from {name} (local was v{mesh_orders.version})")
+            logger.info("Applying v%s from %s (local was v%s)", remote_ver, name, mesh_orders.version)
             applied = mesh_orders.apply_remote(
                 {
                     "version": remote_ver,
@@ -103,15 +105,17 @@ def try_sync(
                 lion_pubkey,
             )
             if applied:
-                print(f"[sync] Now at v{mesh_orders.version} lock_active={mesh_orders.orders.get('lock_active')}")
+                logger.info(
+                    "Now at v%s lock_active=%s", mesh_orders.version, mesh_orders.orders.get("lock_active")
+                )
                 if on_orders_applied:
                     on_orders_applied(mesh_orders.orders)
                 return True
             else:
-                print(f"[sync] apply_remote returned False for v{remote_ver}")
+                logger.warning("apply_remote returned False for v%s", remote_ver)
         return True
     except Exception as e:
-        print(f"[sync] {name} error: {e}")
+        logger.warning("%s sync error: %s", name, e)
         return False
 
 
@@ -236,7 +240,7 @@ def relay_to_phones(action, params, *, mesh_orders=None, mesh_peers, node_id, pi
                     f"http://{addr}:{peer.port}/mesh/order", data=payload, headers={"Content-Type": "application/json"}
                 )
                 urllib.request.urlopen(req, timeout=3)
-                print(f"[relay] Forwarded {action} to phone {addr}:{peer.port}")
+                logger.info("Forwarded %s to phone %s:%s", action, addr, peer.port)
                 break
             except Exception:
                 continue

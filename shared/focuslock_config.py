@@ -214,7 +214,7 @@ def load_config(config_path=None):
                 file_config = json.load(f)
             config = _deep_merge(config, file_config)
         except (OSError, json.JSONDecodeError) as e:
-            print(f"[config] WARNING: Failed to load {path}: {e}")
+            logger.warning("Failed to load %s: %s", path, e)
 
     # Apply env var overrides
     _apply_env_overrides(config)
@@ -228,14 +228,14 @@ def save_config(config, config_path=None):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
-    print(f"[config] Saved to {path}")
+    logger.info("Saved config to %s", path)
 
 
 def require_pin(config):
     """Validate that PIN is configured. Returns the PIN or exits."""
     pin = config.get("pin", "")
     if not pin:
-        print("[config] ERROR: No mesh PIN configured.")
-        print("[config] Set 'pin' in config.json or FOCUSLOCK_PIN env var.")
+        logger.error("No mesh PIN configured.")
+        logger.error("Set 'pin' in config.json or FOCUSLOCK_PIN env var.")
         return ""
     return pin

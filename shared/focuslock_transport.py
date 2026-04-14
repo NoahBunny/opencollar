@@ -283,7 +283,7 @@ def transport_factory(config):
     if transport == "syncthing":
         vault_dir = config.get("syncthing_vault_dir", "")
         if not vault_dir:
-            print("[transport] WARNING: syncthing transport selected but syncthing_vault_dir not set")
+            logger.warning("syncthing transport selected but syncthing_vault_dir not set")
             return HttpVaultTransport(config.get("mesh_url", ""))
         return SyncthingVaultTransport(vault_dir)
     return HttpVaultTransport(config.get("mesh_url", ""))

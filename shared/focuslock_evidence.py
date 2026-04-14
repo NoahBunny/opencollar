@@ -75,17 +75,17 @@ def send_evidence(
         True if the email was sent, False otherwise.
     """
     if not partner_email:
-        print(f"[evidence] No partner email configured, skipping {evidence_type}")
+        logger.info("No partner email configured, skipping %s", evidence_type)
         return False
 
     # Check notification preferences
     pref_key = _TYPE_TO_PREF.get(evidence_type, "email_evidence")
     if not get_notif_pref(pref_key, mesh_orders, adb):
-        print(f"[evidence] Email disabled for {evidence_type} (pref: {pref_key}), skipping")
+        logger.info("Email disabled for %s (pref: %s), skipping", evidence_type, pref_key)
         return False
 
     if not all([smtp_host, mail_user, mail_pass]):
-        print(f"[evidence] SMTP not configured, skipping {evidence_type}")
+        logger.info("SMTP not configured, skipping %s", evidence_type)
         return False
 
     try:
@@ -111,9 +111,9 @@ def send_evidence(
             server.login(mail_user, mail_pass)
             server.send_message(msg)
 
-        print(f"[evidence] Evidence email sent to {partner_email}")
+        logger.info("Evidence email sent to %s", partner_email)
         return True
 
-    except Exception as e:
-        print(f"[evidence] SMTP error for {evidence_type}: {e}")
+    except Exception:
+        logger.exception("SMTP error for %s", evidence_type)
         return False

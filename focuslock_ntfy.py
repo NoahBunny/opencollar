@@ -39,9 +39,9 @@ def ntfy_publish(topic: str, version: int, server: str = "https://ntfy.sh") -> N
                 method="POST",
             )
             urllib.request.urlopen(req, timeout=3)
-            print(f"[ntfy] Published v{version} to {topic}")
+            logger.debug("Published v%s to %s", version, topic)
         except Exception as e:
-            print(f"[ntfy] Publish failed: {e}")
+            logger.warning("ntfy publish failed: %s", e)
 
     threading.Thread(target=_post, daemon=True).start()
 
@@ -65,7 +65,7 @@ class NtfySubscribeThread(threading.Thread):
         self._stop_event.set()
 
     def run(self):
-        print(f"[ntfy] Subscribing to {self.server}/{self.topic}")
+        logger.info("Subscribing to %s/%s", self.server, self.topic)
         # Start with since=60s ago — catches very recent messages without
         # replaying full history. Gossip handles anything older.
         self._since = str(int(time.time()) - 60)
@@ -76,7 +76,7 @@ class NtfySubscribeThread(threading.Thread):
                 # Normal return (server closed connection) — reset backoff
                 self._backoff = 1
             except Exception as e:
-                print(f"[ntfy] Subscribe error: {e}")
+                logger.warning("ntfy subscribe error: %s", e)
                 wait = self._backoff
                 self._backoff = min(self._backoff * 2, 60)
                 if self._stop_event.wait(wait):
@@ -124,8 +124,8 @@ class NtfySubscribeThread(threading.Thread):
                     pass
 
             if version is not None:
-                print(f"[ntfy] Received wake-up v{version}")
+                logger.debug("Received wake-up v%s", version)
                 try:
                     self.on_wake(version)
-                except Exception as e:
-                    print(f"[ntfy] on_wake error: {e}")
+                except Exception:
+                    logger.exception("on_wake error")

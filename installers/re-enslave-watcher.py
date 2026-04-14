@@ -37,7 +37,7 @@ PROBE_TIMEOUT = 2.0
 
 
 def log(msg: str) -> None:
-    print(f"[watcher] {msg}", flush=True)
+    logger.info(msg)
 
 
 def load_phone_targets() -> list[tuple[str, str, str]]:
