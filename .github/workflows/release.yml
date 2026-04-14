@@ -108,9 +108,37 @@ jobs:
           path: staged/*.exe
           if-no-files-found: error
 
+  sbom:
+    name: Generate SBOM (CycloneDX)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install cyclonedx-bom
+        run: pip install cyclonedx-bom
+
+      - name: Generate SBOM from requirements.txt
+        run: |
+          cyclonedx-py requirements requirements.txt \
+            --output-format JSON \
+            --output-file SBOM.cdx.json \
+            --spec-version 1.5
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: SBOM.cdx.json
+          if-no-files-found: error
+
   release:
     name: Publish GitHub Release
-    needs: [android, windows]
+    needs: [android, windows, sbom]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -123,7 +151,7 @@ jobs:
       - name: Flatten artifact tree
         run: |
           mkdir -p release
-          find artifacts -type f \( -name '*.apk' -o -name '*.exe' \) -exec cp {} release/ \;
+          find artifacts -type f \( -name '*.apk' -o -name '*.exe' -o -name 'SBOM.cdx.json' \) -exec cp {} release/ \;
           ls -la release/
 
       - name: Generate SHA256SUMS.txt
@@ -159,6 +187,7 @@ jobs:
           files: |
             release/*.apk
             release/*.exe
+            release/SBOM.cdx.json
             release/SHA256SUMS.txt
           fail_on_unmatched_files: true
           draft: false

@@ -1,7 +1,75 @@
 # Tool configuration for The Collar / Lion's Share / Bunny Tasker.
 #
-# Runtime dependencies live in requirements.txt (hash-pinned).
-# Phase 7 of docs/PUBLISHABLE-ROADMAP.md adds full [project] metadata.
+# Runtime install for the server uses requirements.txt (hash-pinned for
+# supply-chain safety). The [project] block below exists so contributors
+# can `pip install -e '.[dev]'` and get the test/lint stack in one shot,
+# and so SBOM generators (cyclonedx, syft) have a manifest to read.
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "focuslock"
+version = "0.9.0"
+description = "Consensual remote device restriction — Lion's Share, Bunny Tasker, The Collar"
+readme = "README.md"
+license = { text = "GPL-3.0-or-later" }
+requires-python = ">=3.10"
+authors = [{ name = "The FocusLock Contributors" }]
+keywords = ["consent-tech", "device-admin", "kink", "self-host", "e2ee"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications",
+    "Topic :: Security :: Cryptography",
+    "Intended Audience :: End Users/Desktop",
+]
+# Core runtime dep shared by server, desktop, and shared/ modules.
+# Hash-pinned production install: pip install --require-hashes -r requirements.txt
+dependencies = [
+    "cryptography>=42",
+]
+
+[project.optional-dependencies]
+# Windows desktop collar — pystray tray icon + Pillow icon conversion.
+# build-win.py installs these at build time; listed here so editable installs
+# work for contributors hacking on the Windows path from any host.
+desktop-win = [
+    "pystray>=0.19",
+    "pillow>=10",
+]
+# Server install adds nothing beyond core today; reserved for future
+# server-only deps so deployments can declare intent.
+server = []
+# Test + lint stack. CI installs these explicitly; contributors get them
+# via `pip install -e '.[dev]'`.
+dev = [
+    "pytest>=7",
+    "pytest-cov>=4",
+    "ruff>=0.4",
+    "mypy>=1.8",
+]
+
+[project.urls]
+Homepage = "https://github.com/OWNER/REPO"
+Documentation = "https://github.com/OWNER/REPO/tree/main/docs"
+Issues = "https://github.com/OWNER/REPO/issues"
+Changelog = "https://github.com/OWNER/REPO/blob/main/CHANGELOG.md"
+
+# This is a "metadata-only" project for now — the codebase is a mix of
+# top-level scripts and a shared/ helper directory without __init__.py,
+# so `pip install` here only installs the dependency closure (and the
+# extras you opt into), not any Python modules. Phase 8 (Android Gradle
+# migration) is the natural point to also migrate this to a src/ layout
+# with proper packaging.
+[tool.setuptools]
+py-modules = []
 
 [tool.pytest.ini_options]
 minversion = "7.0"
