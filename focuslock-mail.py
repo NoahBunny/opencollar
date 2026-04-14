@@ -11,6 +11,7 @@ FocusLock Mail Service — runs on homelab
 import base64
 import hmac
 import json
+import logging
 import os
 import secrets
 import smtplib
@@ -25,6 +26,8 @@ from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+logger = logging.getLogger(__name__)
 
 # Add mesh module to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -781,8 +784,8 @@ def check_desktop_heartbeats():
                             pw = 0
                             try:
                                 pw = int(pw_str) if pw_str and pw_str != "null" else 0
-                            except Exception:
-                                print(f"[warn] failed to parse paywall value: {pw_str!r}")
+                            except Exception as e:
+                                logger.warning("Failed to parse paywall value %r: %s", pw_str, e)
                             pw += 50
                             adb.put("focus_lock_paywall", str(pw))
                             adb.put_str(
@@ -834,8 +837,8 @@ def check_tributes_and_fines():
                         if ntfy_fn:
                             try:
                                 ntfy_fn(mesh_orders.version)
-                            except Exception:
-                                print("[warn] ntfy push failed after daily tribute")
+                            except Exception as e:
+                                logger.warning("ntfy push failed after daily tribute: %s", e)
                         print(f"[{now()}] Daily tribute: +${amount} (unlocked for 24h+)")
 
             # Recurring fine — accrues regardless of lock state
@@ -858,8 +861,8 @@ def check_tributes_and_fines():
                     if ntfy_fn:
                         try:
                             ntfy_fn(mesh_orders.version)
-                        except Exception:
-                            print("[warn] ntfy push failed after fine")
+                        except Exception as e:
+                            logger.warning("ntfy push failed after fine: %s", e)
                     print(f"[{now()}] Fine applied: +${fine_amount}")
 
             # Streak bonuses — 7d clean = -$5, 30d clean = -$25
@@ -932,8 +935,8 @@ class PairingRegistry:
             if os.path.exists(self.path):
                 with open(self.path) as f:
                     self.entries = json.load(f)
-        except Exception:
-            print(f"[warn] failed to load pairing registry from {self.path}")
+        except Exception as e:
+            logger.warning("Failed to load pairing registry from %s: %s", self.path, e)
 
     def _save(self):
         try:
@@ -942,8 +945,8 @@ class PairingRegistry:
             with open(tmp, "w") as f:
                 json.dump(self.entries, f)
             os.replace(tmp, self.path)
-        except Exception:
-            print(f"[warn] failed to save pairing registry to {self.path}")
+        except Exception as e:
+            logger.warning("Failed to save pairing registry to %s: %s", self.path, e)
 
     def register(self, passphrase, bunny_pubkey, node_id):
         with self.lock:
@@ -1803,8 +1806,8 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             pw = 0
             try:
                 pw = int(pw_str) if pw_str and pw_str != "null" else 0
-            except Exception:
-                print(f"[warn] failed to parse paywall value: {pw_str!r}")
+            except Exception as e:
+                logger.warning("Failed to parse paywall value %r: %s", pw_str, e)
             pw += amount
             adb.put("focus_lock_paywall", str(pw))
             adb.put_str("focus_lock_message", f"{reason}. ${amount} added.")
