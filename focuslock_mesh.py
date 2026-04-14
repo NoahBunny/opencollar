@@ -13,6 +13,7 @@ Shared between server (focuslock-mail.py) and desktop collar (focuslock-desktop.
 
 import base64
 import json
+import logging
 import os
 import socket
 import sys
@@ -21,6 +22,8 @@ import time
 import traceback
 import urllib.error
 import urllib.request
+
+logger = logging.getLogger(__name__)
 
 # On Windows, subprocess calls need CREATE_NO_WINDOW to avoid console flashes
 _SUBPROCESS_FLAGS = {}
@@ -57,7 +60,7 @@ def verify_signature(orders: dict, signature_b64: str, pubkey_pem: str) -> bool:
         pubkey.verify(sig, data, asym_padding.PKCS1v15(), hashes.SHA256())
         return True
     except Exception as e:
-        print(f"[mesh] Signature verification failed: {e}")
+        logger.warning("Signature verification failed: %s", e)
         return False
 
 
@@ -197,7 +200,7 @@ class OrdersDocument:
                         self.orders[k] = stored[k]
                 print(f"[mesh] Loaded orders v{self.version} from {self.persist_path}")
             except Exception as e:
-                print(f"[mesh] Failed to load orders: {e}")
+                logger.warning("Failed to load orders: %s", e)
 
     def save(self):
         if not self.persist_path:
@@ -209,7 +212,7 @@ class OrdersDocument:
                 json.dump(self.to_dict(), f, indent=2)
             os.replace(tmp, self.persist_path)
         except Exception as e:
-            print(f"[mesh] Failed to save orders: {e}")
+            logger.warning("Failed to save orders: %s", e)
 
     def to_dict(self) -> dict:
         return {
@@ -401,7 +404,7 @@ class PeerRegistry:
                     self.peers[node_id] = PeerInfo.from_dict(info)
                 print(f"[mesh] Loaded {len(self.peers)} peers from {self.persist_path}")
             except Exception as e:
-                print(f"[mesh] Failed to load peers: {e}")
+                logger.warning("Failed to load peers: %s", e)
 
     def _prune_stale(self):
         """Remove any peers not in the warren whitelist."""
@@ -423,7 +426,7 @@ class PeerRegistry:
                 json.dump({nid: p.to_dict() for nid, p in self.peers.items()}, f, indent=2)
             os.replace(tmp, self.persist_path)
         except Exception as e:
-            print(f"[mesh] Failed to save peers: {e}")
+            logger.warning("Failed to save peers: %s", e)
 
     def update_peer(
         self,
@@ -777,7 +780,8 @@ def handle_mesh_order(
             # Signature covers canonical({action, params}) — minimal envelope
             sig_payload = {"action": action, "params": params}
             sig_ok = verify_signature(sig_payload, signature, lion_pubkey)
-        except Exception:
+        except Exception as e:
+            logger.warning("Mesh order signature check raised: %s", e)
             sig_ok = False
     # If neither auth method configured (PIN and lion_pubkey both missing),
     # this is an uninitialized node — fall through legacy permissive behavior
@@ -925,7 +929,7 @@ class GossipThread(threading.Thread):
                     self.on_orders_applied,
                 )
             except Exception as e:
-                print(f"[mesh] Gossip error: {e}")
+                logger.warning("Gossip error: %s", e)
                 traceback.print_exc()
             time.sleep(self.interval)
 
@@ -1239,7 +1243,7 @@ class LANDiscoveryThread(threading.Thread):
                 finally:
                     sock.close()
             except Exception as e:
-                print(f"[mesh] LAN beacon send error: {e}")
+                logger.warning("LAN beacon send error: %s", e)
             time.sleep(self.beacon_interval)
 
     def _listen_loop(self):
@@ -1256,7 +1260,7 @@ class LANDiscoveryThread(threading.Thread):
             self._sock.settimeout(5)
             print(f"[mesh] LAN discovery listening on UDP :{LAN_DISCOVERY_PORT}")
         except Exception as e:
-            print(f"[mesh] LAN discovery bind failed: {e}")
+            logger.error("LAN discovery bind failed: %s", e)
             return
 
         while self.running:
@@ -1288,7 +1292,7 @@ class LANDiscoveryThread(threading.Thread):
                 continue
             except Exception as e:
                 if self.running:
-                    print(f"[mesh] LAN discovery listen error: {e}")
+                    logger.warning("LAN discovery listen error: %s", e)
                 time.sleep(1)
 
     def stop(self):
@@ -1318,7 +1322,7 @@ class VoucherPool:
                 with open(self.persist_path, "r") as f:
                     self.vouchers = json.load(f)
             except Exception as e:
-                print(f"[mesh] Failed to load vouchers: {e}")
+                logger.warning("Failed to load vouchers: %s", e)
 
     def save(self):
         if not self.persist_path:
@@ -1330,7 +1334,7 @@ class VoucherPool:
                 json.dump(self.vouchers, f)
             os.replace(tmp, self.persist_path)
         except Exception as e:
-            print(f"[mesh] Failed to save vouchers: {e}")
+            logger.warning("Failed to save vouchers: %s", e)
 
     def get_available(self) -> list:
         with self.lock:
