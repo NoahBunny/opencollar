@@ -1,6 +1,34 @@
 # The Collar + Lion's Share + Bunny Tasker
 
-A multi-platform ecosystem for consensual remote device restriction. The Lion controls. The Bunny obeys. The Collar enforces.
+A multi-platform ecosystem for **consensual** remote device restriction. The Lion controls. The Bunny obeys. The Collar enforces.
+
+> ⚠️ **Read first:** This software handles real money, real devices, and a real power dynamic. Install it only on devices you own or with the explicit, informed, freely-given consent of the device owner. Installing it on someone's device without their knowledge or against their will may be a criminal offence. **The authors will not help you do that.** Full terms in [`DISCLAIMER.md`](../DISCLAIMER.md).
+
+## Who is this for?
+
+- **Adults in a consensual power-exchange relationship** who want a tool that enforces locks, paywalls, and tasks more reliably than willpower.
+- **Self-hosters** who'd rather run their own relay than trust a third party with the metadata channel.
+- **Auditors and tinkerers** who want a worked example of a zero-knowledge mesh with E2E-encrypted multi-recipient blobs and RSA-signed orders.
+
+It is **not** for: monitoring children, partners without consent, employees, or anyone who hasn't sat through the consent screen and meant it.
+
+## Documentation index
+
+| Doc | What it covers |
+|-----|----------------|
+| [`docs/BUILD.md`](BUILD.md) | Build every artifact from source (Android, Windows, server) |
+| [`docs/CONFIG.md`](CONFIG.md) | Every config field with type, default, and security implications |
+| [`docs/SELF-HOSTING.md`](SELF-HOSTING.md) | Stand up your own relay end-to-end (DNS → TLS → first pairing) |
+| [`docs/THREAT-MODEL.md`](THREAT-MODEL.md) | What this defends against, what it doesn't, and out-of-scope adversaries |
+| [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) | Sanitized code map and sequence diagrams for new contributors |
+| [`docs/VAULT-DESIGN.md`](VAULT-DESIGN.md) | Full cryptographic design rationale |
+| [`docs/QA-CHECKLIST.md`](QA-CHECKLIST.md) | Manual + scripted regression matrix |
+| [`docs/STAGING.md`](STAGING.md) | Spin up an isolated mesh for testing |
+| [`docs/MANUAL-LION.md`](MANUAL-LION.md) | Controller manual (cheeky) |
+| [`docs/MANUAL-BUNNY.md`](MANUAL-BUNNY.md) | Target manual (cheekier) |
+| [`docs/PRICE-LIST.md`](PRICE-LIST.md) | Penalty and pricing reference |
+| [`SECURITY.md`](../SECURITY.md) | Vulnerability disclosure policy |
+| [`CHANGELOG.md`](../CHANGELOG.md) | What changed and when |
 
 ## Architecture
 
@@ -225,30 +253,20 @@ Basic, Negotiation, Task, Compliment, Gratitude Journal, Exercise, Love Letter, 
 - `re-enslave-desktops.sh` -- Desktop collar update
 - `re-enslave-phones.sh` -- Phone APK sideload via ADB
 
-### Docs
-- `docs/VAULT-DESIGN.md` -- Cryptographic design + threat model
-- `docs/MANUAL-LION.md` -- Controller manual (cheeky)
-- `docs/MANUAL-BUNNY.md` -- Target manual (cheekier)
-- `docs/PRICE-LIST.md` -- Penalty and pricing reference
-
 ## Build
 
-### Android
-No Gradle. Uses aapt2/javac/d8/apksigner directly.
+See [`docs/BUILD.md`](BUILD.md) for the full build guide. TL;DR:
+
 ```bash
+# Android (Linux/macOS/Windows host)
 cd android/slave && bash build.sh
-# Requires: JDK 17+, Android SDK build-tools, android.jar (API 34)
-```
+cd android/companion && bash build.sh
+cd android/controller && bash build.sh
 
-### Windows Desktop
-```bash
-python build-win.py              # Builds FocusLock.exe + Watchdog
-python build-win.py --skip-sign  # Skip code signing
-```
+# Windows desktop (must run on Windows)
+python build-win.py
 
-### Linux Desktop
-No build needed -- runs as Python script via systemd.
-```bash
+# Linux desktop (no build, install via systemd)
 bash installers/install-desktop-collar.sh
 ```
 
