@@ -10,7 +10,10 @@ peer discovery, and order application with signature verification.
 """
 
 import json
+import logging
 import urllib.request
+
+logger = logging.getLogger(__name__)
 
 
 def try_sync(

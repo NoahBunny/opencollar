@@ -7,7 +7,10 @@ Replaces os.system/os.popen calls with subprocess.run to eliminate
 command injection vulnerabilities in shell-interpolated ADB commands.
 """
 
+import logging
 import subprocess
+
+logger = logging.getLogger(__name__)
 
 
 class ADBBridge:

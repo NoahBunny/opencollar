@@ -18,10 +18,13 @@ Config keys:
 """
 
 import json
+import logging
 import os
 import time
 import urllib.error
 import urllib.request
+
+logger = logging.getLogger(__name__)
 
 
 class VaultTransport:

@@ -17,12 +17,15 @@ Exit code 0 always — this is a best-effort daemon, the timer will retry next t
 from __future__ import annotations
 
 import json
+import logging
 import shlex
 import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path.home() / ".config/focuslock/re-enslave.config"
 STATE_PATH = Path.home() / ".local/state/focuslock/watcher.json"

@@ -34,6 +34,7 @@ if WEBKIT_OK:
 import datetime
 import html as _html
 import json
+import logging
 import os
 import random
 import signal
@@ -44,6 +45,8 @@ import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+logger = logging.getLogger(__name__)
 
 # Add mesh module to path
 for _p in [os.path.dirname(os.path.abspath(__file__)), "/opt/focuslock", os.path.expanduser("~/Desktop/Focus")]:

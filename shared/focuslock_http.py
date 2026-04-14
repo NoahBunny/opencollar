@@ -8,6 +8,9 @@ Content-Length, optional CORS headers, and body encoding.
 """
 
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class JSONResponseMixin:

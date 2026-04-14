@@ -8,10 +8,13 @@ verdicts, escape attempts, geofence breaches, and other evidence types.
 Respects per-type notification preferences from mesh orders or ADB.
 """
 
+import logging
 import smtplib
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+
+logger = logging.getLogger(__name__)
 
 
 def get_notif_pref(key, mesh_orders, adb=None):

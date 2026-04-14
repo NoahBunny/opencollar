@@ -13,6 +13,7 @@ Build: pyinstaller --onefile --noconsole --icon=crown-gold.ico focuslock-desktop
 import ctypes
 import datetime
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -22,6 +23,8 @@ import time
 import urllib.error
 import urllib.request
 import winreg
+
+logger = logging.getLogger(__name__)
 
 # ── Paths ──
 

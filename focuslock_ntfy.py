@@ -12,10 +12,13 @@ beyond timing and a monotonic counter.
 """
 
 import json
+import logging
 import threading
 import time
 import urllib.error
 import urllib.request
+
+logger = logging.getLogger(__name__)
 
 
 def ntfy_publish(topic: str, version: int, server: str = "https://ntfy.sh") -> None:

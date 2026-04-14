@@ -8,8 +8,11 @@ dolphin-llama3:8b (text) for creative task generation.
 """
 
 import json
+import logging
 import urllib.request
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_VISION_MODEL = "minicpm-v"
