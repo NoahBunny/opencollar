@@ -10,18 +10,34 @@ starting with v1.0.0.
 
 ### Added
 - `SECURITY.md` — vulnerability disclosure policy
-- `CODE_OF_CONDUCT.md` — Contributor Covenant 2.1
+- `CODE_OF_CONDUCT.md` — custom code of conduct tailored to the power-exchange context
 - `.editorconfig` — shared editor conventions
 - `CHANGELOG.md` — this file
 - `docs/PUBLISHABLE-ROADMAP.md` — phased plan to v1.0.0
+- `pyproject.toml` — ruff + mypy configuration (Phase 1a)
+- `.pre-commit-config.yaml` — ruff, ruff-format, mypy on shared/, hygiene hooks (Phase 1a)
+- `.git-blame-ignore-revs` — skip mechanical reformat commits in `git blame` (Phase 1a)
+- `logger = logging.getLogger(__name__)` module pattern in `shared/focuslock_vault.py`, `shared/focuslock_payment.py`, `focuslock_mesh.py`, `focuslock-mail.py` (Phase 1b-core)
 
 ### Changed
 - `focuslock-mail.py` — default `Host` header fallback changed from operator's personal domain to `localhost`
 - `android/companion/.../MainActivity.java` — server URL input hint changed from operator's personal domain to a generic example
+- Python codebase reformatted with `ruff format` (Phase 1a — mechanical, skipped in `git blame` via `.git-blame-ignore-revs`)
+- Security-critical exception handlers now use structured logging at appropriate severity (Phase 1b-core):
+  - Vault signature-verify and decrypt failures → `logger.warning`
+  - Payment email parse + IMAP loop errors → `logger.warning`/`logger.error`
+  - Mesh signature verify + state I/O (orders, peers, vouchers) → `logger.warning`
+  - Roadmap-called-out `[warn]` prints in `focuslock-mail.py` (paywall parse, ntfy push, pairing registry) → logger
+
+### Fixed
+- **Real bugs surfaced by lint (Phase 1a):**
+  - `focuslock-desktop-win.py` was missing `import subprocess` (5 crash sites: bedtime check + 4 process-management paths) and `import datetime` (1 bedtime check site)
+  - `focuslock-mail.py:806` called bare `push_to_peers(...)` instead of `mesh.push_to_peers(...)` — fine-application mesh push was broken
+- `set-payment-email` feature completed with missing `ORDER_KEYS` schema entries and `focuslock_payment.py` consumer (hot-swappable IMAP creds via Lion's Share app)
 
 ### Security
-- Payment security: anti-self-pay + recipient verification
-- Production hardening: crash safety, security, observability
+- Payment security: anti-self-pay + recipient verification (prior work)
+- Production hardening: crash safety, security, observability (prior work)
 
 ## [0.x] — pre-release
 
