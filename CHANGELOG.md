@@ -18,6 +18,8 @@ starting with v1.0.0.
 - `.pre-commit-config.yaml` — ruff, ruff-format, mypy on shared/, hygiene hooks (Phase 1a)
 - `.git-blame-ignore-revs` — skip mechanical reformat commits in `git blame` (Phase 1a)
 - `logger = logging.getLogger(__name__)` module pattern in `shared/focuslock_vault.py`, `shared/focuslock_payment.py`, `focuslock_mesh.py`, `focuslock-mail.py` (Phase 1b-core)
+- `logger = logging.getLogger(__name__)` extended to the remaining 11 modules: `focuslock-desktop{,-win}.py`, `focuslock_ntfy.py`, `installers/re-enslave-watcher.py`, and the shared/ helpers (`focuslock_adb`, `focuslock_config`, `focuslock_evidence`, `focuslock_http`, `focuslock_llm`, `focuslock_sync`, `focuslock_transport`) (Phase 1b-tail)
+- `logging.basicConfig` wired at startup in the three entry-points (`focuslock-mail.py`, `focuslock-desktop.py`, `focuslock-desktop-win.py`) — format `%(asctime)s %(levelname)-7s %(name)s: %(message)s`, datefmt `%Y-%m-%d %H:%M:%S`. Library modules inherit from the root logger (Phase 1b-tail)
 
 ### Changed
 - `focuslock-mail.py` — default `Host` header fallback changed from operator's personal domain to `localhost`
@@ -28,6 +30,8 @@ starting with v1.0.0.
   - Payment email parse + IMAP loop errors → `logger.warning`/`logger.error`
   - Mesh signature verify + state I/O (orders, peers, vouchers) → `logger.warning`
   - Roadmap-called-out `[warn]` prints in `focuslock-mail.py` (paywall parse, ntfy push, pairing registry) → logger
+- All remaining ~300 diagnostic `print(...)` calls across `focuslock-mail.py` (~90), `focuslock-desktop.py` (~75), `focuslock-desktop-win.py` (~91), `focuslock_mesh.py` (~14), `focuslock_ntfy.py`, `shared/focuslock_payment.py` (~9 missed in Phase 1b-core), and smaller modules migrated to `logger.{info,warning,exception,debug}` with `%-format` lazy formatting (Phase 1b-tail)
+- Silent `except Exception: pass` blocks triaged (Phase 1b-tail) — ADB wrapper, mesh trust I/O, mesh account load, homelab URL parse, Lion pubkey load now leave a debug breadcrumb. Tailscale/DNS probes and liberation cleanup stay intentionally silent.
 
 ### Fixed
 - **Real bugs surfaced by lint (Phase 1a):**
