@@ -147,6 +147,22 @@ Makes the tests + QA actually enforce quality.
 
 ---
 
+## Phase 7.5 — Supply-chain finishing (½ day)
+
+Gap-fill against current OSS supply-chain best practices. Independent leaf — runs after Phase 7, before Phase 9.
+
+- **Pin GitHub Actions by commit SHA** in every workflow (CI, release, CodeQL, Scorecard). Dependabot keeps SHAs current; mutable tags are out.
+- **CodeQL workflow** (`.github/workflows/codeql.yml`) — free GitHub-native SAST on Python. Runs on push + weekly cron.
+- **Sigstore build provenance** via `actions/attest-build-provenance` on every release artifact (APKs, EXEs, SBOM). Verifiable with `gh attestation verify`.
+- **OpenSSF Scorecard workflow** (`.github/workflows/scorecard.yml`) — automated health metric, surfaces missing branch protection / pinned-deps / etc. Adds a badge to README.
+- **APK signing cert fingerprint** documented in `docs/BUILD.md` — release builds use the operator's keystore; users sideloading should verify the cert SHA-256 matches the published value.
+- **`CONTRIBUTING.md`** — short companion to `CODE_OF_CONDUCT.md`. Where to file issues, what PRs we accept, security reports → SECURITY.md, no AI-generated PRs without disclosure.
+- **Issue + PR templates** (`.github/ISSUE_TEMPLATE/bug.yml`, `feature.yml`, `config.yml`; `.github/PULL_REQUEST_TEMPLATE.md`) — channel reports into the right shape.
+
+**Exit criteria:** A fresh release cuts SBOM + signed artifacts + provenance attestations; CodeQL and Scorecard run green; cert fingerprint is published; CONTRIBUTING + templates are live.
+
+---
+
 ## Phase 8 — Android build modernization (OPTIONAL, 3–5 days)
 
 **Decision point — deferred to Jace.**
@@ -180,6 +196,7 @@ Phase 7 ─────────────> Phase 9
 - **Phase 0 + 6** can run in parallel (docs work doesn't block code work)
 - **Phases 1 → 2 → 3 → 4** strictly sequential (lint before tests before QA before CI)
 - **Phases 5 + 7** independent leaves
+- **Phase 7.5** supply-chain finishing — runs after 7, before 9
 - **Phase 8** optional, out of critical path
 
 **Total estimate:** ~4 weeks solo, ~12 focused paired days.

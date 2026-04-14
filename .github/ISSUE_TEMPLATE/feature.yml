@@ -1,0 +1,38 @@
+name: Feature request
+description: Propose a feature or change. Discussion happens here before code.
+title: "feat: "
+labels: ["feature", "discuss"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Features that touch crypto, enforcement, payment parsing, or the consent flow **require design discussion** before implementation. Opening this issue is how we start that discussion. See `CONTRIBUTING.md` for what we accept, discuss, or decline.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do? What's blocking you today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like to see happen? Sketch the UX and the data flow.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds, existing features you tried, other designs you thought about.
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope checklist
+      description: Features that weaken consent or safety valves will be declined. Confirm yours does not.
+      options:
+        - label: This does not disable or weaken the consent screen
+        - label: This does not remove or bypass the Release Forever / factory-reset safety valves
+        - label: This does not add stealth / anti-forensic / deception features
+        - label: This is not a request to unlock, reduce paywall, or remove restrictions outside the normal payment/negotiation flow

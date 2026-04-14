@@ -78,6 +78,19 @@ Store this keystore offline and back it up. **Losing it means you can never sign
 $ANDROID_SDK/build-tools/35.0.0/apksigner verify --verbose android/slave/focuslock-signed.apk
 ```
 
+### Verify the signing cert fingerprint
+
+When users sideload a release APK, they should verify the cert SHA-256 matches the one published for the release.
+
+Print a local APK's cert fingerprint:
+
+```bash
+$ANDROID_SDK/build-tools/35.0.0/apksigner verify --print-certs android/slave/focuslock-signed.apk | grep 'SHA-256'
+```
+
+The release workflow publishes the production cert fingerprints alongside `SHA256SUMS.txt` on every tagged release. If your sideloaded APK's cert doesn't match the published fingerprint, **do not install it** — the build is not authentic. Once an APK is installed, Android refuses to update it with an APK signed by a different cert, so a mismatch also blocks the upgrade path to an authentic build. You would have to uninstall first, losing pairing + data.
+
+Users switching from debug builds to release builds must uninstall first for the same reason. This is a one-time cost at v1.0.0 adoption.
 
 ---
 

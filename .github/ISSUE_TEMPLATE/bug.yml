@@ -1,0 +1,72 @@
+name: Bug report
+description: Something is broken or behaving unexpectedly.
+title: "bug: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Security bugs do not belong here** — use the process in `SECURITY.md` instead.
+        Everything else, fill out below.
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I have read `SECURITY.md` and confirmed this is not a security issue
+          required: true
+        - label: I have searched existing issues and this is not a duplicate
+          required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - The Collar (Android slave)
+        - Bunny Tasker (Android companion)
+        - Lion's Share (Android controller)
+        - Desktop collar (Linux)
+        - Desktop collar (Windows)
+        - Mail relay (focuslock-mail.py)
+        - Shared modules (vault / payment / mesh)
+        - Installer scripts
+        - Docs
+        - Unclear / multiple
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / git SHA
+      description: Release tag (`v1.0.0`) or `git rev-parse HEAD` from your checkout.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Minimum viable reproduction. Config files with secrets redacted.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include relevant log excerpts. Server logs from `journalctl -u focuslock-mail`, Android logs from `adb logcat`, desktop logs from tray icon's "Show Log" menu.
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS + version, Python version, Android version if relevant, relay URL (public vs self-hosted).

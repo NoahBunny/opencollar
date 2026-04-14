@@ -1,52 +1,61 @@
-# Contributing to The Collar
+# Contributing
 
-Thanks for your interest in contributing to The Collar.
+Thanks for your interest. A few ground rules before you open an issue or PR.
 
-## Getting Started
+---
 
-1. Fork the repository
-2. Copy `config.example.json` to `config.json` and set your mesh PIN
-3. For server deployments, copy `config.env.example` to `config.env`
+## Before you start
 
-## Development Setup
+- **Read [`DISCLAIMER.md`](DISCLAIMER.md) and [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) first.** This project handles consent, enforcement, and real money. Contributors who don't take that framing seriously will have their PRs closed.
+- **Security-sensitive change?** Don't open a public issue. Use the process in [`SECURITY.md`](SECURITY.md).
+- **New feature?** Open an issue with the `feature` template *before* writing code. For anything touching crypto, enforcement, payment parsing, or consent flow, expect design discussion before implementation.
 
-### Desktop Collar (Linux)
-- Python 3.10+
-- GTK4 + WebKit2 (`sudo dnf install gtk4-devel webkitgtk6.0-devel` on Fedora)
-- Optional: `cryptography` package for RSA signature verification
+## What we accept
 
-### Desktop Collar (Windows)
-- Python 3.10+
-- PyInstaller for building executables
-- Run `python build-win.py --help` for build options
+| PRs welcome | Discuss first | Politely declined |
+|-------------|---------------|-------------------|
+| Bug fixes with tests | New lock modes | Features to weaken consent/safety (Release Forever, factory reset, escape penalties) |
+| Documentation improvements | New bank fingerprints in `shared/banks.json` | Anything that makes the tool usable without the consent screen |
+| Test coverage additions | New platform ports | Anti-forensic / stealth install modes |
+| Lint / format cleanups | UI reworks | Features designed to deceive the device owner |
+| Dependency bumps | New enforcement integrations (Lovense, etc.) | Removing the 150-escape factory-reset safety valve |
 
-### Android Apps
-- JDK 17+
-- Android SDK build-tools (aapt2, d8, zipalign, apksigner)
-- android.jar (API 34)
-- No Gradle — manual build pipeline
+## Process
 
-### Homelab Server
-- Python 3.10+
-- ADB (for bridge)
-- Optional: Ollama with minicpm-v (for photo task verification)
+1. **Fork** the repo, create a topic branch from `main`.
+2. **Install dev deps**: `pip install -e '.[dev]'` — gives you ruff, mypy, pytest.
+3. **Run locally before pushing**: `ruff check . && ruff format --check . && mypy shared && pytest tests/`. CI runs the same checks.
+4. **Write tests** for any code change in `shared/` or the enforcement path. Coverage is currently 78% on `shared/`; we don't accept drops.
+5. **Keep commits focused.** One logical change per commit. Conventional subject lines preferred (`fix:`, `feat:`, `docs:`, `refactor:`, `test:`, `chore:`).
+6. **Open a PR** against `main`. Fill out the PR template honestly. Link the issue you're closing.
 
-## Code Style
+## AI-assisted contributions
 
-- Python: PEP 8, with reasonable line length (120 chars)
-- Shell: shellcheck-clean where practical
-- No external package managers — stdlib-only Python (except `cryptography` for RSA)
+This is a consent-heavy project and AI assistants do not understand consent frameworks the way humans do.
 
-## Submitting Changes
+- You may use AI coding assistants, but **you are responsible for every line you submit**.
+- **Disclose AI use in the PR description.** "I used Claude/Copilot/Cursor for X" is fine. Undisclosed AI-generated PRs that turn out to be slop will be closed without review.
+- Do not paste output from an AI directly into a crypto, payment, or enforcement-path change. Review, understand, test.
 
-1. Create a feature branch
-2. Make your changes
-3. Test locally (desktop collar, mesh gossip, etc.)
-4. Open a pull request with a clear description
+## Signing off
 
-## Architecture Overview
+Commits should be signed (`git commit -S`). Unsigned commits get merged too, but signed is preferred for the enforcement-sensitive surface.
 
-See `CLAUDE.md` for the full architecture, file layout, and mesh protocol documentation.
+## Android specifics
+
+Android modules have no Gradle — builds go through `aapt2 → javac → d8 → apksigner`. If you're used to Gradle + AGP + `gradlew`, the `android/*/build.sh` scripts are what you run instead. See [`docs/BUILD.md`](docs/BUILD.md).
+
+Don't add a `build.gradle` in a drive-by PR. Gradle migration is Phase 8 in the roadmap and is a deliberate decision, not a drive-by cleanup.
+
+## Getting unstuck
+
+- Architecture and sequence diagrams: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- Crypto design: [`docs/VAULT-DESIGN.md`](docs/VAULT-DESIGN.md)
+- Config field reference: [`docs/CONFIG.md`](docs/CONFIG.md)
+- Self-hosting walkthrough: [`docs/SELF-HOSTING.md`](docs/SELF-HOSTING.md)
+- Build guide: [`docs/BUILD.md`](docs/BUILD.md)
+
+For questions that don't fit the issue tracker, open a GitHub Discussion (once they're enabled).
 
 ## License
 
