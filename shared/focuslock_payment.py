@@ -12,12 +12,10 @@ on full payment.
 import email
 import imaplib
 import json
-import os
 import re
 import time
 import urllib.request
 from datetime import datetime
-
 
 # ── Hardcoded fallback providers (used when banks.json is missing) ──
 
@@ -180,7 +178,7 @@ def unlock_phone(adb):
     Args:
         adb: ADBBridge instance.
     """
-    print(f"[payment] Unlocking via ADB")
+    print("[payment] Unlocking via ADB")
     adb.put("focus_lock_active", "0")
     adb.put_str("focus_lock_message", "Payment received. Good boy.")
 
@@ -248,16 +246,27 @@ def check_payment_emails(*, imap_host, mail_user, mail_pass,
         recipient_email: If set, reject e-Transfers where this email is
             NOT mentioned in the body (anti-self-pay protection).
     """
-    if not imap_host or not mail_user or not mail_pass:
-        print("[payment] IMAP not configured \u2014 payment email detection disabled")
-        while True:
-            time.sleep(3600)
-
     def _now():
         return datetime.now().strftime("%H:%M:%S")
 
+    if not imap_host or not mail_user or not mail_pass:
+        print("[payment] No static IMAP creds — waiting for Lion to configure via mesh")
+
     while True:
         try:
+            # Prefer Lion-configured creds from mesh orders (hot-swappable)
+            dyn_host = str(mesh_orders.get("payment_imap_host", "") or "")
+            dyn_user = str(mesh_orders.get("payment_imap_user", "") or "")
+            dyn_pass = str(mesh_orders.get("payment_imap_pass", "") or "")
+            if dyn_host and dyn_user and dyn_pass:
+                active_host, active_user, active_pass = dyn_host, dyn_user, dyn_pass
+            else:
+                active_host, active_user, active_pass = imap_host, mail_user, mail_pass
+
+            if not active_host or not active_user or not active_pass:
+                time.sleep(check_interval)
+                continue
+
             # Check when locked OR when paywall > 0 (subscription charges
             # add to paywall without locking — still need to detect payment)
             lock_active = adb.get("focus_lock_active")
@@ -272,10 +281,10 @@ def check_payment_emails(*, imap_host, mail_user, mail_pass,
                 continue
 
             paywall = float(paywall_str)
-            print(f"[{_now()}] Checking IMAP for payment >= ${paywall}")
+            print(f"[{_now()}] Checking IMAP ({active_user}) for payment >= ${paywall}")
 
-            mail = imaplib.IMAP4_SSL(imap_host)
-            mail.login(mail_user, mail_pass)
+            mail = imaplib.IMAP4_SSL(active_host)
+            mail.login(active_user, active_pass)
             mail.select("INBOX")
 
             # Search ALL recent emails, not just UNSEEN — dedup is handled
@@ -311,12 +320,9 @@ def check_payment_emails(*, imap_host, mail_user, mail_pass,
                 if not best_provider:
                     continue
 
-                # Anti-self-pay: the IMAP inbox being scanned should be the
-                # Lion's (payment recipient), not the Bunny's. When Lion's
-                # inbox shows "You received $X", it's a genuine incoming
-                # transfer. TODO: Lion sets Their IMAP creds via Lion's Share
-                # → server stores them → scans Lion's inbox. Until then,
-                # recipient_email check is disabled (wrong architecture).
+                # Anti-self-pay: Lion configures Their IMAP creds via
+                # Lion's Share → server scans Lion's inbox. "You received $X"
+                # in Lion's inbox proves a genuine incoming transfer.
 
                 amount = extract_amount(all_text, iso_codes)
                 if amount < min_payment:

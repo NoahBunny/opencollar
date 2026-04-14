@@ -164,6 +164,10 @@ ORDER_KEYS = {
     "streak_escapes_at_start": 0,    # escape count when streak began
     "streak_7d_claimed": 0,          # 1 if 7d bonus already applied this streak
     "streak_30d_claimed": 0,         # 1 if 30d bonus already applied this streak
+    # Payment email — Lion's IMAP creds (set via Lion's Share)
+    "payment_imap_host": "",
+    "payment_imap_user": "",
+    "payment_imap_pass": "",
 }
 
 
