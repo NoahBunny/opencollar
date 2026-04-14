@@ -1,0 +1,9 @@
+# Revisions intentionally skipped by `git blame` — typically large
+# mechanical reformats with no semantic changes. Configure with:
+#
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# GitHub, GitLab, and Bitbucket respect this file automatically.
+
+# Apply ruff format to Python codebase (Phase 1a).
+efb16b8581b3d12895ea55132badf952ea39a188
