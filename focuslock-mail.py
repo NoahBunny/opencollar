@@ -625,6 +625,11 @@ def mesh_apply_order(action, params, orders):
                     print(f"[mesh] Removed {target} from device registry")
             except Exception:
                 pass
+    elif action == "set-payment-email":
+        orders.set("payment_imap_host", params.get("imap_host", ""))
+        orders.set("payment_imap_user", params.get("user", ""))
+        orders.set("payment_imap_pass", params.get("pass", ""))
+        print(f"[mesh] Payment email configured: {params.get('user', '(empty)')}")
     return {"applied": action}
 
 # Seed peers from config
