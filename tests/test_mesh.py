@@ -1434,29 +1434,29 @@ class TestLocalAddressDiscovery:
 
         ip_output = (
             "1: lo    inet 127.0.0.1/8 scope host lo\n"
-            "2: eth0  inet 192.168.50.10/24 scope global eth0\n"
+            "2: eth0  inet 192.168.1.10/24 scope global eth0\n"
             "3: tun0  inet 100.64.0.5/32 scope global tun0\n"
         )
         fake = self._fake_proc(ip_output)
         monkeypatch.setattr("subprocess.run", lambda *a, **kw: fake)
         monkeypatch.setattr(focuslock_mesh, "_get_tailscale_addresses", lambda: [])
         addrs = focuslock_mesh.get_local_addresses()
-        assert "192.168.50.10" in addrs
+        assert "192.168.1.10" in addrs
         assert "100.64.0.5" in addrs
         assert "127.0.0.1" not in addrs
 
     def test_tailscale_addresses_merged_deduped(self, monkeypatch):
         import focuslock_mesh
 
-        ip_output = "2: eth0  inet 192.168.50.10/24 scope global eth0\n"
+        ip_output = "2: eth0  inet 192.168.1.10/24 scope global eth0\n"
         monkeypatch.setattr("subprocess.run", lambda *a, **kw: self._fake_proc(ip_output))
         monkeypatch.setattr(
             focuslock_mesh,
             "_get_tailscale_addresses",
-            lambda: ["100.64.0.5", "192.168.50.10"],
+            lambda: ["100.64.0.5", "192.168.1.10"],
         )
         addrs = focuslock_mesh.get_local_addresses()
-        assert addrs.count("192.168.50.10") == 1
+        assert addrs.count("192.168.1.10") == 1
         assert "100.64.0.5" in addrs
 
     def test_udp_fallback_when_nothing_found(self, monkeypatch):
@@ -1564,18 +1564,18 @@ class TestTailnetDiscovery:
         monkeypatch.setattr(focuslock_mesh, "_ts_hostname_map", {})
 
         status = {
-            "Self": {"HostName": "Vir", "TailscaleIPs": ["100.64.0.1", "fd7a::1"]},
+            "Self": {"HostName": "Host-A", "TailscaleIPs": ["100.64.0.1", "fd7a::1"]},
             "Peer": {
-                "node1": {"HostName": "Umbreon", "TailscaleIPs": ["100.64.0.5"]},
-                "node2": {"HostName": "Pegasus", "TailscaleIPs": ["100.64.0.6", "fd7a::2"]},
+                "node1": {"HostName": "Phone", "TailscaleIPs": ["100.64.0.5"]},
+                "node2": {"HostName": "Homelab", "TailscaleIPs": ["100.64.0.6", "fd7a::2"]},
             },
         }
         fake = MagicMock(stdout=json.dumps(status), returncode=0)
         monkeypatch.setattr("subprocess.run", lambda *a, **kw: fake)
         focuslock_mesh._refresh_tailscale_hosts()
-        assert focuslock_mesh._ts_hostname_map["vir"] == "100.64.0.1"
-        assert focuslock_mesh._ts_hostname_map["umbreon"] == "100.64.0.5"
-        assert focuslock_mesh._ts_hostname_map["pegasus"] == "100.64.0.6"
+        assert focuslock_mesh._ts_hostname_map["host-a"] == "100.64.0.1"
+        assert focuslock_mesh._ts_hostname_map["phone"] == "100.64.0.5"
+        assert focuslock_mesh._ts_hostname_map["homelab"] == "100.64.0.6"
 
     def test_refresh_hosts_rate_limited(self, monkeypatch):
         import focuslock_mesh

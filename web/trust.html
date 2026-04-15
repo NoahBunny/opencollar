@@ -94,7 +94,7 @@ li { font-size: 0.85rem; line-height: 1.6; margin-bottom: 0.3rem; }
     <pre>1. curl https://relay-url/version
    # Note the git_commit and source_sha256
 
-2. git clone https://github.com/NoahBunny/openleash
+2. git clone https://github.com/NoahBunny/opencollar
    git checkout &lt;git_commit&gt;
 
 3. sha256sum focuslock-mail.py
@@ -113,7 +113,7 @@ li { font-size: 0.85rem; line-height: 1.6; margin-bottom: 0.3rem; }
       <li><strong>Signatures:</strong> RSA-PKCS1v15-SHA256 over canonical JSON (sorted keys, compact separators)</li>
       <li><strong>Slot addressing:</strong> SHA-256 of recipient's public key, truncated to 12 hex chars</li>
     </ul>
-    <p>Full specification: <a href="https://github.com/NoahBunny/openleash/blob/main/docs/VAULT-DESIGN.md">VAULT-DESIGN.md</a></p>
+    <p>Full specification: <a href="https://github.com/NoahBunny/opencollar/blob/main/docs/VAULT-DESIGN.md">VAULT-DESIGN.md</a></p>
   </div>
 
   <div class="card">
@@ -136,7 +136,7 @@ li { font-size: 0.85rem; line-height: 1.6; margin-bottom: 0.3rem; }
   <div class="footer">
     <a href="/cost">Cost</a>
     <a href="/signup">Create Mesh</a>
-    <a href="https://github.com/NoahBunny/openleash">Source</a>
+    <a href="https://github.com/NoahBunny/opencollar">Source</a>
   </div>
 </div>
 
@@ -154,7 +154,7 @@ li { font-size: 0.85rem; line-height: 1.6; margin-bottom: 0.3rem; }
       var commitEl = document.getElementById('v-commit');
       if (d.git_commit) {
         var a = document.createElement('a');
-        a.href = 'https://github.com/NoahBunny/openleash/commit/' + d.git_commit;
+        a.href = 'https://github.com/NoahBunny/opencollar/commit/' + d.git_commit;
         a.textContent = d.git_commit.substring(0, 12);
         a.target = '_blank';
         commitEl.appendChild(a);

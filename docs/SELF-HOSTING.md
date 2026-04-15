@@ -2,7 +2,7 @@
 
 Stand up your own relay end-to-end: DNS, TLS, server, first phone pairing.
 
-This is the path the maintainers run on `focus.wildhome.ca`. If you'd rather use a hosted relay you don't operate, skip to the README — there's nothing here you need.
+This is the path the maintainers run on their own relay. If you'd rather use a hosted relay you don't operate, skip to the README — there's nothing here you need.
 
 ---
 

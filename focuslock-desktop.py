@@ -573,8 +573,8 @@ _last_phone_lock_active = None  # track for ADB statusbar enforcement
 
 def _adb_statusbar_enforce(lock_active):
     """Toggle phone statusbar via ADB shell when lock state changes.
-    Only works from a machine with an active ADB connection to the phone
-    (vir). Silently no-ops if no phone is connected."""
+    Only works from a machine with an active ADB connection to the phone.
+    Silently no-ops if no phone is connected."""
     cmd = "true" if lock_active else "false"
     adb_port = os.environ.get("ANDROID_ADB_SERVER_PORT", "15037")
     try:

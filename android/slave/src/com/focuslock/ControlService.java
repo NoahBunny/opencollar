@@ -88,7 +88,7 @@ public class ControlService extends Service {
             dpm.setUninstallBlocked(admin, getPackageName(), true);
             // Block safe mode boot
             dpm.addUserRestriction(admin, UserManager.DISALLOW_SAFE_BOOT);
-            // Block factory reset from Settings (Jace can still release via
+            // Block factory reset from Settings (the Lion can still release via
             // Release Forever which calls clearDeviceOwnerApp first)
             dpm.addUserRestriction(admin, UserManager.DISALLOW_FACTORY_RESET);
             Log.i(TAG, "Device owner restrictions applied (uninstall blocked, safe boot blocked, factory reset blocked)");

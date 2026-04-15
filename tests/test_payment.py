@@ -311,9 +311,9 @@ class TestRealisticEmails:
 
     def test_realistic_interac_etransfer_scored_and_extracted(self, providers):
         sender = "notify@payments.interac.ca"
-        subject = "INTERAC e-Transfer: You received money from Jace"
+        subject = "INTERAC e-Transfer: You received money from Alice"
         body = (
-            "Hi Livv, Jace sent you an INTERAC e-Transfer for $50.00 (CAD).\n"
+            "Hi Bob, Alice sent you an INTERAC e-Transfer for $50.00 (CAD).\n"
             "The amount has been automatically deposited into your account."
         )
         all_text = (subject + " " + body).lower()

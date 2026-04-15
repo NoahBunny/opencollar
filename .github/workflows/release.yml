@@ -14,6 +14,10 @@ jobs:
   android:
     name: Build Android APKs
     runs-on: ubuntu-latest
+    env:
+      # Hoisted to job-level env because GitHub Actions does not allow
+      # `secrets` references inside a step-level `if:` expression.
+      RELEASE_KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
     outputs:
       slave: ${{ steps.collect.outputs.slave }}
       companion: ${{ steps.collect.outputs.companion }}
@@ -36,9 +40,7 @@ jobs:
         run: echo "ANDROID_SDK=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
 
       - name: Restore release keystore (optional)
-        if: ${{ secrets.RELEASE_KEYSTORE_B64 != '' }}
-        env:
-          RELEASE_KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+        if: env.RELEASE_KEYSTORE_B64 != ''
         run: |
           echo "$RELEASE_KEYSTORE_B64" | base64 -d > "$PWD/release.keystore"
           echo "FOCUSLOCK_KEYSTORE=$PWD/release.keystore" >> "$GITHUB_ENV"

@@ -57,10 +57,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/NoahBunny/openleash"
-Documentation = "https://github.com/NoahBunny/openleash/tree/main/docs"
-Issues = "https://github.com/NoahBunny/openleash/issues"
-Changelog = "https://github.com/NoahBunny/openleash/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/NoahBunny/opencollar"
+Documentation = "https://github.com/NoahBunny/opencollar/tree/main/docs"
+Issues = "https://github.com/NoahBunny/opencollar/issues"
+Changelog = "https://github.com/NoahBunny/opencollar/blob/main/CHANGELOG.md"
 
 # This is a "metadata-only" project for now — the codebase is a mix of
 # top-level scripts and a shared/ helper directory without __init__.py,

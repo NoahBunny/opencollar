@@ -23,7 +23,7 @@ Please include:
 - Installer scripts (`installers/`)
 
 ### Out of scope
-- The hosted relay at `focus.wildhome.ca` (personal infrastructure — report directly to its operator)
+- Any specific hosted relay deployment (personal infrastructure — report directly to its operator)
 - Third-party dependencies (report upstream; we will track CVEs and bump)
 - Social-engineering the power dynamic itself (that is between participants)
 - Denial-of-service via resource exhaustion on self-hosted deployments where the operator has sized their server inappropriately

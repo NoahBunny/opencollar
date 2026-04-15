@@ -1,6 +1,6 @@
 # Staging Mesh Setup
 
-Isolated environment for running QA regressions against The Collar ecosystem without touching production (`focus.wildhome.ca`).
+Isolated environment for running QA regressions against The Collar ecosystem without touching your production relay.
 
 **Goal:** run the full `docs/QA-CHECKLIST.md` matrix against a relay, two Waydroid phones, and optionally a throwaway desktop collar — all pointing at a staging mesh that cannot reach prod and vice versa.
 
@@ -14,7 +14,7 @@ Production staging must NEVER share:
 |----------|------|---------|
 | `mesh_id` | operator's real mesh | distinct random base64url |
 | `admin_token` | real token | distinct random token |
-| Relay URL | `https://focus.wildhome.ca` | `http://127.0.0.1:8435` or `http://staging.<your-domain>` |
+| Relay URL | `https://your-relay.example` | `http://127.0.0.1:8435` or `http://staging.<your-domain>` |
 | `ntfy_topic` | real topic | distinct random topic |
 | State files | `/run/focuslock/` | `/tmp/focuslock-staging/` |
 | Config file | `~/.config/focuslock/config.json` | `staging/config.json` (repo-local) |

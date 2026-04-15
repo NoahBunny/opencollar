@@ -15,7 +15,7 @@
 #   5. Logcat evidence of 410 errors AFTER the latch (= latch failed to suppress)
 #
 # What you still have to do manually (the round-trip needs Lion's privkey):
-#   - From Lion's Share on Jace's phone: send a no-op order (set pinned message
+#   - From Lion's Share on the Lion's phone: send a no-op order (set pinned message
 #     to a unique marker)
 #   - Run this script again immediately: it will look for that marker in the
 #     bunny phone's runtime body via /vault/{id}/since/{v}
@@ -162,7 +162,7 @@ check_one_phone() {
         rm -f "$logcat_tmp"
     fi
 
-    # Marker poll (optional, relies on Jace having sent a Lion order with a unique pinned message)
+    # Marker poll (optional, relies on the Lion having sent an order with a unique pinned message)
     if [ -n "$MARKER" ] && [ "$check_slave" = 1 ]; then
         local mesh_id; mesh_id="$(adb_cmd -s "$addr" shell "settings get global focus_lock_mesh_id" 2>/dev/null | tr -d '\r')"
         if [ -z "$mesh_id" ] || [ "$mesh_id" = "null" ]; then
@@ -196,12 +196,12 @@ while IFS=$'\t' read -r name addr role; do
     check_one_phone "$name" "$addr" "$role"
 done < <(list_phone_targets)
 
-section "Round-trip test (manual — needs Jace)"
+section "Round-trip test (manual — needs the Lion)"
 cat <<'EOF'
 The slave latch + version checks above are automatic. To prove an end-to-end
 order ACTUALLY survives the vault path on real hardware, do this once:
 
-  1. On Jace's phone, open Lion's Share → INBOX or wherever pinned messages are set
+  1. On the Lion's phone, open Lion's Share → INBOX or wherever pinned messages are set
   2. Set a unique marker as the pinned message, e.g.: VAULT-QA-XYZ123
   3. Within 60s, run:
        ./qa-vault-mode.sh --phone myphone --marker VAULT-QA-XYZ123

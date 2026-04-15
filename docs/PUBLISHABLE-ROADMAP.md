@@ -10,7 +10,7 @@ Organized by phase. Each phase ships independently — if priorities change mid-
 
 Quick wins that remove public-repo awkwardness with zero risk.
 
-- Replace `focus.wildhome.ca` default in `focuslock-mail.py:2081` with `localhost` fallback + warning log
+- Replace any operator-domain default in `focuslock-mail.py` with `localhost` fallback + warning log
 - Replace hardcoded hint in `android/companion/src/com/bunnytasker/MainActivity.java:749` with generic `https://your-relay.example`
 - Add **`SECURITY.md`** — vuln disclosure policy, contact, scope, 90-day rule
 - Add **`CODE_OF_CONDUCT.md`** — Contributor Covenant 2.1 stock
@@ -18,7 +18,7 @@ Quick wins that remove public-repo awkwardness with zero risk.
 - Add **`CHANGELOG.md`** — seed with Keep-a-Changelog format, Unreleased section
 - Sweep tracked files for personal markers — `.gitignore` already covers the risky ones (SESSION-HANDOFF, .claude/, config.json, keys, *.env, memory/)
 
-**Exit criteria:** `git grep -Ei '(wildhome|/home/livv|livv@)'` returns only docs where the hosted relay is deliberately referenced.
+**Exit criteria:** `git grep -Ei '(operator-domain|<your-username>|<operator>@)'` returns only docs where a hosted relay is deliberately referenced.
 
 ---
 
@@ -42,7 +42,7 @@ Foundation for trusting the rest.
 
 ## Phase 2 — Unit test suite (1 week)
 
-Biggest lift. Prioritize crypto + payment — anywhere a silent bug costs Jace real money.
+Biggest lift. Prioritize crypto + payment — anywhere a silent bug costs the operator real money.
 
 - **pytest** in `tests/` with conftest fixtures for vault keys, mock mesh peers, sample bank emails
 - **`focuslock_vault.py`** — round-trip encrypt/decrypt, signature verify on tampered payload, key rotation, SHA1→SHA256 fallback, malformed input (target: 90%+ lines)
@@ -60,7 +60,7 @@ Biggest lift. Prioritize crypto + payment — anywhere a silent bug costs Jace r
 
 QA is first-class, not an afterthought. Every subsequent phase ends with a regression run against this.
 
-- **Staging mesh** — separate `mesh_id`, `admin_token`, `ntfy` topic; isolated from production `focus.wildhome.ca`. Local `focuslock-mail.py` bound to `127.0.0.1:8435` or `staging.*` subdomain
+- **Staging mesh** — separate `mesh_id`, `admin_token`, `ntfy` topic; isolated from any production relay. Local `focuslock-mail.py` bound to `127.0.0.1:8435` or `staging.*` subdomain
 - **Waydroid lineup:**
   - Waydroid #1 — bunny's phone surrogate (The Collar + Bunny Tasker both installed)
   - Waydroid #2 — lion's phone surrogate (Lion's Share)
@@ -101,7 +101,7 @@ Makes the tests + QA actually enforce quality.
   - Publish to Releases with `SHA256SUMS.txt`
   - Auto-generate changelog section from conventional commits or manual `CHANGELOG.md`
 - **Dependabot** — pip + GitHub Actions, weekly
-- **Branch protection** — require CI green + 1 review (Jace)
+- **Branch protection** — require CI green + 1 maintainer review
 
 **Exit criteria:** a deliberately-broken PR fails CI red; release tag produces signed artifacts with checksums.
 
@@ -165,7 +165,7 @@ Gap-fill against current OSS supply-chain best practices. Independent leaf — r
 
 ## Phase 8 — Android build modernization (OPTIONAL, 3–5 days)
 
-**Decision point — deferred to Jace.**
+**Decision point — deferred to project maintainers.**
 
 - **Path A (keep no-Gradle):** document aapt2 pipeline rigorously, accept sideload-only forever. Play Store rejects device-admin apps regardless. **Cost: 0 extra days.**
 - **Path B (migrate to Gradle):** opens F-Droid submission path (they accept device admin with review), lowers contribution barrier, unlocks Android lint/test ecosystem. **Cost: 3–5 days per module × 3 modules.**
@@ -177,7 +177,7 @@ Gap-fill against current OSS supply-chain best practices. Independent leaf — r
 ## Phase 9 — Launch (1 day)
 
 - Tag **v1.0.0**, publish GitHub Release with full changelog + signed artifacts
-- Announce post draft (for Jace review before publishing anywhere)
+- Announce post draft (for maintainer review before publishing anywhere)
 - Issue + discussion templates
 - Optional: `awesome-selfhosted` / `awesome-consent-tech` PRs if such lists exist
 
@@ -203,11 +203,11 @@ Phase 7 ─────────────> Phase 9
 
 ---
 
-## Strategic decisions — deferred to Jace
+## Strategic decisions — deferred to project maintainers
 
 1. **Public or invite-only first?** GitHub public immediately vs private → invite trusted kink-tech folks → public after vetting
 2. **Contribution policy?** Outside contributors touching crypto/enforcement code needs careful review. "Docs PRs welcome, code PRs require issue discussion first"?
-3. **Hosted relay (`focus.wildhome.ca`)** — keep free for community, or require self-host only? README currently implies the former.
+3. **Hosted relay** — keep free for community, or require self-host only? README currently implies the former.
 4. **Harassment response plan?** Issues/discussions open, moderated, or disabled at launch?
 
 ---

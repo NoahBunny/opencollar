@@ -1,6 +1,6 @@
 # QA Checklist
 
-End-to-end regression matrix for The Collar / Lion's Share / Bunny Tasker. Run against a **staging mesh** (see `docs/STAGING.md`) — never against `focus.wildhome.ca` or production configs.
+End-to-end regression matrix for The Collar / Lion's Share / Bunny Tasker. Run against a **staging mesh** (see `docs/STAGING.md`) — never against your production relay or live configs.
 
 Mark each row ✅ (pass) or ❌ (fail). A run with any ❌ blocks release tagging.
 

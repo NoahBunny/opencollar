@@ -423,7 +423,7 @@ def first_run_check():
         except Exception:
             logger.warning("Mesh unreachable at %s", url)
     if not reached:
-        logger.info("Pegasus unreachable — pubkey will be fetched on first gossip")
+        logger.info("Homelab unreachable — pubkey will be fetched on first gossip")
 
     # Mark initialized
     with open(FIRST_RUN_FILE, "w") as f:
