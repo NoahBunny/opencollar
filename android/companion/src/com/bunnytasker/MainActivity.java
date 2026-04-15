@@ -1046,38 +1046,21 @@ public class MainActivity extends Activity {
                 byte[] imageBytes = baos.toByteArray();
                 String imageB64 = android.util.Base64.encodeToString(imageBytes, android.util.Base64.NO_WRAP);
 
-                // E2EE: encrypt the image with Lion's pubkey
+                // Photo attachments require a bunny-authed /mesh/upload endpoint
+                // that doesn't exist yet (roadmap item separate from #6). For
+                // now, degrade to a text message so the chat stays usable.
                 String lionPubKey = gstr("focus_lock_lion_pubkey");
-                String attId = java.util.UUID.randomUUID().toString().substring(0, 12);
-
-                // Upload to mesh server
-                String uploadJson;
+                final String placeholder = "[photo attached — attachment upload not yet shipped]";
+                E2EEHelper.EncryptedMessage enc = null;
                 if (E2EEHelper.canEncrypt(lionPubKey)) {
-                    E2EEHelper.EncryptedMessage enc = E2EEHelper.encrypt(imageB64, lionPubKey);
-                    if (enc != null) {
-                        uploadJson = "{\"id\":\"" + attId + "\",\"content\":\"" + escJson(enc.ciphertext)
-                            + "\",\"content_type\":\"image/jpeg\",\"encrypted\":true"
-                            + ",\"encrypted_key\":\"" + escJson(enc.encryptedKey)
-                            + "\",\"iv\":\"" + escJson(enc.iv) + "\"}";
-                    } else {
-                        uploadJson = "{\"id\":\"" + attId + "\",\"content\":\"" + escJson(imageB64)
-                            + "\",\"content_type\":\"image/jpeg\"}";
-                    }
-                } else {
-                    uploadJson = "{\"id\":\"" + attId + "\",\"content\":\"" + escJson(imageB64)
-                        + "\",\"content_type\":\"image/jpeg\"}";
+                    enc = E2EEHelper.encrypt(placeholder, lionPubKey);
                 }
-
-                sendWebhook("/mesh/upload", uploadJson);
-                String attachUrl = "/mesh/attachment/" + attId;
-
-                // Send message with attachment
-                String msgJson = "{\"from\":\"bunny\",\"text\":\"[photo]\",\"attachment_url\":\"" + attachUrl + "\"}";
-                sendWebhook("/mesh/message", msgJson);
+                final boolean ok = postMeshMessage(placeholder, false, false, enc);
 
                 handler.post(() -> {
-                    addMessageBubble("[Photo sent]", true, System.currentTimeMillis());
-                    statusText.setText("Photo sent");
+                    addMessageBubble(ok ? "[Photo placeholder sent]" : "[Photo send failed]",
+                        true, System.currentTimeMillis());
+                    statusText.setText(ok ? "Photo placeholder sent" : "Photo failed");
                 });
 
             } catch (Exception e) {
@@ -1344,26 +1327,145 @@ public class MainActivity extends Activity {
             .show();
     }
 
+    /** Roadmap #6: bunny-authed message append.
+     *  Signs {mesh|node|from|text|pinned|mandatory|ts} with the registered
+     *  bunny privkey and POSTs /api/mesh/{id}/messages/send. For E2EE, the
+     *  signed `text` is the literal "[e2ee]" marker; ciphertext / encrypted_key
+     *  / iv ride in the body as passthrough. A MITM flipping ciphertext still
+     *  breaks decrypt (fail-closed) since we bind the plaintext marker.
+     *  Returns true on 200, false otherwise. Blocking — call from executor. */
+    private boolean postMeshMessage(String text, boolean pinned, boolean mandatory,
+                                    E2EEHelper.EncryptedMessage enc) {
+        String meshId = gstr("focus_lock_mesh_id");
+        String meshUrl = gstr("focus_lock_mesh_url");
+        String nodeId = gstr("focus_lock_mesh_node_id");
+        if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty()) return false;
+        long ts = System.currentTimeMillis();
+        String signedText = (enc != null) ? "[e2ee]" : text;
+        String payload = meshId + "|" + nodeId + "|bunny|" + signedText
+            + "|" + (pinned ? "1" : "0") + "|" + (mandatory ? "1" : "0") + "|" + ts;
+        String signature = PairingManager.sign(getContentResolver(), payload);
+        if (signature == null || signature.isEmpty()) return false;
+        try {
+            JSONObject body = new JSONObject();
+            body.put("node_id", nodeId);
+            body.put("from", "bunny");
+            body.put("text", signedText);
+            if (pinned) body.put("pinned", true);
+            if (mandatory) body.put("mandatory_reply", true);
+            if (enc != null) {
+                body.put("encrypted", true);
+                body.put("ciphertext", enc.ciphertext);
+                body.put("encrypted_key", enc.encryptedKey);
+                body.put("iv", enc.iv);
+            }
+            body.put("ts", ts);
+            body.put("signature", signature);
+            URL url = new URL(meshUrl + "/api/mesh/" + meshId + "/messages/send");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(10000);
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.getOutputStream().write(body.toString().getBytes("UTF-8"));
+            int code = conn.getResponseCode();
+            conn.disconnect();
+            return code < 400;
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "postMeshMessage failed", e);
+            return false;
+        }
+    }
+
+    /** Roadmap #6: signed fetch of the per-mesh message log.
+     *  Returns the raw JSONObject response {ok, messages[], since} or null on error.
+     *  Caller derives unread/pinned/mandatory state locally from message fields —
+     *  the server no longer computes those. Blocking — call from executor. */
+    private JSONObject fetchMeshMessagesSigned(long since, int limit) {
+        String meshId = gstr("focus_lock_mesh_id");
+        String meshUrl = gstr("focus_lock_mesh_url");
+        String nodeId = gstr("focus_lock_mesh_node_id");
+        if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty()) return null;
+        long ts = System.currentTimeMillis();
+        String payload = meshId + "|" + nodeId + "|bunny|" + since + "|" + ts;
+        String signature = PairingManager.sign(getContentResolver(), payload);
+        if (signature == null || signature.isEmpty()) return null;
+        try {
+            JSONObject body = new JSONObject();
+            body.put("node_id", nodeId);
+            body.put("from", "bunny");
+            body.put("since", since);
+            body.put("limit", limit);
+            body.put("ts", ts);
+            body.put("signature", signature);
+            URL url = new URL(meshUrl + "/api/mesh/" + meshId + "/messages/fetch");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(10000);
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.getOutputStream().write(body.toString().getBytes("UTF-8"));
+            int code = conn.getResponseCode();
+            if (code >= 400) { conn.disconnect(); return null; }
+            BufferedReader r = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = r.readLine()) != null) sb.append(line);
+            r.close();
+            conn.disconnect();
+            return new JSONObject(sb.toString());
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "fetchMeshMessagesSigned failed", e);
+            return null;
+        }
+    }
+
+    /** Roadmap #6: flag a message as read or replied.
+     *  Signed over {mesh|node|from|message_id|status|ts}. Blocking — from executor. */
+    private boolean markMeshMessage(String messageId, String status) {
+        String meshId = gstr("focus_lock_mesh_id");
+        String meshUrl = gstr("focus_lock_mesh_url");
+        String nodeId = gstr("focus_lock_mesh_node_id");
+        if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty()) return false;
+        long ts = System.currentTimeMillis();
+        String payload = meshId + "|" + nodeId + "|bunny|" + messageId + "|" + status + "|" + ts;
+        String signature = PairingManager.sign(getContentResolver(), payload);
+        if (signature == null || signature.isEmpty()) return false;
+        try {
+            JSONObject body = new JSONObject();
+            body.put("node_id", nodeId);
+            body.put("from", "bunny");
+            body.put("message_id", messageId);
+            body.put("status", status);
+            body.put("ts", ts);
+            body.put("signature", signature);
+            URL url = new URL(meshUrl + "/api/mesh/" + meshId + "/messages/mark");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(10000);
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.getOutputStream().write(body.toString().getBytes("UTF-8"));
+            int code = conn.getResponseCode();
+            conn.disconnect();
+            return code < 400;
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "markMeshMessage failed", e);
+            return false;
+        }
+    }
+
     private void sendMessage(String msg) {
         executor.execute(() -> {
-            // E2EE: encrypt with Lion's public key if available
             String lionPubKey = gstr("focus_lock_lion_pubkey");
-            String jsonBody;
+            E2EEHelper.EncryptedMessage enc = null;
             if (E2EEHelper.canEncrypt(lionPubKey)) {
-                E2EEHelper.EncryptedMessage enc = E2EEHelper.encrypt(msg, lionPubKey);
-                if (enc != null) {
-                    jsonBody = "{\"from\":\"bunny\",\"encrypted\":true"
-                        + ",\"ciphertext\":\"" + escJson(enc.ciphertext) + "\""
-                        + ",\"encrypted_key\":\"" + escJson(enc.encryptedKey) + "\""
-                        + ",\"iv\":\"" + escJson(enc.iv) + "\"}";
-                } else {
-                    // Fallback to plaintext
-                    jsonBody = "{\"from\":\"bunny\",\"text\":\"" + escJson(msg) + "\"}";
-                }
-            } else {
-                jsonBody = "{\"from\":\"bunny\",\"text\":\"" + escJson(msg) + "\"}";
+                enc = E2EEHelper.encrypt(msg, lionPubKey);
             }
-            sendWebhook("/mesh/message", jsonBody);
+            postMeshMessage(msg, false, false, enc);
             // Record check-in timestamp (any message counts as check-in)
             Settings.Global.putLong(getContentResolver(), "focus_lock_checkin_timestamp",
                 System.currentTimeMillis());
@@ -1373,82 +1475,102 @@ public class MainActivity extends Activity {
         });
     }
 
+    /** Overdue threshold for mandatory lion replies. Legacy server computed
+     *  this; client now owns it. 4h default keeps the semantics without being
+     *  hair-trigger. */
+    private static final long MANDATORY_OVERDUE_MS = 4L * 60 * 60 * 1000;
+
     private void refreshMeshMessages() {
         executor.execute(() -> {
             try {
-                String resp = fetchFromHomelab("/mesh/messages?reader=bunny&limit=30");
-                if (resp == null) return;
-                JSONObject data = new JSONObject(resp);
+                JSONObject data = fetchMeshMessagesSigned(0, 30);
+                if (data == null) return;
                 JSONArray msgs = data.optJSONArray("messages");
-                JSONArray unread = data.optJSONArray("unread");
-                JSONArray pinned = data.optJSONArray("pinned");
-                JSONArray mandatory = data.optJSONArray("mandatory_pending");
-                JSONArray overdue = data.optJSONArray("mandatory_overdue");
+                if (msgs == null) return;
 
-                // Show notifications for unread lion messages
-                if (unread != null) {
-                    String bunnyPrivKey = gstr("focus_lock_bunny_privkey");
-                    for (int i = 0; i < unread.length(); i++) {
-                        JSONObject m = unread.getJSONObject(i);
-                        if ("lion".equals(m.optString("from"))) {
-                            String notifText = m.optString("text", "");
-                            // Decrypt E2EE messages
-                            if (m.optBoolean("encrypted", false) && E2EEHelper.canDecrypt(bunnyPrivKey)) {
+                String myNodeId = gstr("focus_lock_mesh_node_id");
+                String bunnyPrivKey = gstr("focus_lock_bunny_privkey");
+                long now = System.currentTimeMillis();
+                boolean anyOverdue = false;
+                java.util.List<String> toMarkRead = new java.util.ArrayList<>();
+
+                // First pass: notifications, unread tracking, overdue detection.
+                // "unread by me" = from lion AND `bunny` not in read_by.
+                for (int i = 0; i < msgs.length(); i++) {
+                    JSONObject m = msgs.optJSONObject(i);
+                    if (m == null) continue;
+                    if (!"lion".equals(m.optString("from"))) continue;
+                    JSONArray readBy = m.optJSONArray("read_by");
+                    boolean readByMe = false;
+                    if (readBy != null) {
+                        for (int j = 0; j < readBy.length(); j++) {
+                            if ("bunny".equals(readBy.optString(j))) { readByMe = true; break; }
+                        }
+                    }
+                    String mid = m.optString("id", "");
+                    boolean pinnedFlag = m.optBoolean("pinned", false);
+                    boolean mandatoryFlag = m.optBoolean("mandatory_reply", false);
+                    boolean replied = m.optBoolean("replied", false);
+
+                    if (!readByMe) {
+                        String notifText = m.optString("text", "");
+                        if (m.optBoolean("encrypted", false) && E2EEHelper.canDecrypt(bunnyPrivKey)) {
+                            String decrypted = E2EEHelper.decrypt(
+                                m.optString("ciphertext", ""),
+                                m.optString("encrypted_key", ""),
+                                m.optString("iv", ""),
+                                bunnyPrivKey);
+                            notifText = decrypted != null ? decrypted : "[encrypted message]";
+                        }
+                        showLionMessageNotification(notifText, pinnedFlag, mandatoryFlag);
+                        if (!mid.isEmpty()) toMarkRead.add(mid);
+                    }
+
+                    // Overdue = lion's mandatory-reply older than threshold and not yet replied.
+                    long mts = m.optLong("ts", 0);
+                    if (mandatoryFlag && !replied && mts > 0 && (now - mts) > MANDATORY_OVERDUE_MS) {
+                        anyOverdue = true;
+                    }
+                }
+
+                // Ack reads — fire-and-forget per message.
+                for (String mid : toMarkRead) markMeshMessage(mid, "read");
+
+                // Update message bubbles. Server returns newest-first, so we
+                // render top-to-bottom in that order.
+                handler.post(() -> {
+                    messagesContainer.removeAllViews();
+                    for (int i = 0; i < msgs.length(); i++) {
+                        JSONObject m = msgs.optJSONObject(i);
+                        if (m == null) continue;
+                        String text = m.optString("text", "");
+                        boolean fromBunny = "bunny".equals(m.optString("from"));
+                        long ts = m.optLong("ts", 0);
+                        if (m.optBoolean("encrypted", false) && !fromBunny) {
+                            if (E2EEHelper.canDecrypt(bunnyPrivKey)) {
                                 String decrypted = E2EEHelper.decrypt(
                                     m.optString("ciphertext", ""),
                                     m.optString("encrypted_key", ""),
                                     m.optString("iv", ""),
                                     bunnyPrivKey);
-                                notifText = decrypted != null ? decrypted : "[encrypted message]";
+                                text = decrypted != null ? decrypted : "[encrypted]";
+                            } else {
+                                text = "[encrypted — missing key]";
                             }
-                            showLionMessageNotification(notifText,
-                                m.optBoolean("pinned", false),
-                                m.optBoolean("mandatory_reply", false));
+                        } else if (m.optBoolean("encrypted", false) && fromBunny) {
+                            text = "[encrypted — sent by you]";
                         }
-                    }
-                    // Mark all as read
-                    if (unread.length() > 0) {
-                        sendWebhook("/mesh/messages/read", "{\"reader\":\"bunny\"}");
-                    }
-                }
-
-                // Update message bubbles
-                if (msgs != null) {
-                    handler.post(() -> {
-                        messagesContainer.removeAllViews();
-                        for (int i = 0; i < msgs.length(); i++) {
-                            JSONObject m = msgs.optJSONObject(i);
-                            if (m == null) continue;
-                            String text = m.optString("text", "");
-                            boolean fromBunny = "bunny".equals(m.optString("from"));
-                            long ts = m.optLong("timestamp", 0);
-                            // E2EE: decrypt if encrypted
-                            if (m.optBoolean("encrypted", false) && !fromBunny) {
-                                String bunnyPrivKey = gstr("focus_lock_bunny_privkey");
-                                if (E2EEHelper.canDecrypt(bunnyPrivKey)) {
-                                    String decrypted = E2EEHelper.decrypt(
-                                        m.optString("ciphertext", ""),
-                                        m.optString("encrypted_key", ""),
-                                        m.optString("iv", ""),
-                                        bunnyPrivKey);
-                                    text = decrypted != null ? decrypted : "[encrypted]";
-                                } else {
-                                    text = "[encrypted — missing key]";
-                                }
-                            } else if (m.optBoolean("encrypted", false) && fromBunny) {
-                                text = "[encrypted — sent by you]";
-                            }
-                            boolean isMandatory = m.optBoolean("mandatory_reply", false) && !m.optBoolean("replied", false);
-                            if (isMandatory && !fromBunny) {
-                                text = "[REPLY REQUIRED] " + text;
-                            }
-                            addMessageBubble(text, fromBunny, ts);
+                        boolean isMandatory = m.optBoolean("mandatory_reply", false)
+                            && !m.optBoolean("replied", false);
+                        if (isMandatory && !fromBunny) {
+                            text = "[REPLY REQUIRED] " + text;
                         }
-                    });
-                }
+                        addMessageBubble(text, fromBunny, ts);
+                    }
+                });
 
-                // Enforce mandatory reply — auto-lock if overdue
-                if (overdue != null && overdue.length() > 0) {
+                // Enforce mandatory reply — auto-lock if overdue.
+                if (anyOverdue) {
                     int active = Settings.Global.getInt(getContentResolver(), "focus_lock_active", 0);
                     if (active == 0) {
                         Settings.Global.putInt(getContentResolver(), "focus_lock_active", 1);
@@ -1494,20 +1616,22 @@ public class MainActivity extends Activity {
         } catch (Exception e) { android.util.Log.e("BunnyTasker", "Lion notif", e); }
     }
 
+    /** Mark every outstanding mandatory-reply lion message as replied.
+     *  Called after the bunny sends a message — any message counts as answering. */
     private void markMandatoryReplied() {
         try {
-            String resp = fetchFromHomelab("/mesh/messages?reader=bunny&limit=50");
-            if (resp == null) return;
-            JSONObject data = new JSONObject(resp);
-            JSONArray pending = data.optJSONArray("mandatory_pending");
-            if (pending != null) {
-                for (int i = 0; i < pending.length(); i++) {
-                    String mid = pending.getJSONObject(i).optString("id", "");
-                    if (!mid.isEmpty()) {
-                        sendWebhook("/mesh/messages/replied",
-                            "{\"message_id\":\"" + escJson(mid) + "\"}");
-                    }
-                }
+            JSONObject data = fetchMeshMessagesSigned(0, 50);
+            if (data == null) return;
+            JSONArray msgs = data.optJSONArray("messages");
+            if (msgs == null) return;
+            for (int i = 0; i < msgs.length(); i++) {
+                JSONObject m = msgs.optJSONObject(i);
+                if (m == null) continue;
+                if (!"lion".equals(m.optString("from"))) continue;
+                if (!m.optBoolean("mandatory_reply", false)) continue;
+                if (m.optBoolean("replied", false)) continue;
+                String mid = m.optString("id", "");
+                if (!mid.isEmpty()) markMeshMessage(mid, "replied");
             }
         } catch (Exception e) { android.util.Log.e("BunnyTasker", "Mark replied", e); }
     }

@@ -1090,8 +1090,7 @@ def _check_tributes_fines_for_mesh(mid, orders, now_ms):
                 amount = int(orders.get("tribute_amount", 1) or 1)
                 result = _server_apply_order(mid, "tribute-charge", {"amount": amount})
                 if result:
-                    logger.info("Daily tribute: mesh=%s +$%s (paywall→$%s)",
-                                mid, amount, result.get("paywall"))
+                    logger.info("Daily tribute: mesh=%s +$%s (paywall→$%s)", mid, amount, result.get("paywall"))
 
     # Recurring fine — accrues regardless of lock state
     fine_active = orders.get("fine_active", 0)
@@ -1103,8 +1102,7 @@ def _check_tributes_fines_for_mesh(mid, orders, now_ms):
         if elapsed_ms >= fine_interval * 60000:
             result = _server_apply_order(mid, "fine-charge", {"amount": fine_amount})
             if result:
-                logger.info("Fine applied: mesh=%s +$%s (paywall→$%s)",
-                            mid, fine_amount, result.get("paywall"))
+                logger.info("Fine applied: mesh=%s +$%s (paywall→$%s)", mid, fine_amount, result.get("paywall"))
 
     # Streak bonuses — 7d clean = -$5, 30d clean = -$25
     streak_enabled = orders.get("streak_enabled", 0)
@@ -1118,20 +1116,17 @@ def _check_tributes_fines_for_mesh(mid, orders, now_ms):
 
         if current_escapes > escapes_at_start:
             _server_apply_order(mid, "streak-break", {})
-            logger.info("Streak broken: mesh=%s escapes %s → %s",
-                        mid, escapes_at_start, current_escapes)
+            logger.info("Streak broken: mesh=%s escapes %s → %s", mid, escapes_at_start, current_escapes)
         elif streak_start > 0:
             elapsed_days = (now_ms - streak_start) / 86400000
             if elapsed_days >= 7 and str(orders.get("streak_7d_claimed", 0)) != "1":
                 result = _server_apply_order(mid, "streak-bonus", {"which": "7d", "credit": 5})
                 if result:
-                    logger.info("Streak bonus 7d: mesh=%s paywall→$%s",
-                                mid, result.get("paywall"))
+                    logger.info("Streak bonus 7d: mesh=%s paywall→$%s", mid, result.get("paywall"))
             if elapsed_days >= 30 and str(orders.get("streak_30d_claimed", 0)) != "1":
                 result = _server_apply_order(mid, "streak-bonus", {"which": "30d", "credit": 25})
                 if result:
-                    logger.info("Streak bonus 30d: mesh=%s paywall→$%s",
-                                mid, result.get("paywall"))
+                    logger.info("Streak bonus 30d: mesh=%s paywall→$%s", mid, result.get("paywall"))
 
 
 def check_tributes_and_fines():
@@ -2234,6 +2229,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             payload = f"{mesh_id}|{node_id}|{tier}|{ts_i}"
             try:
                 import base64 as _b64
+
                 from cryptography.hazmat.primitives import hashes, serialization
                 from cryptography.hazmat.primitives.asymmetric import padding
 
@@ -2301,6 +2297,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             payload = f"{mesh_id}|{node_id}|{since_i}|{ts_i}"
             try:
                 import base64 as _b64
+
                 from cryptography.hazmat.primitives import hashes, serialization
                 from cryptography.hazmat.primitives.asymmetric import padding
 
@@ -2321,12 +2318,15 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 total_paid_cents = int(orders.get("total_paid_cents", 0) or 0) if orders else 0
             except (ValueError, TypeError):
                 total_paid_cents = 0
-            self.respond(200, {
-                "ok": True,
-                "entries": entries,
-                "total_paid_cents": total_paid_cents,
-                "since": since_i,
-            })
+            self.respond(
+                200,
+                {
+                    "ok": True,
+                    "entries": entries,
+                    "total_paid_cents": total_paid_cents,
+                    "since": since_i,
+                },
+            )
 
         # ── Bunny-authed escape/tamper event push (roadmap #4) ──
         # Path: /api/mesh/{mesh_id}/escape-event
@@ -2379,6 +2379,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             payload = f"{mesh_id}|{node_id}|{event_type}|{ts_i}"
             try:
                 import base64 as _b64
+
                 from cryptography.hazmat.primitives import hashes, serialization
                 from cryptography.hazmat.primitives.asymmetric import padding
 
@@ -2392,42 +2393,64 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 return
             if event_type == "escape":
                 result = _server_apply_order(mesh_id, "escape-recorded", {})
-                logger.info("Escape event: mesh=%s node=%s lifetime_escapes=%s",
-                            mesh_id, node_id, (result or {}).get("lifetime_escapes"))
+                logger.info(
+                    "Escape event: mesh=%s node=%s lifetime_escapes=%s",
+                    mesh_id,
+                    node_id,
+                    (result or {}).get("lifetime_escapes"),
+                )
             elif event_type == "geofence_breach":
                 result = _server_apply_order(mesh_id, "geofence-breach-recorded", {})
-                logger.info("Geofence breach event: mesh=%s node=%s lifetime_breaches=%s details=%s",
-                            mesh_id, node_id,
-                            (result or {}).get("lifetime_geofence_breaches"),
-                            details)
+                logger.info(
+                    "Geofence breach event: mesh=%s node=%s lifetime_breaches=%s details=%s",
+                    mesh_id,
+                    node_id,
+                    (result or {}).get("lifetime_geofence_breaches"),
+                    details,
+                )
             else:
                 kind = "removed" if event_type == "tamper_removed" else "detected"
                 result = _server_apply_order(mesh_id, "tamper-recorded", {"kind": kind})
-                logger.info("Tamper event: mesh=%s node=%s kind=%s lifetime_tamper=%s paywall=%s",
-                            mesh_id, node_id, kind,
-                            (result or {}).get("lifetime_tamper"),
-                            (result or {}).get("paywall"))
+                logger.info(
+                    "Tamper event: mesh=%s node=%s kind=%s lifetime_tamper=%s paywall=%s",
+                    mesh_id,
+                    node_id,
+                    kind,
+                    (result or {}).get("lifetime_tamper"),
+                    (result or {}).get("paywall"),
+                )
             if not result:
                 self.respond(500, {"error": "apply failed"})
                 return
             self.respond(200, {"ok": True, "event_type": event_type, **result})
 
         # ── Bunny/Lion-authed message history (roadmap #6) ──
-        # Two POST endpoints under /api/mesh/{mesh_id}/messages:
+        # Three POST endpoints under /api/mesh/{mesh_id}/messages:
         #   .../send   — append a message to the per-mesh log
         #   .../fetch  — paginated read (newest first, capped)
-        # Either party may call both. Auth works like:
+        #   .../mark   — flag a message as read or replied
+        # Either party may call all three. Auth:
         #   - from="bunny": node must exist with bunny_pubkey on file; sig
         #     is SHA256withRSA(PKCS1v15) over the text payload below.
         #   - from="lion":  signature verified against the mesh's lion_pubkey.
-        #   - from="system" is rejected — only real principals write.
-        # Replay window: ts within ±5min. Fetch signatures bind since_ts so a
-        # replayed fetch reads the same prefix its signer intended.
+        # Replay window: ts within ±5min.
+        #
+        # Send payload also carries optional hybrid fields:
+        #   pinned (bool)            — sticky message in the UI
+        #   mandatory_reply (bool)   — other party must reply; enforcement is
+        #                              CLIENT-side (bunny auto-locks on overdue).
+        #                              Server just stores the flag + replied-state.
+        #   encrypted + ciphertext + encrypted_key + iv — E2EE passthrough
+        #     (server stores opaquely; signature binds the plaintext marker in
+        #     `text` so a MITM flipping ciphertext still breaks the client's
+        #     decrypt — fail-closed).
         elif self.path.startswith("/api/mesh/") and (
-            self.path.endswith("/messages/send") or self.path.endswith("/messages/fetch")
+            self.path.endswith("/messages/send")
+            or self.path.endswith("/messages/fetch")
+            or self.path.endswith("/messages/mark")
         ):
             parts = self.path.strip("/").split("/")
-            # ["api", "mesh", "{mesh_id}", "messages", "send" | "fetch"]
+            # ["api", "mesh", "{mesh_id}", "messages", "send" | "fetch" | "mark"]
             if len(parts) != 5 or parts[3] != "messages":
                 self.respond(400, {"error": "bad path"})
                 return
@@ -2475,6 +2498,8 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     self.respond(403, {"error": "no lion_pubkey on file for mesh"})
                     return
 
+            # Build the signed payload per op. Flags serialized as "1"/"0"
+            # so the client's string-concat sig helper stays trivial.
             if op == "send":
                 text = data.get("text", "")
                 if not isinstance(text, str) or not text.strip():
@@ -2483,8 +2508,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 if len(text) > 4000:
                     self.respond(413, {"error": "text too long (max 4000)"})
                     return
-                payload = f"{mesh_id}|{node_id}|{from_who}|{text}|{ts_i}"
-            else:  # fetch
+                pinned = bool(data.get("pinned", False))
+                mandatory = bool(data.get("mandatory_reply", False))
+                payload = (
+                    f"{mesh_id}|{node_id}|{from_who}|{text}|{'1' if pinned else '0'}|{'1' if mandatory else '0'}|{ts_i}"
+                )
+            elif op == "fetch":
                 try:
                     since_i = int(data.get("since", 0) or 0)
                 except (ValueError, TypeError):
@@ -2495,9 +2524,20 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     limit_i = 50
                 limit_i = max(1, min(limit_i, 200))
                 payload = f"{mesh_id}|{node_id}|{from_who}|{since_i}|{ts_i}"
+            else:  # mark
+                message_id = data.get("message_id", "")
+                status = (data.get("status", "") or "").lower()
+                if not message_id:
+                    self.respond(400, {"error": "message_id required"})
+                    return
+                if status not in ("read", "replied"):
+                    self.respond(400, {"error": "status must be 'read' or 'replied'"})
+                    return
+                payload = f"{mesh_id}|{node_id}|{from_who}|{message_id}|{status}|{ts_i}"
 
             try:
                 import base64 as _b64
+
                 from cryptography.hazmat.primitives import hashes, serialization
                 from cryptography.hazmat.primitives.asymmetric import padding
 
@@ -2506,26 +2546,67 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 sig_bytes = _b64.b64decode(signature)
                 pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
             except Exception as e:
-                logger.warning("messages/%s sig verify failed: mesh=%s node=%s from=%s err=%s",
-                               op, mesh_id, node_id, from_who, e)
+                logger.warning(
+                    "messages/%s sig verify failed: mesh=%s node=%s from=%s err=%s", op, mesh_id, node_id, from_who, e
+                )
                 self.respond(403, {"error": "invalid signature"})
                 return
 
             store = _get_message_store(mesh_id)
             if op == "send":
-                msg = store.add({"from": from_who, "node_id": node_id, "text": text})
-                logger.info("Message appended: mesh=%s node=%s from=%s id=%s",
-                            mesh_id, node_id, from_who, msg.get("id"))
+                entry = {"from": from_who, "node_id": node_id, "text": text}
+                if pinned:
+                    entry["pinned"] = True
+                if mandatory:
+                    entry["mandatory_reply"] = True
+                # E2EE passthrough (server stores opaquely; signature binds `text`)
+                if data.get("encrypted"):
+                    entry["encrypted"] = True
+                    for k in ("ciphertext", "encrypted_key", "iv"):
+                        v = data.get(k, "")
+                        if isinstance(v, str) and v:
+                            entry[k] = v
+                # Attachment ref passthrough (attachments themselves are a
+                # separate storage endpoint — not shipped yet).
+                att = data.get("attachment_url", "")
+                if isinstance(att, str) and att:
+                    entry["attachment_url"] = att
+                msg = store.add(entry)
+                logger.info(
+                    "Message appended: mesh=%s node=%s from=%s id=%s pinned=%s mandatory=%s",
+                    mesh_id,
+                    node_id,
+                    from_who,
+                    msg.get("id"),
+                    pinned,
+                    mandatory,
+                )
                 self.respond(200, {"ok": True, "message": msg})
-            else:  # fetch
+            elif op == "fetch":
                 with store.lock:
                     entries = [m for m in store.messages if int(m.get("ts", 0)) > since_i]
                 entries = list(reversed(entries))[:limit_i]
-                self.respond(200, {
-                    "ok": True,
-                    "messages": entries,
-                    "since": since_i,
-                })
+                self.respond(
+                    200,
+                    {
+                        "ok": True,
+                        "messages": entries,
+                        "since": since_i,
+                    },
+                )
+            else:  # mark
+                if status == "read":
+                    # Reader identity = signing party ("bunny" or "lion").
+                    # Clients compute unread by checking from != self AND
+                    # self not in read_by.
+                    result = store.mark_read(message_id, from_who)
+                else:
+                    result = store.mark_replied(message_id)
+                if "error" in result:
+                    self.respond(404, result)
+                    return
+                logger.info("Message %s: mesh=%s node=%s from=%s id=%s", status, mesh_id, node_id, from_who, message_id)
+                self.respond(200, {"ok": True, "status": status, "message_id": message_id})
 
         # ── Vault endpoints (zero-knowledge mesh) ──
         # See docs/VAULT-DESIGN.md.
@@ -3421,7 +3502,8 @@ if __name__ == "__main__":
             # #20 and docs/STATE-OWNERSHIP.md Category A.
             "apply_fn": (
                 (lambda action, params: _server_apply_order(OPERATOR_MESH_ID, action, params))
-                if OPERATOR_MESH_ID else None
+                if OPERATOR_MESH_ID
+                else None
             ),
         },
         daemon=True,

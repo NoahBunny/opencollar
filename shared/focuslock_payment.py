@@ -391,10 +391,13 @@ def check_payment_emails(
                 # loses vault propagation — vault_only meshes require apply_fn.
                 if apply_fn is not None:
                     try:
-                        apply_fn("payment-received", {
-                            "amount_cents": amount_cents,
-                            "clear_paywall": clear_paywall,
-                        })
+                        apply_fn(
+                            "payment-received",
+                            {
+                                "amount_cents": amount_cents,
+                                "clear_paywall": clear_paywall,
+                            },
+                        )
                     except Exception as e:
                         logger.warning("payment-received apply_fn failed: %s", e)
                 else:

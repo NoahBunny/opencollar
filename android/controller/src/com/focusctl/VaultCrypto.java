@@ -105,6 +105,22 @@ public class VaultCrypto {
     }
 
     /**
+     * Roadmap #6: sign an arbitrary string payload with Lion's privkey.
+     * RSA-PKCS1v15-SHA256 over the literal UTF-8 bytes — matches the
+     * pipe-separated payload format the /api/mesh/{id}/messages/{send,fetch,mark}
+     * endpoints expect (and the same scheme bunny uses via PairingManager.sign).
+     */
+    public static String signString(String message, String lionPrivKeyB64) throws Exception {
+        byte[] privDer = Base64.decode(stripPemHeaders(lionPrivKeyB64), Base64.DEFAULT);
+        PrivateKey pk = KeyFactory.getInstance("RSA")
+            .generatePrivate(new PKCS8EncodedKeySpec(privDer));
+        Signature sig = Signature.getInstance("SHA256withRSA");
+        sig.initSign(pk);
+        sig.update(message.getBytes("UTF-8"));
+        return Base64.encodeToString(sig.sign(), Base64.NO_WRAP);
+    }
+
+    /**
      * Sign canonical_json(blob_minus_signature) with Lion's privkey.
      * Uses RSA-PKCS1v15-SHA256 to match Python's verify_signature.
      */

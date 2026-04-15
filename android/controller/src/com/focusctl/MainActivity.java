@@ -2866,7 +2866,9 @@ public class MainActivity extends Activity {
             if (vaultMode && !"direct".equals(pairMode)) {
                 msgsResp = meshResp;
             } else {
-                msgsResp = meshGet("/mesh/messages?reader=lion&limit=30");
+                // Roadmap #6: signed fetch of the per-mesh log. The legacy
+                // /mesh/messages relay path was 410'd server-side.
+                msgsResp = fetchLionMessages(0, 30);
             }
             final String msgsRespFinal = msgsResp;
             handler.post(() -> {
@@ -3062,7 +3064,22 @@ public class MainActivity extends Activity {
                 boolean mandatory = obj.contains("\"mandatory_reply\":true");
                 boolean replied = obj.contains("\"replied\":true");
                 boolean isPraise = obj.contains("\"praise\":true") || obj.contains("\"praise\": true");
-                String readByBunny = obj.contains("\"read_by_bunny\":true") ? "read" : "unread";
+                // New schema (#6) ships read_by as a JSON array of reader
+                // identities. Vault-mode history still emits the legacy
+                // read_by_bunny boolean.
+                String readByBunny = "unread";
+                if (obj.contains("\"read_by_bunny\":true")) {
+                    readByBunny = "read";
+                } else {
+                    int rbIdx = obj.indexOf("\"read_by\":");
+                    if (rbIdx >= 0) {
+                        int rbEnd = obj.indexOf("]", rbIdx);
+                        if (rbEnd > rbIdx
+                            && obj.substring(rbIdx, rbEnd).contains("\"bunny\"")) {
+                            readByBunny = "read";
+                        }
+                    }
+                }
 
                 // Decrypt E2EE messages from bunny
                 if (encrypted && "bunny".equals(from)) {
@@ -3370,17 +3387,23 @@ public class MainActivity extends Activity {
             // Phase D: in vault mode, route through api() → apiVault →
             // /vault/{id}/append. The slave's vaultSync dispatches a
             // send-message action that persists to history and triggers
-            // an immediate runtime push. The legacy /mesh/message endpoint
-            // returns 410 in vault_only mode, so we skip it entirely.
+            // an immediate runtime push. Roadmap #6 replaced the dead
+            // /mesh/message legacy path with the bunny/lion-authed
+            // /api/mesh/{id}/messages/send endpoint for non-vault meshes.
             String r;
             if (vaultMode && !"direct".equals(pairMode)) {
                 r = api("/api/send-message", json.toString());
             } else {
-                try {
-                    r = meshPost(meshUrl + "/mesh/message", json.toString());
-                } catch (Exception e) { r = null; }
+                E2EEHelper.EncryptedMessage enc = null;
+                if (E2EEHelper.canEncrypt(bunnyPubKey)) {
+                    enc = E2EEHelper.encrypt(msg, bunnyPubKey);
+                }
+                boolean ok = postLionMessage(msg, pinAsNotif, mandatory, enc);
+                r = ok ? "{\"ok\":true}" : null;
 
-                // Also send via old API for backward compat (legacy paths only)
+                // Also push to direct-mode Collar HTTP via the legacy api()
+                // helper so the bunny's phone gets an immediate notif even
+                // when polling is slow.
                 String apiJson = "{\"message\":\"" + esc(msg) + "\"}";
                 if (pinAsNotif) {
                     api("/api/pin-message", apiJson);
@@ -3402,17 +3425,124 @@ public class MainActivity extends Activity {
         });
     }
 
-    // Mark lion's messages as read when viewing inbox.
-    // Phase D: vault mode has no per-message read-state plumbing yet — the
-    // slave's history is append-only and the controller's view is derived.
-    // Follow-up if Lion ever needs read receipts in vault mode: add a
-    // mark-read action and store reader_state in the slave's history.
+    // ── Roadmap #6 messaging client (lion side) ──
+    // Three signed POST helpers that hit the new bunny-/lion-authed message
+    // endpoints. node_id="controller" matches our vault registration.
+    // Replaces the dead /mesh/message{,s,/read,/replied} legacy paths the
+    // server stopped serving. Vault-mode messaging continues to flow through
+    // /api/send-message → vault append (unchanged) — these new helpers are
+    // for the non-vault path and the on-demand mark-read flow.
+
+    /** Sign + POST a lion-authored message to /api/mesh/{id}/messages/send.
+     *  Returns true on 200. Blocking — call from executor. */
+    private boolean postLionMessage(String text, boolean pinned, boolean mandatory,
+                                    E2EEHelper.EncryptedMessage enc) {
+        if (meshUrl.isEmpty() || meshId.isEmpty()) return false;
+        String lionPriv = prefs.getString("lion_privkey", "");
+        if (lionPriv.isEmpty()) return false;
+        long ts = System.currentTimeMillis();
+        String signedText = (enc != null) ? "[e2ee]" : text;
+        String payload = meshId + "|controller|lion|" + signedText
+            + "|" + (pinned ? "1" : "0") + "|" + (mandatory ? "1" : "0") + "|" + ts;
+        try {
+            String signature = VaultCrypto.signString(payload, lionPriv);
+            org.json.JSONObject body = new org.json.JSONObject();
+            body.put("node_id", "controller");
+            body.put("from", "lion");
+            body.put("text", signedText);
+            if (pinned) body.put("pinned", true);
+            if (mandatory) body.put("mandatory_reply", true);
+            if (enc != null) {
+                body.put("encrypted", true);
+                body.put("ciphertext", enc.ciphertext);
+                body.put("encrypted_key", enc.encryptedKey);
+                body.put("iv", enc.iv);
+            }
+            body.put("ts", ts);
+            body.put("signature", signature);
+            String resp = meshPost(meshUrl + "/api/mesh/" + meshId + "/messages/send", body.toString());
+            return resp != null && resp.contains("\"ok\"");
+        } catch (Exception e) {
+            android.util.Log.w("focusctl", "postLionMessage failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** Signed fetch — returns raw response string or null on error. */
+    private String fetchLionMessages(long since, int limit) {
+        if (meshUrl.isEmpty() || meshId.isEmpty()) return null;
+        String lionPriv = prefs.getString("lion_privkey", "");
+        if (lionPriv.isEmpty()) return null;
+        long ts = System.currentTimeMillis();
+        String payload = meshId + "|controller|lion|" + since + "|" + ts;
+        try {
+            String signature = VaultCrypto.signString(payload, lionPriv);
+            org.json.JSONObject body = new org.json.JSONObject();
+            body.put("node_id", "controller");
+            body.put("from", "lion");
+            body.put("since", since);
+            body.put("limit", limit);
+            body.put("ts", ts);
+            body.put("signature", signature);
+            return meshPost(meshUrl + "/api/mesh/" + meshId + "/messages/fetch", body.toString());
+        } catch (Exception e) {
+            android.util.Log.w("focusctl", "fetchLionMessages failed: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /** Sign + POST a single mark (status="read" or "replied"). */
+    private boolean markLionMessage(String messageId, String status) {
+        if (meshUrl.isEmpty() || meshId.isEmpty() || messageId == null || messageId.isEmpty()) return false;
+        String lionPriv = prefs.getString("lion_privkey", "");
+        if (lionPriv.isEmpty()) return false;
+        long ts = System.currentTimeMillis();
+        String payload = meshId + "|controller|lion|" + messageId + "|" + status + "|" + ts;
+        try {
+            String signature = VaultCrypto.signString(payload, lionPriv);
+            org.json.JSONObject body = new org.json.JSONObject();
+            body.put("node_id", "controller");
+            body.put("from", "lion");
+            body.put("message_id", messageId);
+            body.put("status", status);
+            body.put("ts", ts);
+            body.put("signature", signature);
+            String resp = meshPost(meshUrl + "/api/mesh/" + meshId + "/messages/mark", body.toString());
+            return resp != null && resp.contains("\"ok\"");
+        } catch (Exception e) {
+            android.util.Log.w("focusctl", "markLionMessage failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** Mark every bunny message Lion hasn't yet acked as read.
+     *  Phase D vault-mode meshes still skip — vault has no per-message
+     *  read-state plumbing yet (would need a mark-read action stored in
+     *  the slave's history). */
     private void markLionRead() {
         if (vaultMode && !"direct".equals(pairMode)) return;
         executor.execute(() -> {
             try {
-                String body = "{\"reader\":\"lion\"}";
-                meshPost(meshUrl + "/mesh/messages/read", body);
+                String resp = fetchLionMessages(0, 50);
+                if (resp == null) return;
+                org.json.JSONObject root = new org.json.JSONObject(resp);
+                org.json.JSONArray msgs = root.optJSONArray("messages");
+                if (msgs == null) return;
+                for (int i = 0; i < msgs.length(); i++) {
+                    org.json.JSONObject m = msgs.optJSONObject(i);
+                    if (m == null) continue;
+                    if (!"bunny".equals(m.optString("from"))) continue;
+                    org.json.JSONArray readBy = m.optJSONArray("read_by");
+                    boolean alreadyRead = false;
+                    if (readBy != null) {
+                        for (int j = 0; j < readBy.length(); j++) {
+                            if ("lion".equals(readBy.optString(j))) { alreadyRead = true; break; }
+                        }
+                    }
+                    if (alreadyRead) continue;
+                    String mid = m.optString("id", "");
+                    if (!mid.isEmpty()) markLionMessage(mid, "read");
+                }
             } catch (Exception e) {}
         });
     }
