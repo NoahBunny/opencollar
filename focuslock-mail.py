@@ -873,6 +873,25 @@ MAX_PAYMENT = float(_cfg.get("banking", {}).get("max_payment", 10000))
 _LEDGER_PATH = os.path.join(os.path.dirname(MESH_ORDERS_FILE), "payment_ledger.json")
 payment_ledger = mesh.PaymentLedger(persist_path=_LEDGER_PATH)
 
+# ── Per-mesh message history (roadmap #6) ──
+# Server-side append-only chat log, plaintext-scoped to the server.
+# Separate from vault gossip — clients POST bunny/lion-signed messages and
+# pull paginated history. No propagation through the mesh; this replaces
+# the broken legacy /mesh/message plaintext path that never shipped server-side.
+_MESSAGES_DIR = os.path.join(os.path.dirname(MESH_ORDERS_FILE), "messages")
+_message_stores: dict = {}
+_message_stores_lock = threading.Lock()
+
+
+def _get_message_store(mesh_id: str) -> "mesh.MessageStore":
+    with _message_stores_lock:
+        store = _message_stores.get(mesh_id)
+        if store is None:
+            path = os.path.join(_MESSAGES_DIR, f"{mesh_id}.json")
+            store = mesh.MessageStore(persist_path=path)
+            _message_stores[mesh_id] = store
+        return store
+
 
 def enforce_jail():
     """Immediately enforce jail via ADB — called on entrap webhook."""
@@ -2392,6 +2411,121 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(500, {"error": "apply failed"})
                 return
             self.respond(200, {"ok": True, "event_type": event_type, **result})
+
+        # ── Bunny/Lion-authed message history (roadmap #6) ──
+        # Two POST endpoints under /api/mesh/{mesh_id}/messages:
+        #   .../send   — append a message to the per-mesh log
+        #   .../fetch  — paginated read (newest first, capped)
+        # Either party may call both. Auth works like:
+        #   - from="bunny": node must exist with bunny_pubkey on file; sig
+        #     is SHA256withRSA(PKCS1v15) over the text payload below.
+        #   - from="lion":  signature verified against the mesh's lion_pubkey.
+        #   - from="system" is rejected — only real principals write.
+        # Replay window: ts within ±5min. Fetch signatures bind since_ts so a
+        # replayed fetch reads the same prefix its signer intended.
+        elif self.path.startswith("/api/mesh/") and (
+            self.path.endswith("/messages/send") or self.path.endswith("/messages/fetch")
+        ):
+            parts = self.path.strip("/").split("/")
+            # ["api", "mesh", "{mesh_id}", "messages", "send" | "fetch"]
+            if len(parts) != 5 or parts[3] != "messages":
+                self.respond(400, {"error": "bad path"})
+                return
+            mesh_id = parts[2]
+            op = parts[4]
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            account = _mesh_accounts.get(mesh_id)
+            if not account:
+                self.respond(404, {"error": "mesh not found"})
+                return
+            node_id = data.get("node_id", "")
+            from_who = (data.get("from", "") or "").lower()
+            signature = data.get("signature", "")
+            if from_who not in ("bunny", "lion"):
+                self.respond(400, {"error": "from must be 'bunny' or 'lion'"})
+                return
+            if not node_id or not signature:
+                self.respond(400, {"error": "node_id and signature required"})
+                return
+            try:
+                ts_i = int(data.get("ts", 0) or 0)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            now_ms = int(time.time() * 1000)
+            if abs(now_ms - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+
+            # Resolve verifier pubkey: bunny = node.bunny_pubkey, lion = account.lion_pubkey
+            if from_who == "bunny":
+                node = account.get("nodes", {}).get(node_id)
+                if not node:
+                    self.respond(403, {"error": "node not registered in mesh"})
+                    return
+                verifier_pub = node.get("bunny_pubkey", "")
+                if not verifier_pub:
+                    self.respond(403, {"error": "no bunny_pubkey on file for node"})
+                    return
+            else:  # lion
+                verifier_pub = account.get("lion_pubkey", "")
+                if not verifier_pub:
+                    self.respond(403, {"error": "no lion_pubkey on file for mesh"})
+                    return
+
+            if op == "send":
+                text = data.get("text", "")
+                if not isinstance(text, str) or not text.strip():
+                    self.respond(400, {"error": "text required"})
+                    return
+                if len(text) > 4000:
+                    self.respond(413, {"error": "text too long (max 4000)"})
+                    return
+                payload = f"{mesh_id}|{node_id}|{from_who}|{text}|{ts_i}"
+            else:  # fetch
+                try:
+                    since_i = int(data.get("since", 0) or 0)
+                except (ValueError, TypeError):
+                    since_i = 0
+                try:
+                    limit_i = int(data.get("limit", 50) or 50)
+                except (ValueError, TypeError):
+                    limit_i = 50
+                limit_i = max(1, min(limit_i, 200))
+                payload = f"{mesh_id}|{node_id}|{from_who}|{since_i}|{ts_i}"
+
+            try:
+                import base64 as _b64
+                from cryptography.hazmat.primitives import hashes, serialization
+                from cryptography.hazmat.primitives.asymmetric import padding
+
+                pub_der = _b64.b64decode(verifier_pub)
+                pub = serialization.load_der_public_key(pub_der)
+                sig_bytes = _b64.b64decode(signature)
+                pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
+            except Exception as e:
+                logger.warning("messages/%s sig verify failed: mesh=%s node=%s from=%s err=%s",
+                               op, mesh_id, node_id, from_who, e)
+                self.respond(403, {"error": "invalid signature"})
+                return
+
+            store = _get_message_store(mesh_id)
+            if op == "send":
+                msg = store.add({"from": from_who, "node_id": node_id, "text": text})
+                logger.info("Message appended: mesh=%s node=%s from=%s id=%s",
+                            mesh_id, node_id, from_who, msg.get("id"))
+                self.respond(200, {"ok": True, "message": msg})
+            else:  # fetch
+                with store.lock:
+                    entries = [m for m in store.messages if int(m.get("ts", 0)) > since_i]
+                entries = list(reversed(entries))[:limit_i]
+                self.respond(200, {
+                    "ok": True,
+                    "messages": entries,
+                    "since": since_i,
+                })
 
         # ── Vault endpoints (zero-knowledge mesh) ──
         # See docs/VAULT-DESIGN.md.
