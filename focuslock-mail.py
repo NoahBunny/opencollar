@@ -1045,77 +1045,80 @@ def check_subscription_charges():
 # ── Daily Tribute + Fine Enforcement ──
 
 
-def check_tributes_and_fines():
-    """Periodic check for daily tribute (cost of freedom while unlocked),
-    recurring fines, and streak bonuses/breaks. Runs every 5 minutes.
+def _check_tributes_fines_for_mesh(mid, orders, now_ms):
+    """Run one tick of tribute/fine/streak checks for a single mesh.
+    All mutations route through _server_apply_order so vault_only meshes
+    receive the RPC blob (landmine #21 fix)."""
+    # Daily tribute — accrues while phone is UNLOCKED
+    tribute_active = orders.get("tribute_active", 0)
+    if str(tribute_active) == "1":
+        lock_active = orders.get("lock_active", 0)
+        if str(lock_active) != "1":  # unlocked → tribute accrues
+            last = int(orders.get("tribute_last_applied", 0) or 0)
+            elapsed_ms = now_ms - last if last else 0
+            if elapsed_ms >= 86400000:  # 24 hours
+                amount = int(orders.get("tribute_amount", 1) or 1)
+                result = _server_apply_order(mid, "tribute-charge", {"amount": amount})
+                if result:
+                    logger.info("Daily tribute: mesh=%s +$%s (paywall→$%s)",
+                                mid, amount, result.get("paywall"))
 
-    All state mutations route through _server_apply_order so vault_only
-    meshes receive the RPC blob (landmine #21 fix 2026-04-15). The pre-fix
-    code did orders.set + push_to_peers, which is a no-op on vault_only
-    meshes where plaintext gossip is suppressed."""
-    if not OPERATOR_MESH_ID:
-        # Nothing to drive these off of — operator-scoped by design.
-        return
+    # Recurring fine — accrues regardless of lock state
+    fine_active = orders.get("fine_active", 0)
+    if str(fine_active) == "1":
+        fine_amount = int(orders.get("fine_amount", 10) or 10)
+        fine_interval = int(orders.get("fine_interval_m", 60) or 60)
+        last_fine = int(orders.get("fine_last_applied", 0) or 0)
+        elapsed_ms = now_ms - last_fine if last_fine else 0
+        if elapsed_ms >= fine_interval * 60000:
+            result = _server_apply_order(mid, "fine-charge", {"amount": fine_amount})
+            if result:
+                logger.info("Fine applied: mesh=%s +$%s (paywall→$%s)",
+                            mid, fine_amount, result.get("paywall"))
+
+    # Streak bonuses — 7d clean = -$5, 30d clean = -$25
+    streak_enabled = orders.get("streak_enabled", 0)
+    if str(streak_enabled) == "1":
+        streak_start = int(orders.get("streak_start", 0) or 0)
+        escapes_at_start = int(orders.get("streak_escapes_at_start", 0) or 0)
+        try:
+            current_escapes = int(orders.get("lifetime_escapes", 0) or 0)
+        except (ValueError, TypeError):
+            current_escapes = 0
+
+        if current_escapes > escapes_at_start:
+            _server_apply_order(mid, "streak-break", {})
+            logger.info("Streak broken: mesh=%s escapes %s → %s",
+                        mid, escapes_at_start, current_escapes)
+        elif streak_start > 0:
+            elapsed_days = (now_ms - streak_start) / 86400000
+            if elapsed_days >= 7 and str(orders.get("streak_7d_claimed", 0)) != "1":
+                result = _server_apply_order(mid, "streak-bonus", {"which": "7d", "credit": 5})
+                if result:
+                    logger.info("Streak bonus 7d: mesh=%s paywall→$%s",
+                                mid, result.get("paywall"))
+            if elapsed_days >= 30 and str(orders.get("streak_30d_claimed", 0)) != "1":
+                result = _server_apply_order(mid, "streak-bonus", {"which": "30d", "credit": 25})
+                if result:
+                    logger.info("Streak bonus 30d: mesh=%s paywall→$%s",
+                                mid, result.get("paywall"))
+
+
+def check_tributes_and_fines():
+    """Periodic check for daily tribute, recurring fines, and streak
+    bonuses/breaks across every registered mesh. Runs every 5 minutes.
+
+    Roadmap #5 (2026-04-15): iterates _orders_registry.docs so multi-tenant
+    meshes all get their checks, matching check_subscription_charges's
+    per-mesh pattern. Pre-fix this thread only looked at the operator mesh."""
     while True:
         try:
             now_ms = int(time.time() * 1000)
-
-            # Daily tribute — accrues while phone is UNLOCKED
-            tribute_active = mesh_orders.get("tribute_active", 0)
-            if str(tribute_active) == "1":
-                lock_active = mesh_orders.get("lock_active", 0)
-                if str(lock_active) != "1":  # unlocked → tribute accrues
-                    last = int(mesh_orders.get("tribute_last_applied", 0))
-                    elapsed_ms = now_ms - last if last else 0
-                    if elapsed_ms >= 86400000:  # 24 hours
-                        amount = int(mesh_orders.get("tribute_amount", 1))
-                        result = _server_apply_order(OPERATOR_MESH_ID, "tribute-charge", {"amount": amount})
-                        if result:
-                            logger.info("Daily tribute: +$%s (paywall→$%s)", amount, result.get("paywall"))
-
-            # Recurring fine — accrues regardless of lock state
-            fine_active = mesh_orders.get("fine_active", 0)
-            if str(fine_active) == "1":
-                fine_amount = int(mesh_orders.get("fine_amount", 10))
-                fine_interval = int(mesh_orders.get("fine_interval_m", 60))
-                last_fine = int(mesh_orders.get("fine_last_applied", 0))
-                elapsed_ms = now_ms - last_fine if last_fine else 0
-                if elapsed_ms >= fine_interval * 60000:
-                    result = _server_apply_order(OPERATOR_MESH_ID, "fine-charge", {"amount": fine_amount})
-                    if result:
-                        logger.info("Fine applied: +$%s (paywall→$%s)", fine_amount, result.get("paywall"))
-
-            # Streak bonuses — 7d clean = -$5, 30d clean = -$25
-            streak_enabled = mesh_orders.get("streak_enabled", 0)
-            if str(streak_enabled) == "1":
-                streak_start = int(mesh_orders.get("streak_start", 0))
-                escapes_at_start = int(mesh_orders.get("streak_escapes_at_start", 0))
-                # Roadmap #4 (2026-04-15): read the server-authoritative
-                # lifetime_escapes counter. Pre-fix this read "escapes" which
-                # isn't in ORDER_KEYS and was always 0 on vault_only meshes
-                # (no state-gossip from phone) — streak-break was dead code.
+            for mid, orders in list(_orders_registry.docs.items()):
                 try:
-                    current_escapes = int(mesh_orders.get("lifetime_escapes", 0) or 0)
-                except (ValueError, TypeError):
-                    current_escapes = 0
-                streak_broken = current_escapes > escapes_at_start
-
-                if streak_broken:
-                    _server_apply_order(OPERATOR_MESH_ID, "streak-break", {})
-                    logger.info("Streak broken: escapes %s → %s", escapes_at_start, current_escapes)
-                elif streak_start > 0:
-                    elapsed_days = (now_ms - streak_start) / 86400000
-
-                    if elapsed_days >= 7 and str(mesh_orders.get("streak_7d_claimed", 0)) != "1":
-                        result = _server_apply_order(OPERATOR_MESH_ID, "streak-bonus", {"which": "7d", "credit": 5})
-                        if result:
-                            logger.info("Streak bonus 7d: -$5 (paywall→$%s)", result.get("paywall"))
-
-                    if elapsed_days >= 30 and str(mesh_orders.get("streak_30d_claimed", 0)) != "1":
-                        result = _server_apply_order(OPERATOR_MESH_ID, "streak-bonus", {"which": "30d", "credit": 25})
-                        if result:
-                            logger.info("Streak bonus 30d: -$25 (paywall→$%s)", result.get("paywall"))
-
+                    _check_tributes_fines_for_mesh(mid, orders, now_ms)
+                except Exception:
+                    logger.exception("tribute/fine/streak tick for mesh=%s failed", mid)
         except Exception:
             logger.exception("Tribute/fine/streak checker error")
 
