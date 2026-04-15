@@ -673,6 +673,62 @@ def mesh_apply_order(action, params, orders):
         orders.set("sub_total_owed", str(total_owed + amount))
         orders.set("sub_last_charged", now_ms)
         return {"applied": action, "tier": tier, "amount": amount, "paywall": current_pw + amount}
+    elif action == "tribute-charge":
+        # Daily tribute: accrues while phone unlocked. Fired by
+        # check_tributes_and_fines once per 24h unlocked window.
+        import time as t_tc
+
+        try:
+            amount = int(params.get("amount", 0) or 0)
+        except (ValueError, TypeError):
+            amount = 0
+        try:
+            current_pw = int(orders.get("paywall", "0") or "0")
+        except (ValueError, TypeError):
+            current_pw = 0
+        orders.set("paywall", str(current_pw + amount))
+        orders.set("tribute_last_applied", int(t_tc.time() * 1000))
+        return {"applied": action, "amount": amount, "paywall": current_pw + amount}
+    elif action == "fine-charge":
+        # Recurring fine: accrues regardless of lock state. Fired by
+        # check_tributes_and_fines once per fine_interval_m.
+        import time as t_fc
+
+        try:
+            amount = int(params.get("amount", 0) or 0)
+        except (ValueError, TypeError):
+            amount = 0
+        try:
+            current_pw = int(orders.get("paywall", "0") or "0")
+        except (ValueError, TypeError):
+            current_pw = 0
+        orders.set("paywall", str(current_pw + amount))
+        orders.set("fine_last_applied", int(t_fc.time() * 1000))
+        return {"applied": action, "amount": amount, "paywall": current_pw + amount}
+    elif action == "streak-break":
+        # Bunny escaped — streak resets. Fired by check_tributes_and_fines
+        # when reported escapes > escapes_at_start.
+        orders.set("streak_enabled", 0)
+        return {"applied": action}
+    elif action == "streak-bonus":
+        # 7d or 30d clean-streak reward: subtract credit from paywall
+        # (clamped at 0), mark the tier claimed so it fires exactly once.
+        try:
+            credit = int(params.get("credit", 0) or 0)
+        except (ValueError, TypeError):
+            credit = 0
+        which = (params.get("which", "") or "").lower()
+        try:
+            current_pw = int(orders.get("paywall", "0") or "0")
+        except (ValueError, TypeError):
+            current_pw = 0
+        new_pw = max(0, current_pw - credit)
+        orders.set("paywall", str(new_pw))
+        if which == "7d":
+            orders.set("streak_7d_claimed", 1)
+        elif which == "30d":
+            orders.set("streak_30d_claimed", 1)
+        return {"applied": action, "which": which, "credit": credit, "paywall": new_pw}
     elif action == "set-countdown":
         import time as t_cd
 
@@ -946,8 +1002,16 @@ def check_subscription_charges():
 
 
 def check_tributes_and_fines():
-    """Periodic check for daily tribute (cost of freedom while unlocked)
-    and recurring fines. Runs every 5 minutes to stay responsive."""
+    """Periodic check for daily tribute (cost of freedom while unlocked),
+    recurring fines, and streak bonuses/breaks. Runs every 5 minutes.
+
+    All state mutations route through _server_apply_order so vault_only
+    meshes receive the RPC blob (landmine #21 fix 2026-04-15). The pre-fix
+    code did orders.set + push_to_peers, which is a no-op on vault_only
+    meshes where plaintext gossip is suppressed."""
+    if not OPERATOR_MESH_ID:
+        # Nothing to drive these off of — operator-scoped by design.
+        return
     while True:
         try:
             now_ms = int(time.time() * 1000)
@@ -961,21 +1025,9 @@ def check_tributes_and_fines():
                     elapsed_ms = now_ms - last if last else 0
                     if elapsed_ms >= 86400000:  # 24 hours
                         amount = int(mesh_orders.get("tribute_amount", 1))
-                        current_pw = 0
-                        try:
-                            current_pw = int(mesh_orders.get("paywall", "0"))
-                        except (ValueError, TypeError):
-                            pass
-                        mesh_orders.set("paywall", str(current_pw + amount))
-                        mesh_orders.set("tribute_last_applied", now_ms)
-                        mesh_orders.bump_version()
-                        mesh.push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
-                        if ntfy_fn:
-                            try:
-                                ntfy_fn(mesh_orders.version)
-                            except Exception as e:
-                                logger.warning("ntfy push failed after daily tribute: %s", e)
-                        logger.info("Daily tribute: +$%s (unlocked for 24h+)", amount)
+                        result = _server_apply_order(OPERATOR_MESH_ID, "tribute-charge", {"amount": amount})
+                        if result:
+                            logger.info("Daily tribute: +$%s (paywall→$%s)", amount, result.get("paywall"))
 
             # Recurring fine — accrues regardless of lock state
             fine_active = mesh_orders.get("fine_active", 0)
@@ -985,68 +1037,36 @@ def check_tributes_and_fines():
                 last_fine = int(mesh_orders.get("fine_last_applied", 0))
                 elapsed_ms = now_ms - last_fine if last_fine else 0
                 if elapsed_ms >= fine_interval * 60000:
-                    current_pw = 0
-                    try:
-                        current_pw = int(mesh_orders.get("paywall", "0"))
-                    except (ValueError, TypeError):
-                        pass
-                    mesh_orders.set("paywall", str(current_pw + fine_amount))
-                    mesh_orders.set("fine_last_applied", now_ms)
-                    mesh_orders.bump_version()
-                    mesh.push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
-                    if ntfy_fn:
-                        try:
-                            ntfy_fn(mesh_orders.version)
-                        except Exception as e:
-                            logger.warning("ntfy push failed after fine: %s", e)
-                    logger.info("Fine applied: +$%s", fine_amount)
+                    result = _server_apply_order(OPERATOR_MESH_ID, "fine-charge", {"amount": fine_amount})
+                    if result:
+                        logger.info("Fine applied: +$%s (paywall→$%s)", fine_amount, result.get("paywall"))
 
             # Streak bonuses — 7d clean = -$5, 30d clean = -$25
             streak_enabled = mesh_orders.get("streak_enabled", 0)
             if str(streak_enabled) == "1":
                 streak_start = int(mesh_orders.get("streak_start", 0))
                 escapes_at_start = int(mesh_orders.get("streak_escapes_at_start", 0))
-                # Read current escapes from the runtime body (set by slave)
-                current_escapes = 0
                 try:
                     current_escapes = int(mesh_orders.get("escapes", 0))
                 except (ValueError, TypeError):
-                    pass
+                    current_escapes = 0
                 streak_broken = current_escapes > escapes_at_start
 
                 if streak_broken:
-                    mesh_orders.set("streak_enabled", 0)
-                    mesh_orders.bump_version()
-                    mesh.push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
+                    _server_apply_order(OPERATOR_MESH_ID, "streak-break", {})
                     logger.info("Streak broken: escapes %s → %s", escapes_at_start, current_escapes)
                 elif streak_start > 0:
                     elapsed_days = (now_ms - streak_start) / 86400000
 
                     if elapsed_days >= 7 and str(mesh_orders.get("streak_7d_claimed", 0)) != "1":
-                        current_pw = 0
-                        try:
-                            current_pw = int(mesh_orders.get("paywall", "0"))
-                        except (ValueError, TypeError):
-                            pass
-                        new_pw = max(0, current_pw - 5)
-                        mesh_orders.set("paywall", str(new_pw))
-                        mesh_orders.set("streak_7d_claimed", 1)
-                        mesh_orders.bump_version()
-                        mesh.push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
-                        logger.info("Streak bonus: 7d clean → -$5 (paywall $%s → $%s)", current_pw, new_pw)
+                        result = _server_apply_order(OPERATOR_MESH_ID, "streak-bonus", {"which": "7d", "credit": 5})
+                        if result:
+                            logger.info("Streak bonus 7d: -$5 (paywall→$%s)", result.get("paywall"))
 
                     if elapsed_days >= 30 and str(mesh_orders.get("streak_30d_claimed", 0)) != "1":
-                        current_pw = 0
-                        try:
-                            current_pw = int(mesh_orders.get("paywall", "0"))
-                        except (ValueError, TypeError):
-                            pass
-                        new_pw = max(0, current_pw - 25)
-                        mesh_orders.set("paywall", str(new_pw))
-                        mesh_orders.set("streak_30d_claimed", 1)
-                        mesh_orders.bump_version()
-                        mesh.push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
-                        logger.info("Streak bonus: 30d clean → -$25 (paywall $%s → $%s)", current_pw, new_pw)
+                        result = _server_apply_order(OPERATOR_MESH_ID, "streak-bonus", {"which": "30d", "credit": 25})
+                        if result:
+                            logger.info("Streak bonus 30d: -$25 (paywall→$%s)", result.get("paywall"))
 
         except Exception:
             logger.exception("Tribute/fine/streak checker error")

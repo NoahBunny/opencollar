@@ -2612,6 +2612,63 @@ public class ControlService extends Service {
                 }
                 break;
             }
+            case "tribute-charge": {
+                // Server-fired daily tribute (landmine #21 fix). Params: {amount}.
+                int amt = safeInt(jval(body, "amount"), 0);
+                if (amt > 0) {
+                    String pw = gstr("focus_lock_paywall");
+                    int curPw = safeInt(pw, 0);
+                    Settings.Global.putString(getContentResolver(),
+                        "focus_lock_paywall", String.valueOf(curPw + amt));
+                    Settings.Global.putLong(getContentResolver(),
+                        "focus_lock_tribute_last_applied", System.currentTimeMillis());
+                    result = "{\"ok\":true,\"action\":\"tribute_charged\",\"amount\":" + amt + "}";
+                } else {
+                    result = "{\"error\":\"invalid amount\"}";
+                }
+                break;
+            }
+            case "fine-charge": {
+                // Server-fired recurring fine (landmine #21 fix). Params: {amount}.
+                int amt = safeInt(jval(body, "amount"), 0);
+                if (amt > 0) {
+                    String pw = gstr("focus_lock_paywall");
+                    int curPw = safeInt(pw, 0);
+                    Settings.Global.putString(getContentResolver(),
+                        "focus_lock_paywall", String.valueOf(curPw + amt));
+                    Settings.Global.putLong(getContentResolver(),
+                        "focus_lock_fine_last_applied", System.currentTimeMillis());
+                    result = "{\"ok\":true,\"action\":\"fine_charged\",\"amount\":" + amt + "}";
+                } else {
+                    result = "{\"error\":\"invalid amount\"}";
+                }
+                break;
+            }
+            case "streak-break": {
+                // Server observed escapes > escapes_at_start. Disable streak flag.
+                Settings.Global.putInt(getContentResolver(), "focus_lock_streak_enabled", 0);
+                result = "{\"ok\":true,\"action\":\"streak_broken\"}";
+                break;
+            }
+            case "streak-bonus": {
+                // 7d or 30d clean-streak reward — subtract credit from paywall
+                // (clamped at 0), set the claimed flag so it fires exactly once.
+                int credit = safeInt(jval(body, "credit"), 0);
+                String which = jval(body, "which");
+                String pw = gstr("focus_lock_paywall");
+                int curPw = safeInt(pw, 0);
+                int newPw = Math.max(0, curPw - credit);
+                Settings.Global.putString(getContentResolver(),
+                    "focus_lock_paywall", String.valueOf(newPw));
+                if ("7d".equals(which)) {
+                    Settings.Global.putInt(getContentResolver(), "focus_lock_streak_7d_claimed", 1);
+                } else if ("30d".equals(which)) {
+                    Settings.Global.putInt(getContentResolver(), "focus_lock_streak_30d_claimed", 1);
+                }
+                result = "{\"ok\":true,\"action\":\"streak_bonus\",\"which\":\"" + which
+                    + "\",\"credit\":" + credit + ",\"paywall\":" + newPw + "}";
+                break;
+            }
             case "set-curfew": {
                 String confine = jval(body, "confine_hour");
                 String release = jval(body, "release_hour");
