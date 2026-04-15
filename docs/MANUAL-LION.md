@@ -102,7 +102,7 @@ Tap **UNLOCK**. Respects your target selector.
 
 ### Modifiers
 
-- **Taunt**: Progressively insulting messages. 32 taunts.
+- **Taunt**: Progressively insulting messages. 48 taunts across Portal, Pokémon, Severance, Frieren, Greek myth, Stoic, Good Place, literary, and kink-core registers.
 - **+5m/esc**: Every escape attempt adds 5 minutes.
 - **Vibrate**: Random buzzes.
 - **Dim**: Screen brightness 1%.

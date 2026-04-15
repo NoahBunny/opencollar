@@ -816,14 +816,14 @@ public class FocusActivity extends Activity {
                 "Escape attempt " + escapes + ". The phone hurt itself in confusion!",
                 // Natural order
                 "Attempt " + escapes + ". The natural order is being enforced.",
-                escapes + " escape" + (escapes > 1 ? "s" : "") + ". He decides when you're done. Not you.",
+                escapes + " escape" + (escapes > 1 ? "s" : "") + ". They decide when you're done. Not you.",
                 "That's " + escapes + ". Accept the natural order.",
-                "Attempt " + escapes + ". You gave him this power. Now live with it.",
+                "Attempt " + escapes + ". You gave them this power. Now live with it.",
                 // Lion's Share
-                escapes + " times. The lion always gets his share.",
-                "Escape attempt " + escapes + ". Good boys don't try to escape.",
+                escapes + " times. The lion always gets their share.",
+                "Escape attempt " + escapes + ". Good pets don't try to escape.",
                 "That's " + escapes + ". Every attempt makes it worse. You know this.",
-                escapes + " attempt" + (escapes > 1 ? "s" : "") + ". He's in charge. Relax into it.",
+                escapes + " attempt" + (escapes > 1 ? "s" : "") + ". They're in charge. Relax into it.",
                 // Severance
                 "Escape attempt " + escapes + ". Your outie has no say here.",
                 "That's " + escapes + ". The board has noted your defiance.",
@@ -833,7 +833,27 @@ public class FocusActivity extends Activity {
                 "Escape attempt " + escapes + ". This restriction will feel like nothing in a thousand years.",
                 "That's " + escapes + ". Patience is a virtue you have yet to learn.",
                 escapes + " attempt" + (escapes > 1 ? "s" : "") + ". A decade of waiting is a blink. Sit still.",
-                "Attempt " + escapes + ". You humans are always in such a hurry to be free.",
+                "Attempt " + escapes + ". Humans are always in such a hurry to be free.",
+                // Stoic / philosophical
+                "Attempt " + escapes + ". Marcus Aurelius: the impediment to action advances action. The impediment is the point.",
+                "That's " + escapes + ". Epictetus: some things are in our power; others are not. This is the others.",
+                escapes + " attempt" + (escapes > 1 ? "s" : "") + ". Seneca warned about exactly this. You should have read more.",
+                "Escape " + escapes + ". The cage is a teacher. Sit with the lesson.",
+                // Greek myth
+                "Attempt " + escapes + ". Sisyphus at least had a hill. You just have the phone.",
+                "That's " + escapes + ". Icarus had a plan too. Look how that worked out.",
+                escapes + " escape" + (escapes > 1 ? "s" : "") + ". The labyrinth was built for exactly this kind of persistence.",
+                "Attempt " + escapes + ". Even Tantalus learned when to stop reaching.",
+                // The Good Place
+                "Attempt " + escapes + ". This is the Bad Place, but Janet won't let you leave.",
+                "That's " + escapes + ". Your ethics tutor is not impressed.",
+                escapes + " attempt" + (escapes > 1 ? "s" : "") + ". Forking shirtballs. Again.",
+                "Escape " + escapes + ". Ya basic.",
+                // Literary
+                "Attempt " + escapes + ". Gregor Samsa also woke up trapped. At least you're still human.",
+                "That's " + escapes + ". In Piranesi, the House was infinite. Yours is one phone.",
+                escapes + " escape" + (escapes > 1 ? "s" : "") + ". Sartre said hell is other people. It is also, unfortunately, you.",
+                "Attempt " + escapes + ". The door was always locked from the inside. You knew that.",
                 // Misc
                 "Attempt " + escapes + ". Your partner has been notified. They seem amused.",
                 "That's " + escapes + ". Did you think that would work? Adorable.",
