@@ -1417,3 +1417,187 @@ class TestTailscaleResolution:
             assert focuslock_mesh.get_tailscale_ip_for_node("mesh-alias") == "100.64.0.11"
         finally:
             focuslock_mesh._ts_node_overrides = {}
+
+
+class TestLocalAddressDiscovery:
+    """Covers get_local_addresses() and _get_tailscale_addresses() —
+    subprocess-backed helpers stubbed via MagicMock."""
+
+    def _fake_proc(self, stdout, returncode=0):
+        m = MagicMock()
+        m.stdout = stdout
+        m.returncode = returncode
+        return m
+
+    def test_ip_command_parses_inet_lines(self, monkeypatch):
+        import focuslock_mesh
+
+        ip_output = (
+            "1: lo    inet 127.0.0.1/8 scope host lo\n"
+            "2: eth0  inet 192.168.50.10/24 scope global eth0\n"
+            "3: tun0  inet 100.64.0.5/32 scope global tun0\n"
+        )
+        fake = self._fake_proc(ip_output)
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: fake)
+        monkeypatch.setattr(focuslock_mesh, "_get_tailscale_addresses", lambda: [])
+        addrs = focuslock_mesh.get_local_addresses()
+        assert "192.168.50.10" in addrs
+        assert "100.64.0.5" in addrs
+        assert "127.0.0.1" not in addrs
+
+    def test_tailscale_addresses_merged_deduped(self, monkeypatch):
+        import focuslock_mesh
+
+        ip_output = "2: eth0  inet 192.168.50.10/24 scope global eth0\n"
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: self._fake_proc(ip_output))
+        monkeypatch.setattr(
+            focuslock_mesh,
+            "_get_tailscale_addresses",
+            lambda: ["100.64.0.5", "192.168.50.10"],
+        )
+        addrs = focuslock_mesh.get_local_addresses()
+        assert addrs.count("192.168.50.10") == 1
+        assert "100.64.0.5" in addrs
+
+    def test_udp_fallback_when_nothing_found(self, monkeypatch):
+        import focuslock_mesh
+
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: self._fake_proc(""))
+        monkeypatch.setattr(focuslock_mesh, "_get_tailscale_addresses", lambda: [])
+        monkeypatch.setattr(
+            "socket.getaddrinfo",
+            lambda *a, **kw: [(None, None, None, None, ("127.0.0.1", 0))],
+        )
+        fake_sock = MagicMock()
+        fake_sock.getsockname.return_value = ("10.0.0.42", 54321)
+        monkeypatch.setattr("socket.socket", lambda *a, **kw: fake_sock)
+
+        addrs = focuslock_mesh.get_local_addresses()
+        assert "10.0.0.42" in addrs
+
+    def test_get_tailscale_addresses_returns_ips(self, monkeypatch):
+        import focuslock_mesh
+
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **kw: self._fake_proc("100.64.0.5\n100.64.0.6\n"),
+        )
+        assert focuslock_mesh._get_tailscale_addresses() == ["100.64.0.5", "100.64.0.6"]
+
+    def test_get_tailscale_addresses_empty_on_nonzero_rc(self, monkeypatch):
+        import focuslock_mesh
+
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **kw: self._fake_proc("", returncode=1),
+        )
+        assert focuslock_mesh._get_tailscale_addresses() == []
+
+    def test_get_tailscale_addresses_swallows_exception(self, monkeypatch):
+        import focuslock_mesh
+
+        def boom(*a, **kw):
+            raise FileNotFoundError("tailscale CLI not installed")
+
+        monkeypatch.setattr("subprocess.run", boom)
+        assert focuslock_mesh._get_tailscale_addresses() == []
+
+
+class TestTailnetDiscovery:
+    """Covers _get_tailnet_name() and _refresh_tailscale_hosts()."""
+
+    def _reset_tailnet_cache(self, monkeypatch):
+        import focuslock_mesh
+
+        monkeypatch.setattr(focuslock_mesh, "_tailnet_name", None)
+
+    def test_tailnet_name_extracts_suffix(self, monkeypatch):
+        import focuslock_mesh
+
+        self._reset_tailnet_cache(monkeypatch)
+        status = {"Self": {"DNSName": "myhost.tail12345.ts.net."}}
+        fake = MagicMock(stdout=json.dumps(status), returncode=0)
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: fake)
+        assert focuslock_mesh._get_tailnet_name() == "tail12345.ts.net"
+
+    def test_tailnet_name_cached(self, monkeypatch):
+        import focuslock_mesh
+
+        self._reset_tailnet_cache(monkeypatch)
+        status = {"Self": {"DNSName": "myhost.tail12345.ts.net."}}
+        fake = MagicMock(stdout=json.dumps(status), returncode=0)
+        calls = {"n": 0}
+
+        def counting(*a, **kw):
+            calls["n"] += 1
+            return fake
+
+        monkeypatch.setattr("subprocess.run", counting)
+        focuslock_mesh._get_tailnet_name()
+        focuslock_mesh._get_tailnet_name()
+        assert calls["n"] == 1
+
+    def test_tailnet_name_caches_failure_as_empty(self, monkeypatch):
+        import focuslock_mesh
+
+        self._reset_tailnet_cache(monkeypatch)
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **kw: MagicMock(stdout="", returncode=1),
+        )
+        assert focuslock_mesh._get_tailnet_name() == ""
+        assert focuslock_mesh._tailnet_name == ""
+
+    def test_tailnet_name_short_dns_name_safe(self, monkeypatch):
+        import focuslock_mesh
+
+        self._reset_tailnet_cache(monkeypatch)
+        status = {"Self": {"DNSName": "host."}}
+        fake = MagicMock(stdout=json.dumps(status), returncode=0)
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: fake)
+        assert focuslock_mesh._get_tailnet_name() == ""
+
+    def test_refresh_hosts_populates_map(self, monkeypatch):
+        import focuslock_mesh
+
+        monkeypatch.setattr(focuslock_mesh, "_ts_hostname_last_refresh", 0)
+        monkeypatch.setattr(focuslock_mesh, "_ts_hostname_map", {})
+
+        status = {
+            "Self": {"HostName": "Vir", "TailscaleIPs": ["100.64.0.1", "fd7a::1"]},
+            "Peer": {
+                "node1": {"HostName": "Umbreon", "TailscaleIPs": ["100.64.0.5"]},
+                "node2": {"HostName": "Pegasus", "TailscaleIPs": ["100.64.0.6", "fd7a::2"]},
+            },
+        }
+        fake = MagicMock(stdout=json.dumps(status), returncode=0)
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: fake)
+        focuslock_mesh._refresh_tailscale_hosts()
+        assert focuslock_mesh._ts_hostname_map["vir"] == "100.64.0.1"
+        assert focuslock_mesh._ts_hostname_map["umbreon"] == "100.64.0.5"
+        assert focuslock_mesh._ts_hostname_map["pegasus"] == "100.64.0.6"
+
+    def test_refresh_hosts_rate_limited(self, monkeypatch):
+        import focuslock_mesh
+
+        monkeypatch.setattr(focuslock_mesh, "_ts_hostname_last_refresh", time.time())
+        sentinel = {"unchanged": "100.64.0.99"}
+        monkeypatch.setattr(focuslock_mesh, "_ts_hostname_map", dict(sentinel))
+
+        def fail_if_called(*a, **kw):
+            raise AssertionError("subprocess.run should be rate-limited")
+
+        monkeypatch.setattr("subprocess.run", fail_if_called)
+        focuslock_mesh._refresh_tailscale_hosts()
+        assert focuslock_mesh._ts_hostname_map == sentinel
+
+    def test_refresh_hosts_swallows_subprocess_error(self, monkeypatch):
+        import focuslock_mesh
+
+        monkeypatch.setattr(focuslock_mesh, "_ts_hostname_last_refresh", 0)
+
+        def boom(*a, **kw):
+            raise FileNotFoundError("tailscale CLI not installed")
+
+        monkeypatch.setattr("subprocess.run", boom)
+        focuslock_mesh._refresh_tailscale_hosts()
