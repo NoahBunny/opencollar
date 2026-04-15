@@ -18,6 +18,10 @@ jobs:
       # Hoisted to job-level env because GitHub Actions does not allow
       # `secrets` references inside a step-level `if:` expression.
       RELEASE_KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+      # Single-alias signing — release.keystore is generated with one
+      # alias ("focuslock") and reused across all three modules. Each
+      # build.sh defaults to a per-app alias if this is unset.
+      FOCUSLOCK_KEY_ALIAS: focuslock
     outputs:
       slave: ${{ steps.collect.outputs.slave }}
       companion: ${{ steps.collect.outputs.companion }}
