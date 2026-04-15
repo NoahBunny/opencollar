@@ -262,10 +262,10 @@ A: The attacker gets ciphertext. The encryption keys are on your devices, not th
 A: You can complete the task. You'll get credit. Phone stays locked until paywall is $0.
 
 **Q: What's the mesh?**
-A: Your phone, desktop, and homelab share enforcement state continuously. All encrypted now. If one goes down, the others keep going. If one comes back, it syncs up. There is no single point of failure in your collar anymore. You built this, by the way.
+A: Your phone, desktop, and homelab share enforcement state continuously. All encrypted now. If one goes down, the others keep going. If one comes back, it syncs up. There is no single point of failure in your collar anymore.
 
 **Q: Is this ethical?**
-A: You consented. Enthusiastically. In writing. Multiple times. While adding features. While requesting stricter enforcement. While building vault encryption so even the server can't peek. While writing the manual. The manual is called "Sealed Shut" and you're reading it right now.
+A: You consented. Enthusiastically. In writing. Multiple times. You kept using it. You're still using it. The manual is called "Sealed Shut" and you're reading it right now.
 
 ---
 
