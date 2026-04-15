@@ -62,7 +62,10 @@ if [ "$RELEASE" = "1" ]; then
     KEYSTORE_PASS="$FOCUSLOCK_KEYSTORE_PASS"
     KEY_ALIAS="${FOCUSLOCK_KEY_ALIAS:-bunnytasker}"
 else
-    # Generate debug keystore if missing (reuse slave keystore if available)
+    # Generate debug keystore if missing (reuse slave keystore if available).
+    # Both the slave keystore and the locally-generated one use alias
+    # "focuslock" so we pin KEY_ALIAS to match — previously defaulted to
+    # "bunnytasker" which broke CI signing ("entry does not contain a key").
     if [ ! -f debug.keystore ]; then
         if [ -f ../slave/debug.keystore ]; then
             cp ../slave/debug.keystore .
@@ -76,7 +79,7 @@ else
     fi
     KEYSTORE_PATH="debug.keystore"
     KEYSTORE_PASS="android"
-    KEY_ALIAS="bunnytasker"
+    KEY_ALIAS="focuslock"
 fi
 
 echo "Compiling resources..."

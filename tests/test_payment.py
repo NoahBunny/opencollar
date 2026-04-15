@@ -649,13 +649,12 @@ class TestCheckPaymentEmails:
 
     def test_total_paid_cents_tracked(self, monkeypatch):
         mesh = self._make_mesh_orders(paywall="100")
+        # Roadmap #1 (commit 65e2511) made total_paid_cents server-authoritative —
+        # the legacy adb.put path was removed. Without apply_fn, the fallback
+        # writes through mesh_orders directly. Seed prior balance there.
+        mesh._store["total_paid_cents"] = 1234
         ledger = self._make_ledger()
         adb = self._make_adb()
-        # Simulate existing cumulative $12.34 already paid (1234 cents)
-        adb.get.side_effect = lambda k: {
-            "focus_lock_active": "1",
-            "focus_lock_total_paid_cents": "1234",
-        }.get(k, "0")
         _install_fake_imap(monkeypatch, [_make_imap_email(body="You received $40.00 via e-transfer. autodeposit.")])
         monkeypatch.setattr("focuslock_payment.time.sleep", _make_sleep_stop(1))
 
@@ -671,9 +670,8 @@ class TestCheckPaymentEmails:
                 providers=_HARDCODED_FALLBACK,
                 iso_codes="USD|CAD",
             )
-        calls = {c.args[0]: c.args[1] for c in adb.put.call_args_list}
         # 1234 + 4000 = 5234
-        assert calls.get("focus_lock_total_paid_cents") == "5234"
+        assert mesh._store.get("total_paid_cents") == 5234
 
     def test_missing_creds_skips_and_sleeps(self, monkeypatch):
         mesh = self._make_mesh_orders(paywall="50")
