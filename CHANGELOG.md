@@ -83,5 +83,5 @@ Development history prior to v1.0.0 is recorded in the git log. Notable mileston
 
 See `git log` for full commit history since `0de5fd9` (initial public repo push, 2026-04-09).
 
-[Unreleased]: https://github.com/NoahBunny/openleash/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/NoahBunny/openleash/releases/tag/v1.0.0
+[Unreleased]: https://github.com/NoahBunny/opencollar/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/NoahBunny/opencollar/releases/tag/v1.0.0

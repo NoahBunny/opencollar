@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/NoahBunny/openleash/security/advisories/new
+    url: https://github.com/NoahBunny/opencollar/security/advisories/new
     about: Report privately via the Security tab. Do not open a public issue. See SECURITY.md.
   - name: Usage question
-    url: https://github.com/NoahBunny/openleash/discussions
+    url: https://github.com/NoahBunny/opencollar/discussions
     about: "Not sure if it's a bug? Start a discussion."
