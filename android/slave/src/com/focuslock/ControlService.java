@@ -163,7 +163,7 @@ public class ControlService extends Service {
         "streak_7d_claimed", "streak_30d_claimed",
         "lion_pinned_message", "released", "release_timestamp", "entrapped",
         "total_paid_cents",
-        "lifetime_escapes", "lifetime_tamper",
+        "lifetime_escapes", "lifetime_tamper", "lifetime_geofence_breaches",
     };
 
     @Override
@@ -398,6 +398,10 @@ public class ControlService extends Service {
                                         Settings.Global.putLong(getContentResolver(), "focus_lock_locked_at", System.currentTimeMillis());
                                         launchFocus();
                                         reportGeofenceBreach(lat, lon, dist[0]);
+                                        // Roadmap #7 — bunny-signed vault-propagated event so
+                                        // lifetime_geofence_breaches survives device swap.
+                                        postEventToServer(this, "geofence_breach",
+                                            String.format("%.0fm outside zone", dist[0]));
                                     }
                                     reportLocation(lat, lon);
                                 }

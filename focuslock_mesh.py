@@ -181,6 +181,7 @@ ORDER_KEYS = {
     # Migrated 2026-04-15 from phone-local so they survive device swap.
     "lifetime_escapes": 0,
     "lifetime_tamper": 0,
+    "lifetime_geofence_breaches": 0,
 }
 
 

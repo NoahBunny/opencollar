@@ -735,6 +735,17 @@ def mesh_apply_order(action, params, orders):
             cur = 0
         orders.set("lifetime_escapes", cur + 1)
         return {"applied": action, "lifetime_escapes": cur + 1}
+    elif action == "geofence-breach-recorded":
+        # Phone left the geofence. Roadmap #7 — 2026-04-15. Increment
+        # lifetime_geofence_breaches. The $100 paywall + lock are applied
+        # by the Collar immediately (local latency); server just maintains
+        # the audit counter and projects it via vault for Lion's timeline.
+        try:
+            cur = int(orders.get("lifetime_geofence_breaches", 0) or 0)
+        except (ValueError, TypeError):
+            cur = 0
+        orders.set("lifetime_geofence_breaches", cur + 1)
+        return {"applied": action, "lifetime_geofence_breaches": cur + 1}
     elif action == "tamper-recorded":
         # Phone reports device-admin tampering: tamper_detected (attempt
         # blocked) or tamper_removed (admin actually stripped — big penalty).
@@ -2323,7 +2334,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             event_type = (data.get("event_type", "") or "").strip()
             details = data.get("details", "")
             signature = data.get("signature", "")
-            if event_type not in ("escape", "tamper_detected", "tamper_removed"):
+            if event_type not in ("escape", "tamper_detected", "tamper_removed", "geofence_breach"):
                 self.respond(400, {"error": "invalid event_type"})
                 return
             if not node_id or not signature:
@@ -2364,6 +2375,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 result = _server_apply_order(mesh_id, "escape-recorded", {})
                 logger.info("Escape event: mesh=%s node=%s lifetime_escapes=%s",
                             mesh_id, node_id, (result or {}).get("lifetime_escapes"))
+            elif event_type == "geofence_breach":
+                result = _server_apply_order(mesh_id, "geofence-breach-recorded", {})
+                logger.info("Geofence breach event: mesh=%s node=%s lifetime_breaches=%s details=%s",
+                            mesh_id, node_id,
+                            (result or {}).get("lifetime_geofence_breaches"),
+                            details)
             else:
                 kind = "removed" if event_type == "tamper_removed" else "detected"
                 result = _server_apply_order(mesh_id, "tamper-recorded", {"kind": kind})
