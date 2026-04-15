@@ -1143,49 +1143,77 @@ public class MainActivity extends Activity {
     }
 
     private void refreshPaymentHistory() {
+        // Roadmap #2 — bunny-authed payment history fetch. Signs a read
+        // request with the registered bunny_pubkey and posts to
+        // /api/mesh/{id}/payments on the mesh relay. Pre-2026-04-15 this
+        // hit /mesh/ledger on the homelab, which was a plaintext endpoint
+        // the server no longer speaks — the UI silently rendered empty.
         executor.execute(() -> {
+            String meshId = gstr("focus_lock_mesh_id");
+            String meshUrl = gstr("focus_lock_mesh_url");
+            String nodeId = gstr("focus_lock_mesh_node_id");
+            if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty()) return;
+            long ts = System.currentTimeMillis();
+            long since = 0;  // full history; server caps at 200 entries newest-first
+            String payload = meshId + "|" + nodeId + "|" + since + "|" + ts;
+            String signature = PairingManager.sign(getContentResolver(), payload);
+            if (signature == null || signature.isEmpty()) return;
             try {
-                String respStr = fetchFromHomelab("/mesh/ledger?limit=20");
-                if (respStr == null) return;
+                JSONObject body = new JSONObject();
+                body.put("node_id", nodeId);
+                body.put("since", since);
+                body.put("ts", ts);
+                body.put("signature", signature);
+                URL url = new URL(meshUrl + "/api/mesh/" + meshId + "/payments");
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setConnectTimeout(5000);
+                conn.setReadTimeout(10000);
+                conn.setRequestMethod("POST");
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setDoOutput(true);
+                conn.getOutputStream().write(body.toString().getBytes("UTF-8"));
+                int code = conn.getResponseCode();
+                if (code >= 400) { conn.disconnect(); return; }
+                BufferedReader r = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = r.readLine()) != null) sb.append(line);
+                r.close();
+                conn.disconnect();
 
-                JSONObject resp = new JSONObject(respStr);
+                JSONObject resp = new JSONObject(sb.toString());
                 JSONArray entries = resp.optJSONArray("entries");
                 if (entries == null) return;
 
                 handler.post(() -> {
                     paymentHistory.removeAllViews();
-                    for (int i = 0; i < entries.length() && i < 20; i++) {
+                    int shown = Math.min(entries.length(), 20);
+                    for (int i = 0; i < shown; i++) {
                         JSONObject e = entries.optJSONObject(i);
                         if (e == null) continue;
-                        String type = e.optString("type", "");
                         double amount = e.optDouble("amount", 0);
                         String desc = e.optString("description", "");
-                        double balAfter = e.optDouble("balance_after", 0);
-                        long ts = e.optLong("timestamp", 0);
-
-                        boolean isPayment = "payment".equals(type) || "prepay".equals(type);
-                        String prefix = isPayment ? "-$" : "+$";
-                        int color = isPayment ? 0xFF44aa44 : 0xFFcc6644;
+                        long ets = e.optLong("timestamp", 0);
 
                         TextView tv = new TextView(MainActivity.this);
-                        tv.setText(prefix + String.format("%.0f", amount) + " " + desc
-                            + " | bal: $" + String.format("%.0f", balAfter)
-                            + " | " + formatRelativeTime(ts));
-                        tv.setTextColor(color);
+                        tv.setText("+$" + String.format("%.2f", amount)
+                            + "  " + desc
+                            + "  " + formatRelativeTime(ets));
+                        tv.setTextColor(0xFF66aa66);
                         tv.setTextSize(10);
                         tv.setPadding(0, 4, 0, 4);
                         paymentHistory.addView(tv);
                     }
                     if (entries.length() == 0) {
                         TextView tv = new TextView(MainActivity.this);
-                        tv.setText("No transactions yet");
+                        tv.setText("No payments yet");
                         tv.setTextColor(0xFF3a3a4a);
                         tv.setTextSize(11);
                         paymentHistory.addView(tv);
                     }
                 });
             } catch (Exception e) {
-                android.util.Log.e("BunnyTasker", "Ledger fetch", e);
+                android.util.Log.e("BunnyTasker", "Payments fetch", e);
             }
         });
     }

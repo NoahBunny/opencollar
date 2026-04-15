@@ -2171,6 +2171,82 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             logger.info("Bunny subscribe: mesh=%s node=%s tier=%s", mesh_id, node_id, tier)
             self.respond(200, {"ok": True, "tier": tier, "due": result.get("due")})
 
+        # ── Bunny-authed payment history (roadmap #2) ──
+        # Path: /api/mesh/{mesh_id}/payments
+        # Body: {node_id, since (ms epoch, optional, default 0), ts, signature}
+        # signature = SHA256withRSA over "mesh_id|node_id|since|ts" with the
+        # bunny's registered private key. ts ±5min replay window. Returns
+        # payment ledger entries with timestamp >= since, newest first, plus
+        # the authoritative total_paid_cents counter.
+        elif self.path.startswith("/api/mesh/") and self.path.endswith("/payments"):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 4 or parts[3] != "payments":
+                self.respond(400, {"error": "bad path"})
+                return
+            mesh_id = parts[2]
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            account = _mesh_accounts.get(mesh_id)
+            if not account:
+                self.respond(404, {"error": "mesh not found"})
+                return
+            node_id = data.get("node_id", "")
+            signature = data.get("signature", "")
+            try:
+                since_i = int(data.get("since", 0) or 0)
+            except (ValueError, TypeError):
+                since_i = 0
+            try:
+                ts_i = int(data.get("ts", 0) or 0)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            if not node_id or not signature:
+                self.respond(400, {"error": "node_id and signature required"})
+                return
+            now_ms = int(time.time() * 1000)
+            if abs(now_ms - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+            node = account.get("nodes", {}).get(node_id)
+            if not node:
+                self.respond(403, {"error": "node not registered in mesh"})
+                return
+            bunny_pubkey = node.get("bunny_pubkey", "")
+            if not bunny_pubkey:
+                self.respond(403, {"error": "no bunny_pubkey on file for node"})
+                return
+            payload = f"{mesh_id}|{node_id}|{since_i}|{ts_i}"
+            try:
+                import base64 as _b64
+                from cryptography.hazmat.primitives import hashes, serialization
+                from cryptography.hazmat.primitives.asymmetric import padding
+
+                pub_der = _b64.b64decode(bunny_pubkey)
+                pub = serialization.load_der_public_key(pub_der)
+                sig_bytes = _b64.b64decode(signature)
+                pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
+            except Exception as e:
+                logger.warning("payments sig verify failed: mesh=%s node=%s err=%s", mesh_id, node_id, e)
+                self.respond(403, {"error": "invalid signature"})
+                return
+            # Snapshot entries under ledger lock, filter + slice outside
+            with payment_ledger.lock:
+                entries = [e for e in payment_ledger.entries if int(e.get("timestamp", 0)) >= since_i]
+            entries = list(reversed(entries))[:200]  # newest first, hard cap
+            orders = _orders_registry.get(OPERATOR_MESH_ID)
+            try:
+                total_paid_cents = int(orders.get("total_paid_cents", 0) or 0) if orders else 0
+            except (ValueError, TypeError):
+                total_paid_cents = 0
+            self.respond(200, {
+                "ok": True,
+                "entries": entries,
+                "total_paid_cents": total_paid_cents,
+                "since": since_i,
+            })
+
         # ── Vault endpoints (zero-knowledge mesh) ──
         # See docs/VAULT-DESIGN.md.
         elif self.path.startswith("/vault/"):
