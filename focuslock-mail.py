@@ -630,6 +630,49 @@ def mesh_apply_order(action, params, orders):
             due = int(due)
         orders.set("sub_due", due)
         return {"applied": action, "due": due}
+    elif action == "payment-received":
+        # IMAP-confirmed payment. Additively stamps total_paid_cents (lifetime
+        # counter, server-authoritative) and optionally zeroes paywall.
+        # Migrated 2026-04-15 from direct ADB writes so the lifetime total
+        # survives device swap.
+        try:
+            amount_cents = int(params.get("amount_cents", 0) or 0)
+        except (ValueError, TypeError):
+            amount_cents = 0
+        if amount_cents > 0:
+            try:
+                cur = int(orders.get("total_paid_cents", 0) or 0)
+            except (ValueError, TypeError):
+                cur = 0
+            orders.set("total_paid_cents", cur + amount_cents)
+        if params.get("clear_paywall"):
+            orders.set("paywall", "0")
+        return {"applied": action, "amount_cents": amount_cents, "cleared": bool(params.get("clear_paywall"))}
+    elif action == "subscribe-charge":
+        # Server-driven weekly charge. Atomic: bump paywall + advance sub_due
+        # + update sub_total_owed + stamp sub_last_charged in one order.
+        # Only fired by check_subscription_charges(); bunny cannot self-charge.
+        import time as t_sc
+
+        tier = params.get("tier", orders.get("sub_tier", "bronze")).lower()
+        amounts = {"bronze": 25, "silver": 35, "gold": 50}
+        amount = amounts.get(tier, 0)
+        if amount == 0:
+            return {"error": f"invalid tier: {tier}"}
+        try:
+            current_pw = int(orders.get("paywall", "0") or "0")
+        except (ValueError, TypeError):
+            current_pw = 0
+        try:
+            total_owed = int(orders.get("sub_total_owed", "0") or "0")
+        except (ValueError, TypeError):
+            total_owed = 0
+        now_ms = int(t_sc.time() * 1000)
+        orders.set("paywall", str(current_pw + amount))
+        orders.set("sub_due", now_ms + 7 * 24 * 3600 * 1000)
+        orders.set("sub_total_owed", str(total_owed + amount))
+        orders.set("sub_last_charged", now_ms)
+        return {"applied": action, "tier": tier, "amount": amount, "paywall": current_pw + amount}
     elif action == "set-countdown":
         import time as t_cd
 
@@ -816,6 +859,87 @@ def check_desktop_heartbeats():
             logger.exception("Desktop heartbeat checker error")
 
         time.sleep(3600)  # Check hourly
+
+
+# ── Subscription auto-charge (server-side, per-mesh) ──
+
+
+def _server_apply_order(mesh_id, action, params):
+    """Apply an order server-side and propagate via vault blob.
+    Analogous to the /admin/order path but invoked from background threads.
+    Returns the mesh_apply_order result dict (or None on failure)."""
+    orders = _orders_registry.get(mesh_id)
+    if orders is None:
+        return None
+    try:
+        result = mesh_apply_order(action, params, orders)
+        orders.bump_version()
+    except Exception:
+        logger.exception("server apply %s on %s failed", action, mesh_id)
+        return None
+    try:
+        _admin_order_to_vault_blob(action, params, mesh_id)
+    except Exception as e:
+        logger.warning("server apply %s on %s: vault blob write failed: %s", action, mesh_id, e)
+    # Operator-mesh gossip to peers so plaintext consumers (desktop collars
+    # pre-vault_only) also see the new state. No-op for non-operator meshes.
+    if mesh_id == OPERATOR_MESH_ID:
+        try:
+            mesh.push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
+        except Exception as e:
+            logger.warning("server apply %s: gossip push failed: %s", action, e)
+    if ntfy_fn:
+        try:
+            ntfy_fn(orders.version)
+        except Exception:
+            pass
+    return result
+
+
+def check_subscription_charges():
+    """Weekly recurring charge, server-side. Scans every mesh with a sub_tier
+    set; when sub_due <= now, fires a subscribe-charge order that atomically
+    bumps paywall + advances sub_due + stamps sub_last_charged. Replaces the
+    per-device auto-charge that used to live in ControlService (landmine #11).
+
+    Dedup: skips if sub_last_charged < 60min ago — protects against restart
+    windows where sub_due may still read stale (pre-charge) and fire twice.
+    """
+    CHARGE_MIN_INTERVAL_MS = 60 * 60 * 1000  # 1 hour
+    while True:
+        try:
+            now_ms = int(time.time() * 1000)
+            for mid, orders in list(_orders_registry.docs.items()):
+                try:
+                    tier = (orders.get("sub_tier", "") or "").lower()
+                    if tier not in ("bronze", "silver", "gold"):
+                        continue
+                    try:
+                        sub_due = int(orders.get("sub_due", 0) or 0)
+                    except (ValueError, TypeError):
+                        continue
+                    if sub_due <= 0 or now_ms < sub_due:
+                        continue
+                    try:
+                        last = int(orders.get("sub_last_charged", 0) or 0)
+                    except (ValueError, TypeError):
+                        last = 0
+                    if last and now_ms - last < CHARGE_MIN_INTERVAL_MS:
+                        continue
+                    result = _server_apply_order(mid, "subscribe-charge", {"tier": tier})
+                    if result and "amount" in result:
+                        logger.info(
+                            "subscription charge: mesh=%s tier=%s amount=$%s paywall→$%s",
+                            mid,
+                            tier,
+                            result["amount"],
+                            result.get("paywall"),
+                        )
+                except Exception:
+                    logger.exception("subscription charge tick error for mesh=%s", mid)
+        except Exception:
+            logger.exception("subscription charge loop error")
+        time.sleep(60)
 
 
 # ── Daily Tribute + Fine Enforcement ──
@@ -1959,6 +2083,74 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 },
             )
 
+        # ── Bunny-authed subscribe (landmine #20 fix) ──
+        # Path: /api/mesh/{mesh_id}/subscribe
+        # Body: {node_id, tier, ts, signature}
+        # signature = SHA256withRSA over "mesh_id|node_id|tier|ts" with the
+        # bunny's private key (registered during /api/mesh/join). ts is ms
+        # epoch, must be within ±5min of server time. One-shot per (node_id,
+        # ts) within the window — replays outside the window naturally reject.
+        elif self.path.startswith("/api/mesh/") and self.path.endswith("/subscribe"):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 4 or parts[3] != "subscribe":
+                self.respond(400, {"error": "bad path"})
+                return
+            mesh_id = parts[2]
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            account = _mesh_accounts.get(mesh_id)
+            if not account:
+                self.respond(404, {"error": "mesh not found"})
+                return
+            node_id = data.get("node_id", "")
+            tier = (data.get("tier", "") or "").lower()
+            ts = data.get("ts", 0)
+            signature = data.get("signature", "")
+            if tier not in ("bronze", "silver", "gold"):
+                self.respond(400, {"error": "invalid tier"})
+                return
+            if not node_id or not signature:
+                self.respond(400, {"error": "node_id and signature required"})
+                return
+            try:
+                ts_i = int(ts)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            now_ms = int(time.time() * 1000)
+            if abs(now_ms - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+            node = account.get("nodes", {}).get(node_id)
+            if not node:
+                self.respond(403, {"error": "node not registered in mesh"})
+                return
+            bunny_pubkey = node.get("bunny_pubkey", "")
+            if not bunny_pubkey:
+                self.respond(403, {"error": "no bunny_pubkey on file for node"})
+                return
+            payload = f"{mesh_id}|{node_id}|{tier}|{ts_i}"
+            try:
+                import base64 as _b64
+                from cryptography.hazmat.primitives import hashes, serialization
+                from cryptography.hazmat.primitives.asymmetric import padding
+
+                pub_der = _b64.b64decode(bunny_pubkey)
+                pub = serialization.load_der_public_key(pub_der)
+                sig_bytes = _b64.b64decode(signature)
+                pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
+            except Exception as e:
+                logger.warning("subscribe sig verify failed: mesh=%s node=%s err=%s", mesh_id, node_id, e)
+                self.respond(403, {"error": "invalid signature"})
+                return
+            result = _server_apply_order(mesh_id, "subscribe", {"tier": tier})
+            if not result:
+                self.respond(500, {"error": "apply failed"})
+                return
+            logger.info("Bunny subscribe: mesh=%s node=%s tier=%s", mesh_id, node_id, tier)
+            self.respond(200, {"ok": True, "tier": tier, "due": result.get("due")})
+
         # ── Vault endpoints (zero-knowledge mesh) ──
         # See docs/VAULT-DESIGN.md.
         elif self.path.startswith("/vault/"):
@@ -2847,6 +3039,14 @@ if __name__ == "__main__":
             "phone_url": PHONE_URL,
             "phone_pin": str(_cfg.get("pin", "")),
             "recipient_email": PARTNER_EMAIL,
+            # apply_fn routes payment updates through _server_apply_order so
+            # total_paid_cents + paywall land in the orders doc AND propagate
+            # via vault blob — required for vault_only meshes. See landmine
+            # #20 and docs/STATE-OWNERSHIP.md Category A.
+            "apply_fn": (
+                (lambda action, params: _server_apply_order(OPERATOR_MESH_ID, action, params))
+                if OPERATOR_MESH_ID else None
+            ),
         },
         daemon=True,
     )
@@ -2859,6 +3059,10 @@ if __name__ == "__main__":
     # Start tribute/fine enforcement checker
     tribute_thread = threading.Thread(target=check_tributes_and_fines, daemon=True)
     tribute_thread.start()
+
+    # Start subscription auto-charge checker (per-mesh weekly charge)
+    sub_charge_thread = threading.Thread(target=check_subscription_charges, daemon=True)
+    sub_charge_thread.start()
 
     # Start webhook server
     server = HTTPServer(("0.0.0.0", WEBHOOK_PORT), WebhookHandler)

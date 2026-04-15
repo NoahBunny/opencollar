@@ -171,6 +171,10 @@ ORDER_KEYS = {
     "payment_imap_host": "",
     "payment_imap_user": "",
     "payment_imap_pass": "",
+    # Lifetime payout — server-authoritative, projected from payment_ledger.json.
+    # Migrated 2026-04-15 from phone-local Settings.Global so it survives device
+    # swap. Server IMAP bot increments on confirmed payment; vault propagates.
+    "total_paid_cents": 0,
 }
 
 

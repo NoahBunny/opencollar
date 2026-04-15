@@ -234,6 +234,7 @@ def check_payment_emails(
     phone_url="",
     phone_pin="",
     recipient_email="",
+    apply_fn=None,
 ):
     """Main IMAP polling loop for payment email detection.
 
@@ -378,18 +379,36 @@ def check_payment_emails(
                 # Notify Lion via mesh pinned message
                 mesh_orders.set("pinned_message", f"Payment received: ${amount:.2f} via {best_provider['name']}")
 
-                # Track total paid (cents) for stats display
-                try:
-                    cur = int(adb.get("focus_lock_total_paid_cents") or "0")
-                except Exception as e:
-                    logger.debug("focus_lock_total_paid_cents unreadable, resetting: %s", e)
-                    cur = 0
-                adb.put("focus_lock_total_paid_cents", str(cur + int(amount * 100)))
+                amount_cents = int(amount * 100)
+                clear_paywall = amount >= paywall
 
-                if amount >= paywall:
+                # Server-authoritative propagation (2026-04-15 migration).
+                # When apply_fn is wired (from focuslock-mail.py's
+                # _server_apply_order), the payment-received action bumps
+                # total_paid_cents, optionally zeroes paywall, bumps version,
+                # and writes a vault blob. Falling back to direct mutation
+                # keeps the legacy bridge-only deployment path working but
+                # loses vault propagation — vault_only meshes require apply_fn.
+                if apply_fn is not None:
+                    try:
+                        apply_fn("payment-received", {
+                            "amount_cents": amount_cents,
+                            "clear_paywall": clear_paywall,
+                        })
+                    except Exception as e:
+                        logger.warning("payment-received apply_fn failed: %s", e)
+                else:
+                    try:
+                        cur_cents = int(mesh_orders.get("total_paid_cents", 0) or 0)
+                    except (ValueError, TypeError):
+                        cur_cents = 0
+                    mesh_orders.set("total_paid_cents", cur_cents + amount_cents)
+                    if clear_paywall:
+                        mesh_orders.set("paywall", "0")
+
+                if clear_paywall:
                     logger.info("FULL PAYMENT — clearing paywall!")
                     adb.put("focus_lock_paywall", "0")
-                    mesh_orders.set("paywall", "0")
                     unlock_phone(adb)
                 else:
                     remaining = paywall - amount

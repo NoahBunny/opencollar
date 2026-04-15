@@ -32,6 +32,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 public class MainActivity extends Activity {
@@ -945,17 +946,74 @@ public class MainActivity extends Activity {
                  "Perks: No compound interest + 1 free unlock/month") +
                 "\n\nCancel fee: $" + (amount * 2) + "\n\nFirst charge in 7 days. Overdue = warnings then auto-lock.")
             .setPositiveButton("SUBSCRIBE", (d, w) -> {
-                executor.execute(() -> {
-                    Settings.Global.putString(getContentResolver(), "focus_lock_sub_tier", tier);
-                    Settings.Global.putLong(getContentResolver(), "focus_lock_sub_due",
-                        System.currentTimeMillis() + 7L * 24 * 3600 * 1000);
-                    sendWebhook("/webhook/bunny-message",
-                        "{\"text\":\"Subscribed to " + tier + " ($" + amount + "/wk)\",\"type\":\"subscription\"}");
-                    handler.post(() -> subStatus.setText(tier.toUpperCase() + " — $" + amount + "/week"));
-                });
+                executor.execute(() -> postSubscribeToMesh(tier, amount));
             })
             .setNegativeButton("Cancel", null)
             .show();
+    }
+
+    /** Sign a subscribe intent with the bunny's registered key and POST to the
+     *  server. Server verifies the signature, fires the mesh subscribe action,
+     *  and the resulting vault blob propagates sub_tier + sub_due to every
+     *  device in the mesh. Replaces the pre-2026-04-15 local-only write
+     *  (landmine #20) — previously a subscription chosen here lived only on
+     *  this phone and was lost on device swap. */
+    private void postSubscribeToMesh(String tier, int amount) {
+        String meshId = gstr("focus_lock_mesh_id");
+        String meshUrl = gstr("focus_lock_mesh_url");
+        String nodeId = gstr("focus_lock_mesh_node_id");
+        if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty()) {
+            handler.post(() -> subStatus.setText("Not paired to a mesh yet"));
+            return;
+        }
+        long ts = System.currentTimeMillis();
+        String payload = meshId + "|" + nodeId + "|" + tier + "|" + ts;
+        String signature = PairingManager.sign(getContentResolver(), payload);
+        if (signature == null || signature.isEmpty()) {
+            handler.post(() -> subStatus.setText("Subscribe failed (no key)"));
+            return;
+        }
+        JSONObject body = new JSONObject();
+        try {
+            body.put("node_id", nodeId);
+            body.put("tier", tier);
+            body.put("ts", ts);
+            body.put("signature", signature);
+        } catch (JSONException e) {
+            handler.post(() -> subStatus.setText("Subscribe failed (json)"));
+            return;
+        }
+        try {
+            URL url = new URL(meshUrl + "/api/mesh/" + meshId + "/subscribe");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(10000);
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.getOutputStream().write(body.toString().getBytes("UTF-8"));
+            int code = conn.getResponseCode();
+            BufferedReader reader = new BufferedReader(new InputStreamReader(
+                code < 400 ? conn.getInputStream() : conn.getErrorStream()));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) sb.append(line);
+            reader.close();
+            conn.disconnect();
+            if (code >= 400) {
+                final String err = sb.toString();
+                handler.post(() -> subStatus.setText("Subscribe failed: " + err));
+                return;
+            }
+            sendWebhook("/webhook/bunny-message",
+                "{\"text\":\"Subscribed to " + tier + " ($" + amount + "/wk)\",\"type\":\"subscription\"}");
+            // Optimistic UI update; authoritative sub_tier/sub_due arrive via
+            // the next vault blob (usually within ~30s).
+            handler.post(() -> subStatus.setText(tier.toUpperCase() + " — $" + amount + "/week (syncing...)"));
+        } catch (Exception e) {
+            final String msg = e.getMessage();
+            handler.post(() -> subStatus.setText("Subscribe failed: " + msg));
+        }
     }
 
     @Override

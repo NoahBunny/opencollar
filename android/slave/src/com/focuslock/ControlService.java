@@ -162,6 +162,7 @@ public class ControlService extends Service {
         "streak_enabled", "streak_start", "streak_escapes_at_start",
         "streak_7d_claimed", "streak_30d_claimed",
         "lion_pinned_message", "released", "release_timestamp", "entrapped",
+        "total_paid_cents",
     };
 
     @Override
@@ -489,41 +490,10 @@ public class ControlService extends Service {
                             }
                         } catch (Exception e) {}
 
-                        // Subscription auto-charge check (with dedup guard)
-                        try {
-                            String subTier = gstr("focus_lock_sub_tier");
-                            long subDue = Settings.Global.getLong(getContentResolver(), "focus_lock_sub_due", 0);
-                            long lastCharged = Settings.Global.getLong(getContentResolver(), "focus_lock_sub_last_charged", 0);
-                            if (!subTier.isEmpty() && subDue > 0 && System.currentTimeMillis() >= subDue
-                                    && System.currentTimeMillis() - lastCharged > 60000) {
-                                // Tribute is due — add to paywall
-                                int amount = 0;
-                                if ("bronze".equals(subTier)) amount = 25;
-                                else if ("silver".equals(subTier)) amount = 35;
-                                else if ("gold".equals(subTier)) amount = 50;
-                                if (amount > 0) {
-                                    // Stamp dedup guard FIRST to prevent double-charge from poll loop
-                                    Settings.Global.putLong(getContentResolver(), "focus_lock_sub_last_charged",
-                                        System.currentTimeMillis());
-                                    String pw = gstr("focus_lock_paywall");
-                                    int currentPw = 0;
-                                    try { currentPw = Integer.parseInt(pw); } catch (Exception e2) {}
-                                    Settings.Global.putString(getContentResolver(), "focus_lock_paywall",
-                                        String.valueOf(currentPw + amount));
-                                    // Set next due date (7 days)
-                                    Settings.Global.putLong(getContentResolver(), "focus_lock_sub_due",
-                                        System.currentTimeMillis() + 7L * 24 * 3600 * 1000);
-                                    // Track total owed
-                                    long totalOwed = Settings.Global.getLong(getContentResolver(), "focus_lock_sub_total_owed", 0);
-                                    Settings.Global.putLong(getContentResolver(), "focus_lock_sub_total_owed", totalOwed + amount);
-                                    Log.i(TAG, "Subscription auto-charge: $" + amount + " (" + subTier + ")");
-                                    // Propagate to mesh so server/desktops see updated paywall + due
-                                    meshBumpAndPush();
-                                    // Notify homelab
-                                    reportSubscriptionCharge(subTier, amount);
-                                }
-                            }
-                        } catch (Exception e) {}
+                        // Subscription auto-charge moved to server (focuslock-mail.py
+                        // check_subscription_charges) 2026-04-15. Server is sole
+                        // charger; it fires subscribe-charge orders that project
+                        // paywall + sub_due to all mesh devices via vault blobs.
 
                         // Screen time leash — track cumulative unlocked minutes, auto-lock on quota
                         try {
@@ -1493,22 +1463,6 @@ public class ControlService extends Service {
         Settings.Global.putString(getContentResolver(), "focus_lock_sub_tier", "");
         Settings.Global.putLong(getContentResolver(), "focus_lock_sub_due", 0);
         return "{\"ok\":true,\"action\":\"unsubscribed\",\"fee\":" + fee + ",\"new_paywall\":" + (currentPw + fee) + "}";
-    }
-
-    private void reportSubscriptionCharge(String tier, int amount) {
-        new Thread(() -> {
-            String host = webhookHost();
-            if (host.isEmpty()) return;
-            try {
-                String json = "{\"tier\":\"" + tier + "\",\"amount\":" + amount +
-                    ",\"time\":" + System.currentTimeMillis() + "}";
-                java.net.URL url = new java.net.URL("http://" + host + "/webhook/subscription-charge");
-                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("POST"); conn.setRequestProperty("Content-Type", "application/json");
-                conn.setDoOutput(true); conn.setConnectTimeout(5000);
-                conn.getOutputStream().write(json.getBytes()); conn.getResponseCode(); conn.disconnect();
-            } catch (Exception e) {}
-        }).start();
     }
 
     private String doPhotoTask(String body) {
@@ -2607,6 +2561,40 @@ public class ControlService extends Service {
             case "entrap": result = doEntrap(body); break;
             case "task": result = doTask(body); break;
             case "subscribe": result = doSubscribe(body); break;
+            case "subscribe-charge": {
+                // Server-fired weekly charge (landmine #20 fix). Params carry
+                // tier; locally we just bump paywall + advance sub_due so the
+                // enforcement state matches the server's projection. No
+                // webhook — server is the source of truth and has already
+                // logged the charge.
+                String tier = jval(body, "tier");
+                if (tier != null) tier = tier.toLowerCase();
+                int amt = 0;
+                if ("bronze".equals(tier)) amt = 25;
+                else if ("silver".equals(tier)) amt = 35;
+                else if ("gold".equals(tier)) amt = 50;
+                if (amt > 0) {
+                    String pw = gstr("focus_lock_paywall");
+                    int curPw = 0;
+                    try { curPw = Integer.parseInt(pw); } catch (Exception e) {}
+                    Settings.Global.putString(getContentResolver(),
+                        "focus_lock_paywall", String.valueOf(curPw + amt));
+                    Settings.Global.putLong(getContentResolver(),
+                        "focus_lock_sub_due",
+                        System.currentTimeMillis() + 7L * 24 * 3600 * 1000);
+                    long totalOwed = Settings.Global.getLong(getContentResolver(),
+                        "focus_lock_sub_total_owed", 0);
+                    Settings.Global.putLong(getContentResolver(),
+                        "focus_lock_sub_total_owed", totalOwed + amt);
+                    Settings.Global.putLong(getContentResolver(),
+                        "focus_lock_sub_last_charged", System.currentTimeMillis());
+                    result = "{\"ok\":true,\"action\":\"subscribe_charged\",\"tier\":\""
+                        + tier + "\",\"amount\":" + amt + "}";
+                } else {
+                    result = "{\"error\":\"invalid tier\"}";
+                }
+                break;
+            }
             case "set-sub-due": {
                 String dueVal = jval(body, "due");
                 if (dueVal == null) dueVal = jval("{\"due\":" + jval(body, "params") + "}", "due");

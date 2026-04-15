@@ -50,7 +50,7 @@ def check_python():
 
 def install_deps():
     print("  Installing dependencies...")
-    required = ["pyinstaller", "pywebview", "pillow", "pystray"]
+    required = ["pyinstaller", "pillow", "pystray"]
     optional = ["cryptography"]  # needs Rust on ARM64 — mesh module works without it
 
     subprocess.run(
@@ -106,11 +106,23 @@ def write_build_config(variant, homelab_url=None, mesh_pin=None, pubkey_pem=None
 def _stage_sources():
     """Copy all source files to BUILD_ROOT (no special chars in path)."""
     os.makedirs(BUILD_ROOT, exist_ok=True)
-    # Main scripts
-    for f in ["focuslock-desktop-win.py", "focuslock_mesh.py", "watchdog-win.pyw", "_build_config.py"]:
+    # Main scripts (top-level)
+    for f in [
+        "focuslock-desktop-win.py",
+        "focuslock_mesh.py",
+        "focuslock_ntfy.py",
+        "watchdog-win.pyw",
+        "_build_config.py",
+    ]:
         src = os.path.join(SCRIPT_DIR, f)
         if os.path.exists(src):
             shutil.copy2(src, BUILD_ROOT)
+    # Shared Python modules (focuslock_http, _sync, _vault, _config, _transport, etc.)
+    shared_dir = os.path.join(SCRIPT_DIR, "shared")
+    if os.path.isdir(shared_dir):
+        for fname in os.listdir(shared_dir):
+            if fname.startswith("focuslock_") and fname.endswith(".py"):
+                shutil.copy2(os.path.join(shared_dir, fname), BUILD_ROOT)
     # Icons
     for icon_name in ["collar-icon.png", "collar-icon-gold.png", "crown-gold.png", "crown-gray.png"]:
         for search_dir in [os.path.join(SCRIPT_DIR, "icons"), SCRIPT_DIR]:
@@ -143,9 +155,14 @@ def pyinstaller_build(name, script, ico_path=None, windowed=True):
         f"--workpath={work_dir}",
         f"--specpath={spec_dir}",
         "--hidden-import=_build_config",
-        "--hidden-import=webview",
         "--hidden-import=pystray",
-        "--collect-data=webview",
+        "--hidden-import=focuslock_mesh",
+        "--hidden-import=focuslock_http",
+        "--hidden-import=focuslock_sync",
+        "--hidden-import=focuslock_vault",
+        "--hidden-import=focuslock_config",
+        "--hidden-import=focuslock_transport",
+        "--hidden-import=focuslock_ntfy",
     ]
     if windowed:
         cmd.append("--windowed")
@@ -154,14 +171,12 @@ def pyinstaller_build(name, script, ico_path=None, windowed=True):
         cmd.extend(["--add-data", f"{ico_path}{os.pathsep}."])
 
     # Bundle assets from the staged build dir
-    for asset in [
-        "collar-icon.png",
-        "collar-icon-gold.png",
-        "crown-gold.png",
-        "crown-gray.png",
-        "Lexend.ttf",
-        "focuslock_mesh.py",
-    ]:
+    assets = ["collar-icon.png", "collar-icon-gold.png", "crown-gold.png", "crown-gray.png", "Lexend.ttf"]
+    # Include all staged focuslock_*.py modules so PyInstaller ships them alongside the exe
+    for fname in os.listdir(BUILD_ROOT):
+        if fname.startswith("focuslock_") and fname.endswith(".py"):
+            assets.append(fname)
+    for asset in assets:
         asset_path = os.path.join(BUILD_ROOT, asset)
         if os.path.exists(asset_path):
             cmd.extend(["--add-data", f"{asset_path}{os.pathsep}."])
