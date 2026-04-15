@@ -175,6 +175,12 @@ ORDER_KEYS = {
     # Migrated 2026-04-15 from phone-local Settings.Global so it survives device
     # swap. Server IMAP bot increments on confirmed payment; vault propagates.
     "total_paid_cents": 0,
+    # Lifetime escape + tamper counters — server-authoritative. Phone pushes
+    # escape-event to /api/mesh/{id}/escape-event; server increments here.
+    # Never reset (unlike focus_lock_escapes on the phone which resets on unlock).
+    # Migrated 2026-04-15 from phone-local so they survive device swap.
+    "lifetime_escapes": 0,
+    "lifetime_tamper": 0,
 }
 
 

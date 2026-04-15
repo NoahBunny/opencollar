@@ -564,9 +564,23 @@ def mesh_apply_order(action, params, orders):
     elif action == "start-streak":
         import time as t1
 
+        # Snapshot lifetime_escapes so the streak_broken check has a stable
+        # baseline. Roadmap #4 (2026-04-15): streak_broken compares
+        # current lifetime_escapes > streak_escapes_at_start. Without this
+        # snapshot, a mesh with any historical escapes would mark the
+        # freshly-enabled streak as broken on the next tick.
+        try:
+            lifetime_snap = int(orders.get("lifetime_escapes", 0) or 0)
+        except (ValueError, TypeError):
+            lifetime_snap = 0
         orders.set("streak_enabled", 1)
         orders.set("streak_start", int(t1.time() * 1000))
-        orders.set("streak_escapes_at_start", int(params.get("escapes", 0)))
+        # Accept an explicit override (for testing / backfill) else snapshot
+        # from lifetime_escapes.
+        if "escapes" in params:
+            orders.set("streak_escapes_at_start", int(params.get("escapes", 0)))
+        else:
+            orders.set("streak_escapes_at_start", lifetime_snap)
         orders.set("streak_7d_claimed", 0)
         orders.set("streak_30d_claimed", 0)
     elif action == "stop-streak":
@@ -710,6 +724,36 @@ def mesh_apply_order(action, params, orders):
         # when reported escapes > escapes_at_start.
         orders.set("streak_enabled", 0)
         return {"applied": action}
+    elif action == "escape-recorded":
+        # Phone reports an escape attempt. Increment lifetime_escapes.
+        # Roadmap #4 — 2026-04-15. Tiered paywall penalty stays on the
+        # phone (Collar applies it immediately in FocusActivity for low
+        # latency); server just maintains the lifetime counter + audit.
+        try:
+            cur = int(orders.get("lifetime_escapes", 0) or 0)
+        except (ValueError, TypeError):
+            cur = 0
+        orders.set("lifetime_escapes", cur + 1)
+        return {"applied": action, "lifetime_escapes": cur + 1}
+    elif action == "tamper-recorded":
+        # Phone reports device-admin tampering: tamper_detected (attempt
+        # blocked) or tamper_removed (admin actually stripped — big penalty).
+        # Roadmap #4 — 2026-04-15.
+        kind = (params.get("kind", "") or "").lower()
+        try:
+            cur = int(orders.get("lifetime_tamper", 0) or 0)
+        except (ValueError, TypeError):
+            cur = 0
+        orders.set("lifetime_tamper", cur + 1)
+        if kind == "removed":
+            # +$1000 to paywall for removing device admin
+            try:
+                current_pw = int(orders.get("paywall", "0") or "0")
+            except (ValueError, TypeError):
+                current_pw = 0
+            orders.set("paywall", str(current_pw + 1000))
+            return {"applied": action, "kind": kind, "lifetime_tamper": cur + 1, "paywall": current_pw + 1000}
+        return {"applied": action, "kind": kind, "lifetime_tamper": cur + 1}
     elif action == "streak-bonus":
         # 7d or 30d clean-streak reward: subtract credit from paywall
         # (clamped at 0), mark the tier claimed so it fires exactly once.
@@ -1046,8 +1090,12 @@ def check_tributes_and_fines():
             if str(streak_enabled) == "1":
                 streak_start = int(mesh_orders.get("streak_start", 0))
                 escapes_at_start = int(mesh_orders.get("streak_escapes_at_start", 0))
+                # Roadmap #4 (2026-04-15): read the server-authoritative
+                # lifetime_escapes counter. Pre-fix this read "escapes" which
+                # isn't in ORDER_KEYS and was always 0 on vault_only meshes
+                # (no state-gossip from phone) — streak-break was dead code.
                 try:
-                    current_escapes = int(mesh_orders.get("escapes", 0))
+                    current_escapes = int(mesh_orders.get("lifetime_escapes", 0) or 0)
                 except (ValueError, TypeError):
                     current_escapes = 0
                 streak_broken = current_escapes > escapes_at_start
@@ -2246,6 +2294,84 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 "total_paid_cents": total_paid_cents,
                 "since": since_i,
             })
+
+        # ── Bunny-authed escape/tamper event push (roadmap #4) ──
+        # Path: /api/mesh/{mesh_id}/escape-event
+        # Body: {node_id, event_type, details (opt), ts, signature}
+        # event_type: "escape" | "tamper_detected" | "tamper_removed"
+        # signature: SHA256withRSA over "mesh_id|node_id|event_type|ts",
+        # bunny_pubkey lookup, ±5min replay window. Fires escape-recorded
+        # or tamper-recorded through _server_apply_order so lifetime_escapes
+        # / lifetime_tamper projections reach every mesh device via vault.
+        elif self.path.startswith("/api/mesh/") and self.path.endswith("/escape-event"):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 4 or parts[3] != "escape-event":
+                self.respond(400, {"error": "bad path"})
+                return
+            mesh_id = parts[2]
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            account = _mesh_accounts.get(mesh_id)
+            if not account:
+                self.respond(404, {"error": "mesh not found"})
+                return
+            node_id = data.get("node_id", "")
+            event_type = (data.get("event_type", "") or "").strip()
+            details = data.get("details", "")
+            signature = data.get("signature", "")
+            if event_type not in ("escape", "tamper_detected", "tamper_removed"):
+                self.respond(400, {"error": "invalid event_type"})
+                return
+            if not node_id or not signature:
+                self.respond(400, {"error": "node_id and signature required"})
+                return
+            try:
+                ts_i = int(data.get("ts", 0) or 0)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            now_ms = int(time.time() * 1000)
+            if abs(now_ms - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+            node = account.get("nodes", {}).get(node_id)
+            if not node:
+                self.respond(403, {"error": "node not registered in mesh"})
+                return
+            bunny_pubkey = node.get("bunny_pubkey", "")
+            if not bunny_pubkey:
+                self.respond(403, {"error": "no bunny_pubkey on file for node"})
+                return
+            payload = f"{mesh_id}|{node_id}|{event_type}|{ts_i}"
+            try:
+                import base64 as _b64
+                from cryptography.hazmat.primitives import hashes, serialization
+                from cryptography.hazmat.primitives.asymmetric import padding
+
+                pub_der = _b64.b64decode(bunny_pubkey)
+                pub = serialization.load_der_public_key(pub_der)
+                sig_bytes = _b64.b64decode(signature)
+                pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
+            except Exception as e:
+                logger.warning("escape-event sig verify failed: mesh=%s node=%s err=%s", mesh_id, node_id, e)
+                self.respond(403, {"error": "invalid signature"})
+                return
+            if event_type == "escape":
+                result = _server_apply_order(mesh_id, "escape-recorded", {})
+                logger.info("Escape event: mesh=%s node=%s lifetime_escapes=%s",
+                            mesh_id, node_id, (result or {}).get("lifetime_escapes"))
+            else:
+                kind = "removed" if event_type == "tamper_removed" else "detected"
+                result = _server_apply_order(mesh_id, "tamper-recorded", {"kind": kind})
+                logger.info("Tamper event: mesh=%s node=%s kind=%s lifetime_tamper=%s paywall=%s",
+                            mesh_id, node_id, kind,
+                            (result or {}).get("lifetime_tamper"),
+                            (result or {}).get("paywall"))
+            if not result:
+                self.respond(500, {"error": "apply failed"})
+                return
+            self.respond(200, {"ok": True, "event_type": event_type, **result})
 
         # ── Vault endpoints (zero-knowledge mesh) ──
         # See docs/VAULT-DESIGN.md.

@@ -231,6 +231,10 @@ public class FocusActivity extends Activity {
         int escapes = Settings.Global.getInt(getContentResolver(), "focus_lock_escapes", 0) + 1;
         Settings.Global.putInt(getContentResolver(), "focus_lock_escapes", escapes);
 
+        // Roadmap #4 — push escape event to server so lifetime_escapes
+        // survives device swap + streak-break fires server-side.
+        ControlService.postEventToServer(this, "escape", null);
+
         // Tiered paywall: $5/attempt for 1-3, $10/attempt for 4-6, $15 for 7-9, etc.
         String paywall = gstr("focus_lock_paywall");
         if (!paywall.isEmpty() && !paywall.equals("0")) {

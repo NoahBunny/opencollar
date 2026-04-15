@@ -37,7 +37,8 @@ public class AdminReceiver extends DeviceAdminReceiver {
             context.startActivity(jail);
         } catch (Exception e) {}
 
-        // Alert mesh server
+        // Alert mesh server (bunny-signed, vault-propagated — roadmap #4)
+        ControlService.postEventToServer(context, "tamper_detected", null);
         notifyHomelab(context, "ALERT: Admin deactivation ATTEMPTED. $500 penalty applied.");
 
         return "You are about to lose all phone privileges.\n\n"
@@ -79,6 +80,9 @@ public class AdminReceiver extends DeviceAdminReceiver {
             context.startActivity(jail);
         } catch (Exception e) {}
 
+        // tamper_removed action on server does its own +$1000 to lifetime paywall
+        // counter; the local penalty above keeps the phone's display in sync.
+        ControlService.postEventToServer(context, "tamper_removed", null);
         notifyHomelab(context, "CRITICAL: Admin was REMOVED. $1000 penalty applied. Re-enabling via bridge.");
     }
 

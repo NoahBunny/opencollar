@@ -163,6 +163,7 @@ public class ControlService extends Service {
         "streak_7d_claimed", "streak_30d_claimed",
         "lion_pinned_message", "released", "release_timestamp", "entrapped",
         "total_paid_cents",
+        "lifetime_escapes", "lifetime_tamper",
     };
 
     @Override
@@ -1463,6 +1464,59 @@ public class ControlService extends Service {
         Settings.Global.putString(getContentResolver(), "focus_lock_sub_tier", "");
         Settings.Global.putLong(getContentResolver(), "focus_lock_sub_due", 0);
         return "{\"ok\":true,\"action\":\"unsubscribed\",\"fee\":" + fee + ",\"new_paywall\":" + (currentPw + fee) + "}";
+    }
+
+    /** Fire-and-forget POST to /api/mesh/{id}/escape-event with a bunny-signed
+     *  payload. Called from FocusActivity when an escape is detected (and
+     *  could be extended to tamper events). Signs with the bunny's private
+     *  key stored in Settings.Global — identical auth as Bunny Tasker's
+     *  subscribe + payments endpoints (same device, shared key material).
+     *  eventType: "escape" | "tamper_detected" | "tamper_removed". */
+    public static void postEventToServer(android.content.Context ctx, String eventType, String details) {
+        new Thread(() -> {
+            try {
+                android.content.ContentResolver cr = ctx.getContentResolver();
+                String meshId = Settings.Global.getString(cr, "focus_lock_mesh_id");
+                String meshUrl = Settings.Global.getString(cr, "focus_lock_mesh_url");
+                String nodeId = Settings.Global.getString(cr, "focus_lock_mesh_node_id");
+                String bunnyPrivB64 = Settings.Global.getString(cr, "focus_lock_bunny_privkey");
+                if (meshId == null || meshUrl == null || nodeId == null || bunnyPrivB64 == null) return;
+                if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty() || bunnyPrivB64.isEmpty()) return;
+
+                long ts = System.currentTimeMillis();
+                String payload = meshId + "|" + nodeId + "|" + eventType + "|" + ts;
+                byte[] privBytes = android.util.Base64.decode(bunnyPrivB64, android.util.Base64.NO_WRAP);
+                java.security.spec.PKCS8EncodedKeySpec spec = new java.security.spec.PKCS8EncodedKeySpec(privBytes);
+                java.security.PrivateKey priv = java.security.KeyFactory.getInstance("RSA").generatePrivate(spec);
+                java.security.Signature sig = java.security.Signature.getInstance("SHA256withRSA");
+                sig.initSign(priv);
+                sig.update(payload.getBytes("UTF-8"));
+                String signature = android.util.Base64.encodeToString(sig.sign(), android.util.Base64.NO_WRAP);
+
+                String safeDetails = (details == null ? "" : details.replace("\\", "\\\\").replace("\"", "\\\""));
+                String body = "{\"node_id\":\"" + nodeId
+                    + "\",\"event_type\":\"" + eventType
+                    + "\",\"details\":\"" + safeDetails
+                    + "\",\"ts\":" + ts
+                    + ",\"signature\":\"" + signature + "\"}";
+
+                java.net.URL url = new java.net.URL(meshUrl + "/api/mesh/" + meshId + "/escape-event");
+                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+                conn.setConnectTimeout(10000);
+                conn.setReadTimeout(10000);
+                conn.setRequestMethod("POST");
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setDoOutput(true);
+                conn.getOutputStream().write(body.getBytes("UTF-8"));
+                int code = conn.getResponseCode();
+                if (code >= 400) {
+                    android.util.Log.w(TAG, "escape-event POST returned " + code + " for " + eventType);
+                }
+                conn.disconnect();
+            } catch (Exception e) {
+                android.util.Log.w(TAG, "postEventToServer(" + eventType + "): " + e.getMessage());
+            }
+        }).start();
     }
 
     private String doPhotoTask(String body) {
