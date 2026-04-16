@@ -1438,6 +1438,7 @@ _mesh_accounts = MeshAccountStore()
 
 VAULT_MODE_ALLOWED = _cfg.get("vault_mode_allowed", True)
 VAULT_RETENTION_DAYS = _cfg.get("vault_retention_days", 7)
+VAULT_MAX_BLOBS = _cfg.get("vault_max_blobs", 1000)
 
 # ── Admin API (enforcement infrastructure) ──
 # Separate from mesh PIN — used by sync-standing-orders.sh and CLAUDE.md
@@ -1625,10 +1626,13 @@ class VaultStore:
                     logger.warning("vault read error v%s: %s", v, e)
         return result, versions[-1]
 
-    def gc(self, mesh_id, retention_days=None):
-        """Delete blobs older than retention_days. Always retain the latest."""
+    def gc(self, mesh_id, retention_days=None, max_blobs=None):
+        """Delete blobs older than retention_days, then trim so at most
+        max_blobs remain (oldest dropped first). Always retain the latest."""
         if retention_days is None:
             retention_days = VAULT_RETENTION_DAYS
+        if max_blobs is None:
+            max_blobs = VAULT_MAX_BLOBS
         d = self._mesh_dir(mesh_id)
         if not d:
             return 0
@@ -1640,17 +1644,33 @@ class VaultStore:
             return 0
         cutoff = time.time() - retention_days * 86400
         removed = 0
-        # Keep the latest always; consider older ones for deletion
+        survivors = []
+        # Age-based sweep; keep the latest always
         for v in versions[:-1]:
             path = os.path.join(blobs_dir, f"{v:08d}.json")
             try:
                 if os.path.getmtime(path) < cutoff:
                     os.remove(path)
                     removed += 1
+                    continue
             except FileNotFoundError:
-                pass
+                continue
             except Exception as e:
                 logger.warning("vault gc error v%s: %s", v, e)
+            survivors.append(v)
+        survivors.append(versions[-1])
+        # Count-based autorotation: drop oldest beyond max_blobs
+        if max_blobs and len(survivors) > max_blobs:
+            overflow = survivors[: len(survivors) - max_blobs]
+            for v in overflow:
+                path = os.path.join(blobs_dir, f"{v:08d}.json")
+                try:
+                    os.remove(path)
+                    removed += 1
+                except FileNotFoundError:
+                    pass
+                except Exception as e:
+                    logger.warning("vault gc error v%s: %s", v, e)
         return removed
 
     def _read_json(self, mesh_id, fname, default):

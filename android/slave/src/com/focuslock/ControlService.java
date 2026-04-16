@@ -247,6 +247,7 @@ public class ControlService extends Service {
     /** Poll lock flag + self-check servers every 2s. */
     private void startJailWatcher() {
         Thread watcher = new Thread(() -> {
+            Log.w(TAG, "Jail watcher thread started");
             boolean wasLocked = false;
             int healthCounter = 0;
             long bootTime = System.currentTimeMillis();
@@ -312,6 +313,48 @@ public class ControlService extends Service {
                         Settings.Global.putLong(getContentResolver(), "focus_lock_countdown_warn_tier", 0);
                     }
 
+                    // Mutual admin monitoring — lock + penalty if BunnyTasker admin removed
+                    if (healthCounter % 3 == 0) {
+                        long breakglassUntil = Settings.Global.getLong(getContentResolver(), "focus_lock_breakglass_until", 0);
+                        int releaseAuth = Settings.Global.getInt(getContentResolver(), "focus_lock_release_authorized", 0);
+                        if (System.currentTimeMillis() > breakglassUntil && releaseAuth == 0) {
+                            try {
+                                ComponentName btAdmin = new ComponentName("com.bunnytasker", "com.bunnytasker.AdminReceiver");
+                                if (!dpm().isAdminActive(btAdmin)) {
+                                    // Only penalize once per removal (not every 6s)
+                                    int btTamper = Settings.Global.getInt(getContentResolver(), "focus_lock_bt_admin_removed", 0);
+                                    if (btTamper == 0) {
+                                        Log.w(TAG, "BunnyTasker admin removed — locking + $500 penalty");
+                                        Settings.Global.putInt(getContentResolver(), "focus_lock_bt_admin_removed", 1);
+                                        int pw = 0;
+                                        try { pw = Integer.parseInt(gstr("focus_lock_paywall")); } catch (Exception e2) {}
+                                        pw += 500;
+                                        Settings.Global.putString(getContentResolver(), "focus_lock_paywall", String.valueOf(pw));
+                                        Settings.Global.putString(getContentResolver(), "focus_lock_paywall_original", String.valueOf(pw));
+                                        Settings.Global.putString(getContentResolver(), "focus_lock_message",
+                                            "BunnyTasker admin removed.\n+$500 penalty.\nRe-enable it in Settings → Security → Device admin.");
+                                        Settings.Global.putInt(getContentResolver(), "focus_lock_shame", 1);
+                                        meshBumpAndPush();
+                                        ControlService.postEventToServer(ControlService.this, "tamper_detected", null);
+                                    }
+                                    Settings.Global.putInt(getContentResolver(), "focus_lock_active", 1);
+                                    Settings.Global.putLong(getContentResolver(), "focus_lock_locked_at",
+                                        System.currentTimeMillis());
+                                    Settings.Global.putString(getContentResolver(), "focus_lock_mode", "basic");
+                                    enforceEscapeHatches();
+                                    launchFocus();
+                                }
+                            } catch (Exception e) {}
+                            // Clear tamper flag when admin is restored
+                            try {
+                                ComponentName btAdmin2 = new ComponentName("com.bunnytasker", "com.bunnytasker.AdminReceiver");
+                                if (dpm().isAdminActive(btAdmin2)) {
+                                    Settings.Global.putInt(getContentResolver(), "focus_lock_bt_admin_removed", 0);
+                                }
+                            } catch (Exception e) {}
+                        }
+                    }
+
                     // Health check every 30s (15 cycles of 2s)
                     healthCounter++;
                     if (healthCounter >= 15) {
@@ -339,6 +382,14 @@ public class ControlService extends Service {
                             } catch (Exception e) {
                                 // Tailscale not installed — skip silently
                             }
+                        }
+
+                        // Dead-man's switch: release if Lion offline >14 days
+                        long lionLastSeen = Settings.Global.getLong(getContentResolver(), "focus_lock_lion_last_seen", 0);
+                        if (lionLastSeen > 0 && System.currentTimeMillis() - lionLastSeen > 14L * 86400000L) {
+                            Log.w(TAG, "DEAD-MAN'S SWITCH: Lion offline >14 days — releasing all meshes");
+                            doReleaseForever();
+                            return;
                         }
 
                         // Compound interest on paywall — rate depends on subscription tier
@@ -552,10 +603,11 @@ public class ControlService extends Service {
                         // Phone home: report current IPs to homelab
                         phoneHome();
                     }
-                } catch (Exception e) {
+                } catch (Throwable e) {
                     Log.e(TAG, "Watcher error", e);
                 }
             }
+            Log.e(TAG, "Jail watcher exited unexpectedly (running=" + running + ")");
         });
         watcher.setDaemon(true);
         watcher.start();
@@ -785,6 +837,7 @@ public class ControlService extends Service {
                 && !path.equals("/api/ping") && !path.equals("/api/status")
                 && !path.startsWith("/mesh/")) {
                 meshBumpAndPush();
+                Settings.Global.putLong(getContentResolver(), "focus_lock_lion_last_seen", System.currentTimeMillis());
             }
 
             byte[] rb = resp.getBytes("UTF-8");
@@ -1921,6 +1974,36 @@ public class ControlService extends Service {
         }
     }
 
+    private void launchAdminActivation(ComponentName admin, String explanation) {
+        try {
+            Intent activate = new Intent(android.app.admin.DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN);
+            activate.putExtra(android.app.admin.DevicePolicyManager.EXTRA_DEVICE_ADMIN, admin);
+            activate.putExtra(android.app.admin.DevicePolicyManager.EXTRA_ADD_EXPLANATION, explanation);
+            activate.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            PendingIntent pi = PendingIntent.getActivity(this, 99, activate,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+            NotificationChannel ch = new NotificationChannel(
+                "admin_nag", "Admin Re-activation", NotificationManager.IMPORTANCE_HIGH);
+            ch.setBypassDnd(true);
+            ch.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+            getSystemService(NotificationManager.class).createNotificationChannel(ch);
+
+            Notification n = new Notification.Builder(this, "admin_nag")
+                .setContentTitle("Device admin removed")
+                .setContentText(explanation)
+                .setSmallIcon(android.R.drawable.ic_lock_lock)
+                .setFullScreenIntent(pi, true)
+                .setCategory(Notification.CATEGORY_ALARM)
+                .setPriority(Notification.PRIORITY_MAX)
+                .setOngoing(true)
+                .build();
+            getSystemService(NotificationManager.class).notify(97, n);
+        } catch (Exception e) {
+            Log.e(TAG, "Admin activation launch failed", e);
+        }
+    }
+
     /** Show a warm praise notification from Lion — a reward, not a command. */
     private void showPraiseNotification(String text) {
         try {
@@ -2285,6 +2368,10 @@ public class ControlService extends Service {
         if (meshVersion.get() == 0) {
             meshVersion.set(1);
             Settings.Global.putLong(getContentResolver(), "focus_lock_mesh_version", meshVersion.get());
+        }
+        // Seed lion_last_seen so the dead-man's switch doesn't fire on fresh install
+        if (Settings.Global.getLong(getContentResolver(), "focus_lock_lion_last_seen", 0) == 0) {
+            Settings.Global.putLong(getContentResolver(), "focus_lock_lion_last_seen", System.currentTimeMillis());
         }
         // Seed peers
         String peersJson = gstr("focus_lock_mesh_peers");
@@ -3179,6 +3266,9 @@ public class ControlService extends Service {
                 // 2. This slave (our own runtime pushes)
                 // 3. Approved node (relay admin orders, other nodes)
                 boolean isLionSigned = VaultCrypto.verifySignature(blob, lionPub);
+                if (isLionSigned) {
+                    Settings.Global.putLong(getContentResolver(), "focus_lock_lion_last_seen", System.currentTimeMillis());
+                }
                 boolean isSelfSigned = false;
                 boolean isNodeSigned = false;
                 if (!isLionSigned) {

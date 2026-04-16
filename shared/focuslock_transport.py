@@ -51,7 +51,7 @@ class VaultTransport:
 class HttpVaultTransport(VaultTransport):
     """HTTPS relay transport (extracts current inline HTTP logic)."""
 
-    MAX_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MB — vault blob bundles capped
+    MAX_RESPONSE_BYTES = 64 * 1024 * 1024  # 64 MB — vault blob bundles capped
 
     def __init__(self, base_url, timeout=10):
         self.base_url = base_url.rstrip("/") if base_url else ""

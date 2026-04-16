@@ -686,6 +686,12 @@ def mesh_apply_order(action, params, orders):
             devices = str(orders.get("desktop_locked_devices", ""))
             devlist = [d for d in devices.split(",") if d and d != target]
             orders.set("desktop_locked_devices", ",".join(devlist))
+    elif action == "add-paywall":
+        current = int(orders.get("paywall", 0) or 0)
+        amount = int(params.get("amount", 0))
+        orders.set("paywall", str(max(0, current + amount)))
+    elif action == "clear-paywall":
+        orders.set("paywall", "0")
     elif action == "release-device":
         target = params.get("target", "")
         if target == "all" or target == MESH_NODE_ID:

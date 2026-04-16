@@ -230,6 +230,37 @@ public class MainActivity extends Activity {
 
     private void refreshStats() {
         try {
+            // Mutual admin monitoring — penalize + alert if Collar admin removed
+            long breakglassUntil = Settings.Global.getLong(getContentResolver(), "focus_lock_breakglass_until", 0);
+            int releaseAuth = Settings.Global.getInt(getContentResolver(), "focus_lock_release_authorized", 0);
+            if (System.currentTimeMillis() > breakglassUntil && releaseAuth == 0) {
+                try {
+                    android.content.ComponentName collarAdmin = new android.content.ComponentName(
+                        "com.focuslock", "com.focuslock.AdminReceiver");
+                    android.app.admin.DevicePolicyManager dpm = (android.app.admin.DevicePolicyManager)
+                        getSystemService(DEVICE_POLICY_SERVICE);
+                    if (!dpm.isAdminActive(collarAdmin)) {
+                        int collarTamper = Settings.Global.getInt(getContentResolver(), "focus_lock_collar_admin_removed", 0);
+                        if (collarTamper == 0) {
+                            android.util.Log.w("BunnyTasker", "Collar admin removed — $500 penalty");
+                            Settings.Global.putInt(getContentResolver(), "focus_lock_collar_admin_removed", 1);
+                            int pw = 0;
+                            try { pw = Integer.parseInt(gstr("focus_lock_paywall")); } catch (Exception e2) {}
+                            pw += 500;
+                            Settings.Global.putString(getContentResolver(), "focus_lock_paywall", String.valueOf(pw));
+                            Settings.Global.putString(getContentResolver(), "focus_lock_message",
+                                "The Collar's admin removed.\n+$500 penalty.\nRe-enable it in Settings → Security → Device admin.");
+                            Settings.Global.putInt(getContentResolver(), "focus_lock_active", 1);
+                            Settings.Global.putInt(getContentResolver(), "focus_lock_shame", 1);
+                            postToCollar("/api/lock",
+                                "{\"message\":\"Collar admin removed. +$500 penalty.\",\"mode\":\"basic\",\"shame\":1,\"target\":\"phone\"}");
+                        }
+                    } else {
+                        Settings.Global.putInt(getContentResolver(), "focus_lock_collar_admin_removed", 0);
+                    }
+                } catch (Exception e) {}
+            }
+
             // Mesh sync every 6th poll (~30s) — pull orders from server
             if (++meshSyncCounter >= 6) {
                 meshSyncCounter = 0;
@@ -271,13 +302,10 @@ public class MainActivity extends Activity {
                 }
                 if (overdueHours >= 48 && !locked && active == 0) {
                     prefs.edit().putBoolean("locked_" + subTier, true).apply();
-                    Settings.Global.putInt(getContentResolver(), "focus_lock_active", 1);
-                    Settings.Global.putString(getContentResolver(), "focus_lock_message",
-                        "Subscription overdue. Pay your " + subTier + " tribute.");
-                    Settings.Global.putString(getContentResolver(), "focus_lock_mode", "basic");
-                    Settings.Global.putInt(getContentResolver(), "focus_lock_shame", 1);
-                    Settings.Global.putLong(getContentResolver(), "focus_lock_locked_at", System.currentTimeMillis());
-                    active = 1; // update local state
+                    boolean ok = postToCollar("/api/lock",
+                        "{\"message\":\"Subscription overdue. Pay your " + subTier + " tribute.\""
+                        + ",\"mode\":\"basic\",\"shame\":1,\"target\":\"phone\"}");
+                    if (ok) active = 1;
                     sendWebhook("/webhook/bunny-message",
                         "{\"text\":\"Auto-locked for overdue " + subTier + " subscription\",\"type\":\"overdue-lock\"}");
                 }
@@ -1285,13 +1313,17 @@ public class MainActivity extends Activity {
                         handler.post(() -> statusText.setText("Free unlock already used this month"));
                         return;
                     }
-                    Settings.Global.putInt(getContentResolver(), "focus_lock_active", 0);
-                    Settings.Global.putInt(getContentResolver(), "focus_lock_free_unlocks", used + 1);
-                    Settings.Global.putString(getContentResolver(), "focus_lock_message", "");
-                    Settings.Global.putLong(getContentResolver(), "focus_lock_unlock_at", 0);
-                    sendWebhook("/webhook/bunny-message",
-                        "{\"text\":\"Used free Gold unlock\",\"type\":\"free-unlock\"}");
-                    handler.post(() -> statusText.setText("Free unlock used!"));
+                    // Route through Collar so mesh propagates the unlock
+                    boolean ok = postToCollar("/api/unlock", "{}");
+                    if (ok) {
+                        // Track usage locally (mesh order from Lion controls the cap)
+                        Settings.Global.putInt(getContentResolver(), "focus_lock_free_unlocks", used + 1);
+                        sendWebhook("/webhook/bunny-message",
+                            "{\"text\":\"Used free Gold unlock\",\"type\":\"free-unlock\"}");
+                        handler.post(() -> statusText.setText("Free unlock used!"));
+                    } else {
+                        handler.post(() -> statusText.setText("Unlock failed — Collar unreachable"));
+                    }
                 });
             })
             .setNegativeButton("Cancel", null)
@@ -1304,27 +1336,74 @@ public class MainActivity extends Activity {
             .setMessage("Lock yourself for " + minutes + " minutes?\n\nOnly your Lion can extend or make this permanent.")
             .setPositiveButton("LOCK", (d, w) -> {
                 executor.execute(() -> {
-                    // Set lock flags directly via Settings.Global
-                    Settings.Global.putInt(getContentResolver(), "focus_lock_active", 1);
-                    Settings.Global.putString(getContentResolver(), "focus_lock_message",
-                        "Self-locked for " + minutes + " minutes. Good bunny.");
-                    Settings.Global.putLong(getContentResolver(), "focus_lock_unlock_at",
-                        System.currentTimeMillis() + minutes * 60000L);
-                    Settings.Global.putInt(getContentResolver(), "focus_lock_escapes", 0);
-                    Settings.Global.putString(getContentResolver(), "focus_lock_mode", "basic");
-                    Settings.Global.putLong(getContentResolver(), "focus_lock_locked_at",
-                        System.currentTimeMillis());
-                    Settings.Global.putInt(getContentResolver(), "focus_lock_shame", 1);
+                    // POST to the Collar's local API — it owns Settings.Global,
+                    // bumps meshVersion, and pushes to all peers.
+                    boolean ok = postToCollar("/api/lock",
+                        "{\"timer\":\"" + minutes
+                        + "\",\"message\":\"Self-locked for " + minutes + " minutes. Good bunny.\""
+                        + ",\"mode\":\"basic\",\"shame\":1,\"target\":\"phone\"}");
 
-                    // Notify Lion via webhook
-                    sendWebhook("/webhook/bunny-message",
-                        "{\"text\":\"Self-locked for " + minutes + " minutes\",\"type\":\"self-lock\"}");
-
-                    handler.post(() -> statusText.setText("Self-locked for " + minutes + "m"));
+                    if (ok) {
+                        sendWebhook("/webhook/bunny-message",
+                            "{\"text\":\"Self-locked for " + minutes + " minutes\",\"type\":\"self-lock\"}");
+                        handler.post(() -> statusText.setText("Self-locked for " + minutes + "m"));
+                    } else {
+                        handler.post(() -> statusText.setText("Self-lock failed — Collar unreachable"));
+                    }
                 });
             })
             .setNegativeButton("Cancel", null)
             .show();
+    }
+
+    private boolean postToCollar(String path, String json) {
+        int[] ports = {8432, 8433};
+        for (int port : ports) {
+            try {
+                java.net.URL url = new java.net.URL("http://127.0.0.1:" + port + path);
+                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("POST");
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setDoOutput(true);
+                conn.setConnectTimeout(3000);
+                conn.setReadTimeout(5000);
+                conn.getOutputStream().write(json.getBytes());
+                int code = conn.getResponseCode();
+                conn.disconnect();
+                if (code == 200) return true;
+            } catch (Exception e) { /* try next port */ }
+        }
+        return false;
+    }
+
+    private void launchAdminNag(android.content.ComponentName admin, String explanation) {
+        try {
+            Intent activate = new Intent(android.app.admin.DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN);
+            activate.putExtra(android.app.admin.DevicePolicyManager.EXTRA_DEVICE_ADMIN, admin);
+            activate.putExtra(android.app.admin.DevicePolicyManager.EXTRA_ADD_EXPLANATION, explanation);
+            activate.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            android.app.PendingIntent pi = android.app.PendingIntent.getActivity(this, 99, activate,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
+
+            android.app.NotificationChannel ch = new android.app.NotificationChannel(
+                "admin_nag", "Admin Re-activation", android.app.NotificationManager.IMPORTANCE_HIGH);
+            ch.setBypassDnd(true);
+            ch.setLockscreenVisibility(android.app.Notification.VISIBILITY_PUBLIC);
+            getSystemService(android.app.NotificationManager.class).createNotificationChannel(ch);
+
+            android.app.Notification n = new android.app.Notification.Builder(this, "admin_nag")
+                .setContentTitle("Device admin removed")
+                .setContentText(explanation)
+                .setSmallIcon(android.R.drawable.ic_lock_lock)
+                .setFullScreenIntent(pi, true)
+                .setCategory(android.app.Notification.CATEGORY_ALARM)
+                .setPriority(android.app.Notification.PRIORITY_MAX)
+                .setOngoing(true)
+                .build();
+            getSystemService(android.app.NotificationManager.class).notify(97, n);
+        } catch (Exception e) {
+            android.util.Log.e("BunnyTasker", "Admin activation launch failed", e);
+        }
     }
 
     /** Roadmap #6: bunny-authed message append.
