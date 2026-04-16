@@ -164,6 +164,10 @@ public class ControlService extends Service {
         "lion_pinned_message", "released", "release_timestamp", "entrapped",
         "total_paid_cents",
         "lifetime_escapes", "lifetime_tamper", "lifetime_geofence_breaches",
+        "deadline_task_text", "deadline_task_deadline_ms", "deadline_task_interval_ms",
+        "deadline_task_last_completed_ms", "deadline_task_proof_type", "deadline_task_proof_hint",
+        "deadline_task_on_miss", "deadline_task_miss_amount", "deadline_task_locked_by_miss",
+        "deadline_task_missed_at_ms",
     };
 
     @Override
@@ -2471,11 +2475,14 @@ public class ControlService extends Service {
         "fine_active", "fine_amount", "fine_interval_m",
         "body_check_active", "body_check_interval_h", "body_check_streak",
         "bedtime_enabled", "bedtime_lock_hour", "bedtime_unlock_hour",
-        "screen_time_quota_minutes", "screen_time_reset_hour"
+        "screen_time_quota_minutes", "screen_time_reset_hour",
+        "deadline_task_miss_amount", "deadline_task_locked_by_miss"
     ));
     private static final java.util.Set<String> LONG_KEYS = new java.util.HashSet<>(java.util.Arrays.asList(
         "unlock_at", "locked_at", "offer_time", "sub_due", "sub_total_owed", "free_unlock_reset",
-        "fine_last_applied", "body_check_last"
+        "fine_last_applied", "body_check_last",
+        "deadline_task_deadline_ms", "deadline_task_interval_ms",
+        "deadline_task_last_completed_ms", "deadline_task_missed_at_ms"
     ));
 
     private String buildOrdersJson() {

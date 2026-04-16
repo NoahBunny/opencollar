@@ -784,6 +784,147 @@ def mesh_apply_order(action, params, orders):
         elif which == "30d":
             orders.set("streak_30d_claimed", 1)
         return {"applied": action, "which": which, "credit": credit, "paywall": new_pw}
+    elif action == "set-deadline-task":
+        # Arm a do-or-lock task. Bunny clears any time before deadline;
+        # early completion rolls the next deadline forward from the
+        # completion time (never stacks). On miss: either auto-lock or
+        # paywall bump, Lion's choice.
+        import time as t_sdt
+        now_ms_sdt = int(t_sdt.time() * 1000)
+        text = (params.get("text", "") or "").strip()
+        if not text:
+            return {"error": "text required"}
+        if "deadline_ms" in params:
+            try:
+                deadline_ms = int(params["deadline_ms"])
+            except (ValueError, TypeError):
+                return {"error": "deadline_ms must be int"}
+        elif "deadline_minutes" in params:
+            try:
+                deadline_ms = now_ms_sdt + int(params["deadline_minutes"]) * 60000
+            except (ValueError, TypeError):
+                return {"error": "deadline_minutes must be int"}
+        else:
+            return {"error": "deadline_ms or deadline_minutes required"}
+        if deadline_ms <= now_ms_sdt:
+            return {"error": "deadline must be in the future"}
+        if "interval_ms" in params:
+            try:
+                interval_ms = int(params["interval_ms"])
+            except (ValueError, TypeError):
+                return {"error": "interval_ms must be int"}
+        elif "interval_days" in params:
+            try:
+                interval_ms = int(params["interval_days"]) * 86400000
+            except (ValueError, TypeError):
+                return {"error": "interval_days must be int"}
+        else:
+            interval_ms = 0
+        proof_type = (params.get("proof_type", "none") or "none").lower()
+        if proof_type not in ("none", "typed", "photo"):
+            return {"error": "invalid proof_type"}
+        on_miss = (params.get("on_miss", "lock") or "lock").lower()
+        if on_miss not in ("lock", "paywall"):
+            return {"error": "invalid on_miss"}
+        try:
+            miss_amount = max(0, int(params.get("miss_amount", 0) or 0))
+        except (ValueError, TypeError):
+            miss_amount = 0
+        orders.set("deadline_task_text", text)
+        orders.set("deadline_task_deadline_ms", deadline_ms)
+        orders.set("deadline_task_interval_ms", max(0, interval_ms))
+        orders.set("deadline_task_proof_type", proof_type)
+        orders.set("deadline_task_proof_hint", params.get("proof_hint", "") or "")
+        orders.set("deadline_task_on_miss", on_miss)
+        orders.set("deadline_task_miss_amount", miss_amount)
+        orders.set("deadline_task_locked_by_miss", 0)
+        orders.set("deadline_task_missed_at_ms", 0)
+        return {
+            "applied": action,
+            "deadline_ms": deadline_ms,
+            "interval_ms": max(0, interval_ms),
+            "proof_type": proof_type,
+            "on_miss": on_miss,
+        }
+    elif action == "clear-deadline-task":
+        # Lion cancels an armed task. If the task had already missed and
+        # triggered a lock, clearing here also releases the lock (Lion's
+        # decision — forgiveness).
+        was_locked_by_miss = str(orders.get("deadline_task_locked_by_miss", 0)) == "1"
+        orders.set("deadline_task_text", "")
+        orders.set("deadline_task_deadline_ms", 0)
+        orders.set("deadline_task_interval_ms", 0)
+        orders.set("deadline_task_proof_type", "none")
+        orders.set("deadline_task_proof_hint", "")
+        orders.set("deadline_task_on_miss", "lock")
+        orders.set("deadline_task_miss_amount", 0)
+        orders.set("deadline_task_locked_by_miss", 0)
+        orders.set("deadline_task_missed_at_ms", 0)
+        if was_locked_by_miss and str(orders.get("lock_active", 0)) == "1":
+            orders.set("lock_active", 0)
+            orders.set("message", "Deadline task cancelled — unlocked.")
+        return {"applied": action, "released_lock": was_locked_by_miss}
+    elif action == "deadline-task-cleared":
+        # Bunny completed the task (phone-side proof verification already
+        # passed if required — server trusts the signed clear call). Roll
+        # the deadline forward from the completion time if interval > 0;
+        # else drop the task. Release any miss-induced lock.
+        import time as t_dtc
+        now_ms_dtc = int(t_dtc.time() * 1000)
+        interval = int(orders.get("deadline_task_interval_ms", 0) or 0)
+        was_locked_by_miss = str(orders.get("deadline_task_locked_by_miss", 0)) == "1"
+        text_before = orders.get("deadline_task_text", "")
+        orders.set("deadline_task_last_completed_ms", now_ms_dtc)
+        orders.set("deadline_task_locked_by_miss", 0)
+        orders.set("deadline_task_missed_at_ms", 0)
+        if interval > 0:
+            orders.set("deadline_task_deadline_ms", now_ms_dtc + interval)
+            next_deadline = now_ms_dtc + interval
+            cleared = False
+        else:
+            orders.set("deadline_task_text", "")
+            orders.set("deadline_task_deadline_ms", 0)
+            orders.set("deadline_task_proof_type", "none")
+            orders.set("deadline_task_proof_hint", "")
+            next_deadline = 0
+            cleared = True
+        if was_locked_by_miss and str(orders.get("lock_active", 0)) == "1":
+            orders.set("lock_active", 0)
+            orders.set("message", f"Task completed: {text_before}. Unlocked.")
+        return {
+            "applied": action,
+            "next_deadline_ms": next_deadline,
+            "cleared": cleared,
+            "released_lock": was_locked_by_miss,
+        }
+    elif action == "deadline-task-missed":
+        # Server scheduler tick observed deadline_ms in the past without a
+        # completion. Apply the configured penalty and mark the task as
+        # outstanding (locked_by_miss=1) so a future completion releases it.
+        on_miss = (params.get("on_miss", orders.get("deadline_task_on_miss", "lock")) or "lock").lower()
+        import time as t_dtm
+        now_ms_dtm = int(t_dtm.time() * 1000)
+        task_text = orders.get("deadline_task_text", "")
+        orders.set("deadline_task_locked_by_miss", 1)
+        orders.set("deadline_task_missed_at_ms", now_ms_dtm)
+        if on_miss == "paywall":
+            try:
+                amount = int(orders.get("deadline_task_miss_amount", 0) or 0)
+            except (ValueError, TypeError):
+                amount = 0
+            if amount > 0:
+                try:
+                    current_pw = int(orders.get("paywall", "0") or "0")
+                except (ValueError, TypeError):
+                    current_pw = 0
+                orders.set("paywall", str(current_pw + amount))
+            orders.set("pinned_message", f"MISSED TASK: {task_text} (+${amount})")
+            return {"applied": action, "on_miss": on_miss, "amount": amount}
+        # Default: auto-lock until completion
+        orders.set("lock_active", 1)
+        orders.set("message", f"Task missed: {task_text}. Complete to unlock.")
+        orders.set("pinned_message", f"MISSED TASK: {task_text} — locked until cleared")
+        return {"applied": action, "on_miss": on_miss}
     elif action == "set-countdown":
         import time as t_cd
 
@@ -1127,6 +1268,28 @@ def _check_tributes_fines_for_mesh(mid, orders, now_ms):
                 result = _server_apply_order(mid, "streak-bonus", {"which": "30d", "credit": 25})
                 if result:
                     logger.info("Streak bonus 30d: mesh=%s paywall→$%s", mid, result.get("paywall"))
+
+    # Deadline-bound task — miss detection. Fires exactly once per miss:
+    # deadline-task-missed stamps missed_at_ms, and set/clear/clear-cleared
+    # all reset it to 0, so we never re-penalize the same miss on the next tick.
+    try:
+        dt_deadline = int(orders.get("deadline_task_deadline_ms", 0) or 0)
+    except (ValueError, TypeError):
+        dt_deadline = 0
+    try:
+        dt_missed_at = int(orders.get("deadline_task_missed_at_ms", 0) or 0)
+    except (ValueError, TypeError):
+        dt_missed_at = 0
+    if dt_deadline > 0 and now_ms > dt_deadline and dt_missed_at == 0:
+        on_miss = orders.get("deadline_task_on_miss", "lock")
+        result = _server_apply_order(mid, "deadline-task-missed", {"on_miss": on_miss})
+        if result:
+            logger.info(
+                "Deadline task missed: mesh=%s text=%r on_miss=%s",
+                mid,
+                orders.get("deadline_task_text", ""),
+                on_miss,
+            )
 
 
 def check_tributes_and_fines():
@@ -2499,6 +2662,91 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(500, {"error": "apply failed"})
                 return
             self.respond(200, {"ok": True, "event_type": event_type, **result})
+
+        # ── Bunny-authed deadline-task completion ──
+        # Path: /api/mesh/{mesh_id}/deadline-task/clear
+        # Body: {node_id, ts, signature}
+        # signature = SHA256withRSA over "mesh_id|node_id|deadline-task-clear|ts".
+        # Phone verifies proof locally (photo → Ollama, typed → word_min) before
+        # calling; server trusts the signed clear. On success, fires
+        # deadline-task-cleared which rolls the deadline forward (if interval>0)
+        # or drops the task, and releases any miss-induced lock.
+        elif self.path.startswith("/api/mesh/") and self.path.endswith("/deadline-task/clear"):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 5 or parts[3] != "deadline-task" or parts[4] != "clear":
+                self.respond(400, {"error": "bad path"})
+                return
+            mesh_id = parts[2]
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            account = _mesh_accounts.get(mesh_id)
+            if not account:
+                self.respond(404, {"error": "mesh not found"})
+                return
+            node_id = data.get("node_id", "")
+            signature = data.get("signature", "")
+            if not node_id or not signature:
+                self.respond(400, {"error": "node_id and signature required"})
+                return
+            try:
+                ts_i = int(data.get("ts", 0) or 0)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            now_ms = int(time.time() * 1000)
+            if abs(now_ms - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+            node = account.get("nodes", {}).get(node_id)
+            if not node:
+                self.respond(403, {"error": "node not registered in mesh"})
+                return
+            bunny_pubkey = node.get("bunny_pubkey", "")
+            if not bunny_pubkey:
+                self.respond(403, {"error": "no bunny_pubkey on file for node"})
+                return
+            payload = f"{mesh_id}|{node_id}|deadline-task-clear|{ts_i}"
+            try:
+                import base64 as _b64
+
+                from cryptography.hazmat.primitives import hashes, serialization
+                from cryptography.hazmat.primitives.asymmetric import padding
+
+                pub_der = _b64.b64decode(bunny_pubkey)
+                pub = serialization.load_der_public_key(pub_der)
+                sig_bytes = _b64.b64decode(signature)
+                pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
+            except Exception as e:
+                logger.warning("deadline-task-clear sig verify failed: mesh=%s node=%s err=%s", mesh_id, node_id, e)
+                self.respond(403, {"error": "invalid signature"})
+                return
+            # Refuse if no task is armed — prevents spurious calls from
+            # masking a legitimate future assignment.
+            _morders = _resolve_orders(mesh_id)
+            if _morders is None:
+                self.respond(404, {"error": "mesh orders not found"})
+                return
+            try:
+                armed_deadline = int(_morders.get("deadline_task_deadline_ms", 0) or 0)
+            except (ValueError, TypeError):
+                armed_deadline = 0
+            armed_text = _morders.get("deadline_task_text", "")
+            if armed_deadline == 0 and not armed_text:
+                self.respond(409, {"error": "no deadline task armed"})
+                return
+            result = _server_apply_order(mesh_id, "deadline-task-cleared", {})
+            if not result:
+                self.respond(500, {"error": "apply failed"})
+                return
+            logger.info(
+                "Deadline task cleared: mesh=%s node=%s next_deadline=%s released_lock=%s",
+                mesh_id,
+                node_id,
+                result.get("next_deadline_ms"),
+                result.get("released_lock"),
+            )
+            self.respond(200, {"ok": True, **result})
 
         # ── Bunny/Lion-authed message history (roadmap #6) ──
         # Three POST endpoints under /api/mesh/{mesh_id}/messages:

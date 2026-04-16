@@ -137,6 +137,16 @@ The Lion assigns tasks requiring photo proof. AI verification via Ollama. No fak
 
 ---
 
+## Deadline Tasks
+
+The Lion assigns a task with a deadline ("clean the sink by 3pm", "every 3 days from last time"). You can clear it any time before the deadline -- clearing early never costs you anything extra.
+
+Miss it and the server either auto-locks you or bumps your paywall (the Lion's choice at assignment). Once you clear the task, any miss-induced lock releases automatically.
+
+Rolling tasks reset from the moment you clear them, not from the old deadline. So doing it early doesn't lose you time -- it just moves the next deadline forward from now.
+
+---
+
 ## The Geofence
 
 If "confined" appears in your stats, you're inside a zone. You don't know the center. You don't know the radius. Leave = auto-lock + $100 paywall + GPS coordinates sent to the Lion.

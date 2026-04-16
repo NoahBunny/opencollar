@@ -112,6 +112,19 @@ Tap **UNLOCK**. Respects your target selector.
 
 Scrambles the PIN to a random 64-character string. Next lock: no escape code. Only you know.
 
+### Deadline Task (do-or-lock)
+
+Assign a task with a deadline. Bunny can clear it any time before the deadline -- early clearing never stacks penalties. Miss the deadline and the server either auto-locks him or bumps his paywall.
+
+| Field | What It Does |
+|-------|-------------|
+| Text | What you want done (e.g. "Clean the sink", "Type a devotional") |
+| Deadline | Absolute time (+4h from now) or rolling interval (every 3 days from last completion) |
+| Proof | `none` / typed / photo. Photo verified on-device by Ollama. |
+| On miss | `lock` (auto-lock until cleared) or `paywall` (bump paywall by set amount) |
+
+Rolling tasks never punish pre-completion: clearing early resets the next deadline to `now + interval`, not `old_deadline + interval`. Cancelling a missed task also releases the lock (forgiveness path).
+
 ### Vault Nodes
 
 Shows all devices registered in your mesh. Approve pending nodes to add them to the encryption recipient list. Deny to block.
