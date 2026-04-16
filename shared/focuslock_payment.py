@@ -305,18 +305,49 @@ def check_payment_emails(
 
             mail = imaplib.IMAP4_SSL(active_host)
             mail.login(active_user, active_pass)
-            mail.select("INBOX")
 
-            # Search ALL recent emails, not just UNSEEN — dedup is handled
-            # by the payment ledger via Message-ID, not read/unread state.
-            # SINCE last 7 days to avoid scanning entire inbox every cycle.
+            # Walk INBOX + all subfolders so archived/auto-filed payment
+            # emails still get scanned. Skip Trash/Spam/Junk/Drafts/Sent.
             since_date = (datetime.now() - __import__("datetime").timedelta(days=7)).strftime("%d-%b-%Y")
-            _, data = mail.search(None, f"(SINCE {since_date})")
-            email_ids = data[0].split()
-            logger.info("Found %d emails in last 7 days", len(email_ids))
-            for num in email_ids:
-                _, msg_data = mail.fetch(num, "(RFC822)")
-                msg = email.message_from_bytes(msg_data[0][1])
+            _, folders_raw = mail.list()
+            folder_names = []
+            skip_pat = ("trash", "spam", "junk", "drafts", "sent")
+            for raw in folders_raw or []:
+                if not raw:
+                    continue
+                line = raw.decode() if isinstance(raw, bytes) else str(raw)
+                # Format: (\HasNoChildren) "/" "INBOX/Archive/2026"
+                parts = line.rsplit(" ", 1)
+                if len(parts) < 2:
+                    continue
+                name = parts[-1].strip().strip('"')
+                low = name.lower()
+                if any(s in low for s in skip_pat):
+                    continue
+                folder_names.append(name)
+
+            messages = []  # (folder, num, msg_bytes)
+            for folder in folder_names:
+                try:
+                    typ, _ = mail.select(folder, readonly=True)
+                    if typ != "OK":
+                        continue
+                    _, data = mail.search(None, f"(SINCE {since_date})")
+                    ids = data[0].split() if data and data[0] else []
+                    for num in ids:
+                        try:
+                            _, msg_data = mail.fetch(num, "(RFC822)")
+                            messages.append((folder, num, msg_data[0][1]))
+                        except Exception:
+                            continue
+                except Exception as e:
+                    logger.debug("folder %s skipped: %s", folder, e)
+                    continue
+
+            logger.info("Found %d emails across %d folders in last 7 days",
+                        len(messages), len(folder_names))
+            for folder, num, raw_msg in messages:
+                msg = email.message_from_bytes(raw_msg)
                 subject = str(msg.get("Subject", "")).lower()
                 body = get_body(msg).lower()
                 all_text = subject + " " + body
@@ -329,7 +360,8 @@ def check_payment_emails(
                     score, _kw = score_payment_email(sender, all_text, provider)
                     if score > 0:
                         logger.debug(
-                            "#%s from=%s subj=%s score=%s/%s provider=%s",
+                            "[%s]#%s from=%s subj=%s score=%s/%s provider=%s",
+                            folder,
                             num.decode(),
                             sender[:40],
                             subject[:50],

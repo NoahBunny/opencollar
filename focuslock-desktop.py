@@ -164,7 +164,23 @@ try:
 except ImportError:
     _vault_transport = None
 
-_vault_last_version = 0
+_VAULT_VERSION_FILE = os.path.join(MESH_CONFIG_DIR, "vault_last_version")
+
+def _load_vault_last_version():
+    try:
+        with open(_VAULT_VERSION_FILE) as f:
+            return int(f.read().strip())
+    except Exception:
+        return 0
+
+def _save_vault_last_version(v):
+    try:
+        with open(_VAULT_VERSION_FILE, "w") as f:
+            f.write(str(v))
+    except Exception:
+        pass
+
+_vault_last_version = _load_vault_last_version()
 _vault_node_registered = False
 
 VAULT_PRIVKEY_FILE = os.path.join(MESH_CONFIG_DIR, "node_privkey.pem")
@@ -310,6 +326,13 @@ def _vault_poll():
         if not blobs:
             return
         lion_pub = get_lion_pubkey()
+        # During catchup (large batch), skip action blobs — they are deltas
+        # whose effects are already folded into subsequent runtime snapshots.
+        # Replaying them double-counts (e.g. add-paywall accumulates again on
+        # top of a snapshot that already reflects the addition).  In real-time
+        # (small batch, ≤3 blobs), apply everything so the UI updates promptly
+        # before the next phone snapshot arrives.
+        catchup = len(blobs) > 3
         for blob in blobs:
             v = blob.get("version", 0)
             if v <= _vault_last_version:
@@ -326,6 +349,10 @@ def _vault_poll():
             body = json.loads(plaintext)
             # Apply orders from decrypted body
             if "action" in body:
+                if catchup:
+                    # Skip action deltas during catchup — snapshots are authoritative
+                    _vault_last_version = v
+                    continue
                 # RPC blob from Lion or relay
                 mesh_apply_order(body["action"], body.get("params", {}), mesh_orders)
                 mesh_orders.bump_version()
@@ -338,6 +365,7 @@ def _vault_poll():
                     mesh_orders.bump_version()
             _vault_last_version = v
             logger.info("Vault applied v%s (%d fields)", v, len(body))
+        _save_vault_last_version(_vault_last_version)
         on_mesh_orders_applied(dict(mesh_orders.orders))
     except urllib.error.HTTPError as e:
         if e.code == 404:

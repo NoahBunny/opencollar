@@ -2615,6 +2615,32 @@ public class ControlService extends Service {
             case "clear-geofence": result = doClearGeofence(); break;
             case "add-paywall": result = doAddPaywall(body); break;
             case "clear-paywall": result = doClearPaywall(); break;
+            case "payment-received": {
+                // Server-confirmed IMAP payment. Bumps total_paid_cents
+                // (lifetime counter, server-authoritative mirror) and
+                // optionally clears paywall + unlocks.
+                int amountCents = 0;
+                try { amountCents = Integer.parseInt(jval(body, "amount_cents")); } catch (Exception e) {}
+                if (amountCents > 0) {
+                    int cur = 0;
+                    try { cur = Integer.parseInt(gstr("focus_lock_total_paid_cents")); } catch (Exception e) {}
+                    Settings.Global.putString(getContentResolver(),
+                        "focus_lock_total_paid_cents", String.valueOf(cur + amountCents));
+                }
+                boolean clearPaywall = "true".equals(jval(body, "clear_paywall"))
+                    || "1".equals(jval(body, "clear_paywall"));
+                if (clearPaywall) {
+                    Settings.Global.putString(getContentResolver(), "focus_lock_paywall", "0");
+                    Settings.Global.putString(getContentResolver(), "focus_lock_paywall_original", "0");
+                    Settings.Global.putInt(getContentResolver(), "focus_lock_active", 0);
+                    Settings.Global.putLong(getContentResolver(), "focus_lock_unlock_at", 0);
+                    Settings.Global.putString(getContentResolver(), "focus_lock_message",
+                        "Payment received. Good boy.");
+                }
+                result = "{\"ok\":true,\"action\":\"payment-received\",\"amount_cents\":"
+                    + amountCents + ",\"cleared\":" + clearPaywall + "}";
+                break;
+            }
             case "pin-message": result = doPinMessage(body); break;
             case "send-message": {
                 // Phase D: Lion's apiVault → vault append → vaultSync → here.
