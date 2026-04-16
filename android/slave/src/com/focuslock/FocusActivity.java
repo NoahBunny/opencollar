@@ -48,6 +48,7 @@ public class FocusActivity extends Activity {
     private android.widget.Button factoryResetBtn;
     private android.widget.Button gratitudeSubmitBtn, exerciseDoneBtn;
     private android.widget.Button btnTakePhoto;
+    private android.widget.Button btnBunnyTasker;
     private TextView photoStatus;
     private static final int PHOTO_TASK_REQUEST = 7777;
     private android.net.Uri photoTaskUri;
@@ -72,7 +73,8 @@ public class FocusActivity extends Activity {
         factoryResetBtn = (android.widget.Button) findViewById(fid("btn_factory_reset"));
 
         // Bunny Tasker launch button (whitelisted during lock)
-        findViewById(fid("btn_bunny_tasker")).setOnClickListener(v -> {
+        btnBunnyTasker = (android.widget.Button) findViewById(fid("btn_bunny_tasker"));
+        btnBunnyTasker.setOnClickListener(v -> {
             try {
                 allowPause = true;
                 Intent launch = new Intent();
@@ -746,6 +748,26 @@ public class FocusActivity extends Activity {
     private void updateDisplay() {
         String msg = gstr("focus_lock_message");
         if (msg.isEmpty()) msg = "No phone for now.";
+
+        // Deadline-task miss-lock: the lock was triggered by a missed deadline
+        // task (server set deadline_task_locked_by_miss=1). Surface the CTA on
+        // the Bunny Tasker button so the bunny knows where to clear it — the
+        // generic "Bunny Tasker" label makes it look optional, which it isn't.
+        if (btnBunnyTasker != null) {
+            int missLocked = Settings.Global.getInt(getContentResolver(),
+                "focus_lock_deadline_task_locked_by_miss", 0);
+            if (missLocked == 1) {
+                btnBunnyTasker.setText("\u2192 Clear deadline task in Bunny Tasker");
+                btnBunnyTasker.setTextColor(0xFFff88cc);
+                btnBunnyTasker.setBackgroundTintList(
+                    android.content.res.ColorStateList.valueOf(0xFF2a1028));
+            } else {
+                btnBunnyTasker.setText("Bunny Tasker");
+                btnBunnyTasker.setTextColor(0xFFaa88cc);
+                btnBunnyTasker.setBackgroundTintList(
+                    android.content.res.ColorStateList.valueOf(0xFF1a1028));
+            }
+        }
 
         // Timer
         long unlockAt = Settings.Global.getLong(getContentResolver(), "focus_lock_unlock_at", 0);

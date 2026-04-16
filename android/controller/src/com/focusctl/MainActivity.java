@@ -227,6 +227,7 @@ public class MainActivity extends Activity {
         findViewById(getId("btn_confine_home")).setOnClickListener(v -> doConfineHome());
         findViewById(getId("btn_pin_message")).setOnClickListener(v -> doPinMessage());
         findViewById(getId("btn_force_sub")).setOnClickListener(v -> doForceSub());
+        try { findViewById(getId("btn_deadline_task")).setOnClickListener(v -> doDeadlineTask()); } catch (Exception e) {}
         try { findViewById(getId("btn_web_remote")).setOnClickListener(v -> doWebRemoteScan()); } catch (Exception e) {}
         try { findViewById(getId("btn_payment_email")).setOnClickListener(v -> doPaymentEmail()); } catch (Exception e) {}
         try { findViewById(getId("btn_vault_nodes")).setOnClickListener(v -> doVaultNodes()); } catch (Exception e) {}
@@ -2828,6 +2829,242 @@ public class MainActivity extends Activity {
             })
             .setNegativeButton("Cancel", null)
             .show();
+    }
+
+    /** Assign (or clear) a deadline-bound task: bunny must clear it before the
+     *  deadline, or the server auto-locks (or bumps the paywall). Early clears
+     *  roll the next deadline forward from the completion time; never stacks.
+     *  Server-side authority — commits {@code b9394fe}. Hits admin/order action
+     *  {@code set-deadline-task} (or {@code clear-deadline-task} to cancel). */
+    private void doDeadlineTask() {
+        final float density = getResources().getDisplayMetrics().density;
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding((int)(16*density), (int)(12*density), (int)(16*density), (int)(8*density));
+        root.setBackgroundColor(0xFF0a0a14);
+
+        TextView hint = new TextView(this);
+        hint.setText("Bunny must clear this before the deadline. Early clears roll the next deadline forward from the completion time (never stacks).");
+        hint.setTextColor(0xFFaaaaaa);
+        hint.setTextSize(12);
+        hint.setPadding(0, 0, 0, (int)(10*density));
+        root.addView(hint);
+
+        EditText taskInputDL = new EditText(this);
+        taskInputDL.setHint("Task text (e.g. 'Check in with Sir via photo')");
+        taskInputDL.setHintTextColor(0xFF555555);
+        taskInputDL.setTextColor(0xFFe0e0e0);
+        taskInputDL.setBackgroundColor(0xFF111118);
+        taskInputDL.setPadding((int)(12*density), (int)(10*density), (int)(12*density), (int)(10*density));
+        taskInputDL.setMinLines(2);
+        root.addView(taskInputDL, matchWrap(density, 0, 8));
+
+        TextView deadlineLbl = new TextView(this);
+        deadlineLbl.setText("Deadline (minutes from now)");
+        deadlineLbl.setTextColor(0xFFc8a84e);
+        deadlineLbl.setTextSize(12);
+        deadlineLbl.setPadding(0, (int)(4*density), 0, (int)(4*density));
+        root.addView(deadlineLbl);
+        EditText deadlineInput = new EditText(this);
+        deadlineInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        deadlineInput.setText("240");
+        deadlineInput.setTextColor(0xFFe0e0e0);
+        deadlineInput.setBackgroundColor(0xFF111118);
+        deadlineInput.setPadding((int)(12*density), (int)(8*density), (int)(12*density), (int)(8*density));
+        root.addView(deadlineInput, matchWrap(density, 0, 4));
+
+        LinearLayout dlChips = new LinearLayout(this);
+        dlChips.setOrientation(LinearLayout.HORIZONTAL);
+        int[] dlMins = {60, 240, 1440, 4320};
+        String[] dlLbls = {"1h", "4h", "1d", "3d"};
+        for (int i = 0; i < dlMins.length; i++) {
+            final int m = dlMins[i];
+            Button chip = new Button(this);
+            chip.setText(dlLbls[i]);
+            chip.setTextSize(11);
+            chip.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF1a1a2a));
+            chip.setTextColor(0xFFaabbcc);
+            chip.setOnClickListener(v -> deadlineInput.setText(String.valueOf(m)));
+            LinearLayout.LayoutParams chipLp = new LinearLayout.LayoutParams(0,
+                (int)(34*density), 1f);
+            if (i < dlMins.length - 1) chipLp.rightMargin = (int)(3*density);
+            dlChips.addView(chip, chipLp);
+        }
+        root.addView(dlChips, matchWrap(density, 0, 10));
+
+        TextView intervalLbl = new TextView(this);
+        intervalLbl.setText("Recur interval (minutes; 0 = one-shot)");
+        intervalLbl.setTextColor(0xFFc8a84e);
+        intervalLbl.setTextSize(12);
+        intervalLbl.setPadding(0, (int)(4*density), 0, (int)(4*density));
+        root.addView(intervalLbl);
+        EditText intervalInput = new EditText(this);
+        intervalInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        intervalInput.setText("0");
+        intervalInput.setTextColor(0xFFe0e0e0);
+        intervalInput.setBackgroundColor(0xFF111118);
+        intervalInput.setPadding((int)(12*density), (int)(8*density), (int)(12*density), (int)(8*density));
+        root.addView(intervalInput, matchWrap(density, 0, 4));
+
+        LinearLayout ivChips = new LinearLayout(this);
+        ivChips.setOrientation(LinearLayout.HORIZONTAL);
+        int[] ivMins = {0, 1440, 4320, 10080};
+        String[] ivLbls = {"Once", "Daily", "3d", "Weekly"};
+        for (int i = 0; i < ivMins.length; i++) {
+            final int m = ivMins[i];
+            Button chip = new Button(this);
+            chip.setText(ivLbls[i]);
+            chip.setTextSize(11);
+            chip.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF1a1a2a));
+            chip.setTextColor(0xFFaabbcc);
+            chip.setOnClickListener(v -> intervalInput.setText(String.valueOf(m)));
+            LinearLayout.LayoutParams chipLp = new LinearLayout.LayoutParams(0,
+                (int)(34*density), 1f);
+            if (i < ivMins.length - 1) chipLp.rightMargin = (int)(3*density);
+            ivChips.addView(chip, chipLp);
+        }
+        root.addView(ivChips, matchWrap(density, 0, 10));
+
+        TextView proofLbl = new TextView(this);
+        proofLbl.setText("Proof type");
+        proofLbl.setTextColor(0xFFc8a84e);
+        proofLbl.setTextSize(12);
+        proofLbl.setPadding(0, (int)(4*density), 0, (int)(4*density));
+        root.addView(proofLbl);
+        android.widget.RadioGroup proofGroup = new android.widget.RadioGroup(this);
+        proofGroup.setOrientation(LinearLayout.HORIZONTAL);
+        String[] proofs = {"none", "typed", "photo"};
+        android.widget.RadioButton[] proofBtns = new android.widget.RadioButton[3];
+        for (int i = 0; i < proofs.length; i++) {
+            android.widget.RadioButton rb = new android.widget.RadioButton(this);
+            rb.setText(proofs[i]);
+            rb.setTextColor(0xFFe0e0e0);
+            rb.setTextSize(13);
+            rb.setId(1000 + i);
+            if (i == 0) rb.setChecked(true);
+            proofBtns[i] = rb;
+            proofGroup.addView(rb);
+        }
+        root.addView(proofGroup, matchWrap(density, 0, 4));
+
+        EditText proofHintInput = new EditText(this);
+        proofHintInput.setHint("Proof hint (shown to bunny, e.g. 'Selfie with collar visible')");
+        proofHintInput.setHintTextColor(0xFF555555);
+        proofHintInput.setTextColor(0xFFe0e0e0);
+        proofHintInput.setBackgroundColor(0xFF111118);
+        proofHintInput.setPadding((int)(12*density), (int)(8*density), (int)(12*density), (int)(8*density));
+        root.addView(proofHintInput, matchWrap(density, 0, 10));
+
+        TextView missLbl = new TextView(this);
+        missLbl.setText("On miss");
+        missLbl.setTextColor(0xFFc8a84e);
+        missLbl.setTextSize(12);
+        missLbl.setPadding(0, (int)(4*density), 0, (int)(4*density));
+        root.addView(missLbl);
+        android.widget.RadioGroup missGroup = new android.widget.RadioGroup(this);
+        missGroup.setOrientation(LinearLayout.HORIZONTAL);
+        android.widget.RadioButton rbLock = new android.widget.RadioButton(this);
+        rbLock.setText("Auto-lock");
+        rbLock.setTextColor(0xFFe0e0e0);
+        rbLock.setTextSize(13);
+        rbLock.setId(2001);
+        rbLock.setChecked(true);
+        missGroup.addView(rbLock);
+        android.widget.RadioButton rbPaywall = new android.widget.RadioButton(this);
+        rbPaywall.setText("Paywall bump");
+        rbPaywall.setTextColor(0xFFe0e0e0);
+        rbPaywall.setTextSize(13);
+        rbPaywall.setId(2002);
+        missGroup.addView(rbPaywall);
+        root.addView(missGroup, matchWrap(density, 0, 4));
+
+        EditText missAmount = new EditText(this);
+        missAmount.setHint("Miss amount ($) — only if Paywall bump");
+        missAmount.setHintTextColor(0xFF555555);
+        missAmount.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        missAmount.setText("10");
+        missAmount.setTextColor(0xFFe0e0e0);
+        missAmount.setBackgroundColor(0xFF111118);
+        missAmount.setPadding((int)(12*density), (int)(8*density), (int)(12*density), (int)(8*density));
+        root.addView(missAmount, matchWrap(density, 0, 8));
+
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        scroll.setBackgroundColor(0xFF0a0a14);
+        scroll.addView(root);
+
+        final AlertDialog dlg = new AlertDialog.Builder(this)
+            .setTitle("\u23F0 Deadline Task")
+            .setView(scroll)
+            .setPositiveButton("Assign", null)   // wired below to avoid auto-dismiss on validation fail
+            .setNeutralButton("Cancel Task", null)
+            .setNegativeButton("Close", null)
+            .show();
+
+        dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String text = taskInputDL.getText().toString().trim();
+            if (text.isEmpty()) {
+                taskInputDL.setError("Required");
+                return;
+            }
+            int mins;
+            try { mins = Integer.parseInt(deadlineInput.getText().toString().trim()); }
+            catch (Exception e) { deadlineInput.setError("Bad number"); return; }
+            if (mins <= 0) { deadlineInput.setError("Must be positive"); return; }
+            int intervalMins;
+            try { intervalMins = Integer.parseInt(intervalInput.getText().toString().trim()); }
+            catch (Exception e) { intervalMins = 0; }
+            if (intervalMins < 0) intervalMins = 0;
+            String proofType = "none";
+            for (int i = 0; i < proofBtns.length; i++) {
+                if (proofBtns[i].isChecked()) { proofType = proofs[i]; break; }
+            }
+            String proofHint = proofHintInput.getText().toString().trim();
+            String onMiss = rbPaywall.isChecked() ? "paywall" : "lock";
+            int missAmt = 0;
+            try { missAmt = Integer.parseInt(missAmount.getText().toString().trim()); }
+            catch (Exception e) { missAmt = 0; }
+            final int fIntervalMinutes = intervalMins;
+            final String fText = text;
+            final int fMins = mins;
+            final String fProofType = proofType;
+            final String fProofHint = proofHint;
+            final String fOnMiss = onMiss;
+            final int fMissAmt = missAmt;
+            dlg.dismiss();
+            setStatus("Arming deadline task...");
+            executor.execute(() -> {
+                StringBuilder jb = new StringBuilder();
+                jb.append("{\"text\":\"").append(esc(fText)).append("\"");
+                jb.append(",\"deadline_minutes\":").append(fMins);
+                jb.append(",\"interval_ms\":").append((long)fIntervalMinutes * 60000L);
+                jb.append(",\"proof_type\":\"").append(fProofType).append("\"");
+                if (!fProofHint.isEmpty()) jb.append(",\"proof_hint\":\"").append(esc(fProofHint)).append("\"");
+                jb.append(",\"on_miss\":\"").append(fOnMiss).append("\"");
+                if ("paywall".equals(fOnMiss)) jb.append(",\"miss_amount\":").append(fMissAmt);
+                jb.append("}");
+                String r = api("/api/set-deadline-task", jb.toString());
+                setStatus(r != null && r.contains("ok") ? "Deadline task armed" : "Failed: " + r);
+            });
+        });
+
+        dlg.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+            dlg.dismiss();
+            setStatus("Clearing deadline task...");
+            executor.execute(() -> {
+                String r = api("/api/clear-deadline-task", "{}");
+                setStatus(r != null && r.contains("ok") ? "Deadline task cleared" : "Failed: " + r);
+            });
+        });
+    }
+
+    /** Helper for MATCH_PARENT x WRAP_CONTENT with bottom margin in dp. */
+    private LinearLayout.LayoutParams matchWrap(float density, int topDp, int bottomDp) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = (int)(topDp * density);
+        lp.bottomMargin = (int)(bottomDp * density);
+        return lp;
     }
 
     // ── Lovense ──

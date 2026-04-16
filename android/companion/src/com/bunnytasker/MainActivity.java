@@ -45,6 +45,9 @@ public class MainActivity extends Activity {
     private TextView statusText, statToday, statWeek, statTotal;
     private TextView statEscapes, statPaywall, statPaid, statInterest, statStreak, statGeofence;
     private TextView pinnedMessage, payHint, subStatus, subPerks, noSubPrompt;
+    private LinearLayout deadlineTaskSection;
+    private TextView deadlineTaskText, deadlineTaskCountdown, deadlineTaskHint, deadlineTaskStatus;
+    private Button btnDeadlineTaskClear;
     private android.widget.ImageView connectionCrown;
     private TextView pairingFingerprint, pairedFingerprint, pairingHint;
     private LinearLayout pinnedSection, messagesContainer;
@@ -88,6 +91,13 @@ public class MainActivity extends Activity {
         statStreak = (TextView) findViewById(fid("stat_streak"));
         statGeofence = (TextView) findViewById(fid("stat_geofence"));
         pinnedSection = (LinearLayout) findViewById(fid("pinned_section"));
+        deadlineTaskSection = (LinearLayout) findViewById(fid("deadline_task_section"));
+        deadlineTaskText = (TextView) findViewById(fid("deadline_task_text"));
+        deadlineTaskCountdown = (TextView) findViewById(fid("deadline_task_countdown"));
+        deadlineTaskHint = (TextView) findViewById(fid("deadline_task_hint"));
+        deadlineTaskStatus = (TextView) findViewById(fid("deadline_task_status"));
+        btnDeadlineTaskClear = (Button) findViewById(fid("btn_deadline_task_clear"));
+        btnDeadlineTaskClear.setOnClickListener(v -> doDeadlineTaskClear());
         pinnedMessage = (TextView) findViewById(fid("pinned_message"));
         messagesContainer = (LinearLayout) findViewById(fid("messages_container"));
         messageInput = (EditText) findViewById(fid("message_input"));
@@ -545,6 +555,8 @@ public class MainActivity extends Activity {
                 } else {
                     pinnedSection.setVisibility(View.GONE);
                 }
+
+                refreshDeadlineTask();
             });
 
         } catch (Exception e) {
@@ -1044,6 +1056,288 @@ public class MainActivity extends Activity {
         }
     }
 
+    // ────────────── Deadline Task ──────────────
+    // Server-authoritative do-or-lock task (commit b9394fe). Lion arms it from
+    // Lion's Share; Collar projects the deadline_task_* keys into Settings.Global
+    // via vault. Bunny Tasker renders countdown + Clear button; clear flow
+    // signs with PairingManager.sign and POSTs /api/mesh/{id}/deadline-task/clear.
+
+    /** UI-thread only. Reads the projected deadline_task_* keys from
+     *  Settings.Global and updates the section visibility / labels / button
+     *  state. Called from refreshStats' handler.post block. */
+    private void refreshDeadlineTask() {
+        if (deadlineTaskSection == null) return;
+        String text = gstr("focus_lock_deadline_task_text");
+        long deadlineMs = Settings.Global.getLong(getContentResolver(),
+            "focus_lock_deadline_task_deadline_ms", 0L);
+        int lockedByMiss = Settings.Global.getInt(getContentResolver(),
+            "focus_lock_deadline_task_locked_by_miss", 0);
+        if (text.isEmpty() && deadlineMs == 0L && lockedByMiss == 0) {
+            deadlineTaskSection.setVisibility(View.GONE);
+            return;
+        }
+        deadlineTaskSection.setVisibility(View.VISIBLE);
+        deadlineTaskText.setText(text.isEmpty() ? "(no task text)" : text);
+        long now = System.currentTimeMillis();
+        if (lockedByMiss == 1) {
+            deadlineTaskCountdown.setText("MISSED — complete to unlock");
+            deadlineTaskCountdown.setTextColor(0xFFff6688);
+        } else if (deadlineMs > now) {
+            long remaining = deadlineMs - now;
+            long h = remaining / 3600000L;
+            long m = (remaining % 3600000L) / 60000L;
+            deadlineTaskCountdown.setText("Deadline in " + (h > 0 ? h + "h " : "") + m + "m");
+            deadlineTaskCountdown.setTextColor(0xFFcc88cc);
+        } else if (deadlineMs > 0) {
+            deadlineTaskCountdown.setText("Deadline passed — miss will fire soon");
+            deadlineTaskCountdown.setTextColor(0xFFff8844);
+        } else {
+            deadlineTaskCountdown.setText("");
+        }
+        String proofType = gstr("focus_lock_deadline_task_proof_type");
+        String hint = gstr("focus_lock_deadline_task_proof_hint");
+        if (!hint.isEmpty() || (!proofType.isEmpty() && !"none".equals(proofType))) {
+            StringBuilder h = new StringBuilder();
+            if (!"none".equals(proofType) && !proofType.isEmpty()) {
+                h.append("Proof: ").append(proofType);
+                if (!hint.isEmpty()) h.append(" — ");
+            }
+            h.append(hint);
+            deadlineTaskHint.setText(h.toString());
+            deadlineTaskHint.setVisibility(View.VISIBLE);
+        } else {
+            deadlineTaskHint.setVisibility(View.GONE);
+        }
+    }
+
+    /** Entry point for the Clear Now button. Branches on proof_type. */
+    private void doDeadlineTaskClear() {
+        String proofType = gstr("focus_lock_deadline_task_proof_type");
+        if (proofType == null || proofType.isEmpty()) proofType = "none";
+        switch (proofType) {
+            case "typed":
+                promptTypedProof();
+                break;
+            case "photo":
+                promptPhotoProof();
+                break;
+            default:
+                confirmAndPostClear(null);
+        }
+    }
+
+    /** Final step — POST to the server's bunny-authed clear endpoint. Shared
+     *  by all three proof paths; the proof check happens client-side, the
+     *  signed clear is what the server trusts (see commit b9394fe). */
+    private void postDeadlineClear() {
+        String meshId = gstr("focus_lock_mesh_id");
+        String meshUrl = gstr("focus_lock_mesh_url");
+        String nodeId = gstr("focus_lock_mesh_node_id");
+        if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty()) {
+            handler.post(() -> setDeadlineTaskStatus("Not paired to a mesh yet"));
+            return;
+        }
+        long ts = System.currentTimeMillis();
+        String payload = meshId + "|" + nodeId + "|deadline-task-clear|" + ts;
+        String signature = PairingManager.sign(getContentResolver(), payload);
+        if (signature == null || signature.isEmpty()) {
+            handler.post(() -> setDeadlineTaskStatus("Clear failed (no key)"));
+            return;
+        }
+        JSONObject body = new JSONObject();
+        try {
+            body.put("node_id", nodeId);
+            body.put("ts", ts);
+            body.put("signature", signature);
+        } catch (JSONException e) {
+            handler.post(() -> setDeadlineTaskStatus("Clear failed (json)"));
+            return;
+        }
+        try {
+            URL url = new URL(meshUrl + "/api/mesh/" + meshId + "/deadline-task/clear");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(10000);
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.getOutputStream().write(body.toString().getBytes("UTF-8"));
+            int code = conn.getResponseCode();
+            BufferedReader reader = new BufferedReader(new InputStreamReader(
+                code < 400 ? conn.getInputStream() : conn.getErrorStream()));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) sb.append(line);
+            reader.close();
+            conn.disconnect();
+            if (code >= 400) {
+                final String err = sb.toString();
+                handler.post(() -> setDeadlineTaskStatus("Clear failed: " + err));
+                return;
+            }
+            handler.post(() -> setDeadlineTaskStatus("Task cleared — syncing..."));
+        } catch (Exception e) {
+            final String msg = e.getMessage();
+            handler.post(() -> setDeadlineTaskStatus("Clear failed: " + msg));
+        }
+    }
+
+    private void setDeadlineTaskStatus(String s) {
+        if (deadlineTaskStatus == null) return;
+        deadlineTaskStatus.setText(s);
+        deadlineTaskStatus.setVisibility(View.VISIBLE);
+    }
+
+    /** Confirm dialog + fire clear. Used for {@code proof_type=none} and as
+     *  the final step after typed/photo proof locally passes. */
+    private void confirmAndPostClear(Runnable onSuccess) {
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Clear deadline task?")
+            .setMessage("This will clear the task and roll the deadline forward if an interval is set.")
+            .setPositiveButton("Clear", (d, w) -> {
+                setDeadlineTaskStatus("Clearing...");
+                executor.execute(() -> {
+                    postDeadlineClear();
+                    if (onSuccess != null) handler.post(onSuccess);
+                });
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    /** Typed-proof flow: show a text field; enable Clear button only when
+     *  word count ≥ focus_lock_word_min (default 30). Mirrors the Collar's
+     *  existing love-letter / word_min pattern. */
+    private void promptTypedProof() {
+        final int wordMin = Settings.Global.getInt(getContentResolver(),
+            "focus_lock_word_min", 30);
+        String hint = gstr("focus_lock_deadline_task_proof_hint");
+        final EditText input = new EditText(this);
+        input.setHint(hint.isEmpty() ? "Type your response" : hint);
+        input.setMinLines(4);
+        input.setGravity(android.view.Gravity.TOP | android.view.Gravity.START);
+        input.setTextColor(0xFFe0e0e0);
+        input.setBackgroundColor(0xFF111118);
+        input.setPadding(24, 16, 24, 16);
+
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.setPadding(32, 16, 32, 8);
+        wrap.addView(input);
+        final TextView counter = new TextView(this);
+        counter.setText("0 / " + wordMin + " words");
+        counter.setTextColor(0xFF888888);
+        counter.setTextSize(12);
+        counter.setPadding(0, 8, 0, 0);
+        wrap.addView(counter);
+
+        final android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(this)
+            .setTitle("Clear task: typed proof")
+            .setView(wrap)
+            .setPositiveButton("Submit", null)
+            .setNegativeButton("Cancel", null)
+            .show();
+        final Button submit = dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE);
+        submit.setEnabled(false);
+        input.addTextChangedListener(new android.text.TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            public void afterTextChanged(android.text.Editable s) {
+                String t = s.toString().trim();
+                int words = t.isEmpty() ? 0 : t.split("\\s+").length;
+                counter.setText(words + " / " + wordMin + " words");
+                submit.setEnabled(words >= wordMin);
+            }
+        });
+        submit.setOnClickListener(v -> {
+            dlg.dismiss();
+            setDeadlineTaskStatus("Submitting typed proof...");
+            executor.execute(this::postDeadlineClear);
+        });
+    }
+
+    /** Photo-proof flow: open the camera, capture a bitmap, POST it to the
+     *  relay's /webhook/verify-photo (same endpoint the Collar's photo-task
+     *  uses). On {@code passed:true}, fire the signed clear. */
+    private void promptPhotoProof() {
+        // Reuse the existing TAKE_PHOTO path in onActivityResult. We stash a
+        // flag via Settings.Global so the result handler knows to route this
+        // photo through the deadline-task verify flow rather than the pay-
+        // receipt upload flow.
+        Settings.Global.putString(getContentResolver(),
+            "focus_lock_deadline_photo_pending", "1");
+        Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+        try {
+            startActivityForResult(intent, TAKE_PHOTO);
+        } catch (Exception e) {
+            Settings.Global.putString(getContentResolver(),
+                "focus_lock_deadline_photo_pending", "0");
+            setDeadlineTaskStatus("Camera unavailable: " + e.getMessage());
+        }
+    }
+
+    /** Called from onActivityResult's TAKE_PHOTO branch when the deadline-
+     *  photo-pending flag is set. Encodes, uploads, verifies, clears. */
+    private void verifyDeadlinePhotoAndClear(Bitmap bitmap) {
+        Settings.Global.putString(getContentResolver(),
+            "focus_lock_deadline_photo_pending", "0");
+        if (bitmap == null) {
+            handler.post(() -> setDeadlineTaskStatus("Photo capture failed"));
+            return;
+        }
+        String meshUrl = gstr("focus_lock_mesh_url");
+        if (meshUrl.isEmpty()) {
+            handler.post(() -> setDeadlineTaskStatus("No mesh URL configured"));
+            return;
+        }
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 70, baos);
+        String b64 = android.util.Base64.encodeToString(baos.toByteArray(),
+            android.util.Base64.NO_WRAP);
+        String task = gstr("focus_lock_deadline_task_text");
+        String hint = gstr("focus_lock_deadline_task_proof_hint");
+        String prompt = task + (hint.isEmpty() ? "" : " (" + hint + ")");
+        handler.post(() -> setDeadlineTaskStatus("Verifying photo..."));
+        try {
+            String json = "{\"photo\":\"" + b64 + "\",\"task\":\""
+                + prompt.replace("\\", "\\\\").replace("\"", "\\\"") + "\"}";
+            URL url = new URL(meshUrl + "/webhook/verify-photo");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(60000);
+            conn.getOutputStream().write(json.getBytes("UTF-8"));
+            int code = conn.getResponseCode();
+            BufferedReader reader = new BufferedReader(new InputStreamReader(
+                code < 400 ? conn.getInputStream() : conn.getErrorStream()));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) sb.append(line);
+            reader.close();
+            conn.disconnect();
+            String response = sb.toString();
+            boolean passed = response.contains("\"passed\":true");
+            if (passed) {
+                postDeadlineClear();
+            } else {
+                String reason = "";
+                int ri = response.indexOf("\"reason\":\"");
+                if (ri >= 0) {
+                    ri += 10;
+                    int re = response.indexOf("\"", ri);
+                    if (re > ri) reason = response.substring(ri, re);
+                }
+                final String fr = reason;
+                handler.post(() -> setDeadlineTaskStatus("Photo rejected: " + fr + " — try again"));
+            }
+        } catch (Exception e) {
+            final String msg = e.getMessage();
+            handler.post(() -> setDeadlineTaskStatus("Verify failed: " + msg));
+        }
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
@@ -1060,6 +1354,16 @@ public class MainActivity extends Activity {
                     if (is != null) is.close();
                 }
                 if (bitmap == null) return;
+
+                // Deadline-task photo-proof intercept: when promptPhotoProof()
+                // launched the camera it stamped this flag — routing the
+                // capture through verify-photo + signed clear instead of the
+                // usual message-photo flow.
+                String deadlinePending = gstr("focus_lock_deadline_photo_pending");
+                if ("1".equals(deadlinePending) && requestCode == TAKE_PHOTO) {
+                    verifyDeadlinePhotoAndClear(bitmap);
+                    return;
+                }
 
                 // Compress to JPEG
                 java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
