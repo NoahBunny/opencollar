@@ -51,7 +51,7 @@ Used here as the template for future migrations.
 | `sub_due` | Server | Collar, Bunny, Lion | vault | ✓ current | done | |
 | `sub_total_owed` | Server | Collar, Bunny | vault | ✓ current | done | |
 | `sub_last_charged` | Server | Server | server-only | ✓ current | done | Intentionally not on phone — no enforcement use. |
-| `paywall` | Collar + Server | All | vault | → server | P1 | Currently dual-write: Collar applies locally on escape ($5/$10/$15 stacking), server applies via admin/order. Drift possible. Move all increments server-side via admin actions; phone only reports escape events. |
+| `paywall` | Server | All | vault | ✓ current | done | **Migrated 2026-04-17**: server applies all enforcement-driven increments (escape tier, tamper attempt/detected/removed, geofence breach, app-launch penalty, good-behavior reward, compound interest). Phone is a pure event reporter — see row 8 of the migration roadmap. |
 | `paywall_original` | Server | Collar | vault | ✓ current | skip | Snapshot on lock engage; already server-authored. |
 | `total_paid_cents` | Server | All | vault | ✓ current | done | **Migrated 2026-04-15**: added to `ORDER_KEYS` + Collar's `MESH_ORDER_KEYS`; new `payment-received` action increments it + optionally clears paywall; `check_payment_emails` wired via `apply_fn` kwarg to `_server_apply_order`. Smoke-tested. |
 | `payment_ledger.json` | Server | Server | server-only | → replicate | P1 | Full history lives at `/run/focuslock/payment_ledger.json` on pegasus. Add a bunny-authed `GET /api/mesh/{id}/payments?since=...` endpoint so Bunny Tasker can show "Payments" tab with history. No write path needed from phone; IMAP bot is the sole writer. |
@@ -175,7 +175,7 @@ Each row is one session's work, following the Category-A worked example as the t
 
 7. **[P2] Geofence breach event push**. Piggy-backs on #4's event infrastructure. Half-session.
 
-8. **[P2] Harden `paywall` writes to server-only**. Collar stops writing paywall directly; all increments go through server actions. Biggest behavior change — risk of regression. One full session with careful testing.
+8. ✅ **[P2] Harden `paywall` writes to server-only** — DONE 2026-04-17. Collar + companion no longer mutate `focus_lock_paywall` on escape / tamper (attempt / detected / removed) / geofence breach / app-launch / good-behavior / compound-interest; server applies amounts via `escape-recorded` (tiered $5×tier), `tamper-recorded` (attempt/detected $500, removed $1000), `geofence-breach-recorded` (+$100), `app-launch-penalty` (+$50 with 10s endpoint dedup), `good-behavior-tick` (-$5 in the tribute/fine loop), and a new `check_compound_interest()` thread that fires `compound-interest-tick`. Penalty amounts live in `shared/focuslock_penalties.py` for a single source of truth. Slave v69, companion v49. Follow-ups deferred: SMS sit-boy, local `/api/paywall` HTTP route, gamble/unsubscribe bunny-initiated paths, Release-Forever zeroing.
 
 ## Known non-candidates (never migrate)
 

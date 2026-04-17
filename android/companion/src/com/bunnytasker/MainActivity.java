@@ -252,18 +252,14 @@ public class MainActivity extends Activity {
                     if (!dpm.isAdminActive(collarAdmin)) {
                         int collarTamper = Settings.Global.getInt(getContentResolver(), "focus_lock_collar_admin_removed", 0);
                         if (collarTamper == 0) {
-                            android.util.Log.w("BunnyTasker", "Collar admin removed — $500 penalty");
+                            android.util.Log.w("BunnyTasker", "Collar admin removed — reporting tamper_removed");
                             Settings.Global.putInt(getContentResolver(), "focus_lock_collar_admin_removed", 1);
-                            int pw = 0;
-                            try { pw = Integer.parseInt(gstr("focus_lock_paywall")); } catch (Exception e2) {}
-                            pw += 500;
-                            Settings.Global.putString(getContentResolver(), "focus_lock_paywall", String.valueOf(pw));
-                            Settings.Global.putString(getContentResolver(), "focus_lock_message",
-                                "The Collar's admin removed.\n+$500 penalty.\nRe-enable it in Settings → Security → Device admin.");
-                            Settings.Global.putInt(getContentResolver(), "focus_lock_active", 1);
-                            Settings.Global.putInt(getContentResolver(), "focus_lock_shame", 1);
+                            // P2 paywall hardening (2026-04-17): server applies
+                            // the $1000 penalty on tamper_removed and propagates
+                            // lock + paywall via vault; companion just reports.
+                            postEventToServer("tamper_removed", "companion-detected");
                             postToCollar("/api/lock",
-                                "{\"message\":\"Collar admin removed. +$500 penalty.\",\"mode\":\"basic\",\"shame\":1,\"target\":\"phone\"}");
+                                "{\"message\":\"Collar admin removed.\",\"mode\":\"basic\",\"shame\":1,\"target\":\"phone\"}");
                         }
                     } else {
                         Settings.Global.putInt(getContentResolver(), "focus_lock_collar_admin_removed", 0);
@@ -2184,6 +2180,48 @@ public class MainActivity extends Activity {
 
     private String escJson(String s) {
         return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
+    }
+
+    /** Bunny-signed event post to /api/mesh/{id}/escape-event. Mirrors the
+     *  Collar's ControlService.postEventToServer — same endpoint, same sig
+     *  format (mesh_id|node_id|event_type|ts). Used for tamper_removed when
+     *  the companion detects the Collar's device admin is gone.
+     *  P2 paywall hardening (2026-04-17): server now owns the penalty amount,
+     *  so the companion reports instead of writing paywall locally. */
+    private void postEventToServer(String eventType, String details) {
+        executor.execute(() -> {
+            try {
+                String meshId = gstr("focus_lock_mesh_id");
+                String meshUrl = gstr("focus_lock_mesh_url");
+                String nodeId = gstr("focus_lock_mesh_node_id");
+                if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty()) return;
+                long ts = System.currentTimeMillis();
+                String payload = meshId + "|" + nodeId + "|" + eventType + "|" + ts;
+                String signature = PairingManager.sign(getContentResolver(), payload);
+                if (signature == null || signature.isEmpty()) return;
+                String safeDetails = (details == null ? "" : escJson(details));
+                String body = "{\"node_id\":\"" + nodeId
+                    + "\",\"event_type\":\"" + eventType
+                    + "\",\"details\":\"" + safeDetails
+                    + "\",\"ts\":" + ts
+                    + ",\"signature\":\"" + signature + "\"}";
+                URL url = new URL(meshUrl + "/api/mesh/" + meshId + "/escape-event");
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setConnectTimeout(10000);
+                conn.setReadTimeout(10000);
+                conn.setRequestMethod("POST");
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setDoOutput(true);
+                conn.getOutputStream().write(body.getBytes("UTF-8"));
+                int code = conn.getResponseCode();
+                if (code >= 400) {
+                    android.util.Log.w("BunnyTasker", "escape-event POST " + code + " for " + eventType);
+                }
+                conn.disconnect();
+            } catch (Exception e) {
+                android.util.Log.w("BunnyTasker", "postEventToServer(" + eventType + "): " + e.getMessage());
+            }
+        });
     }
 
     @Override

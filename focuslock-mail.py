@@ -164,12 +164,36 @@ _phone_addrs = _cfg.get("phone_addresses", [])
 _phone_port = _cfg.get("phone_port", 8432)
 PHONE_URL = os.environ.get("PHONE_URL", f"http://{_phone_addrs[0]}:{_phone_port}" if _phone_addrs else "")
 
+# ── Penalty constants (P2 paywall hardening — server is single writer) ──
+from focuslock_penalties import (
+    APP_LAUNCH_DEDUP_WINDOW_MS,
+    APP_LAUNCH_PENALTY,
+    COMPOUND_INTEREST_TICK_INTERVAL_S,
+    GEOFENCE_BREACH_PENALTY,
+    GOOD_BEHAVIOR_INTERVAL_MS,
+    GOOD_BEHAVIOR_REWARD,
+    TAMPER_ATTEMPT_PENALTY,
+    TAMPER_DETECTED_PENALTY,
+    TAMPER_REMOVED_PENALTY,
+    compound_interest_rate,
+    escape_penalty,
+)
+
 # ── Multi-device ADB targets ──
 from focuslock_adb import ADBBridge
 
 adb = ADBBridge(
     devices=[f"{addr}:5555" for addr in _phone_addrs] if _phone_addrs else [],
 )
+
+# ── App-launch-penalty dedup (P2 paywall hardening) ──
+# Collar may retry the event post on flaky networks; we'd rather drop a
+# duplicate than double-charge. Keyed on (mesh_id, node_id), value is the ms
+# timestamp of the last accepted hit. Cleared naturally as entries age out of
+# the window — no eviction thread needed at current scale.
+_app_launch_last_accepted_ms = {}
+_app_launch_dedup_lock = threading.Lock()
+
 
 # ── Mesh State ──
 
@@ -725,45 +749,136 @@ def mesh_apply_order(action, params, orders):
         orders.set("streak_enabled", 0)
         return {"applied": action}
     elif action == "escape-recorded":
-        # Phone reports an escape attempt. Increment lifetime_escapes.
-        # Roadmap #4 — 2026-04-15. Tiered paywall penalty stays on the
-        # phone (Collar applies it immediately in FocusActivity for low
-        # latency); server just maintains the lifetime counter + audit.
+        # Phone reports an escape attempt. Increment lifetime_escapes and apply
+        # the tiered penalty ($5 × new tier). P2 paywall hardening (2026-04-17)
+        # moved this write server-side so a tampered Collar can't silently skip
+        # it; phone is a pure reporter now.
         try:
             cur = int(orders.get("lifetime_escapes", 0) or 0)
         except (ValueError, TypeError):
             cur = 0
-        orders.set("lifetime_escapes", cur + 1)
-        return {"applied": action, "lifetime_escapes": cur + 1}
+        new_count = cur + 1
+        orders.set("lifetime_escapes", new_count)
+        penalty = escape_penalty(new_count)
+        try:
+            current_pw = int(orders.get("paywall", "0") or "0")
+        except (ValueError, TypeError):
+            current_pw = 0
+        new_pw = current_pw + penalty
+        orders.set("paywall", str(new_pw))
+        return {
+            "applied": action,
+            "lifetime_escapes": new_count,
+            "penalty": penalty,
+            "paywall": new_pw,
+        }
+    elif action == "app-launch-penalty":
+        # Phone launched the Collar / Bunny Tasker directly while locked.
+        # Flat $50. Dedup lives at the endpoint (10s window) so the handler
+        # itself stays idempotent on retries.
+        try:
+            current_pw = int(orders.get("paywall", "0") or "0")
+        except (ValueError, TypeError):
+            current_pw = 0
+        new_pw = current_pw + APP_LAUNCH_PENALTY
+        orders.set("paywall", str(new_pw))
+        return {"applied": action, "penalty": APP_LAUNCH_PENALTY, "paywall": new_pw}
+    elif action == "good-behavior-tick":
+        # Unlocked + no new escapes since paywall_last_bonus_at — credit $5
+        # toward paywall, clamped at 0. Fired by _check_tributes_fines_for_mesh
+        # every GOOD_BEHAVIOR_INTERVAL_MS of qualifying time.
+        try:
+            current_pw = int(orders.get("paywall", "0") or "0")
+        except (ValueError, TypeError):
+            current_pw = 0
+        credit = min(GOOD_BEHAVIOR_REWARD, current_pw)
+        if credit <= 0:
+            return {"applied": action, "credit": 0, "paywall": current_pw}
+        new_pw = current_pw - credit
+        orders.set("paywall", str(new_pw))
+        return {"applied": action, "credit": credit, "paywall": new_pw}
+    elif action == "compound-interest-tick":
+        # Set paywall to the compounded value computed server-side by
+        # check_compound_interest(). Server passes the target amount so the
+        # handler stays a dumb setter. Only applied if higher than current.
+        try:
+            target = int(params.get("paywall", 0) or 0)
+        except (ValueError, TypeError):
+            target = 0
+        try:
+            current_pw = int(orders.get("paywall", "0") or "0")
+        except (ValueError, TypeError):
+            current_pw = 0
+        if target <= current_pw:
+            return {"applied": action, "paywall": current_pw, "skipped": True}
+        orders.set("paywall", str(target))
+        import time as _t_ci
+        orders.set("paywall_last_compounded", int(_t_ci.time() * 1000))
+        return {"applied": action, "paywall": target}
     elif action == "geofence-breach-recorded":
-        # Phone left the geofence. Roadmap #7 — 2026-04-15. Increment
-        # lifetime_geofence_breaches. The $100 paywall + lock are applied
-        # by the Collar immediately (local latency); server just maintains
-        # the audit counter and projects it via vault for Lion's timeline.
+        # Phone left the geofence. Increment lifetime_geofence_breaches and
+        # apply the $100 paywall bump. Lock is still latched locally by the
+        # Collar for latency; paywall + lifetime counter are server-authored
+        # as of P2 paywall hardening (2026-04-17). The Collar ALSO sets
+        # lock_active=1 locally on breach — server write is overwritten by
+        # mesh_orders sync which is fine: both agree on locked=true.
         try:
             cur = int(orders.get("lifetime_geofence_breaches", 0) or 0)
         except (ValueError, TypeError):
             cur = 0
         orders.set("lifetime_geofence_breaches", cur + 1)
-        return {"applied": action, "lifetime_geofence_breaches": cur + 1}
+        try:
+            current_pw = int(orders.get("paywall", "0") or "0")
+        except (ValueError, TypeError):
+            current_pw = 0
+        new_pw = current_pw + GEOFENCE_BREACH_PENALTY
+        orders.set("paywall", str(new_pw))
+        # Mirror the original Collar behavior of setting paywall_original so
+        # compound interest accrues from the breach value, not from 0.
+        try:
+            orig = int(orders.get("paywall_original", "0") or "0")
+        except (ValueError, TypeError):
+            orig = 0
+        if orig <= 0:
+            orders.set("paywall_original", str(GEOFENCE_BREACH_PENALTY))
+        return {
+            "applied": action,
+            "lifetime_geofence_breaches": cur + 1,
+            "penalty": GEOFENCE_BREACH_PENALTY,
+            "paywall": new_pw,
+        }
     elif action == "tamper-recorded":
-        # Phone reports device-admin tampering: tamper_detected (attempt
-        # blocked) or tamper_removed (admin actually stripped — big penalty).
-        # Roadmap #4 — 2026-04-15.
+        # Phone reports device-admin tampering:
+        #   attempt  — onDisableRequested (user tapped deactivate, prompt fired)
+        #   detected — peer app (BunnyTasker ↔ Collar watcher) sees other's admin gone
+        #   removed  — admin actually stripped, big penalty
+        # P2 paywall hardening (2026-04-17): all three apply server-side now.
         kind = (params.get("kind", "") or "").lower()
         try:
             cur = int(orders.get("lifetime_tamper", 0) or 0)
         except (ValueError, TypeError):
             cur = 0
         orders.set("lifetime_tamper", cur + 1)
-        if kind == "removed":
-            # +$1000 to paywall for removing device admin
+        penalty_by_kind = {
+            "attempt": TAMPER_ATTEMPT_PENALTY,
+            "detected": TAMPER_DETECTED_PENALTY,
+            "removed": TAMPER_REMOVED_PENALTY,
+        }
+        penalty = penalty_by_kind.get(kind, 0)
+        if penalty > 0:
             try:
                 current_pw = int(orders.get("paywall", "0") or "0")
             except (ValueError, TypeError):
                 current_pw = 0
-            orders.set("paywall", str(current_pw + 1000))
-            return {"applied": action, "kind": kind, "lifetime_tamper": cur + 1, "paywall": current_pw + 1000}
+            new_pw = current_pw + penalty
+            orders.set("paywall", str(new_pw))
+            return {
+                "applied": action,
+                "kind": kind,
+                "lifetime_tamper": cur + 1,
+                "penalty": penalty,
+                "paywall": new_pw,
+            }
         return {"applied": action, "kind": kind, "lifetime_tamper": cur + 1}
     elif action == "streak-bonus":
         # 7d or 30d clean-streak reward: subtract credit from paywall
@@ -1167,6 +1282,68 @@ def _server_apply_order(mesh_id, action, params):
     return result
 
 
+def check_compound_interest():
+    """Compound interest accrual, server-side. Scans every mesh with
+    lock_active=1 and a non-gold sub_tier; computes `original × rate ** hours`
+    since locked_at; if higher than the current paywall, fires a
+    compound-interest-tick action to propagate the new value via vault.
+
+    P2 paywall hardening (2026-04-17) — moved from phone-side postDelayed
+    loop in ControlService to server so the phone can't skip accrual by being
+    offline or tampered with. 60s tick = <$0.20 drift vs the old 10s phone
+    cadence at worst-case bronze accrual.
+    """
+    while True:
+        try:
+            import time as _t_ci
+            now_ms = int(_t_ci.time() * 1000)
+            for mid, orders in list(_orders_registry.docs.items()):
+                try:
+                    if str(orders.get("lock_active", 0)) != "1":
+                        continue
+                    sub_tier = (orders.get("sub_tier", "") or "").lower()
+                    rate = compound_interest_rate(sub_tier)
+                    if rate <= 1.0:
+                        continue  # gold or explicit no-interest
+                    try:
+                        original = int(orders.get("paywall_original", 0) or 0)
+                    except (ValueError, TypeError):
+                        continue
+                    if original <= 0:
+                        continue
+                    try:
+                        locked_at = int(orders.get("locked_at", 0) or 0)
+                    except (ValueError, TypeError):
+                        continue
+                    if locked_at <= 0:
+                        continue
+                    hours = (now_ms - locked_at) / 3600000.0
+                    if hours <= 0:
+                        continue
+                    compounded = int(original * (rate ** hours))
+                    try:
+                        current_pw = int(orders.get("paywall", "0") or "0")
+                    except (ValueError, TypeError):
+                        current_pw = 0
+                    if compounded <= current_pw:
+                        continue
+                    result = _server_apply_order(mid, "compound-interest-tick", {"paywall": compounded})
+                    if result and not result.get("skipped"):
+                        logger.info(
+                            "compound interest: mesh=%s tier=%s hours=%.2f paywall=%s→%s",
+                            mid,
+                            sub_tier or "(none)",
+                            hours,
+                            current_pw,
+                            result.get("paywall"),
+                        )
+                except Exception:
+                    logger.exception("compound interest tick error for mesh=%s", mid)
+        except Exception:
+            logger.exception("compound interest loop error")
+        time.sleep(COMPOUND_INTEREST_TICK_INTERVAL_S)
+
+
 def check_subscription_charges():
     """Weekly recurring charge, server-side. Scans every mesh with a sub_tier
     set; when sub_due <= now, fires a subscribe-charge order that atomically
@@ -1232,6 +1409,48 @@ def _check_tributes_fines_for_mesh(mid, orders, now_ms):
                 result = _server_apply_order(mid, "tribute-charge", {"amount": amount})
                 if result:
                     logger.info("Daily tribute: mesh=%s +$%s (paywall→$%s)", mid, amount, result.get("paywall"))
+
+    # Good-behavior bonus (P2 paywall hardening) — unlocked with a non-zero
+    # paywall accrues a -$5 credit every GOOD_BEHAVIOR_INTERVAL_MS of
+    # qualifying time. Qualifying means no new escape since the last bonus
+    # tick. Tracked via paywall_last_bonus_at + paywall_bonus_escapes_at.
+    if str(orders.get("lock_active", 0)) != "1":
+        try:
+            current_pw_gb = int(orders.get("paywall", "0") or "0")
+        except (ValueError, TypeError):
+            current_pw_gb = 0
+        if current_pw_gb > 0:
+            try:
+                last_bonus = int(orders.get("paywall_last_bonus_at", 0) or 0)
+            except (ValueError, TypeError):
+                last_bonus = 0
+            try:
+                lifetime_esc = int(orders.get("lifetime_escapes", 0) or 0)
+            except (ValueError, TypeError):
+                lifetime_esc = 0
+            try:
+                bonus_esc_at = int(orders.get("paywall_bonus_escapes_at", -1) or -1)
+            except (ValueError, TypeError):
+                bonus_esc_at = -1
+            # First-ever bonus tick: seed the baseline without giving a credit.
+            if last_bonus == 0 or bonus_esc_at < 0:
+                orders.set("paywall_last_bonus_at", now_ms)
+                orders.set("paywall_bonus_escapes_at", lifetime_esc)
+            elif lifetime_esc > bonus_esc_at:
+                # Escape happened since the last tick — reset the clock, no credit.
+                orders.set("paywall_last_bonus_at", now_ms)
+                orders.set("paywall_bonus_escapes_at", lifetime_esc)
+            elif now_ms - last_bonus >= GOOD_BEHAVIOR_INTERVAL_MS:
+                result = _server_apply_order(mid, "good-behavior-tick", {})
+                if result and (result.get("credit") or 0) > 0:
+                    logger.info(
+                        "Good behavior: mesh=%s -$%s paywall→$%s",
+                        mid,
+                        result.get("credit"),
+                        result.get("paywall"),
+                    )
+                orders.set("paywall_last_bonus_at", now_ms)
+                orders.set("paywall_bonus_escapes_at", lifetime_esc)
 
     # Recurring fine — accrues regardless of lock state
     fine_active = orders.get("fine_active", 0)
@@ -2567,14 +2786,14 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 },
             )
 
-        # ── Bunny-authed escape/tamper event push (roadmap #4) ──
+        # ── Bunny-authed escape/tamper/penalty event push (roadmap #4, P2) ──
         # Path: /api/mesh/{mesh_id}/escape-event
         # Body: {node_id, event_type, details (opt), ts, signature}
-        # event_type: "escape" | "tamper_detected" | "tamper_removed"
+        # event_type: "escape" | "tamper_attempt" | "tamper_detected"
+        #           | "tamper_removed" | "geofence_breach" | "app_launch_penalty"
         # signature: SHA256withRSA over "mesh_id|node_id|event_type|ts",
-        # bunny_pubkey lookup, ±5min replay window. Fires escape-recorded
-        # or tamper-recorded through _server_apply_order so lifetime_escapes
-        # / lifetime_tamper projections reach every mesh device via vault.
+        # bunny_pubkey lookup, ±5min replay window. Fires the matching action
+        # through _server_apply_order so counters + paywall propagate via vault.
         elif self.path.startswith("/api/mesh/") and self.path.endswith("/escape-event"):
             parts = self.path.strip("/").split("/")
             if len(parts) != 4 or parts[3] != "escape-event":
@@ -2592,7 +2811,14 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             event_type = (data.get("event_type", "") or "").strip()
             details = data.get("details", "")
             signature = data.get("signature", "")
-            if event_type not in ("escape", "tamper_detected", "tamper_removed", "geofence_breach"):
+            if event_type not in (
+                "escape",
+                "tamper_attempt",
+                "tamper_detected",
+                "tamper_removed",
+                "geofence_breach",
+                "app_launch_penalty",
+            ):
                 self.respond(400, {"error": "invalid event_type"})
                 return
             if not node_id or not signature:
@@ -2633,29 +2859,62 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if event_type == "escape":
                 result = _server_apply_order(mesh_id, "escape-recorded", {})
                 logger.info(
-                    "Escape event: mesh=%s node=%s lifetime_escapes=%s",
+                    "Escape event: mesh=%s node=%s lifetime_escapes=%s penalty=%s paywall=%s",
                     mesh_id,
                     node_id,
                     (result or {}).get("lifetime_escapes"),
+                    (result or {}).get("penalty"),
+                    (result or {}).get("paywall"),
                 )
             elif event_type == "geofence_breach":
                 result = _server_apply_order(mesh_id, "geofence-breach-recorded", {})
                 logger.info(
-                    "Geofence breach event: mesh=%s node=%s lifetime_breaches=%s details=%s",
+                    "Geofence breach event: mesh=%s node=%s lifetime_breaches=%s paywall=%s details=%s",
                     mesh_id,
                     node_id,
                     (result or {}).get("lifetime_geofence_breaches"),
+                    (result or {}).get("paywall"),
                     details,
                 )
+            elif event_type == "app_launch_penalty":
+                # Dedup retries inside APP_LAUNCH_DEDUP_WINDOW_MS.
+                dedup_key = (mesh_id, node_id)
+                with _app_launch_dedup_lock:
+                    last = _app_launch_last_accepted_ms.get(dedup_key, 0)
+                    if now_ms - last < APP_LAUNCH_DEDUP_WINDOW_MS:
+                        logger.info(
+                            "App launch penalty dedup: mesh=%s node=%s dt_ms=%s",
+                            mesh_id,
+                            node_id,
+                            now_ms - last,
+                        )
+                        self.respond(200, {"ok": True, "event_type": event_type, "deduped": True})
+                        return
+                    _app_launch_last_accepted_ms[dedup_key] = now_ms
+                result = _server_apply_order(mesh_id, "app-launch-penalty", {})
+                logger.info(
+                    "App launch penalty: mesh=%s node=%s penalty=%s paywall=%s",
+                    mesh_id,
+                    node_id,
+                    (result or {}).get("penalty"),
+                    (result or {}).get("paywall"),
+                )
             else:
-                kind = "removed" if event_type == "tamper_removed" else "detected"
+                # tamper_attempt, tamper_detected, tamper_removed
+                kind_map = {
+                    "tamper_attempt": "attempt",
+                    "tamper_detected": "detected",
+                    "tamper_removed": "removed",
+                }
+                kind = kind_map.get(event_type, "detected")
                 result = _server_apply_order(mesh_id, "tamper-recorded", {"kind": kind})
                 logger.info(
-                    "Tamper event: mesh=%s node=%s kind=%s lifetime_tamper=%s paywall=%s",
+                    "Tamper event: mesh=%s node=%s kind=%s lifetime_tamper=%s penalty=%s paywall=%s",
                     mesh_id,
                     node_id,
                     kind,
                     (result or {}).get("lifetime_tamper"),
+                    (result or {}).get("penalty"),
                     (result or {}).get("paywall"),
                 )
             if not result:
@@ -3889,6 +4148,10 @@ if __name__ == "__main__":
     # Start subscription auto-charge checker (per-mesh weekly charge)
     sub_charge_thread = threading.Thread(target=check_subscription_charges, daemon=True)
     sub_charge_thread.start()
+
+    # Start compound-interest accrual checker (P2 paywall hardening)
+    compound_thread = threading.Thread(target=check_compound_interest, daemon=True)
+    compound_thread.start()
 
     # Start webhook server
     server = HTTPServer(("0.0.0.0", WEBHOOK_PORT), WebhookHandler)

@@ -35,7 +35,6 @@ public class FocusActivity extends Activity {
 
     private Handler handler;
     private Runnable timerChecker;
-    private long lastGoodBehaviorCheck = 0;
     private Random random = new Random();
     private boolean allowPause = false; // true when launching banking app or Bunny Tasker
     private boolean activityVisible = false; // track screen on/off vs real app launch
@@ -197,7 +196,6 @@ public class FocusActivity extends Activity {
         setupComplimentInput();
 
         handler = new Handler(Looper.getMainLooper());
-        lastGoodBehaviorCheck = System.currentTimeMillis();
         timerChecker = new Runnable() {
             @Override
             public void run() {
@@ -205,7 +203,6 @@ public class FocusActivity extends Activity {
                 updateDisplay();
                 checkTimer();
                 randomBuzz();
-                checkGoodBehavior();
                 handler.postDelayed(this, 5000);
             }
         };
@@ -233,21 +230,11 @@ public class FocusActivity extends Activity {
         int escapes = Settings.Global.getInt(getContentResolver(), "focus_lock_escapes", 0) + 1;
         Settings.Global.putInt(getContentResolver(), "focus_lock_escapes", escapes);
 
-        // Roadmap #4 — push escape event to server so lifetime_escapes
-        // survives device swap + streak-break fires server-side.
+        // P2 paywall hardening (2026-04-17): paywall tier ($5/$10/$15...) is
+        // applied server-side by the escape-recorded action. The phone is now
+        // a pure reporter — posting the event increments lifetime_escapes and
+        // bumps paywall in one atomic server op, propagated back via vault.
         ControlService.postEventToServer(this, "escape", null);
-
-        // Tiered paywall: $5/attempt for 1-3, $10/attempt for 4-6, $15 for 7-9, etc.
-        String paywall = gstr("focus_lock_paywall");
-        if (!paywall.isEmpty() && !paywall.equals("0")) {
-            try {
-                int tier = ((escapes - 1) / 3) + 1; // 1-3=tier1($5), 4-6=tier2($10), 7-9=tier3($15)...
-                double increment = tier * 5.0;
-                double amount = Double.parseDouble(paywall) + increment;
-                Settings.Global.putString(getContentResolver(), "focus_lock_paywall",
-                    String.format("%.0f", amount));
-            } catch (Exception e) {}
-        }
 
         // Penalty: add 5 minutes to EXISTING timer only
         int penalty = Settings.Global.getInt(getContentResolver(), "focus_lock_penalty", 0);
@@ -683,37 +670,15 @@ public class FocusActivity extends Activity {
         }, 300);
     }
 
-    private void checkGoodBehavior() {
-        // Every 10 minutes without an escape, reduce paywall by $5 (never below original)
-        long now = System.currentTimeMillis();
-        if (now - lastEscapeTime >= 600000 && now - lastGoodBehaviorCheck >= 600000) {
-            lastGoodBehaviorCheck = now;
-            String paywall = gstr("focus_lock_paywall");
-            String original = gstr("focus_lock_paywall_original");
-            if (!paywall.isEmpty() && !paywall.equals("0") && !original.isEmpty()) {
-                try {
-                    double current = Double.parseDouble(paywall);
-                    double orig = Double.parseDouble(original);
-                    if (current > orig) {
-                        double reduced = Math.max(orig, current - 5.0);
-                        Settings.Global.putString(getContentResolver(), "focus_lock_paywall",
-                            String.format("%.0f", reduced));
-                    }
-                } catch (Exception e) {}
-            }
-        }
-    }
+    // Good-behavior bonus moved server-side (P2 paywall hardening, 2026-04-17).
+    // See _check_tributes_fines_for_mesh in focuslock-mail.py — it credits -$5
+    // per 10 unlocked-with-no-new-escape minutes and propagates via vault.
 
     private void triggerAppLaunchPenalty() {
-        // $50 penalty + 10 copies of randomly capitalized "I will not try to escape again."
-        String paywall = gstr("focus_lock_paywall");
-        if (!paywall.isEmpty() && !paywall.equals("0")) {
-            try {
-                double amount = Double.parseDouble(paywall) + 50.0;
-                Settings.Global.putString(getContentResolver(), "focus_lock_paywall",
-                    String.format("%.0f", amount));
-            } catch (Exception e) {}
-        }
+        // $50 penalty applied server-side (P2 paywall hardening, 2026-04-17).
+        // 10s server-side dedup absorbs retries. Task setup stays local so the
+        // typing assignment shows immediately — only the money moves server-side.
+        ControlService.postEventToServer(this, "app_launch_penalty", null);
         // Set up task: 10 reps of randomly capitalized text
         String text = randomizeCaps("I will not try to escape again.");
         Settings.Global.putString(getContentResolver(), "focus_lock_task_text", text);

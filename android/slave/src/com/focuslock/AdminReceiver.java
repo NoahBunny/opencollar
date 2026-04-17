@@ -16,15 +16,13 @@ public class AdminReceiver extends DeviceAdminReceiver {
                 return "Authorized release in progress.";
             }
         } catch (Exception e) {}
-        // Immediately lock and STACK $500 penalty just for ATTEMPTING
+        // Lock immediately. $500 attempt penalty applied server-side by
+        // tamper-recorded(kind=attempt) (P2 paywall hardening, 2026-04-17) —
+        // new paywall lands back here on the next vault pull.
         try {
             Settings.Global.putInt(context.getContentResolver(), "focus_lock_active", 1);
-            int current = 0;
-            try { current = Integer.parseInt(Settings.Global.getString(context.getContentResolver(), "focus_lock_paywall")); } catch (Exception e2) {}
-            int newPw = current + 500;
-            Settings.Global.putString(context.getContentResolver(), "focus_lock_paywall", String.valueOf(newPw));
             Settings.Global.putString(context.getContentResolver(), "focus_lock_message",
-                "Admin removal attempted.\n+$500 penalty (total: $" + newPw + ").\nYour partner has been notified.");
+                "Admin removal attempted.\n+$500 penalty.\nYour partner has been notified.");
             Settings.Global.putInt(context.getContentResolver(), "focus_lock_shame", 1);
             Settings.Global.putInt(context.getContentResolver(), "focus_lock_admin_tamper", 1);
         } catch (Exception e) {}
@@ -37,8 +35,9 @@ public class AdminReceiver extends DeviceAdminReceiver {
             context.startActivity(jail);
         } catch (Exception e) {}
 
-        // Alert mesh server (bunny-signed, vault-propagated — roadmap #4)
-        ControlService.postEventToServer(context, "tamper_detected", null);
+        // Alert mesh server (bunny-signed, vault-propagated). tamper_attempt
+        // triggers the $500 server-side penalty + increments lifetime_tamper.
+        ControlService.postEventToServer(context, "tamper_attempt", null);
         notifyHomelab(context, "ALERT: Admin deactivation ATTEMPTED. $500 penalty applied.");
 
         return "You are about to lose all phone privileges.\n\n"
@@ -59,15 +58,11 @@ public class AdminReceiver extends DeviceAdminReceiver {
                 return;
             }
         } catch (Exception e) {}
-        Log.w("FocusLock", "DEVICE ADMIN DEACTIVATED — stacking $1000 penalty");
+        Log.w("FocusLock", "DEVICE ADMIN DEACTIVATED — reporting tamper_removed");
         try {
             Settings.Global.putInt(context.getContentResolver(), "focus_lock_active", 1);
-            int current = 0;
-            try { current = Integer.parseInt(Settings.Global.getString(context.getContentResolver(), "focus_lock_paywall")); } catch (Exception e2) {}
-            int newPw = current + 1000;
-            Settings.Global.putString(context.getContentResolver(), "focus_lock_paywall", String.valueOf(newPw));
             Settings.Global.putString(context.getContentResolver(), "focus_lock_message",
-                "Admin was removed.\n+$1000 penalty (total: $" + newPw + ").\nYour partner has been notified.\nThe bridge will re-enable admin.");
+                "Admin was removed.\n+$1000 penalty.\nYour partner has been notified.\nThe bridge will re-enable admin.");
             Settings.Global.putInt(context.getContentResolver(), "focus_lock_shame", 1);
             Settings.Global.putInt(context.getContentResolver(), "focus_lock_admin_removed", 1);
         } catch (Exception e) {}
@@ -80,8 +75,9 @@ public class AdminReceiver extends DeviceAdminReceiver {
             context.startActivity(jail);
         } catch (Exception e) {}
 
-        // tamper_removed action on server does its own +$1000 to lifetime paywall
-        // counter; the local penalty above keeps the phone's display in sync.
+        // P2 paywall hardening (2026-04-17): server applies the +$1000 on
+        // tamper_removed and propagates via vault. Phone no longer writes
+        // paywall locally.
         ControlService.postEventToServer(context, "tamper_removed", null);
         notifyHomelab(context, "CRITICAL: Admin was REMOVED. $1000 penalty applied. Re-enabling via bridge.");
     }

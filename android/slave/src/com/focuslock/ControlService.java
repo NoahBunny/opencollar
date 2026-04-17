@@ -328,17 +328,14 @@ public class ControlService extends Service {
                                     // Only penalize once per removal (not every 6s)
                                     int btTamper = Settings.Global.getInt(getContentResolver(), "focus_lock_bt_admin_removed", 0);
                                     if (btTamper == 0) {
-                                        Log.w(TAG, "BunnyTasker admin removed — locking + $500 penalty");
+                                        Log.w(TAG, "BunnyTasker admin removed — locking + reporting tamper");
                                         Settings.Global.putInt(getContentResolver(), "focus_lock_bt_admin_removed", 1);
-                                        int pw = 0;
-                                        try { pw = Integer.parseInt(gstr("focus_lock_paywall")); } catch (Exception e2) {}
-                                        pw += 500;
-                                        Settings.Global.putString(getContentResolver(), "focus_lock_paywall", String.valueOf(pw));
-                                        Settings.Global.putString(getContentResolver(), "focus_lock_paywall_original", String.valueOf(pw));
                                         Settings.Global.putString(getContentResolver(), "focus_lock_message",
                                             "BunnyTasker admin removed.\n+$500 penalty.\nRe-enable it in Settings → Security → Device admin.");
                                         Settings.Global.putInt(getContentResolver(), "focus_lock_shame", 1);
-                                        meshBumpAndPush();
+                                        // P2 paywall hardening (2026-04-17): $500 + lifetime_tamper
+                                        // applied server-side by tamper-recorded(kind=detected).
+                                        // The new paywall lands back here via the next vault pull.
                                         ControlService.postEventToServer(ControlService.this, "tamper_detected", null);
                                     }
                                     Settings.Global.putInt(getContentResolver(), "focus_lock_active", 1);
@@ -396,34 +393,11 @@ public class ControlService extends Service {
                             return;
                         }
 
-                        // Compound interest on paywall — rate depends on subscription tier
-                        // Bronze/none: 10%/hr, Silver: 5%/hr, Gold: 0%
-                        int lockActive2 = Settings.Global.getInt(getContentResolver(), "focus_lock_active", 0);
-                        if (lockActive2 == 1) {
-                            String subTierCI = gstr("focus_lock_sub_tier");
-                            double interestRate = 1.10; // 10% default
-                            if ("silver".equals(subTierCI)) interestRate = 1.05;
-                            else if ("gold".equals(subTierCI)) interestRate = 1.0; // no interest
-                            if (interestRate > 1.0) {
-                                String pwStr = gstr("focus_lock_paywall");
-                                String origStr = gstr("focus_lock_paywall_original");
-                                if (!pwStr.isEmpty() && !pwStr.equals("0") && !origStr.isEmpty() && !origStr.equals("0")) {
-                                    try {
-                                        double original = Double.parseDouble(origStr);
-                                        long lockedAt = Settings.Global.getLong(getContentResolver(), "focus_lock_locked_at", 0);
-                                        if (lockedAt > 0 && original > 0) {
-                                            double hours = (System.currentTimeMillis() - lockedAt) / 3600000.0;
-                                            double compounded = original * Math.pow(interestRate, hours);
-                                            double currentPw = Double.parseDouble(pwStr);
-                                            if (compounded > currentPw) {
-                                                Settings.Global.putString(getContentResolver(), "focus_lock_paywall",
-                                                    String.format("%.0f", compounded));
-                                            }
-                                        }
-                                    } catch (Exception e) {}
-                                }
-                            }
-                        }
+                        // Compound interest on paywall is applied server-side by
+                        // check_compound_interest() in focuslock-mail.py (P2 paywall
+                        // hardening, 2026-04-17). New paywall values arrive via the
+                        // next vault pull and land in Settings.Global through
+                        // mesh_apply_order — no local accrual needed.
 
                         // Geofence check
                         try {
@@ -447,14 +421,14 @@ public class ControlService extends Service {
                                         Settings.Global.putInt(getContentResolver(), "focus_lock_active", 1);
                                         Settings.Global.putString(getContentResolver(), "focus_lock_message",
                                             "Geofence breach. " + String.format("%.0f", dist[0]) + "m outside zone.");
-                                        Settings.Global.putString(getContentResolver(), "focus_lock_paywall", "100");
-                                        Settings.Global.putString(getContentResolver(), "focus_lock_paywall_original", "100");
                                         Settings.Global.putString(getContentResolver(), "focus_lock_mode", "basic");
                                         Settings.Global.putLong(getContentResolver(), "focus_lock_locked_at", System.currentTimeMillis());
                                         launchFocus();
                                         reportGeofenceBreach(lat, lon, dist[0]);
-                                        // Roadmap #7 — bunny-signed vault-propagated event so
-                                        // lifetime_geofence_breaches survives device swap.
+                                        // P2 paywall hardening (2026-04-17): server applies the
+                                        // $100 breach penalty + updates lifetime_geofence_breaches
+                                        // in one atomic op; the new paywall lands on this device
+                                        // via the next vault pull.
                                         postEventToServer(this, "geofence_breach",
                                             String.format("%.0fm outside zone", dist[0]));
                                     }
