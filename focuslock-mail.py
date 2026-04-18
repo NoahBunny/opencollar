@@ -3416,7 +3416,17 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
 
             store = _get_message_store(mesh_id)
             if op == "send":
-                entry = {"from": from_who, "node_id": node_id, "text": text}
+                # Preserve the client ts so recipients can reconstruct the
+                # signed payload (mesh|node|from|text|pinned|mandatory|ts)
+                # and re-verify the signature end-to-end. Without this the
+                # server-assigned ts would break reconstruction.
+                entry = {
+                    "from": from_who,
+                    "node_id": node_id,
+                    "text": text,
+                    "ts": ts_i,
+                    "signature": signature,
+                }
                 if pinned:
                     entry["pinned"] = True
                 if mandatory:

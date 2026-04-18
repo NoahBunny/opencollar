@@ -1910,6 +1910,34 @@ public class MainActivity extends Activity {
      *  hair-trigger. */
     private static final long MANDATORY_OVERDUE_MS = 4L * 60 * 60 * 1000;
 
+    /** Audit C4: verify the stored lion signature on a fetched message record
+     *  before we take any enforcement action on it (currently: mandatory-reply
+     *  auto-lock). Reconstructs the same payload the server verified on
+     *  /messages/send: mesh|node|lion|text|pinned|mandatory|ts. Returns false
+     *  if the signature field is missing (pre-fix messages) or does not verify
+     *  — callers must treat missing + invalid identically. */
+    private boolean verifyLionMessageSignature(JSONObject m, String meshId) {
+        try {
+            String sig = m.optString("signature", "");
+            if (sig.isEmpty() || meshId.isEmpty()) return false;
+            String nodeId = m.optString("node_id", "");
+            if (nodeId.isEmpty()) return false;
+            long ts = m.optLong("ts", 0);
+            if (ts <= 0) return false;
+            // For E2EE messages the signed plaintext marker is "[e2ee]"
+            // (see controller's postLionMessage). Use the raw text field
+            // exactly as the server stored it.
+            String text = m.optString("text", "");
+            boolean pinned = m.optBoolean("pinned", false);
+            boolean mandatory = m.optBoolean("mandatory_reply", false);
+            String payload = meshId + "|" + nodeId + "|lion|" + text
+                + "|" + (pinned ? "1" : "0") + "|" + (mandatory ? "1" : "0") + "|" + ts;
+            return PairingManager.verify(getContentResolver(), payload, sig);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private void refreshMeshMessages() {
         executor.execute(() -> {
             try {
@@ -1920,6 +1948,7 @@ public class MainActivity extends Activity {
 
                 String myNodeId = gstr("focus_lock_mesh_node_id");
                 String bunnyPrivKey = gstr("focus_lock_bunny_privkey");
+                String meshId = gstr("focus_lock_mesh_id");
                 long now = System.currentTimeMillis();
                 boolean anyOverdue = false;
                 java.util.List<String> toMarkRead = new java.util.ArrayList<>();
@@ -1957,9 +1986,18 @@ public class MainActivity extends Activity {
                     }
 
                     // Overdue = lion's mandatory-reply older than threshold and not yet replied.
+                    // SECURITY (audit C4): only auto-lock if the stored lion signature
+                    // on this message verifies. Without this, a compromised relay or
+                    // mesh-peer that bypasses /messages/send could inject
+                    // from:"lion", mandatory_reply:true and force-lock the bunny.
                     long mts = m.optLong("ts", 0);
                     if (mandatoryFlag && !replied && mts > 0 && (now - mts) > MANDATORY_OVERDUE_MS) {
-                        anyOverdue = true;
+                        if (verifyLionMessageSignature(m, meshId)) {
+                            anyOverdue = true;
+                        } else {
+                            android.util.Log.w("BunnyTasker",
+                                "mandatory_reply auto-lock skipped — lion signature missing or invalid (id=" + mid + ")");
+                        }
                     }
                 }
 

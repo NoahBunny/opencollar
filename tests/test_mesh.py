@@ -539,6 +539,36 @@ class TestMessageStore:
         assert len(result) == 2
         assert result[0]["text"] == "m-2"  # newest first
 
+    def test_add_preserves_caller_supplied_ts(self, tmp_path):
+        """Audit C4: caller-supplied ts must survive add() so a recipient can
+        reconstruct the signed payload (mesh|node|from|text|pinned|mandatory|ts)
+        and re-verify the lion signature end-to-end."""
+        store = MessageStore(persist_path=str(tmp_path / "m.json"))
+        msg = store.add({"text": "hi", "from": "lion", "ts": 1234567890})
+        assert msg["ts"] == 1234567890
+
+    def test_add_preserves_signature_field(self, tmp_path):
+        """Audit C4: the lion signature from /messages/send must round-trip
+        through MessageStore so Bunny Tasker can verify it on fetch before
+        auto-locking on mandatory_reply."""
+        store = MessageStore(persist_path=str(tmp_path / "m.json"))
+        msg = store.add({
+            "text": "hi",
+            "from": "lion",
+            "ts": 1234567890,
+            "signature": "BASE64SIG==",
+            "node_id": "controller",
+            "mandatory_reply": True,
+        })
+        # Reload from disk to ensure persistence (not just in-memory passthrough)
+        store2 = MessageStore(persist_path=str(tmp_path / "m.json"))
+        assert len(store2.messages) == 1
+        stored = store2.messages[0]
+        assert stored["signature"] == "BASE64SIG=="
+        assert stored["ts"] == 1234567890
+        assert stored["node_id"] == "controller"
+        assert stored["mandatory_reply"] is True
+
 
 # ── DesktopRegistry ──
 
