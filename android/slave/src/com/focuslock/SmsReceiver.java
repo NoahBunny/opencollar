@@ -100,9 +100,11 @@ public class SmsReceiver extends BroadcastReceiver {
                 Settings.Global.putLong(context.getContentResolver(), "focus_lock_unlock_at", 0);
             }
 
+            // P2 paywall hardening (2026-04-17 follow-up): paywall is server-authoritative.
+            // Phone reports the SMS-requested amount as a sit_boy event; server applies + clamps.
+            // Lock state writes above stay local for UX immediacy (lock fires before round-trip).
             if (!paywall.equals("0")) {
-                Settings.Global.putString(context.getContentResolver(), "focus_lock_paywall", paywall);
-                Settings.Global.putString(context.getContentResolver(), "focus_lock_paywall_original", paywall);
+                ControlService.postEventToServer(context, "sit_boy", paywall);
             }
 
             if (!desktopOnly) {

@@ -40,6 +40,20 @@ TAMPER_REMOVED_PENALTY = 1000
 GEOFENCE_BREACH_PENALTY = 100
 """$100 on geofence exit — matches the phone-side legacy amount."""
 
+SIT_BOY_MAX_AMOUNT = 500
+"""Per-SMS clamp on the `sit-boy $amount` paywall hit. Limits the blast radius
+if the controller's SIM is hijacked or the controller number setting drifts."""
+
+UNSUBSCRIBE_FEES = {
+    "bronze": 50,   # 2 × $25/wk subscribe-charge amount
+    "silver": 70,   # 2 × $35/wk
+    "gold": 100,    # 2 × $50/wk
+}
+"""Fee charged on bunny-initiated unsubscribe — 2× one period's tribute. Matches
+the Bunny Tasker dialog ("Cancel fee: $" + amount × 2) and the actual server
+subscribe-charge amounts ($25 / $35 / $50). The legacy Collar doUnsubscribe()
+used $20 / $50 / $100 which never matched either reality — that table is gone."""
+
 GOOD_BEHAVIOR_REWARD = 5
 """$5 credit per GOOD_BEHAVIOR_INTERVAL_MS of unlocked-with-no-new-escapes."""
 

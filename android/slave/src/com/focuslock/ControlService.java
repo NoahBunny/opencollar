@@ -1281,20 +1281,59 @@ public class ControlService extends Service {
         return "{\"ok\":true,\"action\":\"paywall_cleared\"}";
     }
 
+    /** P2 paywall hardening follow-up: gamble RNG + paywall mutation moved to
+     *  the server. The Collar signs a bunny-authed POST to
+     *  /api/mesh/{id}/gamble; the server runs SecureRandom and writes the new
+     *  paywall via the gamble-resolved action (vault-propagated). The local
+     *  caller (web UI / Lion's Share) gets the same response shape it always
+     *  did. Closes the "tampered Collar always rolls heads" loophole. */
     private String doGamble() {
         String pw = gstr("focus_lock_paywall");
         if (pw.isEmpty() || pw.equals("0")) return "{\"error\":\"no paywall to gamble\"}";
+        String meshId = gstr("focus_lock_mesh_id");
+        String meshUrl = gstr("focus_lock_mesh_url");
+        String nodeId = gstr("focus_lock_mesh_node_id");
+        String bunnyPrivB64 = gstr("focus_lock_bunny_privkey");
+        if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty() || bunnyPrivB64.isEmpty()) {
+            return "{\"error\":\"not paired to a mesh\"}";
+        }
         try {
-            double paywall = Double.parseDouble(pw);
-            boolean heads = new java.security.SecureRandom().nextBoolean();
-            double newPw = heads ? Math.ceil(paywall / 2.0) : paywall * 2;
-            String result = heads ? "heads" : "tails";
-            Settings.Global.putString(getContentResolver(), "focus_lock_paywall", String.format("%.0f", newPw));
-            Settings.Global.putString(getContentResolver(), "focus_lock_gamble_result",
-                result + ":" + String.format("%.0f", newPw));
-            return "{\"ok\":true,\"result\":\"" + result + "\",\"old_paywall\":\"" +
-                String.format("%.0f", paywall) + "\",\"new_paywall\":\"" + String.format("%.0f", newPw) + "\"}";
-        } catch (Exception e) { return "{\"error\":\"" + e.getMessage() + "\"}"; }
+            long ts = System.currentTimeMillis();
+            String payload = meshId + "|" + nodeId + "|gamble|" + ts;
+            byte[] privBytes = android.util.Base64.decode(bunnyPrivB64, android.util.Base64.NO_WRAP);
+            java.security.spec.PKCS8EncodedKeySpec spec =
+                new java.security.spec.PKCS8EncodedKeySpec(privBytes);
+            java.security.PrivateKey priv =
+                java.security.KeyFactory.getInstance("RSA").generatePrivate(spec);
+            java.security.Signature sig = java.security.Signature.getInstance("SHA256withRSA");
+            sig.initSign(priv);
+            sig.update(payload.getBytes("UTF-8"));
+            String signature = android.util.Base64.encodeToString(
+                sig.sign(), android.util.Base64.NO_WRAP);
+
+            String body = "{\"node_id\":\"" + nodeId + "\",\"ts\":" + ts
+                + ",\"signature\":\"" + signature + "\"}";
+
+            java.net.URL url = new java.net.URL(meshUrl + "/api/mesh/" + meshId + "/gamble");
+            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(10000);
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.getOutputStream().write(body.getBytes("UTF-8"));
+            int code = conn.getResponseCode();
+            java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(
+                code < 400 ? conn.getInputStream() : conn.getErrorStream()));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) sb.append(line);
+            reader.close();
+            conn.disconnect();
+            return sb.toString();
+        } catch (Exception e) {
+            return "{\"error\":\"" + e.getMessage() + "\"}";
+        }
     }
 
     private String doPlayAudio(String body) {
@@ -1482,23 +1521,18 @@ public class ControlService extends Service {
             ",\"due\":\"" + new java.text.SimpleDateFormat("yyyy-MM-dd").format(new Date(dueDate)) + "\"}";
     }
 
+    /**
+     * @deprecated P2 paywall hardening follow-up: bunny-initiated unsubscribe
+     * now goes through the server's bunny-signed /api/mesh/{id}/unsubscribe
+     * endpoint (see Bunny Tasker MainActivity.postUnsubscribeToMesh). This
+     * legacy local route remains only for the Lion-driven web UI path that
+     * still POSTs /api/unsubscribe to the Collar — it now refuses, instructing
+     * the caller to use the server endpoint instead. No local paywall write
+     * happens on this path anymore.
+     */
+    @Deprecated
     private String doUnsubscribe() {
-        String tier = gstr("focus_lock_sub_tier");
-        if (tier.isEmpty()) return "{\"error\":\"no active subscription\"}";
-        // Unsubscription fee: 2x one period
-        int fee = 0;
-        if ("bronze".equals(tier)) fee = 20;
-        else if ("silver".equals(tier)) fee = 50;
-        else if ("gold".equals(tier)) fee = 100;
-        // Add fee to paywall
-        String pw = gstr("focus_lock_paywall");
-        int currentPw = 0;
-        try { currentPw = Integer.parseInt(pw); } catch (Exception e) {}
-        Settings.Global.putString(getContentResolver(), "focus_lock_paywall", String.valueOf(currentPw + fee));
-        // Clear subscription
-        Settings.Global.putString(getContentResolver(), "focus_lock_sub_tier", "");
-        Settings.Global.putLong(getContentResolver(), "focus_lock_sub_due", 0);
-        return "{\"ok\":true,\"action\":\"unsubscribed\",\"fee\":" + fee + ",\"new_paywall\":" + (currentPw + fee) + "}";
+        return "{\"error\":\"unsubscribe is server-authoritative — POST /api/mesh/{mesh_id}/unsubscribe (bunny-signed)\"}";
     }
 
     /** Fire-and-forget POST to /api/mesh/{id}/escape-event with a bunny-signed

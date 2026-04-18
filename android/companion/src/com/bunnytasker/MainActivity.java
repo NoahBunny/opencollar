@@ -1586,20 +1586,71 @@ public class MainActivity extends Activity {
             .setMessage("Cancel " + tier.toUpperCase() + " subscription?\n\nCancellation fee: $" + fee +
                 " (added to paywall immediately)")
             .setPositiveButton("CANCEL SUB ($" + fee + ")", (d, w) -> {
-                executor.execute(() -> {
-                    String pw = gstr("focus_lock_paywall");
-                    int currentPw = 0;
-                    try { currentPw = Integer.parseInt(pw); } catch (Exception e) { android.util.Log.e("BunnyTasker", "error", e); }
-                    Settings.Global.putString(getContentResolver(), "focus_lock_paywall", String.valueOf(currentPw + fee));
-                    Settings.Global.putString(getContentResolver(), "focus_lock_sub_tier", "");
-                    Settings.Global.putLong(getContentResolver(), "focus_lock_sub_due", 0);
-                    sendWebhook("/webhook/bunny-message",
-                        "{\"text\":\"Unsubscribed from " + tier + " (fee: $" + fee + ")\",\"type\":\"unsubscription\"}");
-                    handler.post(() -> subStatus.setText("Cancelled. $" + fee + " fee charged."));
-                });
+                executor.execute(() -> postUnsubscribeToMesh(tier, fee));
             })
             .setNegativeButton("Keep", null)
             .show();
+    }
+
+    /** Sign an unsubscribe intent with the bunny's registered key and POST to
+     *  the server. Server reads current sub_tier, applies UNSUBSCRIBE_FEES[tier]
+     *  to paywall, clears tier + due. The resulting vault blob propagates to
+     *  every device. P2 paywall hardening follow-up: replaces the local-only
+     *  paywall write that the Collar was doing — server is single writer for
+     *  enforcement-driven increments. */
+    private void postUnsubscribeToMesh(String tier, int fee) {
+        String meshId = gstr("focus_lock_mesh_id");
+        String meshUrl = gstr("focus_lock_mesh_url");
+        String nodeId = gstr("focus_lock_mesh_node_id");
+        if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty()) {
+            handler.post(() -> subStatus.setText("Not paired to a mesh yet"));
+            return;
+        }
+        long ts = System.currentTimeMillis();
+        String payload = meshId + "|" + nodeId + "|unsubscribe|" + ts;
+        String signature = PairingManager.sign(getContentResolver(), payload);
+        if (signature == null || signature.isEmpty()) {
+            handler.post(() -> subStatus.setText("Unsubscribe failed (no key)"));
+            return;
+        }
+        JSONObject body = new JSONObject();
+        try {
+            body.put("node_id", nodeId);
+            body.put("ts", ts);
+            body.put("signature", signature);
+        } catch (JSONException e) {
+            handler.post(() -> subStatus.setText("Unsubscribe failed (json)"));
+            return;
+        }
+        try {
+            URL url = new URL(meshUrl + "/api/mesh/" + meshId + "/unsubscribe");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(10000);
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.getOutputStream().write(body.toString().getBytes("UTF-8"));
+            int code = conn.getResponseCode();
+            BufferedReader reader = new BufferedReader(new InputStreamReader(
+                code < 400 ? conn.getInputStream() : conn.getErrorStream()));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) sb.append(line);
+            reader.close();
+            conn.disconnect();
+            if (code >= 400) {
+                final String err = sb.toString();
+                handler.post(() -> subStatus.setText("Unsubscribe failed: " + err));
+                return;
+            }
+            sendWebhook("/webhook/bunny-message",
+                "{\"text\":\"Unsubscribed from " + tier + " (fee: $" + fee + ")\",\"type\":\"unsubscription\"}");
+            handler.post(() -> subStatus.setText("Cancelled. $" + fee + " fee charged (syncing...)"));
+        } catch (Exception e) {
+            final String msg = e.getMessage();
+            handler.post(() -> subStatus.setText("Unsubscribe failed: " + msg));
+        }
     }
 
     private void doFreeUnlock() {

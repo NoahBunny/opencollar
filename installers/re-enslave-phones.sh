@@ -15,10 +15,10 @@
 #   ./re-enslave-phones.sh --dry-run      # Print decisions, don't install
 #   ./re-enslave-phones.sh --quiet        # Only errors + summary (for the watcher)
 #   ./re-enslave-phones.sh --re-cage      # After install, rebuild cage on bunny phones
-#                                         # (device admin, perms, notification listener,
-#                                         # consent flag, service restart). Idempotent —
-#                                         # safe to run on healthy phones. Use after dev
-#                                         # downgrades that strip cage components.
+#                                         # (device admin, perms, consent flag, service
+#                                         # restart). Idempotent — safe to run on healthy
+#                                         # phones. Use after dev downgrades that strip
+#                                         # cage components.
 #
 # Exit codes:
 #   0 — all reachable phones up to date (or successfully updated)
@@ -97,9 +97,11 @@ COMPANION_APK_PATH=$(find_apk "$TARGET_COMPANION_APK")
 #     it's granted first; the rest are dangerous-class but pre-grant via adb
 #     works on Android 14+)
 #   - Active device admin for .AdminReceiver
-#   - Notification listener allowance for .PaymentListener
 #   - focus_lock_consent_given flag (consent presumed by maintainer; skip the dialog)
 #   - Force-stop + foreground-service start so the new perms take effect
+#
+# (Removed 2026-04-17: notification-listener allowance for .PaymentListener.
+#  Server IMAP is now the only payment-detection path — see STATE-OWNERSHIP.md.)
 recage_focuslock() {
     local dev="$1" name="$2"
     local pm_perms=(
@@ -120,7 +122,6 @@ recage_focuslock() {
         adb_cmd -s "$dev" shell "pm grant com.focuslock android.permission.$p" >/dev/null 2>&1 || true
     done
     adb_cmd -s "$dev" shell "dpm set-active-admin --user 0 com.focuslock/.AdminReceiver" >/dev/null 2>&1 || true
-    adb_cmd -s "$dev" shell "cmd notification allow_listener com.focuslock/.PaymentListener" >/dev/null 2>&1 || true
     adb_cmd -s "$dev" shell "settings put global focus_lock_consent_given 1" >/dev/null 2>&1 || true
     # Make The Collar the default home app so the home button always lands in FocusActivity.
     # Stores the prior launcher first so unlock can forward back to it.
@@ -133,17 +134,19 @@ recage_focuslock() {
     adb_cmd -s "$dev" shell "am force-stop com.focuslock" >/dev/null 2>&1 || true
     adb_cmd -s "$dev" shell "am start-foreground-service -n com.focuslock/.ControlService" >/dev/null 2>&1 || true
 
-    # Verify the two cage-critical bits actually stuck. If either is missing
-    # the install is half-broken — surface that as a failure so the watcher
-    # / caller can react instead of trusting silent success.
-    local admin_ok listener_ok
+    # Verify the cage-critical bit actually stuck. If admin is missing the
+    # install is half-broken — surface that as a failure so the watcher /
+    # caller can react instead of trusting silent success.
+    # (Was admin + notification-listener pre-2026-04-17; PaymentListener was
+    # removed in the P2 paywall hardening follow-ups — server IMAP is the
+    # single payment-detection path now.)
+    local admin_ok
     admin_ok=$(adb_cmd -s "$dev" shell "dumpsys device_policy 2>/dev/null | grep -c 'com.focuslock/.AdminReceiver'" 2>/dev/null | tr -d '\r\n ' || echo 0)
-    listener_ok=$(adb_cmd -s "$dev" shell "settings get secure enabled_notification_listeners 2>/dev/null | grep -c com.focuslock" 2>/dev/null | tr -d '\r\n ' || echo 0)
-    if [ "${admin_ok:-0}" -gt 0 ] && [ "${listener_ok:-0}" -gt 0 ]; then
-        log "  ✓ cage rebuilt (admin + listener verified)"
+    if [ "${admin_ok:-0}" -gt 0 ]; then
+        log "  ✓ cage rebuilt (admin verified)"
         RECAGED_COUNT=$((RECAGED_COUNT + 1))
     else
-        warn "  re-cage incomplete: admin=$admin_ok listener=$listener_ok — manual intervention needed"
+        warn "  re-cage incomplete: admin=$admin_ok — manual intervention needed"
         FAILED_COUNT=$((FAILED_COUNT + 1))
     fi
 }

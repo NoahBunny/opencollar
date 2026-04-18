@@ -172,9 +172,11 @@ from focuslock_penalties import (
     GEOFENCE_BREACH_PENALTY,
     GOOD_BEHAVIOR_INTERVAL_MS,
     GOOD_BEHAVIOR_REWARD,
+    SIT_BOY_MAX_AMOUNT,
     TAMPER_ATTEMPT_PENALTY,
     TAMPER_DETECTED_PENALTY,
     TAMPER_REMOVED_PENALTY,
+    UNSUBSCRIBE_FEES,
     compound_interest_rate,
     escape_penalty,
 )
@@ -686,6 +688,44 @@ def mesh_apply_order(action, params, orders):
         if params.get("clear_paywall"):
             orders.set("paywall", "0")
         return {"applied": action, "amount_cents": amount_cents, "cleared": bool(params.get("clear_paywall"))}
+    elif action == "gamble-resolved":
+        # Server-driven coin flip outcome. Action is a dumb setter — the RNG +
+        # math live in the /api/mesh/{id}/gamble endpoint so the handler stays
+        # idempotent and trivially testable. P2 paywall hardening follow-up:
+        # closes the "tampered Collar always rolls heads" loophole.
+        try:
+            new_pw = int(params.get("paywall", 0) or 0)
+        except (ValueError, TypeError):
+            new_pw = 0
+        if new_pw < 0:
+            new_pw = 0
+        result_str = str(params.get("result", "")).strip()
+        orders.set("paywall", str(new_pw))
+        orders.set("gamble_result", f"{result_str}:{new_pw}")
+        return {"applied": action, "paywall": new_pw, "result": result_str}
+    elif action == "unsubscribe-charge":
+        # Bunny-initiated unsubscribe. Charges the per-tier exit fee
+        # (UNSUBSCRIBE_FEES) and clears sub_tier + sub_due. P2 paywall hardening
+        # follow-up: server is single writer for the fee so a tampered Collar
+        # can't strip it.
+        cur_tier = (orders.get("sub_tier", "") or "").lower()
+        if not cur_tier:
+            return {"applied": action, "error": "no active subscription"}
+        fee = UNSUBSCRIBE_FEES.get(cur_tier, 0)
+        try:
+            current_pw = int(orders.get("paywall", "0") or "0")
+        except (ValueError, TypeError):
+            current_pw = 0
+        new_pw = current_pw + fee
+        orders.set("paywall", str(new_pw))
+        orders.set("sub_tier", "")
+        orders.set("sub_due", 0)
+        return {
+            "applied": action,
+            "tier": cur_tier,
+            "fee": fee,
+            "paywall": new_pw,
+        }
     elif action == "subscribe-charge":
         # Server-driven weekly charge. Atomic: bump paywall + advance sub_due
         # + update sub_total_owed + stamp sub_last_charged in one order.
@@ -783,6 +823,33 @@ def mesh_apply_order(action, params, orders):
         new_pw = current_pw + APP_LAUNCH_PENALTY
         orders.set("paywall", str(new_pw))
         return {"applied": action, "penalty": APP_LAUNCH_PENALTY, "paywall": new_pw}
+    elif action == "sit-boy-recorded":
+        # Phone received an SMS "sit-boy ... $amount" from the controller number.
+        # Phone has already set the local lock state (UX immediacy); server applies
+        # the paywall hit so a tampered Collar can't strip the dollar amount.
+        # Amount clamped at SIT_BOY_MAX_AMOUNT to limit blast radius if the
+        # controller's SIM is hijacked.
+        try:
+            amount = int(params.get("amount", 0) or 0)
+        except (ValueError, TypeError):
+            amount = 0
+        if amount <= 0:
+            return {"applied": action, "amount": 0, "paywall": int(orders.get("paywall", "0") or "0")}
+        amount = min(amount, SIT_BOY_MAX_AMOUNT)
+        try:
+            current_pw = int(orders.get("paywall", "0") or "0")
+        except (ValueError, TypeError):
+            current_pw = 0
+        new_pw = current_pw + amount
+        orders.set("paywall", str(new_pw))
+        # Seed paywall_original so compound-interest has a base if it kicks in.
+        try:
+            current_orig = int(orders.get("paywall_original", "0") or "0")
+        except (ValueError, TypeError):
+            current_orig = 0
+        if current_orig <= 0:
+            orders.set("paywall_original", str(new_pw))
+        return {"applied": action, "amount": amount, "paywall": new_pw}
     elif action == "good-behavior-tick":
         # Unlocked + no new escapes since paywall_last_bonus_at — credit $5
         # toward paywall, clamped at 0. Fired by _check_tributes_fines_for_mesh
@@ -1073,6 +1140,11 @@ def mesh_apply_order(action, params, orders):
                 logger.warning("Direct push failed (gossip will deliver): %s", e)
         # Clean up bridge device registry
         if target == "all":
+            # Mesh-wide release — zero paywall in orders so admin/status reflects
+            # the post-teardown reality (otherwise the orders doc keeps the last
+            # known balance forever, since no Collar remains to bump it down).
+            orders.set("paywall", "0")
+            orders.set("paywall_original", "0")
             for reg in ["/run/focuslock/devices.json", "/run/focuslock/controller.json"]:
                 try:
                     os.remove(reg)
@@ -2706,6 +2778,181 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             logger.info("Bunny subscribe: mesh=%s node=%s tier=%s", mesh_id, node_id, tier)
             self.respond(200, {"ok": True, "tier": tier, "due": result.get("due")})
 
+        # ── Bunny-authed unsubscribe (P2 paywall hardening follow-up) ──
+        # Path: /api/mesh/{mesh_id}/unsubscribe
+        # Body: {node_id, ts, signature}
+        # signature = SHA256withRSA over "mesh_id|node_id|unsubscribe|ts" with
+        # the bunny's registered private key. ±5min replay window. Server reads
+        # current sub_tier, charges UNSUBSCRIBE_FEES[tier] (bronze=$20, silver=$50,
+        # gold=$100), clears tier + due. Mirrors the /subscribe pattern; replaces
+        # the Collar's local doUnsubscribe() paywall write.
+        elif self.path.startswith("/api/mesh/") and self.path.endswith("/unsubscribe"):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 4 or parts[3] != "unsubscribe":
+                self.respond(400, {"error": "bad path"})
+                return
+            mesh_id = parts[2]
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            account = _mesh_accounts.get(mesh_id)
+            if not account:
+                self.respond(404, {"error": "mesh not found"})
+                return
+            node_id = data.get("node_id", "")
+            ts = data.get("ts", 0)
+            signature = data.get("signature", "")
+            if not node_id or not signature:
+                self.respond(400, {"error": "node_id and signature required"})
+                return
+            try:
+                ts_i = int(ts)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            now_ms = int(time.time() * 1000)
+            if abs(now_ms - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+            node = account.get("nodes", {}).get(node_id)
+            if not node:
+                self.respond(403, {"error": "node not registered in mesh"})
+                return
+            bunny_pubkey = node.get("bunny_pubkey", "")
+            if not bunny_pubkey:
+                self.respond(403, {"error": "no bunny_pubkey on file for node"})
+                return
+            payload = f"{mesh_id}|{node_id}|unsubscribe|{ts_i}"
+            try:
+                import base64 as _b64
+
+                from cryptography.hazmat.primitives import hashes, serialization
+                from cryptography.hazmat.primitives.asymmetric import padding
+
+                pub_der = _b64.b64decode(bunny_pubkey)
+                pub = serialization.load_der_public_key(pub_der)
+                sig_bytes = _b64.b64decode(signature)
+                pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
+            except Exception as e:
+                logger.warning("unsubscribe sig verify failed: mesh=%s node=%s err=%s", mesh_id, node_id, e)
+                self.respond(403, {"error": "invalid signature"})
+                return
+            result = _server_apply_order(mesh_id, "unsubscribe-charge", {})
+            if not result:
+                self.respond(500, {"error": "apply failed"})
+                return
+            if result.get("error"):
+                self.respond(409, {"error": result["error"]})
+                return
+            logger.info(
+                "Bunny unsubscribe: mesh=%s node=%s tier=%s fee=%s paywall=%s",
+                mesh_id,
+                node_id,
+                result.get("tier"),
+                result.get("fee"),
+                result.get("paywall"),
+            )
+            self.respond(200, {"ok": True, **result})
+
+        # ── Bunny-authed gamble (P2 paywall hardening follow-up) ──
+        # Path: /api/mesh/{mesh_id}/gamble
+        # Body: {node_id, ts, signature}
+        # signature = SHA256withRSA over "mesh_id|node_id|gamble|ts" with the
+        # bunny's registered private key. ±5min replay window.
+        # Server runs the RNG (secrets.SystemRandom) and applies the result —
+        # heads halves (rounded up), tails doubles. The Collar's local doGamble()
+        # was the previous RNG site; moving it here closes the "tampered Collar
+        # always rolls heads" loophole. Returns {result, old_paywall, new_paywall}.
+        elif self.path.startswith("/api/mesh/") and self.path.endswith("/gamble"):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 4 or parts[3] != "gamble":
+                self.respond(400, {"error": "bad path"})
+                return
+            mesh_id = parts[2]
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            account = _mesh_accounts.get(mesh_id)
+            if not account:
+                self.respond(404, {"error": "mesh not found"})
+                return
+            node_id = data.get("node_id", "")
+            ts = data.get("ts", 0)
+            signature = data.get("signature", "")
+            if not node_id or not signature:
+                self.respond(400, {"error": "node_id and signature required"})
+                return
+            try:
+                ts_i = int(ts)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            now_ms = int(time.time() * 1000)
+            if abs(now_ms - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+            node = account.get("nodes", {}).get(node_id)
+            if not node:
+                self.respond(403, {"error": "node not registered in mesh"})
+                return
+            bunny_pubkey = node.get("bunny_pubkey", "")
+            if not bunny_pubkey:
+                self.respond(403, {"error": "no bunny_pubkey on file for node"})
+                return
+            payload = f"{mesh_id}|{node_id}|gamble|{ts_i}"
+            try:
+                import base64 as _b64
+
+                from cryptography.hazmat.primitives import hashes, serialization
+                from cryptography.hazmat.primitives.asymmetric import padding
+
+                pub_der = _b64.b64decode(bunny_pubkey)
+                pub = serialization.load_der_public_key(pub_der)
+                sig_bytes = _b64.b64decode(signature)
+                pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
+            except Exception as e:
+                logger.warning("gamble sig verify failed: mesh=%s node=%s err=%s", mesh_id, node_id, e)
+                self.respond(403, {"error": "invalid signature"})
+                return
+            # Read current paywall from the mesh's orders doc.
+            target_orders = _resolve_orders(mesh_id)
+            try:
+                old_pw = int(target_orders.get("paywall", "0") or "0")
+            except (ValueError, TypeError):
+                old_pw = 0
+            if old_pw <= 0:
+                self.respond(409, {"error": "no paywall to gamble"})
+                return
+            import math as _math
+            import secrets as _secrets
+
+            heads = _secrets.SystemRandom().choice([True, False])
+            new_pw = _math.ceil(old_pw / 2) if heads else old_pw * 2
+            result_str = "heads" if heads else "tails"
+            apply_result = _server_apply_order(
+                mesh_id, "gamble-resolved", {"paywall": new_pw, "result": result_str}
+            )
+            if not apply_result:
+                self.respond(500, {"error": "apply failed"})
+                return
+            logger.info(
+                "Bunny gamble: mesh=%s node=%s old=%s result=%s new=%s",
+                mesh_id,
+                node_id,
+                old_pw,
+                result_str,
+                new_pw,
+            )
+            self.respond(
+                200,
+                {
+                    "ok": True,
+                    "result": result_str,
+                    "old_paywall": old_pw,
+                    "new_paywall": new_pw,
+                },
+            )
+
         # ── Bunny-authed payment history (roadmap #2) ──
         # Path: /api/mesh/{mesh_id}/payments
         # Body: {node_id, since (ms epoch, optional, default 0), ts, signature}
@@ -2791,6 +3038,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         # Body: {node_id, event_type, details (opt), ts, signature}
         # event_type: "escape" | "tamper_attempt" | "tamper_detected"
         #           | "tamper_removed" | "geofence_breach" | "app_launch_penalty"
+        #           | "sit_boy"  (details = "<amount>" — dollars, clamped server-side)
         # signature: SHA256withRSA over "mesh_id|node_id|event_type|ts",
         # bunny_pubkey lookup, ±5min replay window. Fires the matching action
         # through _server_apply_order so counters + paywall propagate via vault.
@@ -2818,6 +3066,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 "tamper_removed",
                 "geofence_breach",
                 "app_launch_penalty",
+                "sit_boy",
             ):
                 self.respond(400, {"error": "invalid event_type"})
                 return
@@ -2875,6 +3124,20 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     (result or {}).get("lifetime_geofence_breaches"),
                     (result or {}).get("paywall"),
                     details,
+                )
+            elif event_type == "sit_boy":
+                try:
+                    amount = int(str(details).strip() or "0")
+                except (ValueError, TypeError):
+                    amount = 0
+                result = _server_apply_order(mesh_id, "sit-boy-recorded", {"amount": amount})
+                logger.info(
+                    "Sit-boy event: mesh=%s node=%s amount=%s applied=%s paywall=%s",
+                    mesh_id,
+                    node_id,
+                    amount,
+                    (result or {}).get("amount"),
+                    (result or {}).get("paywall"),
                 )
             elif event_type == "app_launch_penalty":
                 # Dedup retries inside APP_LAUNCH_DEDUP_WINDOW_MS.
