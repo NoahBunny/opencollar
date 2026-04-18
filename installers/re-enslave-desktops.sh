@@ -87,7 +87,7 @@ deploy_local() {
             cp "$src" ~/.config/focuslock/icons/ 2>/dev/null || true
             if [ "$icon" = "$SERVER_ICON" ] || [ "$icon" = "collar-icon-gold.png" ]; then
                 cp "$src" ~/.local/share/focuslock/ 2>/dev/null || true
-                sudo cp "$src" /opt/focuslock/ 2>/dev/null || true
+                sudo install -D -m 0644 "$src" "/opt/focuslock/$(basename "$src")" 2>/dev/null || true
             fi
         fi
     done
@@ -98,7 +98,7 @@ deploy_local() {
         log "  lion_pubkey.pem"
         if [ "$DRY_RUN" != 1 ]; then
             cp "$src" ~/.config/focuslock/lion_pubkey.pem 2>/dev/null || true
-            sudo cp "$src" /opt/focuslock/lion_pubkey.pem 2>/dev/null || true
+            sudo install -D -m 0644 "$src" /opt/focuslock/lion_pubkey.pem 2>/dev/null || true
         fi
         break
     done
@@ -208,7 +208,8 @@ sudo mkdir -p /opt/focuslock /opt/focuslock/web
 for f in focuslock-desktop.py focuslock_mesh.py focuslock-tray.py focuslock_*.py $SERVER_ICON lion_pubkey.pem; do
     [ -f /tmp/\$f ] && sudo install -D -m 644 /tmp/\$f /opt/focuslock/\$f && rm -f /tmp/\$f
 done
-sudo chmod 755 /opt/focuslock/focuslock-desktop.py /opt/focuslock/focuslock-tray.py 2>/dev/null || true
+# chmod no longer needed separately — `sudo install -D -m 0755` above
+# already sets the mode on each file. Sudoers no longer grants wildcard chmod.
 [ -f /tmp/index.html ] && sudo install -D -m 644 /tmp/index.html /opt/focuslock/web/index.html && rm -f /tmp/index.html
 [ -f /tmp/config.json ] && mkdir -p ~/.config/focuslock && cp /tmp/config.json ~/.config/focuslock/config.json && rm -f /tmp/config.json
 mkdir -p ~/.local/share/focuslock

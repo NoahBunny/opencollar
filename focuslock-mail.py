@@ -1184,6 +1184,8 @@ DESKTOP_WARN_DAYS = 7  # 1 week — notify Lion via Lion's Share
 DESKTOP_PENALTY_DAYS = 14  # 2 weeks — $50 penalty, first offense
 DESKTOP_ESCALATE_DAYS = 7  # every week after that — another $50
 
+desktop_registry = mesh.DesktopRegistry(persist_path=DESKTOP_REGISTRY_FILE)
+
 # ── IMAP: Payment Verification ──
 
 from focuslock_payment import (
@@ -1265,53 +1267,40 @@ def check_desktop_heartbeats():
     """Check registered desktops. If a collared PC goes silent for 2 weeks, penalize."""
     while True:
         try:
-            if os.path.exists(DESKTOP_REGISTRY_FILE):
-                with open(DESKTOP_REGISTRY_FILE, "r") as f:
-                    registry = json.load(f)
+            now_ts = time.time()
+            for hostname, info in desktop_registry.snapshot().items():
+                last_ts = info.get("last_seen_ts", 0)
+                if last_ts == 0:
+                    continue
+                silence_days = (now_ts - last_ts) / 86400
 
-                now_ts = time.time()
-                changed = False
-                for hostname, info in registry.items():
-                    last_ts = info.get("last_seen_ts", 0)
-                    if last_ts == 0:
-                        continue
-                    silence_days = (now_ts - last_ts) / 86400
+                # 1 week — warn Lion via pinned message on phone
+                if silence_days >= DESKTOP_WARN_DAYS and not info.get("warned", False):
+                    logger.warning("DESKTOP WARNING: %s silent for %.0f days", hostname, silence_days)
+                    adb.put(
+                        "focus_lock_pinned_message", f"Desktop collar offline: {hostname} ({silence_days:.0f} days)"
+                    )
+                    desktop_registry.mark_warned(hostname)
 
-                    # 1 week — warn Lion via pinned message on phone
-                    if silence_days >= DESKTOP_WARN_DAYS and not info.get("warned", False):
-                        logger.warning("DESKTOP WARNING: %s silent for %.0f days", hostname, silence_days)
-                        adb.put(
-                            "focus_lock_pinned_message", f"Desktop collar offline: {hostname} ({silence_days:.0f} days)"
+                # 2 weeks — penalty
+                if silence_days >= DESKTOP_PENALTY_DAYS:
+                    last_penalty = info.get("last_penalty_ts", 0)
+                    days_since_penalty = (now_ts - last_penalty) / 86400 if last_penalty else 999
+                    if days_since_penalty >= DESKTOP_ESCALATE_DAYS:
+                        logger.warning("DESKTOP PENALTY: %s silent %.0f days — adding $50", hostname, silence_days)
+                        # Add $50 to paywall
+                        pw_str = adb.get("focus_lock_paywall")
+                        pw = 0
+                        try:
+                            pw = int(pw_str) if pw_str and pw_str != "null" else 0
+                        except Exception as e:
+                            logger.warning("Failed to parse paywall value %r: %s", pw_str, e)
+                        pw += 50
+                        adb.put("focus_lock_paywall", str(pw))
+                        adb.put_str(
+                            "focus_lock_message", f"Desktop collar offline: {hostname}. $50 penalty applied."
                         )
-                        info["warned"] = True
-                        changed = True
-
-                    # 2 weeks — penalty
-                    if silence_days >= DESKTOP_PENALTY_DAYS:
-                        last_penalty = info.get("last_penalty_ts", 0)
-                        days_since_penalty = (now_ts - last_penalty) / 86400 if last_penalty else 999
-                        if days_since_penalty >= DESKTOP_ESCALATE_DAYS:
-                            logger.warning("DESKTOP PENALTY: %s silent %.0f days — adding $50", hostname, silence_days)
-                            # Add $50 to paywall
-                            pw_str = adb.get("focus_lock_paywall")
-                            pw = 0
-                            try:
-                                pw = int(pw_str) if pw_str and pw_str != "null" else 0
-                            except Exception as e:
-                                logger.warning("Failed to parse paywall value %r: %s", pw_str, e)
-                            pw += 50
-                            adb.put("focus_lock_paywall", str(pw))
-                            adb.put_str(
-                                "focus_lock_message", f"Desktop collar offline: {hostname}. $50 penalty applied."
-                            )
-                            info["last_penalty_ts"] = now_ts
-                            changed = True
-
-                if changed:
-                    tmp = DESKTOP_REGISTRY_FILE + ".tmp"
-                    with open(tmp, "w") as f:
-                        json.dump(registry, f, indent=2)
-                    os.rename(tmp, DESKTOP_REGISTRY_FILE)
+                        desktop_registry.mark_penalized(hostname, now_ts)
 
         except Exception:
             logger.exception("Desktop heartbeat checker error")
@@ -1905,6 +1894,7 @@ _init_orders_registry()  # Now that OPERATOR_MESH_ID is known, register operator
 
 # ── Disposal tokens (single-use, add-paywall only) ──
 _disposal_tokens = {}  # {token_str: {"created": float, "max_amount": int, "used": bool, "expires": float}}
+_disposal_tokens_lock = threading.Lock()
 
 # ── Relay Keypair (P6.5 zero-knowledge compliance) ──
 # The relay signs admin-originated vault blobs with its OWN key, not Lion's.
@@ -2401,6 +2391,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             self.respond(200, {"ok": True})
 
         elif self.path == "/webhook/entrap":
+            if not ADMIN_TOKEN:
+                self.respond(503, {"error": "admin_token not configured"})
+                return
+            if not _is_valid_admin_auth(data.get("admin_token", "")):
+                self.respond(403, {"error": "invalid admin_token"})
+                return
             enforce_jail()
             send_evidence("Phone has been ENTRAPPED.", "entrap")
             self.respond(200, {"ok": True})
@@ -2508,7 +2504,22 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             self.respond(200, {"ok": True})
 
         elif self.path == "/webhook/desktop-penalty":
-            amount = data.get("amount", 30)
+            if not ADMIN_TOKEN:
+                self.respond(503, {"error": "admin_token not configured"})
+                return
+            if not _is_valid_admin_auth(data.get("admin_token", "")):
+                self.respond(403, {"error": "invalid admin_token"})
+                return
+            # Clamp caller-supplied amount as defense-in-depth even with auth.
+            DESKTOP_PENALTY_MAX = 500
+            try:
+                amount = int(data.get("amount", 30))
+            except (TypeError, ValueError):
+                self.respond(400, {"error": "amount must be an integer"})
+                return
+            if amount < 0 or amount > DESKTOP_PENALTY_MAX:
+                self.respond(400, {"error": f"amount must be 0-{DESKTOP_PENALTY_MAX}"})
+                return
             reason = data.get("reason", "Desktop penalty")
             logger.warning("DESKTOP PENALTY: $%s — %s", amount, reason)
             pw_str = adb.get("focus_lock_paywall")
@@ -2538,16 +2549,17 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             ttl = min(int(data.get("ttl", 3600)), 7200)
             disposal = secrets.token_urlsafe(32)
             now = time.time()
-            _disposal_tokens[disposal] = {
-                "created": now,
-                "max_amount": max_amount,
-                "used": False,
-                "expires": now + ttl,
-            }
-            for k in list(_disposal_tokens):
-                dt = _disposal_tokens[k]
-                if dt["used"] or dt["expires"] < now:
-                    del _disposal_tokens[k]
+            with _disposal_tokens_lock:
+                _disposal_tokens[disposal] = {
+                    "created": now,
+                    "max_amount": max_amount,
+                    "used": False,
+                    "expires": now + ttl,
+                }
+                for k in list(_disposal_tokens):
+                    dt = _disposal_tokens[k]
+                    if dt["used"] or dt["expires"] < now:
+                        del _disposal_tokens[k]
             self.respond(200, {
                 "disposal_token": disposal,
                 "max_amount": max_amount,
@@ -2561,19 +2573,23 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
 
             disposal = data.get("disposal_token", "")
             if disposal:
-                dt = _disposal_tokens.get(disposal)
-                if not dt or dt["used"] or dt["expires"] < time.time():
-                    self.respond(403, {"error": "disposal token invalid, expired, or already used"})
-                    return
                 action = data.get("action", "")
                 if action != "add-paywall":
                     self.respond(403, {"error": "disposal token can only add-paywall"})
                     return
                 amount = data.get("params", {}).get("amount", 0)
-                if not isinstance(amount, (int, float)) or amount < 0 or amount > dt["max_amount"]:
-                    self.respond(403, {"error": f"amount must be 0-{dt['max_amount']}"})
-                    return
-                dt["used"] = True
+                # Atomic check-and-claim: under the lock we validate the token,
+                # verify amount, and mark used in one step. Two concurrent
+                # redemptions can no longer both pass the used-check.
+                with _disposal_tokens_lock:
+                    dt = _disposal_tokens.get(disposal)
+                    if not dt or dt["used"] or dt["expires"] < time.time():
+                        self.respond(403, {"error": "disposal token invalid, expired, or already used"})
+                        return
+                    if not isinstance(amount, (int, float)) or amount < 0 or amount > dt["max_amount"]:
+                        self.respond(403, {"error": f"amount must be 0-{dt['max_amount']}"})
+                        return
+                    dt["used"] = True
                 target_mesh = data.get("mesh_id", "") or OPERATOR_MESH_ID
                 result = _server_apply_order(target_mesh, "add-paywall", {"amount": amount})
                 if result:
@@ -3762,32 +3778,10 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             hostname = data.get("hostname", "unknown")
             logger.debug("Desktop heartbeat: %s", hostname)
             try:
-                registry = {}
-                if os.path.exists(DESKTOP_REGISTRY_FILE):
-                    with open(DESKTOP_REGISTRY_FILE, "r") as f:
-                        registry = json.load(f)
-                registry[hostname] = {
-                    "last_seen": datetime.now().isoformat(),
-                    "last_seen_ts": time.time(),
-                    "warned": registry.get(hostname, {}).get("warned", False),
-                    "last_penalty_ts": registry.get(hostname, {}).get("last_penalty_ts", 0),
-                    "name": registry.get(hostname, {}).get("name", hostname),
-                }
-                tmp = DESKTOP_REGISTRY_FILE + ".tmp"
-                with open(tmp, "w") as f:
-                    json.dump(registry, f, indent=2)
-                os.rename(tmp, DESKTOP_REGISTRY_FILE)
+                desktop_registry.heartbeat(hostname, name=data.get("name", ""))
                 # Push desktop info to phone so Lion's Share can see it
                 # Format: hostname:name:online;hostname:name:online
-                import re as _re
-
-                parts = []
-                for k, v in registry.items():
-                    safe_k = _re.sub(r"[^a-zA-Z0-9._-]", "", k)
-                    name = _re.sub(r"[^a-zA-Z0-9._\- ]", "", v.get("name", k))
-                    online = "1" if (time.time() - v.get("last_seen_ts", 0)) < 60 else "0"
-                    parts.append(f"{safe_k}:{name}:{online}")
-                desktop_summary = ";".join(parts)
+                desktop_summary = desktop_registry.summary_line(time.time())
                 for dev in adb.devices:
                     subprocess.run(
                         [

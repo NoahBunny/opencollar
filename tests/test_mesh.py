@@ -1,11 +1,13 @@
 """Tests for focuslock_mesh.py — mesh protocol, peer registry, gossip handlers."""
 
 import json
+import threading
 import time
 from unittest.mock import MagicMock, patch
 
 from focuslock_mesh import (
     ORDER_KEYS,
+    DesktopRegistry,
     MessageStore,
     OrdersDocument,
     PaymentLedger,
@@ -536,6 +538,74 @@ class TestMessageStore:
         result = store.get(limit=2)
         assert len(result) == 2
         assert result[0]["text"] == "m-2"  # newest first
+
+
+# ── DesktopRegistry ──
+
+
+class TestDesktopRegistry:
+    def test_heartbeat_persists_across_instances(self, tmp_path):
+        path = str(tmp_path / "desktops.json")
+        r1 = DesktopRegistry(persist_path=path)
+        r1.heartbeat("host1", name="My PC")
+        r2 = DesktopRegistry(persist_path=path)
+        snap = r2.snapshot()
+        assert "host1" in snap
+        assert snap["host1"]["name"] == "My PC"
+        assert snap["host1"]["last_seen_ts"] > 0
+
+    def test_heartbeat_preserves_flags(self, tmp_path):
+        r = DesktopRegistry(persist_path=str(tmp_path / "d.json"))
+        r.heartbeat("host1")
+        assert r.mark_warned("host1") is True
+        r.mark_penalized("host1", 12345.0)
+        r.heartbeat("host1")  # fresh heartbeat
+        snap = r.snapshot()
+        # warned + last_penalty_ts survive the re-heartbeat
+        assert snap["host1"]["warned"] is True
+        assert snap["host1"]["last_penalty_ts"] == 12345.0
+
+    def test_concurrent_heartbeats_do_not_clobber(self, tmp_path):
+        r = DesktopRegistry(persist_path=str(tmp_path / "d.json"))
+        N = 25
+        barrier = threading.Barrier(N)
+
+        def fire(i):
+            barrier.wait()
+            r.heartbeat(f"host{i}", name=f"Host {i}")
+
+        threads = [threading.Thread(target=fire, args=(i,)) for i in range(N)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        snap = r.snapshot()
+        assert len(snap) == N
+        for i in range(N):
+            assert f"host{i}" in snap
+            assert snap[f"host{i}"]["name"] == f"Host {i}"
+
+    def test_mark_warned_missing_host_returns_false(self, tmp_path):
+        r = DesktopRegistry(persist_path=str(tmp_path / "d.json"))
+        assert r.mark_warned("ghost") is False
+        assert r.mark_penalized("ghost", time.time()) is False
+
+    def test_summary_line_format(self, tmp_path):
+        r = DesktopRegistry(persist_path=str(tmp_path / "d.json"))
+        r.heartbeat("alpha", name="Alpha Box")
+        r.heartbeat("beta", name="Beta Box")
+        line = r.summary_line(time.time())
+        # Both entries present, online=1 since just heartbeated
+        assert "alpha:Alpha Box:1" in line
+        assert "beta:Beta Box:1" in line
+        assert line.count(";") == 1
+
+    def test_summary_line_marks_stale_offline(self, tmp_path):
+        r = DesktopRegistry(persist_path=str(tmp_path / "d.json"))
+        r.heartbeat("host1", name="PC")
+        # Advance clock past online_window
+        line = r.summary_line(time.time() + 120, online_window=60)
+        assert "host1:PC:0" in line
 
 
 # ── handle_mesh_sync ──

@@ -191,18 +191,36 @@ sudo mkdir -p /run/focuslock 2>/dev/null
 sudo chmod 777 /run/focuslock 2>/dev/null
 echo "d /run/focuslock 0777 root root -" | sudo tee /etc/tmpfiles.d/focuslock.conf >/dev/null 2>/dev/null || true
 
-# Sudoers: allow passwordless deploy to /opt/focuslock/ and service restarts
-# This lets Claude Code deploy updates without requiring interactive sudo
+# Sudoers: allow passwordless deploy to /opt/focuslock/ and service restarts.
+# Tightened 2026-04-17 — the previous rules used wildcards for `cp` and
+# `chmod` which enabled (a) arbitrary-file exfiltration via
+# `sudo cp /etc/shadow /opt/focuslock/x` and (b) privilege escalation
+# via `sudo chmod 4755 /opt/focuslock/<user-writable-file>`. The new
+# rules require the `install` command with explicit modes (no setuid
+# bits) and filename patterns starting with the focuslock/lion/collar
+# prefixes; callers must use `sudo install` instead of `sudo cp`/`chmod`.
 echo "=== Configuring sudoers for FocusLock deployment ==="
 SUDOERS_FILE="/etc/sudoers.d/focuslock"
 CURRENT_USER="$(whoami)"
 cat << SUDOERS_EOF | sudo tee "$SUDOERS_FILE" >/dev/null
-# FocusLock — allow collar deployment without password
-$CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/cp * /opt/focuslock/*
-$CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart *focuslock*
-$CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart *claude*
+# FocusLock — allow collar deployment without password.
+# Allowed modes restricted to non-setuid, non-setgid, non-sticky:
+#   0644 (data), 0755 (executables). Wildcards in the source are scoped
+#   to paths whose basename begins with an allowed prefix, so
+#   /etc/shadow etc. cannot be passed.
+$CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/install -D -m 0755 /*/focuslock*.py /opt/focuslock/focuslock*.py
+$CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/install -D -m 0644 /*/focuslock_*.py /opt/focuslock/focuslock_*.py
+$CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/install -D -m 0644 /*/lion_pubkey.pem /opt/focuslock/lion_pubkey.pem
+$CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/install -D -m 0644 /*/collar-icon*.png /opt/focuslock/collar-icon*.png
+$CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/install -D -m 0644 /*/crown-*.png /opt/focuslock/crown-*.png
+$CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/install -D -m 0644 /*/web/index.html /opt/focuslock/web/index.html
+$CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart focuslock-desktop.service
+$CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart focuslock-tray.service
+$CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart focuslock-bridge.service
+$CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart focuslock-mail.service
+$CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart claude-standing-orders-sync.service
 $CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/mkdir -p /opt/focuslock
-$CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/chmod * /opt/focuslock/*
+$CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/mkdir -p /opt/focuslock/web
 SUDOERS_EOF
 sudo chmod 440 "$SUDOERS_FILE"
 echo "  Sudoers rule installed: $SUDOERS_FILE"

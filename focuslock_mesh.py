@@ -15,6 +15,7 @@ import base64
 import json
 import logging
 import os
+import re
 import socket
 import sys
 import threading
@@ -22,6 +23,7 @@ import time
 import traceback
 import urllib.error
 import urllib.request
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -293,7 +295,13 @@ class OrdersDocument:
             self.save()
 
     def get(self, key: str, default=None):
-        return self.orders.get(key, default)
+        with self.lock:
+            return self.orders.get(key, default)
+
+    def snapshot(self) -> dict:
+        """Return a shallow copy of orders safe to read outside the lock."""
+        with self.lock:
+            return dict(self.orders)
 
     def set(self, key: str, value):
         with self.lock:
@@ -441,6 +449,11 @@ class PeerRegistry:
                     del self.peers[nid]
                 logger.info("Pruned non-warren peers: %s", stale)
                 self.save()
+
+    def snapshot(self) -> dict:
+        """Return {node_id: PeerInfo-copy} safe to iterate outside the lock."""
+        with self.lock:
+            return {nid: p for nid, p in self.peers.items()}
 
     def save(self):
         if not self.persist_path:
@@ -856,7 +869,7 @@ def handle_mesh_order(
 def handle_mesh_status(orders: OrdersDocument, peers: PeerRegistry, my_id: str, local_status: dict) -> dict:
     """Handle GET /mesh/status — aggregated mesh state for Lion's Share."""
     nodes = {}
-    for nid, peer in peers.peers.items():
+    for nid, peer in peers.snapshot().items():
         nodes[nid] = {
             "type": peer.node_type,
             "online": (time.time() - peer.last_seen) < 60,
@@ -1532,6 +1545,92 @@ class MessageStore:
                     self.save()
                     return {"ok": True}
         return {"error": "not found"}
+
+
+class DesktopRegistry:
+    """Desktop collar heartbeat registry — thread-safe, JSON-persisted.
+
+    Replaces the hand-rolled load-mutate-rename pattern in focuslock-mail.py.
+    Writers (HTTP heartbeat handler + hourly penalty thread) share a
+    threading.Lock so neither can clobber the other's entry.
+    """
+
+    _NAME_SAFE_RE = re.compile(r"[^a-zA-Z0-9._\- ]")
+    _HOST_SAFE_RE = re.compile(r"[^a-zA-Z0-9._-]")
+
+    def __init__(self, persist_path=None):
+        self.entries: dict = {}
+        self.persist_path = persist_path
+        self.lock = threading.Lock()
+        self._load()
+
+    def _load(self):
+        if self.persist_path and os.path.exists(self.persist_path):
+            try:
+                with open(self.persist_path, "r") as f:
+                    self.entries = json.load(f)
+            except Exception as e:
+                logger.warning("Failed to load desktop registry: %s", e)
+
+    def _save_locked(self):
+        """Atomic write. Caller must hold self.lock."""
+        if not self.persist_path:
+            return
+        try:
+            os.makedirs(os.path.dirname(self.persist_path), exist_ok=True)
+            tmp = self.persist_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(self.entries, f, indent=2)
+            os.replace(tmp, self.persist_path)
+        except Exception as e:
+            logger.warning("Failed to save desktop registry: %s", e)
+
+    def heartbeat(self, hostname: str, name: str = "") -> dict:
+        """Record a heartbeat; preserve warned/last_penalty_ts/name across updates."""
+        with self.lock:
+            prev = self.entries.get(hostname, {})
+            entry = {
+                "last_seen": datetime.now().isoformat(),
+                "last_seen_ts": time.time(),
+                "warned": prev.get("warned", False),
+                "last_penalty_ts": prev.get("last_penalty_ts", 0),
+                "name": name or prev.get("name", hostname),
+            }
+            self.entries[hostname] = entry
+            self._save_locked()
+            return dict(entry)
+
+    def snapshot(self) -> dict:
+        """Return a copy safe to iterate outside the lock."""
+        with self.lock:
+            return {k: dict(v) for k, v in self.entries.items()}
+
+    def mark_warned(self, hostname: str) -> bool:
+        with self.lock:
+            if hostname not in self.entries:
+                return False
+            self.entries[hostname]["warned"] = True
+            self._save_locked()
+            return True
+
+    def mark_penalized(self, hostname: str, now_ts: float) -> bool:
+        with self.lock:
+            if hostname not in self.entries:
+                return False
+            self.entries[hostname]["last_penalty_ts"] = now_ts
+            self._save_locked()
+            return True
+
+    def summary_line(self, now_ts: float, online_window: float = 60.0) -> str:
+        """Return 'host:name:online;host:name:online' for phone push."""
+        with self.lock:
+            parts = []
+            for k, v in self.entries.items():
+                safe_k = self._HOST_SAFE_RE.sub("", k)
+                name = self._NAME_SAFE_RE.sub("", v.get("name", k))
+                online = "1" if (now_ts - v.get("last_seen_ts", 0)) < online_window else "0"
+                parts.append(f"{safe_k}:{name}:{online}")
+        return ";".join(parts)
 
 
 # ── Voucher/Ledger/Message Handlers ──

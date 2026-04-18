@@ -102,6 +102,7 @@ _cfg = load_config()
 
 MESH_URL = _cfg.get("mesh_url", "") or os.environ.get("FOCUSLOCK_MESH_URL", "")
 HOMELAB_URL = _cfg.get("homelab_url", "") or os.environ.get("FOCUSLOCK_HOMELAB", "")
+ADMIN_TOKEN = _cfg.get("admin_token", "") or os.environ.get("FOCUSLOCK_ADMIN_TOKEN", "")
 PHONE_ADDRESSES = _cfg.get("phone_addresses", [])
 PHONE_PORT = _cfg.get("phone_port", 8432)
 POLL_INTERVAL = _cfg.get("poll_interval", 5)
@@ -1516,14 +1517,22 @@ class CollarApp(Gtk.Application):
         try:
             import socket
 
-            data = json.dumps({"amount": 30, "reason": f"Desktop consent declined ({socket.gethostname()})"}).encode()
-            req = urllib.request.Request(
-                f"{HOMELAB_URL}/webhook/desktop-penalty",
-                data=data,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            urllib.request.urlopen(req, timeout=5)
+            if not ADMIN_TOKEN:
+                logger.warning("desktop-penalty webhook skipped: admin_token not configured")
+            else:
+                payload = {
+                    "amount": 30,
+                    "reason": f"Desktop consent declined ({socket.gethostname()})",
+                    "admin_token": ADMIN_TOKEN,
+                }
+                data = json.dumps(payload).encode()
+                req = urllib.request.Request(
+                    f"{HOMELAB_URL}/webhook/desktop-penalty",
+                    data=data,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                urllib.request.urlopen(req, timeout=5)
         except Exception:
             logger.warning("failed to send consent-decline penalty webhook")
         win.close()
