@@ -2141,24 +2141,56 @@ public class MainActivity extends Activity {
         portInput.setLayoutParams(lp);
         layout.addView(portInput);
 
+        // Audit C5: expected fingerprint pin. The bunny displays a
+        // 16-hex-char fingerprint on Bunny Tasker's pairing screen;
+        // typing it here lets us detect MITM key swap at pair time.
+        EditText fpInput = new EditText(this);
+        fpInput.setHint("Fingerprint (16 hex chars from Bunny Tasker)");
+        fpInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
+        fpInput.setTextColor(0xFFe0e0e0);
+        fpInput.setHintTextColor(0xFF555555);
+        fpInput.setBackgroundColor(0xFF111118);
+        fpInput.setPadding(24, 20, 24, 20);
+        LinearLayout.LayoutParams fpLp = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT);
+        fpLp.topMargin = 16;
+        fpInput.setLayoutParams(fpLp);
+        layout.addView(fpInput);
+
         new AlertDialog.Builder(this)
             .setTitle("Direct Pair")
-            .setMessage("Enter the Bunny's IP/hostname shown in their Bunny Tasker pairing screen. No mesh server needed.")
+            .setMessage("Enter the Bunny's IP/hostname AND the 16-char fingerprint shown in their Bunny Tasker pairing screen. "
+                + "The fingerprint detects a MITM key swap — if you skip it, anyone on the network can impersonate the bunny.")
             .setView(layout)
             .setPositiveButton("Pair", (d, w) -> {
                 String ip = ipInput.getText().toString().trim();
                 String port = portInput.getText().toString().trim();
+                String fp = fpInput.getText().toString().trim().toLowerCase().replaceAll("\\s+", "");
                 if (ip.isEmpty()) { setStatus("Enter an IP"); return; }
                 if (port.isEmpty()) port = "8432";
                 final String bunnyUrl = "http://" + ip + ":" + port;
+                final String expectedFp = fp;
                 setStatus("Pairing direct...");
-                executor.execute(() -> pairDirect(bunnyUrl));
+                executor.execute(() -> pairDirect(bunnyUrl, expectedFp));
             })
             .setNegativeButton("Cancel", null)
             .show();
     }
 
-    private void pairDirect(String bunnyUrl) {
+    /** Audit C5: SHA-256(b64decode(pubkey)) first 8 bytes as 16 hex chars.
+     *  Must match PairingManager.getFingerprint on the bunny side. */
+    private static String computeBunnyFingerprint(String pubKeyB64) {
+        try {
+            byte[] hash = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(android.util.Base64.decode(pubKeyB64, android.util.Base64.NO_WRAP));
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < 8; i++) sb.append(String.format("%02x", hash[i] & 0xFF));
+            return sb.toString();
+        } catch (Exception e) { return ""; }
+    }
+
+    private void pairDirect(String bunnyUrl, String expectedFingerprint) {
         try {
             // Generate Lion's keypair if missing
             String lionPubB64 = prefs.getString("lion_pubkey_b64", "");
@@ -2196,6 +2228,29 @@ public class MainActivity extends Activity {
                 return;
             }
 
+            // Audit C5: verify the returned bunny_pubkey against the
+            // fingerprint the user read off the bunny's own screen. If
+            // they don't match we're MITM'd and must abort — continuing
+            // would trust the attacker's key for the life of the pairing.
+            String receivedFp = computeBunnyFingerprint(bunnyPubB64);
+            if (!expectedFingerprint.isEmpty()) {
+                if (!expectedFingerprint.equalsIgnoreCase(receivedFp)) {
+                    setStatus("Pair ABORTED: fingerprint mismatch. expected="
+                        + expectedFingerprint + " got=" + receivedFp
+                        + ". Possible MITM — check the bunny's screen.");
+                    return;
+                }
+            } else {
+                // No expected fingerprint provided — log the received one
+                // prominently so the user can verify it out-of-band. Does
+                // NOT abort (backwards compat) but the status message
+                // screams at the operator to double-check.
+                android.util.Log.w("focusctl",
+                    "pairDirect: no expected fingerprint given; received " + receivedFp);
+                setStatus("PAIRED without fingerprint check — VERIFY " + receivedFp
+                    + " matches Bunny Tasker NOW");
+            }
+
             // Store pairing — direct mode uses bunnyDirectUrl instead of mesh.
             // Multi-bunny: create a new slot for this direct pairing and set it
             // active. The slot gets a default label "bunny" which the user can
@@ -2213,7 +2268,11 @@ public class MainActivity extends Activity {
                 .putString("pair_mode", "direct")
                 .apply();
             handler.post(() -> setActiveBunny(newId));
-            setStatus("PAIRED direct: " + fBunnyUrl);
+            if (!expectedFingerprint.isEmpty()) {
+                setStatus("PAIRED direct (fingerprint verified): " + fBunnyUrl);
+            } else {
+                setStatus("PAIRED direct (UNVERIFIED fp=" + receivedFp + "): " + fBunnyUrl);
+            }
         } catch (Exception e) {
             setStatus("Pair error: " + e.getMessage());
         }

@@ -9,8 +9,8 @@
 # all sub-scripts read from here so there's exactly one place to change.
 TARGET_SLAVE_VERSIONCODE=70
 TARGET_SLAVE_APK="focuslock-v70.apk"
-TARGET_CONTROLLER_VERSIONCODE=66
-TARGET_CONTROLLER_APK="focusctl-v66.apk"
+TARGET_CONTROLLER_VERSIONCODE=67
+TARGET_CONTROLLER_APK="focusctl-v67.apk"
 TARGET_COMPANION_VERSIONCODE=51
 TARGET_COMPANION_APK="bunnytasker-v51.apk"
 
