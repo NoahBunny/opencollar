@@ -190,15 +190,15 @@ ORDER_KEYS = {
     # which either locks or bumps the paywall (Lion's choice). If interval_ms=0,
     # the task is one-shot and is cleared on completion.
     "deadline_task_text": "",
-    "deadline_task_deadline_ms": 0,          # 0 = no task armed
-    "deadline_task_interval_ms": 0,           # 0 = one-shot
+    "deadline_task_deadline_ms": 0,  # 0 = no task armed
+    "deadline_task_interval_ms": 0,  # 0 = one-shot
     "deadline_task_last_completed_ms": 0,
-    "deadline_task_proof_type": "none",       # "none" | "typed" | "photo"
+    "deadline_task_proof_type": "none",  # "none" | "typed" | "photo"
     "deadline_task_proof_hint": "",
-    "deadline_task_on_miss": "lock",          # "lock" | "paywall"
-    "deadline_task_miss_amount": 0,            # $ bump when on_miss=paywall
-    "deadline_task_locked_by_miss": 0,         # 1 = current lock was caused by a miss
-    "deadline_task_missed_at_ms": 0,           # stamped when miss fires; 0 = armed or cleared
+    "deadline_task_on_miss": "lock",  # "lock" | "paywall"
+    "deadline_task_miss_amount": 0,  # $ bump when on_miss=paywall
+    "deadline_task_locked_by_miss": 0,  # 1 = current lock was caused by a miss
+    "deadline_task_missed_at_ms": 0,  # stamped when miss fires; 0 = armed or cleared
 }
 
 

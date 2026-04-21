@@ -344,8 +344,7 @@ def check_payment_emails(
                     logger.debug("folder %s skipped: %s", folder, e)
                     continue
 
-            logger.info("Found %d emails across %d folders in last 7 days",
-                        len(messages), len(folder_names))
+            logger.info("Found %d emails across %d folders in last 7 days", len(messages), len(folder_names))
             for folder, num, raw_msg in messages:
                 msg = email.message_from_bytes(raw_msg)
                 subject = str(msg.get("Subject", "")).lower()

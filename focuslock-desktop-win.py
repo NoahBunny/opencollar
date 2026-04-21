@@ -171,6 +171,7 @@ except ImportError:
 
 _VAULT_VERSION_FILE = os.path.join(CONFIG_DIR, "vault_last_version")
 
+
 def _load_vault_last_version():
     try:
         with open(_VAULT_VERSION_FILE) as f:
@@ -178,12 +179,14 @@ def _load_vault_last_version():
     except Exception:
         return 0
 
+
 def _save_vault_last_version(v):
     try:
         with open(_VAULT_VERSION_FILE, "w") as f:
             f.write(str(v))
     except Exception:
         pass
+
 
 _vault_last_version = _load_vault_last_version()
 _vault_node_registered = False

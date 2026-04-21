@@ -45,9 +45,9 @@ SIT_BOY_MAX_AMOUNT = 500
 if the controller's SIM is hijacked or the controller number setting drifts."""
 
 UNSUBSCRIBE_FEES = {
-    "bronze": 50,   # 2 x $25/wk subscribe-charge amount
-    "silver": 70,   # 2 x $35/wk
-    "gold": 100,    # 2 x $50/wk
+    "bronze": 50,  # 2 x $25/wk subscribe-charge amount
+    "silver": 70,  # 2 x $35/wk
+    "gold": 100,  # 2 x $50/wk
 }
 """Fee charged on bunny-initiated unsubscribe — 2x one period's tribute. Matches
 the Bunny Tasker dialog ("Cancel fee: $" + amount x 2) and the actual server
@@ -61,10 +61,10 @@ GOOD_BEHAVIOR_INTERVAL_MS = 10 * 60 * 1000
 """10 minutes — matches the phone-side legacy cadence."""
 
 COMPOUND_INTEREST_RATE_BY_TIER = {
-    "": 1.10,        # unsubscribed — same as bronze
+    "": 1.10,  # unsubscribed — same as bronze
     "bronze": 1.10,  # 10%/hr
     "silver": 1.05,  # 5%/hr
-    "gold": 1.00,    # 0% — gold tier has no compound
+    "gold": 1.00,  # 0% — gold tier has no compound
 }
 """Hourly multiplier applied to paywall_original. `compounded = original x rate ** hours`."""
 

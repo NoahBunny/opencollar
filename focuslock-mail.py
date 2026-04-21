@@ -887,6 +887,7 @@ def mesh_apply_order(action, params, orders):
             return {"applied": action, "paywall": current_pw, "skipped": True}
         orders.set("paywall", str(target))
         import time as _t_ci
+
         orders.set("paywall_last_compounded", int(_t_ci.time() * 1000))
         return {"applied": action, "paywall": target}
     elif action == "geofence-breach-recorded":
@@ -979,6 +980,7 @@ def mesh_apply_order(action, params, orders):
         # completion time (never stacks). On miss: either auto-lock or
         # paywall bump, Lion's choice.
         import time as t_sdt
+
         now_ms_sdt = int(t_sdt.time() * 1000)
         text = (params.get("text", "") or "").strip()
         if not text:
@@ -1059,6 +1061,7 @@ def mesh_apply_order(action, params, orders):
         # the deadline forward from the completion time if interval > 0;
         # else drop the task. Release any miss-induced lock.
         import time as t_dtc
+
         now_ms_dtc = int(t_dtc.time() * 1000)
         interval = int(orders.get("deadline_task_interval_ms", 0) or 0)
         was_locked_by_miss = str(orders.get("deadline_task_locked_by_miss", 0)) == "1"
@@ -1092,6 +1095,7 @@ def mesh_apply_order(action, params, orders):
         # outstanding (locked_by_miss=1) so a future completion releases it.
         on_miss = (params.get("on_miss", orders.get("deadline_task_on_miss", "lock")) or "lock").lower()
         import time as t_dtm
+
         now_ms_dtm = int(t_dtm.time() * 1000)
         task_text = orders.get("deadline_task_text", "")
         orders.set("deadline_task_locked_by_miss", 1)
@@ -1304,9 +1308,7 @@ def check_desktop_heartbeats():
                             logger.warning("Failed to parse paywall value %r: %s", pw_str, e)
                         pw += 50
                         adb.put("focus_lock_paywall", str(pw))
-                        adb.put_str(
-                            "focus_lock_message", f"Desktop collar offline: {hostname}. $50 penalty applied."
-                        )
+                        adb.put_str("focus_lock_message", f"Desktop collar offline: {hostname}. $50 penalty applied.")
                         desktop_registry.mark_penalized(hostname, now_ts)
 
         except Exception:
@@ -1364,6 +1366,7 @@ def check_compound_interest():
     while True:
         try:
             import time as _t_ci
+
             now_ms = int(_t_ci.time() * 1000)
             for mid, orders in list(_orders_registry.docs.items()):
                 try:
@@ -1388,7 +1391,7 @@ def check_compound_interest():
                     hours = (now_ms - locked_at) / 3600000.0
                     if hours <= 0:
                         continue
-                    compounded = int(original * (rate ** hours))
+                    compounded = int(original * (rate**hours))
                     try:
                         current_pw = int(orders.get("paywall", "0") or "0")
                     except (ValueError, TypeError):
@@ -2573,11 +2576,14 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     dt = _disposal_tokens[k]
                     if dt["used"] or dt["expires"] < now:
                         del _disposal_tokens[k]
-            self.respond(200, {
-                "disposal_token": disposal,
-                "max_amount": max_amount,
-                "expires_in": ttl,
-            })
+            self.respond(
+                200,
+                {
+                    "disposal_token": disposal,
+                    "max_amount": max_amount,
+                    "expires_in": ttl,
+                },
+            )
 
         elif self.path == "/admin/order":
             if not ADMIN_TOKEN:
@@ -2958,9 +2964,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             heads = _secrets.SystemRandom().choice([True, False])
             new_pw = _math.ceil(old_pw / 2) if heads else old_pw * 2
             result_str = "heads" if heads else "tails"
-            apply_result = _server_apply_order(
-                mesh_id, "gamble-resolved", {"paywall": new_pw, "result": result_str}
-            )
+            apply_result = _server_apply_order(mesh_id, "gamble-resolved", {"paywall": new_pw, "result": result_str})
             if not apply_result:
                 self.respond(500, {"error": "apply failed"})
                 return
@@ -4104,10 +4108,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         )
                         parts.append(f.read())
 
-                mem_dir = (
-                    os.environ.get("MEMORY_DIR")
-                    or os.path.expanduser("~/.claude/enforcement-memory")
-                )
+                mem_dir = os.environ.get("MEMORY_DIR") or os.path.expanduser("~/.claude/enforcement-memory")
                 if os.path.isdir(mem_dir):
                     parts.append("\n\n# TACTICAL ENFORCEMENT MEMORIES\n\n")
                     for fname in sorted(os.listdir(mem_dir)):

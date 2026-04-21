@@ -14,6 +14,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MAIL_PATH = REPO_ROOT / "focuslock-mail.py"
 
+
 # focuslock-mail.py isn't importable by name (hyphen). Load it under an alias
 # so we can call mesh_apply_order directly without running the HTTP server.
 @pytest.fixture(scope="module")
@@ -54,9 +55,7 @@ class TestSetDeadlineTask:
 
     def test_rejects_past_deadline(self, mail_module, orders):
         past = int(time.time() * 1000) - 60000
-        r = mail_module.mesh_apply_order(
-            "set-deadline-task", {"text": "x", "deadline_ms": past}, orders
-        )
+        r = mail_module.mesh_apply_order("set-deadline-task", {"text": "x", "deadline_ms": past}, orders)
         assert "error" in r
 
     def test_rejects_bad_proof_type(self, mail_module, orders):
@@ -111,9 +110,7 @@ class TestDeadlineTaskMissed:
             {"text": "Sink", "deadline_minutes": 10, "on_miss": "lock"},
             orders,
         )
-        result = mail_module.mesh_apply_order(
-            "deadline-task-missed", {"on_miss": "lock"}, orders
-        )
+        result = mail_module.mesh_apply_order("deadline-task-missed", {"on_miss": "lock"}, orders)
         assert result["on_miss"] == "lock"
         assert str(orders.get("lock_active")) == "1"
         assert str(orders.get("deadline_task_locked_by_miss")) == "1"
@@ -131,9 +128,7 @@ class TestDeadlineTaskMissed:
             },
             orders,
         )
-        result = mail_module.mesh_apply_order(
-            "deadline-task-missed", {"on_miss": "paywall"}, orders
-        )
+        result = mail_module.mesh_apply_order("deadline-task-missed", {"on_miss": "paywall"}, orders)
         assert result["on_miss"] == "paywall"
         assert result["amount"] == 25
         assert orders.get("paywall") == "30"  # 5 + 25
@@ -149,9 +144,7 @@ class TestDeadlineTaskClearedAfterMiss:
             orders,
         )
         # Simulate miss
-        mail_module.mesh_apply_order(
-            "deadline-task-missed", {"on_miss": "lock"}, orders
-        )
+        mail_module.mesh_apply_order("deadline-task-missed", {"on_miss": "lock"}, orders)
         assert str(orders.get("lock_active")) == "1"
         # Bunny clears
         result = mail_module.mesh_apply_order("deadline-task-cleared", {}, orders)

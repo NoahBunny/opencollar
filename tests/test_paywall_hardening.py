@@ -42,7 +42,18 @@ class TestEscapePenaltyFormula:
 
         # 1-3 → $5, 4-6 → $10, 7-9 → $15, 10-12 → $20
         assert [escape_penalty(n) for n in range(1, 13)] == [
-            5, 5, 5, 10, 10, 10, 15, 15, 15, 20, 20, 20,
+            5,
+            5,
+            5,
+            10,
+            10,
+            10,
+            15,
+            15,
+            15,
+            20,
+            20,
+            20,
         ]
 
     def test_zero_and_negative(self):
@@ -189,18 +200,14 @@ class TestGoodBehaviorTick:
 class TestCompoundInterestTick:
     def test_sets_paywall_when_target_higher(self, mail_module, orders):
         orders.set("paywall", "100")
-        result = mail_module.mesh_apply_order(
-            "compound-interest-tick", {"paywall": 121}, orders
-        )
+        result = mail_module.mesh_apply_order("compound-interest-tick", {"paywall": 121}, orders)
         assert result["paywall"] == 121
         assert orders.get("paywall") == "121"
         assert int(orders.get("paywall_last_compounded", 0)) > 0
 
     def test_skips_when_target_not_higher(self, mail_module, orders):
         orders.set("paywall", "200")
-        result = mail_module.mesh_apply_order(
-            "compound-interest-tick", {"paywall": 150}, orders
-        )
+        result = mail_module.mesh_apply_order("compound-interest-tick", {"paywall": 150}, orders)
         assert result.get("skipped") is True
         assert orders.get("paywall") == "200"
 
@@ -219,9 +226,7 @@ class TestSitBoyRecorded:
         from focuslock_penalties import SIT_BOY_MAX_AMOUNT
 
         orders.set("paywall", "0")
-        result = mail_module.mesh_apply_order(
-            "sit-boy-recorded", {"amount": SIT_BOY_MAX_AMOUNT * 10}, orders
-        )
+        result = mail_module.mesh_apply_order("sit-boy-recorded", {"amount": SIT_BOY_MAX_AMOUNT * 10}, orders)
         assert result["amount"] == SIT_BOY_MAX_AMOUNT
         assert result["paywall"] == SIT_BOY_MAX_AMOUNT
 
@@ -246,9 +251,7 @@ class TestGambleResolved:
         # heads result is computed by the endpoint (math.ceil(old/2)); the
         # action is a dumb setter, so we pass the precomputed value.
         orders.set("paywall", "100")
-        result = mail_module.mesh_apply_order(
-            "gamble-resolved", {"paywall": 50, "result": "heads"}, orders
-        )
+        result = mail_module.mesh_apply_order("gamble-resolved", {"paywall": 50, "result": "heads"}, orders)
         assert result["paywall"] == 50
         assert result["result"] == "heads"
         assert orders.get("paywall") == "50"
@@ -256,17 +259,13 @@ class TestGambleResolved:
 
     def test_tails_doubles_paywall(self, mail_module, orders):
         orders.set("paywall", "75")
-        result = mail_module.mesh_apply_order(
-            "gamble-resolved", {"paywall": 150, "result": "tails"}, orders
-        )
+        result = mail_module.mesh_apply_order("gamble-resolved", {"paywall": 150, "result": "tails"}, orders)
         assert result["paywall"] == 150
         assert orders.get("gamble_result") == "tails:150"
 
     def test_negative_paywall_clamped_to_zero(self, mail_module, orders):
         orders.set("paywall", "10")
-        result = mail_module.mesh_apply_order(
-            "gamble-resolved", {"paywall": -5, "result": "heads"}, orders
-        )
+        result = mail_module.mesh_apply_order("gamble-resolved", {"paywall": -5, "result": "heads"}, orders)
         assert result["paywall"] == 0
         assert orders.get("paywall") == "0"
 
@@ -350,5 +349,5 @@ class TestCompoundInterestRateTable:
     def test_compounded_math(self):
         # Bronze, 2h lock, $100 original → 100 * 1.1^2 = 121
         rate = 1.10
-        compounded = int(100 * (rate ** 2))
+        compounded = int(100 * (rate**2))
         assert compounded == 121

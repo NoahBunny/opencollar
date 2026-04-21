@@ -224,9 +224,7 @@ class TestDirectPostCanonicalize:
 
     def test_path_is_not_encoded(self):
         # Path is emitted verbatim — callers control it, not an attacker.
-        got = c1_canonicalize(
-            "/api/add-paywall", '{"amount":500}', 42, "nn"
-        )
+        got = c1_canonicalize("/api/add-paywall", '{"amount":500}', 42, "nn")
         assert got == "focusctl|/api/add-paywall|42|nn|amount=500"
 
     def test_tampered_body_produces_different_canonical(self):

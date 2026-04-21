@@ -552,14 +552,16 @@ class TestMessageStore:
         through MessageStore so Bunny Tasker can verify it on fetch before
         auto-locking on mandatory_reply."""
         store = MessageStore(persist_path=str(tmp_path / "m.json"))
-        store.add({
-            "text": "hi",
-            "from": "lion",
-            "ts": 1234567890,
-            "signature": "BASE64SIG==",
-            "node_id": "controller",
-            "mandatory_reply": True,
-        })
+        store.add(
+            {
+                "text": "hi",
+                "from": "lion",
+                "ts": 1234567890,
+                "signature": "BASE64SIG==",
+                "node_id": "controller",
+                "mandatory_reply": True,
+            }
+        )
         # Reload from disk to ensure persistence (not just in-memory passthrough)
         store2 = MessageStore(persist_path=str(tmp_path / "m.json"))
         assert len(store2.messages) == 1
