@@ -3,17 +3,12 @@
 # Copyright (C) 2024-2026 The FocusLock Contributors
 """
 FocusLock Desktop — Windows Build Script
-Builds two .exe variants (Paired + generic/pairable) and a watchdog,
+Builds FocusLock.exe (the desktop collar) and FocusLock-Watchdog.exe,
 then signs them with a self-signed code signing certificate.
 
 Run on Windows: python build-win.py
   Options:
-    --paired-only     Build Paired variant only
-    --generic-only    Build generic variant only
     --skip-sign       Skip code signing
-    --homelab URL     Homelab URL (optional, e.g. http://192.168.1.100:8434)
-    --pin PIN         Mesh PIN (optional, set at runtime via config.json)
-    --pubkey FILE     Lion's RSA pubkey PEM file for Paired build
 """
 
 import glob
@@ -27,10 +22,6 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # Use a temp build dir with no special chars — apostrophes in paths break PyInstaller .spec files
 BUILD_ROOT = os.path.join(os.environ.get("TEMP", os.environ.get("TMP", SCRIPT_DIR)), "focuslock-build")
 DIST_DIR = os.path.join(SCRIPT_DIR, "dist")
-
-# ── Defaults for build (override via CLI args) ──
-DEFAULT_HOMELAB = ""
-DEFAULT_PIN = ""
 
 
 def check_platform():
@@ -90,19 +81,6 @@ def convert_icon():
     return ico_path
 
 
-def write_build_config(variant, homelab_url=None, mesh_pin=None, pubkey_pem=None):
-    """Generate _build_config.py in BUILD_ROOT for PyInstaller to bundle."""
-    os.makedirs(BUILD_ROOT, exist_ok=True)
-    content = f'BUILD_VARIANT = "{variant}"\n'
-    content += f'BUILD_HOMELAB_URL = "{homelab_url}"\n' if homelab_url else "BUILD_HOMELAB_URL = None\n"
-    content += f'BUILD_MESH_PIN = "{mesh_pin}"\n' if mesh_pin else "BUILD_MESH_PIN = None\n"
-    content += f'BUILD_LION_PUBKEY = """{pubkey_pem}"""\n' if pubkey_pem else "BUILD_LION_PUBKEY = None\n"
-    for path in [os.path.join(BUILD_ROOT, "_build_config.py"), os.path.join(SCRIPT_DIR, "_build_config.py")]:
-        with open(path, "w") as f:
-            f.write(content)
-    print(f"  _build_config.py written (variant={variant})")
-
-
 def _stage_sources():
     """Copy all source files to BUILD_ROOT (no special chars in path)."""
     os.makedirs(BUILD_ROOT, exist_ok=True)
@@ -112,7 +90,6 @@ def _stage_sources():
         "focuslock_mesh.py",
         "focuslock_ntfy.py",
         "watchdog-win.pyw",
-        "_build_config.py",
     ]:
         src = os.path.join(SCRIPT_DIR, f)
         if os.path.exists(src):
@@ -154,7 +131,6 @@ def pyinstaller_build(name, script, ico_path=None, windowed=True):
         f"--distpath={DIST_DIR}",
         f"--workpath={work_dir}",
         f"--specpath={spec_dir}",
-        "--hidden-import=_build_config",
         "--hidden-import=pystray",
         "--hidden-import=focuslock_mesh",
         "--hidden-import=focuslock_http",
@@ -316,18 +292,8 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="FocusLock Desktop — Windows Build")
-    parser.add_argument("--paired-only", action="store_true", help="Build Paired variant only")
-    parser.add_argument("--generic-only", action="store_true", help="Build generic variant only")
     parser.add_argument("--skip-sign", action="store_true", help="Skip code signing")
-    parser.add_argument("--homelab", default=DEFAULT_HOMELAB, help="Homelab URL for Paired build")
-    parser.add_argument("--pin", default=DEFAULT_PIN, help="Mesh PIN for Paired build")
-    parser.add_argument("--pubkey", default=None, help="Lion's RSA pubkey PEM file for Paired build")
     args = parser.parse_args()
-
-    pubkey_pem = None
-    if args.pubkey and os.path.exists(args.pubkey):
-        with open(args.pubkey, "r") as f:
-            pubkey_pem = f.read().strip()
 
     print()
     print("  FocusLock Desktop — Windows Build")
@@ -343,27 +309,9 @@ def main():
 
     os.makedirs(DIST_DIR, exist_ok=True)
 
-    build_paired = not args.generic_only
-    build_generic = not args.paired_only
-
     print("\n[3/5] Building executables...")
-
-    if build_paired:
-        write_build_config("paired", args.homelab, args.pin, pubkey_pem)
-        pyinstaller_build("FocusLock-Paired", "focuslock-desktop-win.py", ico_path)
-
-    if build_generic:
-        write_build_config("generic")
-        pyinstaller_build("FocusLock", "focuslock-desktop-win.py", ico_path)
-
-    # Watchdog (shared, no variant)
-    write_build_config("watchdog")  # doesn't matter, watchdog doesn't import it
+    pyinstaller_build("FocusLock", "focuslock-desktop-win.py", ico_path)
     pyinstaller_build("FocusLock-Watchdog", "watchdog-win.pyw", ico_path)
-
-    # Clean up generated config
-    for p in [os.path.join(SCRIPT_DIR, "_build_config.py"), os.path.join(BUILD_ROOT, "_build_config.py")]:
-        if os.path.exists(p):
-            os.remove(p)
 
     print("\n[4/5] Signing executables...")
     sign_executables(skip=args.skip_sign)
