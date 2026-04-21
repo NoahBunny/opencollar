@@ -108,7 +108,7 @@ def _c1_urlenc(s: str) -> str:
         elif b == 0x20:
             out.append("%20")
         else:
-            out.append("%%%02X" % b)
+            out.append(f"%{b:02X}")
     return "".join(out)
 
 

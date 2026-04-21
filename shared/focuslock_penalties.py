@@ -45,12 +45,12 @@ SIT_BOY_MAX_AMOUNT = 500
 if the controller's SIM is hijacked or the controller number setting drifts."""
 
 UNSUBSCRIBE_FEES = {
-    "bronze": 50,   # 2 × $25/wk subscribe-charge amount
-    "silver": 70,   # 2 × $35/wk
-    "gold": 100,    # 2 × $50/wk
+    "bronze": 50,   # 2 x $25/wk subscribe-charge amount
+    "silver": 70,   # 2 x $35/wk
+    "gold": 100,    # 2 x $50/wk
 }
-"""Fee charged on bunny-initiated unsubscribe — 2× one period's tribute. Matches
-the Bunny Tasker dialog ("Cancel fee: $" + amount × 2) and the actual server
+"""Fee charged on bunny-initiated unsubscribe — 2x one period's tribute. Matches
+the Bunny Tasker dialog ("Cancel fee: $" + amount x 2) and the actual server
 subscribe-charge amounts ($25 / $35 / $50). The legacy Collar doUnsubscribe()
 used $20 / $50 / $100 which never matched either reality — that table is gone."""
 
@@ -66,7 +66,7 @@ COMPOUND_INTEREST_RATE_BY_TIER = {
     "silver": 1.05,  # 5%/hr
     "gold": 1.00,    # 0% — gold tier has no compound
 }
-"""Hourly multiplier applied to paywall_original. `compounded = original × rate ** hours`."""
+"""Hourly multiplier applied to paywall_original. `compounded = original x rate ** hours`."""
 
 COMPOUND_INTEREST_TICK_INTERVAL_S = 60
 """How often check_compound_interest() scans every mesh. Lag is <$0.20 vs phone-side."""
@@ -74,7 +74,7 @@ COMPOUND_INTEREST_TICK_INTERVAL_S = 60
 
 def escape_penalty(escape_number: int) -> int:
     """Penalty for the Nth lifetime escape. 1-3 → $5 each, 4-6 → $10 each, …
-    Matches the Collar's legacy `((escapes-1)/3)+1 × $5` formula."""
+    Matches the Collar's legacy `((escapes-1)/3)+1 x $5` formula."""
     if escape_number < 1:
         return 0
     tier = ((escape_number - 1) // ESCAPES_PER_TIER) + 1

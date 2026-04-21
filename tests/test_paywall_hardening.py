@@ -1,7 +1,7 @@
 """Tests for P2 paywall hardening (2026-04-17).
 
 Covers the server-side handlers that replaced per-device paywall writes:
-- escape-recorded with tiered penalty ($5 × tier, 3 escapes/tier)
+- escape-recorded with tiered penalty ($5 x tier, 3 escapes/tier)
 - tamper-recorded for attempt/detected/removed ($500/$500/$1000)
 - geofence-breach-recorded ($100 + lifetime counter)
 - app-launch-penalty ($50 + endpoint-level 10s dedup)
@@ -12,7 +12,6 @@ Covers the server-side handlers that replaced per-device paywall writes:
 
 import importlib.util
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -82,7 +81,7 @@ class TestEscapeRecorded:
         orders.set("paywall", "0")
         for _ in range(10):
             mail_module.mesh_apply_order("escape-recorded", {}, orders)
-        # 3×$5 + 3×$10 + 3×$15 + $20 = 15+30+45+20 = $110
+        # 3x$5 + 3x$10 + 3x$15 + $20 = 15+30+45+20 = $110
         assert int(orders.get("paywall", "0")) == 110
         assert int(orders.get("lifetime_escapes", 0)) == 10
 

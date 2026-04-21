@@ -157,7 +157,13 @@ PARTNER_EMAIL = os.environ.get("PARTNER_EMAIL", _cfg.get("mail", {}).get("partne
 PHONE_PIN = os.environ.get("PHONE_PIN", _cfg.get("pin", ""))
 IMAP_CHECK_INTERVAL = 30  # seconds
 WEBHOOK_PORT = _cfg.get("homelab_port", 8434)
-IP_REGISTRY_FILE = "/run/focuslock/phone-ips.json"
+
+# Runtime state directory — hosts orders, peers, device registry, and per-mesh
+# vaults. Overridable via FOCUSLOCK_STATE_DIR for staging / tests / non-root
+# environments (systemd prod uses /run/focuslock via a tmpfiles.d unit).
+_STATE_DIR = os.environ.get("FOCUSLOCK_STATE_DIR", "/run/focuslock")
+
+IP_REGISTRY_FILE = os.path.join(_STATE_DIR, "phone-ips.json")
 
 # Phone URL — from config or env
 _phone_addrs = _cfg.get("phone_addresses", [])
@@ -165,6 +171,8 @@ _phone_port = _cfg.get("phone_port", 8432)
 PHONE_URL = os.environ.get("PHONE_URL", f"http://{_phone_addrs[0]}:{_phone_port}" if _phone_addrs else "")
 
 # ── Penalty constants (P2 paywall hardening — server is single writer) ──
+# ── Multi-device ADB targets ──
+from focuslock_adb import ADBBridge
 from focuslock_penalties import (
     APP_LAUNCH_DEDUP_WINDOW_MS,
     APP_LAUNCH_PENALTY,
@@ -181,9 +189,6 @@ from focuslock_penalties import (
     escape_penalty,
 )
 
-# ── Multi-device ADB targets ──
-from focuslock_adb import ADBBridge
-
 adb = ADBBridge(
     devices=[f"{addr}:5555" for addr in _phone_addrs] if _phone_addrs else [],
 )
@@ -199,8 +204,8 @@ _app_launch_dedup_lock = threading.Lock()
 
 # ── Mesh State ──
 
-MESH_ORDERS_FILE = "/run/focuslock/orders.json"
-MESH_PEERS_FILE = "/run/focuslock/peers.json"
+MESH_ORDERS_FILE = os.path.join(_STATE_DIR, "orders.json")
+MESH_PEERS_FILE = os.path.join(_STATE_DIR, "peers.json")
 MESH_NODE_ID = socket.gethostname().lower()
 MESH_NODE_TYPE = "server"
 MESH_PORT = WEBHOOK_PORT  # 8434
@@ -231,7 +236,9 @@ class MeshOrdersRegistry:
     legacy global ``mesh_orders`` pointing at /run/focuslock/orders.json;
     see ``_init_orders_registry()`` for the migration story."""
 
-    def __init__(self, base_dir="/run/focuslock/mesh-orders"):
+    def __init__(self, base_dir=None):
+        if base_dir is None:
+            base_dir = os.path.join(_STATE_DIR, "mesh-orders")
         self.base_dir = base_dir
         self.docs = {}  # mesh_id -> OrdersDocument
         os.makedirs(base_dir, exist_ok=True)
@@ -790,7 +797,7 @@ def mesh_apply_order(action, params, orders):
         return {"applied": action}
     elif action == "escape-recorded":
         # Phone reports an escape attempt. Increment lifetime_escapes and apply
-        # the tiered penalty ($5 × new tier). P2 paywall hardening (2026-04-17)
+        # the tiered penalty ($5 x new tier). P2 paywall hardening (2026-04-17)
         # moved this write server-side so a tampered Collar can't silently skip
         # it; phone is a pure reporter now.
         try:
@@ -1179,7 +1186,7 @@ def seed_mesh_peers():
     # Desktop collars self-register via gossip
 
 
-DESKTOP_REGISTRY_FILE = "/run/focuslock/desktop-heartbeats.json"
+DESKTOP_REGISTRY_FILE = os.path.join(_STATE_DIR, "desktop-heartbeats.json")
 DESKTOP_WARN_DAYS = 7  # 1 week — notify Lion via Lion's Share
 DESKTOP_PENALTY_DAYS = 14  # 2 weeks — $50 penalty, first offense
 DESKTOP_ESCALATE_DAYS = 7  # every week after that — another $50
@@ -1345,7 +1352,7 @@ def _server_apply_order(mesh_id, action, params):
 
 def check_compound_interest():
     """Compound interest accrual, server-side. Scans every mesh with
-    lock_active=1 and a non-gold sub_tier; computes `original × rate ** hours`
+    lock_active=1 and a non-gold sub_tier; computes `original x rate ** hours`
     since locked_at; if higher than the current paywall, fires a
     compound-interest-tick action to propagate the new value via vault.
 
@@ -1599,7 +1606,9 @@ def check_tributes_and_fines():
 class PairingRegistry:
     """Persisted pairing registry for relay-based key exchange."""
 
-    def __init__(self, persist_path="/run/focuslock/pairing-registry.json"):
+    def __init__(self, persist_path=None):
+        if persist_path is None:
+            persist_path = os.path.join(_STATE_DIR, "pairing-registry.json")
         self.path = persist_path
         self.lock = threading.Lock()
         self.entries = {}  # passphrase -> {bunny_pubkey, bunny_node_id, lion_pubkey, lion_node_id, paired, expires_at}
@@ -1730,7 +1739,9 @@ class MeshAccountStore:
     DEFAULT_MAX_BLOBS_PER_DAY = 5000
     DEFAULT_MAX_TOTAL_BYTES_MB = 100
 
-    def __init__(self, persist_dir="/run/focuslock/meshes"):
+    def __init__(self, persist_dir=None):
+        if persist_dir is None:
+            persist_dir = os.path.join(_STATE_DIR, "meshes")
         self.persist_dir = persist_dir
         os.makedirs(persist_dir, exist_ok=True)
         self.lock = threading.Lock()
@@ -1973,7 +1984,9 @@ class VaultStore:
     The server stores ciphertext blobs and verifies Lion signatures
     but cannot decrypt order contents."""
 
-    def __init__(self, base_dir="/run/focuslock/vaults"):
+    def __init__(self, base_dir=None):
+        if base_dir is None:
+            base_dir = os.path.join(_STATE_DIR, "vaults")
         self.base_dir = base_dir
         os.makedirs(base_dir, exist_ok=True)
         self.lock = threading.Lock()

@@ -1,4 +1,6 @@
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,14 @@ for p in (SHARED_DIR, REPO_ROOT):
     sp = str(p)
     if sp not in sys.path:
         sys.path.insert(0, sp)
+
+# Redirect focuslock-mail.py's state directory to a per-session tmpdir.
+# Without this, importing focuslock-mail triggers os.makedirs("/run/focuslock/...")
+# at module-load time — fine on prod (systemd tmpfiles.d owns /run/focuslock)
+# but a PermissionError on CI and dev machines. Set BEFORE any test module
+# imports focuslock-mail.
+_STATE_TMPDIR = tempfile.mkdtemp(prefix="focuslock-test-state-")
+os.environ.setdefault("FOCUSLOCK_STATE_DIR", _STATE_TMPDIR)
 
 
 @pytest.fixture(scope="session")
