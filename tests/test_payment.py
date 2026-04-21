@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 from focuslock_payment import (
     _HARDCODED_FALLBACK,
+    DEFAULT_SKIP_FOLDERS,
     check_payment_emails,
     extract_amount,
     get_body,
@@ -18,6 +19,7 @@ from focuslock_payment import (
     reduce_paywall,
     score_payment_email,
     unlock_phone,
+    walk_imap_folders,
 )
 
 # ── load_payment_providers ──
@@ -701,3 +703,137 @@ class TestCheckPaymentEmails:
                 iso_codes="USD|CAD",
             )
         imap_ctor.assert_not_called()
+
+
+class TestWalkImapFolders:
+    """Tests for `walk_imap_folders` via a spec'd imaplib.IMAP4_SSL mock.
+
+    `create_autospec(imaplib.IMAP4_SSL, instance=True)` enforces that our
+    helper only calls real methods with real-shaped signatures. If a future
+    stdlib change renames `fetch` / `search` / `list` / `select` or alters
+    their signatures, these tests fail loudly — catching the kind of drift
+    that used to slip through an ad-hoc `MagicMock()`.
+    """
+
+    def _spec_mail(self):
+        import imaplib
+        from unittest.mock import create_autospec
+
+        return create_autospec(imaplib.IMAP4_SSL, instance=True)
+
+    def test_walks_inbox_plus_subfolder_and_skips_default_exclusions(self):
+        mail = self._spec_mail()
+        mail.list.return_value = (
+            "OK",
+            [
+                b'(\\HasNoChildren) "/" "INBOX"',
+                b'(\\HasChildren) "/" "INBOX/Archive"',
+                b'(\\HasNoChildren) "/" "Trash"',
+                b'(\\HasNoChildren) "/" "Spam"',
+                b'(\\HasNoChildren) "/" "Drafts"',
+                b'(\\HasNoChildren) "/" "Sent"',
+                b'(\\HasNoChildren) "/" "Junk"',
+            ],
+        )
+        mail.select.return_value = ("OK", [b""])
+        mail.search.return_value = ("OK", [b"1"])
+        mail.fetch.return_value = ("OK", [(b"1 (RFC822)", b"raw")])
+
+        results = walk_imap_folders(mail, since_date="01-Apr-2026")
+
+        assert {r[0] for r in results} == {"INBOX", "INBOX/Archive"}
+        # select called with readonly=True — locked in so nothing ever flips
+        # this to a mutating scan
+        mail.select.assert_any_call("INBOX", readonly=True)
+        mail.select.assert_any_call("INBOX/Archive", readonly=True)
+        mail.search.assert_called_with(None, "(SINCE 01-Apr-2026)")
+        mail.fetch.assert_called_with(b"1", "(RFC822)")
+        # Skipped folders never selected
+        skipped = {call.args[0] for call in mail.select.call_args_list}
+        assert skipped.isdisjoint({"Trash", "Spam", "Drafts", "Sent", "Junk"})
+
+    def test_select_returning_non_ok_skips_folder(self):
+        mail = self._spec_mail()
+        mail.list.return_value = ("OK", [b'(\\HasNoChildren) "/" "INBOX"'])
+        mail.select.return_value = ("NO", [b""])
+        mail.search.return_value = ("OK", [b"1"])
+        results = walk_imap_folders(mail, since_date="01-Apr-2026")
+        assert results == []
+        # fetch never called because select didn't green-light
+        mail.fetch.assert_not_called()
+
+    def test_per_message_fetch_error_swallowed_scan_continues(self):
+        mail = self._spec_mail()
+        mail.list.return_value = ("OK", [b'(\\HasNoChildren) "/" "INBOX"'])
+        mail.select.return_value = ("OK", [b""])
+        mail.search.return_value = ("OK", [b"1 2 3"])
+
+        def fetch_side(num, _what):
+            if num == b"2":
+                raise RuntimeError("corrupt message")
+            return ("OK", [(b"%s (RFC822)" % num, b"raw-" + num)])
+
+        mail.fetch.side_effect = fetch_side
+        results = walk_imap_folders(mail, since_date="01-Apr-2026")
+        # 1 and 3 succeed, 2 is swallowed
+        nums = [r[1] for r in results]
+        assert nums == [b"1", b"3"]
+
+    def test_per_folder_error_swallowed_scan_continues(self):
+        mail = self._spec_mail()
+        mail.list.return_value = (
+            "OK",
+            [
+                b'(\\HasNoChildren) "/" "INBOX"',
+                b'(\\HasNoChildren) "/" "INBOX/Broken"',
+            ],
+        )
+
+        def select_side(folder, readonly):
+            if folder == "INBOX/Broken":
+                raise RuntimeError("connection reset")
+            return ("OK", [b""])
+
+        mail.select.side_effect = select_side
+        mail.search.return_value = ("OK", [b"1"])
+        mail.fetch.return_value = ("OK", [(b"1 (RFC822)", b"raw")])
+        results = walk_imap_folders(mail, since_date="01-Apr-2026")
+        # INBOX succeeded despite the broken sibling
+        assert {r[0] for r in results} == {"INBOX"}
+
+    def test_custom_skip_patterns_override_defaults(self):
+        mail = self._spec_mail()
+        mail.list.return_value = (
+            "OK",
+            [
+                b'(\\HasNoChildren) "/" "INBOX"',
+                b'(\\HasNoChildren) "/" "Archive"',  # included by custom pattern
+            ],
+        )
+        mail.select.return_value = ("OK", [b""])
+        mail.search.return_value = ("OK", [b""])
+        # Empty skip tuple → include everything from list()
+        results = walk_imap_folders(mail, since_date="01-Apr-2026", skip_patterns=())
+        selected = {call.args[0] for call in mail.select.call_args_list}
+        assert "Archive" in selected
+        assert "INBOX" in selected
+        assert results == []  # no messages to fetch
+
+    def test_empty_search_result_produces_no_messages(self):
+        mail = self._spec_mail()
+        mail.list.return_value = ("OK", [b'(\\HasNoChildren) "/" "INBOX"'])
+        mail.select.return_value = ("OK", [b""])
+        mail.search.return_value = ("OK", [b""])
+        results = walk_imap_folders(mail, since_date="01-Apr-2026")
+        assert results == []
+        mail.fetch.assert_not_called()
+
+    def test_default_skip_constant_is_exported(self):
+        # If the default skip list is reduced (e.g. Trash accidentally dropped)
+        # this catches it. These folders must always be skipped unless
+        # explicitly overridden.
+        assert "trash" in DEFAULT_SKIP_FOLDERS
+        assert "spam" in DEFAULT_SKIP_FOLDERS
+        assert "junk" in DEFAULT_SKIP_FOLDERS
+        assert "drafts" in DEFAULT_SKIP_FOLDERS
+        assert "sent" in DEFAULT_SKIP_FOLDERS

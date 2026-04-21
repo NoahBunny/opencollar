@@ -218,6 +218,59 @@ def reduce_paywall(remaining, paid, adb, phone_url="", phone_pin=""):
         logger.warning("Reduce paywall failed: %s", e)
 
 
+DEFAULT_SKIP_FOLDERS = ("trash", "spam", "junk", "drafts", "sent")
+
+
+def walk_imap_folders(mail, since_date, skip_patterns=DEFAULT_SKIP_FOLDERS):
+    """Walk INBOX + all subfolders, returning (folder, num, raw_bytes) tuples.
+
+    Parses the `mail.list()` response, skips folders whose names contain any
+    substring in `skip_patterns` (case-insensitive) — Trash/Spam/Junk/Drafts/
+    Sent by default — and for each remaining folder calls `select` + `search
+    (SINCE <date>)` + `fetch(num, "(RFC822)")`. Per-folder and per-message
+    failures are swallowed (per-folder logged at DEBUG) so a single broken
+    mailbox can't abort the whole scan.
+
+    `mail` must quack like `imaplib.IMAP4[_SSL]`. Tested against both a real
+    imaplib instance spec (`create_autospec`) and the existing INBOX-only
+    MagicMock in `tests/test_payment.py`.
+    """
+    _, folders_raw = mail.list()
+    folder_names = []
+    for raw in folders_raw or []:
+        if not raw:
+            continue
+        line = raw.decode() if isinstance(raw, bytes) else str(raw)
+        # Format: (\HasNoChildren) "/" "INBOX/Archive/2026"
+        parts = line.rsplit(" ", 1)
+        if len(parts) < 2:
+            continue
+        name = parts[-1].strip().strip('"')
+        low = name.lower()
+        if any(s in low for s in skip_patterns):
+            continue
+        folder_names.append(name)
+
+    messages = []
+    for folder in folder_names:
+        try:
+            typ, _ = mail.select(folder, readonly=True)
+            if typ != "OK":
+                continue
+            _, data = mail.search(None, f"(SINCE {since_date})")
+            ids = data[0].split() if data and data[0] else []
+            for num in ids:
+                try:
+                    _, msg_data = mail.fetch(num, "(RFC822)")
+                    messages.append((folder, num, msg_data[0][1]))
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.debug("folder %s skipped: %s", folder, e)
+            continue
+    return messages
+
+
 def check_payment_emails(
     *,
     imap_host,
@@ -306,45 +359,12 @@ def check_payment_emails(
             mail = imaplib.IMAP4_SSL(active_host)
             mail.login(active_user, active_pass)
 
-            # Walk INBOX + all subfolders so archived/auto-filed payment
-            # emails still get scanned. Skip Trash/Spam/Junk/Drafts/Sent.
             since_date = (datetime.now() - __import__("datetime").timedelta(days=7)).strftime("%d-%b-%Y")
-            _, folders_raw = mail.list()
-            folder_names = []
-            skip_pat = ("trash", "spam", "junk", "drafts", "sent")
-            for raw in folders_raw or []:
-                if not raw:
-                    continue
-                line = raw.decode() if isinstance(raw, bytes) else str(raw)
-                # Format: (\HasNoChildren) "/" "INBOX/Archive/2026"
-                parts = line.rsplit(" ", 1)
-                if len(parts) < 2:
-                    continue
-                name = parts[-1].strip().strip('"')
-                low = name.lower()
-                if any(s in low for s in skip_pat):
-                    continue
-                folder_names.append(name)
+            messages = walk_imap_folders(mail, since_date)
 
-            messages = []  # (folder, num, msg_bytes)
-            for folder in folder_names:
-                try:
-                    typ, _ = mail.select(folder, readonly=True)
-                    if typ != "OK":
-                        continue
-                    _, data = mail.search(None, f"(SINCE {since_date})")
-                    ids = data[0].split() if data and data[0] else []
-                    for num in ids:
-                        try:
-                            _, msg_data = mail.fetch(num, "(RFC822)")
-                            messages.append((folder, num, msg_data[0][1]))
-                        except Exception:
-                            continue
-                except Exception as e:
-                    logger.debug("folder %s skipped: %s", folder, e)
-                    continue
-
-            logger.info("Found %d emails across %d folders in last 7 days", len(messages), len(folder_names))
+            logger.info(
+                "Found %d emails across %d folders in last 7 days", len(messages), len({m[0] for m in messages})
+            )
             for folder, num, raw_msg in messages:
                 msg = email.message_from_bytes(raw_msg)
                 subject = str(msg.get("Subject", "")).lower()
