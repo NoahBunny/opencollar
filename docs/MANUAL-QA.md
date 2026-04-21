@@ -22,6 +22,18 @@ Target coverage: Android 13, 14, 15 — at minimum one real device per minor ver
 - [ ] Collar's boot-complete receiver runs — lock state restored (if `lock_active=1` at boot, phone relocks within 10s).
 - [ ] No launcher icon for Collar. No entry in "recent apps" tray. Only Bunny Tasker is visible.
 
+### Android 14+ headless bring-up caveat
+
+On Android 14+, `adb shell am start-foreground-service com.focuslock/.ControlService` on a fresh install crashes with:
+
+```
+SecurityException: Starting FGS with type location requires FOREGROUND_SERVICE_LOCATION
+```
+
+`ControlService` declares `foregroundServiceType="specialUse|location"` (`android/slave/AndroidManifest.xml:88`) and the OS refuses to start a `location`-typed FGS until the runtime location permission has been granted. The normal `ConsentActivity` → "grant location" → service-start flow handles this; a bare `adb am start-foreground-service` on a fresh install does not.
+
+**Implication for QA tooling:** do not script "install APK, then `adb am start-foreground-service`" as a bring-up shortcut on Android 14+. Either drive through the real Consent flow (tap the notification or launch the activity) or grant the permission first (`adb shell pm grant com.focuslock android.permission.ACCESS_FINE_LOCATION`) before starting the service. Not a runtime regression — affects headless test harnesses only.
+
 ## 2. Device admin / invisibility
 
 - [ ] Settings → Apps → shows Collar as "Device admin active"

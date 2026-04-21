@@ -65,6 +65,8 @@ Install v1.2.0 APKs per role:
 
 Grant device admin on slaves (manual tap, or for Waydroid: `adb shell dpm set-device-admin com.focuslock/.AdminReceiver`).
 
+> **Android 14+ headless bring-up caveat.** `adb shell am start-foreground-service com.focuslock/.ControlService` on a fresh Android-14+ install crashes with `SecurityException: Starting FGS with type location requires FOREGROUND_SERVICE_LOCATION` because `ControlService` is declared `foregroundServiceType="specialUse|location"` (`android/slave/AndroidManifest.xml:88`) and the OS won't start a `location`-typed FGS until the runtime location permission is granted. For headless QA bring-up, either (a) tap the Consent notification / launch `ConsentActivity` through the UI so the normal grant flow runs, or (b) pre-grant: `adb -s <S> shell pm grant com.focuslock android.permission.ACCESS_FINE_LOCATION` before the `am start-foreground-service`. Not a v1.2.0 regression — it's a standing Android-14 FGS-type enforcement. Also documented in `docs/MANUAL-QA.md §1`.
+
 ---
 
 ## §Environment (record before starting)
