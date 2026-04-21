@@ -381,7 +381,11 @@ def _install_fake_imap(monkeypatch, emails):
 
     fake_mail = MagicMock()
     fake_mail.login.return_value = None
-    fake_mail.select.return_value = None
+    # 2026-04-15 folder walk (commit 4da8c4a): check_payment_emails now calls
+    # mail.list() and unpacks select() / search() / fetch() tuples. Mock just
+    # INBOX — good enough for single-folder test scenarios.
+    fake_mail.list.return_value = ("OK", [b'(\\HasNoChildren) "/" "INBOX"'])
+    fake_mail.select.return_value = ("OK", [b""])
     # search returns ("OK", [b"1 2 3"]) style
     email_ids_bytes = b" ".join(str(i + 1).encode() for i in range(len(emails)))
     fake_mail.search.return_value = ("OK", [email_ids_bytes])
