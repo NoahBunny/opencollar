@@ -1707,7 +1707,22 @@ public class MainActivity extends Activity {
             .show();
     }
 
+    /**
+     * Audit C1: local-HTTP POSTs to the Collar now carry a bunny-signed payload.
+     * The Collar's SigVerifier accepts either lion- or bunny-signed requests,
+     * so Bunny Tasker (same phone, shared Settings.Global) signs with its own
+     * privkey. Canonicalization + headers match the slave's SigVerifier + the
+     * controller's VaultCrypto.canonicalizeDirectPost byte-for-byte.
+     */
     private boolean postToCollar(String path, String json) {
+        long ts = System.currentTimeMillis();
+        String nonce = collarRandomNonce();
+        String payload = collarCanonicalize(path, json, ts, nonce);
+        String sig = PairingManager.sign(getContentResolver(), payload);
+        if (sig == null || sig.isEmpty()) {
+            android.util.Log.w("BunnyTasker", "postToCollar: missing bunny privkey — cannot sign");
+            return false;
+        }
         int[] ports = {8432, 8433};
         for (int port : ports) {
             try {
@@ -1715,6 +1730,9 @@ public class MainActivity extends Activity {
                 java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("POST");
                 conn.setRequestProperty("Content-Type", "application/json");
+                conn.setRequestProperty("X-FL-Ts", Long.toString(ts));
+                conn.setRequestProperty("X-FL-Nonce", nonce);
+                conn.setRequestProperty("X-FL-Sig", sig);
                 conn.setDoOutput(true);
                 conn.setConnectTimeout(3000);
                 conn.setReadTimeout(5000);
@@ -1725,6 +1743,61 @@ public class MainActivity extends Activity {
             } catch (Exception e) { /* try next port */ }
         }
         return false;
+    }
+
+    private static String collarRandomNonce() {
+        byte[] buf = new byte[16];
+        new java.security.SecureRandom().nextBytes(buf);
+        return android.util.Base64.encodeToString(
+            buf, android.util.Base64.NO_WRAP | android.util.Base64.URL_SAFE | android.util.Base64.NO_PADDING);
+    }
+
+    private static String collarCanonicalize(String path, String body, long ts, String nonce) {
+        StringBuilder params = new StringBuilder();
+        boolean jsonOk = body != null && !body.isEmpty() && body.trim().startsWith("{");
+        if (jsonOk) {
+            try {
+                org.json.JSONObject obj = new org.json.JSONObject(body);
+                java.util.TreeMap<String, String> sorted = new java.util.TreeMap<>();
+                java.util.Iterator<String> keys = obj.keys();
+                while (keys.hasNext()) {
+                    String k = keys.next();
+                    Object v = obj.opt(k);
+                    if (v == null || org.json.JSONObject.NULL.equals(v)) continue;
+                    sorted.put(k, collarEncodeValue(v));
+                }
+                boolean first = true;
+                for (java.util.Map.Entry<String, String> e : sorted.entrySet()) {
+                    if (!first) params.append('&');
+                    params.append(collarUrlEnc(e.getKey())).append('=').append(e.getValue());
+                    first = false;
+                }
+            } catch (Exception e) { jsonOk = false; }
+        }
+        if (!jsonOk) {
+            params.setLength(0);
+            params.append("_raw=").append(collarUrlEnc(body == null ? "" : body));
+        }
+        return "focusctl|" + path + "|" + ts + "|" + nonce + "|" + params;
+    }
+
+    private static String collarEncodeValue(Object v) {
+        if (v instanceof Boolean) return ((Boolean) v) ? "1" : "0";
+        if (v instanceof Integer || v instanceof Long) return v.toString();
+        if (v instanceof Number) {
+            double d = ((Number) v).doubleValue();
+            if (!Double.isNaN(d) && !Double.isInfinite(d)
+                    && d == Math.floor(d) && Math.abs(d) < 1e15) {
+                return Long.toString((long) d);
+            }
+            return v.toString();
+        }
+        return collarUrlEnc(v.toString());
+    }
+
+    private static String collarUrlEnc(String s) {
+        try { return java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20"); }
+        catch (Exception e) { return s; }
     }
 
     private void launchAdminNag(android.content.ComponentName admin, String explanation) {

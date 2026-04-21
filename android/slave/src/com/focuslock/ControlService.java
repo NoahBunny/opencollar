@@ -59,6 +59,24 @@ public class ControlService extends Service {
     private boolean running = false;
     private android.speech.tts.TextToSpeech tts;
 
+    /** Audit C1: nonce cache for HTTP signature replay protection. */
+    private final SigVerifier.NonceCache sigNonceCache = new SigVerifier.NonceCache();
+
+    /** Audit C1: paths that do not require an X-FL-Sig header.
+     *  /api/pair is the bootstrap exchange — the lion pubkey arrives IN the
+     *  request body and only the first caller wins (doPair refuses if already
+     *  paired). /api/ping, /api/status, /api/adb-port are read-only liveness
+     *  for dashboards. /mesh/* has its own vault-blob signature layer. */
+    private static final java.util.Set<String> SIG_EXEMPT_PATHS = new java.util.HashSet<String>() {{
+        add("/");
+        add("/index.html");
+        add("/manifest.json");
+        add("/api/ping");
+        add("/api/status");
+        add("/api/adb-port");
+        add("/api/pair");
+    }};
+
     // ── Device Owner (DPM) helpers ──
 
     /** Cached device-owner check — set once in onCreate, avoids repeated IPC. */
@@ -737,9 +755,17 @@ public class ControlService extends Service {
 
             int clen = 0;
             String line;
+            java.util.Map<String, String> headers = new java.util.HashMap<>();
             while ((line = r.readLine()) != null && !line.isEmpty()) {
-                if (line.toLowerCase().startsWith("content-length:"))
-                    clen = Integer.parseInt(line.substring(15).trim());
+                int colon = line.indexOf(':');
+                if (colon > 0) {
+                    String name = line.substring(0, colon).trim().toLowerCase();
+                    String value = line.substring(colon + 1).trim();
+                    headers.put(name, value);
+                    if (name.equals("content-length")) {
+                        try { clen = Integer.parseInt(value); } catch (Exception e) {}
+                    }
+                }
             }
             String body = "";
             if (clen > 0) { char[] buf = new char[clen]; r.read(buf, 0, clen); body = new String(buf); }
@@ -751,13 +777,48 @@ public class ControlService extends Service {
             if (method.equals("OPTIONS")) {
                 out.write(("HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\n"
                     + "Access-Control-Allow-Methods: GET,POST,OPTIONS\r\n"
-                    + "Access-Control-Allow-Headers: Content-Type\r\n\r\n").getBytes());
+                    + "Access-Control-Allow-Headers: Content-Type,X-FL-Ts,X-FL-Nonce,X-FL-Sig\r\n\r\n").getBytes());
                 out.flush(); c.close(); return;
             }
 
-            // Auth: RSA signatures only. PIN auth removed — only Lion's Share
-            // private key can issue orders. API endpoints are open on the LAN
-            // (same trust model as ADB over TCP).
+            // Audit C1: gate every state-mutating /api/* POST behind an RSA
+            // signature from either the lion privkey or the same-phone bunny
+            // privkey. /mesh/* has its own vault-blob signature layer and is
+            // handled in handleMeshOrder. Read-only endpoints (ping, status,
+            // adb-port) and the bootstrap (pair) are exempt — see
+            // SIG_EXEMPT_PATHS above.
+            if (method.equals("POST") && path.startsWith("/api/")
+                    && !SIG_EXEMPT_PATHS.contains(path)) {
+                SigVerifier.Result vr = SigVerifier.verify(
+                    gstr("focus_lock_lion_pubkey"),
+                    gstr("focus_lock_bunny_pubkey"),
+                    path, body,
+                    headers.get("x-fl-ts"),
+                    headers.get("x-fl-nonce"),
+                    headers.get("x-fl-sig"),
+                    sigNonceCache,
+                    System.currentTimeMillis());
+                if (vr != SigVerifier.Result.ACCEPT) {
+                    String err;
+                    switch (vr) {
+                        case NOT_PAIRED:    err = "not_paired"; break;
+                        case SIG_REQUIRED:  err = "signature required"; break;
+                        case STALE_TS:      err = "stale_ts"; break;
+                        case REPLAY:        err = "replay"; break;
+                        case BAD_SIG:       err = "bad_sig"; break;
+                        case MALFORMED:     err = "malformed_sig"; break;
+                        default:            err = "rejected"; break;
+                    }
+                    Log.w(TAG, "C1: rejected " + method + " " + path + " — " + err);
+                    String resp403 = "{\"error\":\"" + err + "\",\"min_controller_version\":68}";
+                    byte[] rb403 = resp403.getBytes("UTF-8");
+                    out.write(("HTTP/1.1 403 Forbidden\r\nContent-Type: application/json; charset=utf-8\r\n"
+                        + "Content-Length: " + rb403.length
+                        + "\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n").getBytes());
+                    out.write(rb403);
+                    out.flush(); c.close(); return;
+                }
+            }
 
             String ct = "application/json";
             String resp;

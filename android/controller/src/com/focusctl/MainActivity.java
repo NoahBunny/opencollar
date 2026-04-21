@@ -717,7 +717,11 @@ public class MainActivity extends Activity {
         // pairMode / bunnyDirectUrl are instance vars loaded from the active
         // bunny slot (see loadActiveBunny).
         if ("direct".equals(pairMode) && !bunnyDirectUrl.isEmpty()) {
-            String r = meshPost(bunnyDirectUrl + path, jsonBody);
+            java.util.Map<String, String> sigHeaders = buildDirectSigHeaders(path, jsonBody);
+            if (sigHeaders == null) {
+                return "{\"error\":\"direct post: missing lion_privkey — re-pair to generate one\"}";
+            }
+            String r = meshPost(bunnyDirectUrl + path, jsonBody, sigHeaders);
             return r != null ? r : "{\"error\":\"connection failed (direct)\"}";
         }
         // Mesh-server mode: configured?
@@ -1620,6 +1624,32 @@ public class MainActivity extends Activity {
     }
 
     private String meshPost(String fullUrl, String body) {
+        return meshPost(fullUrl, body, null);
+    }
+
+    /**
+     * Audit C1: build X-FL-Ts / X-FL-Nonce / X-FL-Sig headers for a direct-mode
+     * POST to the Collar's local HTTP server. Returns null if lion_privkey is
+     * missing (unpaired). The slave's SigVerifier reproduces the same canonical
+     * payload byte-for-byte.
+     */
+    private java.util.Map<String, String> buildDirectSigHeaders(String path, String body) {
+        String lionPriv = prefs.getString("lion_privkey", "");
+        if (lionPriv.isEmpty()) return null;
+        long ts = System.currentTimeMillis();
+        String nonce = VaultCrypto.randomNonce();
+        String payload = VaultCrypto.canonicalizeDirectPost(path, body, ts, nonce);
+        String sig;
+        try { sig = VaultCrypto.signString(payload, lionPriv); }
+        catch (Exception e) { return null; }
+        java.util.Map<String, String> h = new java.util.HashMap<>();
+        h.put("X-FL-Ts", Long.toString(ts));
+        h.put("X-FL-Nonce", nonce);
+        h.put("X-FL-Sig", sig);
+        return h;
+    }
+
+    private String meshPost(String fullUrl, String body, java.util.Map<String, String> extraHeaders) {
         try {
             URL url = new URL(fullUrl);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
@@ -1629,6 +1659,11 @@ public class MainActivity extends Activity {
             conn.setRequestProperty("Content-Type", "application/json");
             if (!authToken.isEmpty()) {
                 conn.setRequestProperty("Authorization", "Bearer " + authToken);
+            }
+            if (extraHeaders != null) {
+                for (java.util.Map.Entry<String, String> e : extraHeaders.entrySet()) {
+                    conn.setRequestProperty(e.getKey(), e.getValue());
+                }
             }
             conn.setDoOutput(true);
             conn.getOutputStream().write(body.getBytes());

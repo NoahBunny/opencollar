@@ -395,4 +395,66 @@ public class VaultCrypto {
             .replace("-----END RSA PRIVATE KEY-----", "")
             .replaceAll("[\\s|]+", "");
     }
+
+    // ── Audit C1: direct-HTTP signed-POST helpers ──
+    //
+    // Canonical payload byte-for-byte mirrors the slave's SigVerifier.canonicalize
+    // (android/slave/.../SigVerifier.java) and the Python parity test in
+    // tests/test_http.py. Any drift → slave will reject with bad_sig.
+
+    public static String canonicalizeDirectPost(String path, String body, long ts, String nonce) {
+        StringBuilder params = new StringBuilder();
+        boolean jsonOk = body != null && !body.isEmpty() && body.trim().startsWith("{");
+        if (jsonOk) {
+            try {
+                org.json.JSONObject obj = new org.json.JSONObject(body);
+                TreeMap<String, String> sorted = new TreeMap<>();
+                Iterator<String> keys = obj.keys();
+                while (keys.hasNext()) {
+                    String k = keys.next();
+                    Object v = obj.opt(k);
+                    if (v == null || org.json.JSONObject.NULL.equals(v)) continue;
+                    sorted.put(k, encodeDirectValue(v));
+                }
+                boolean first = true;
+                for (Map.Entry<String, String> e : sorted.entrySet()) {
+                    if (!first) params.append('&');
+                    params.append(urlEncDirect(e.getKey())).append('=').append(e.getValue());
+                    first = false;
+                }
+            } catch (Exception e) { jsonOk = false; }
+        }
+        if (!jsonOk) {
+            params.setLength(0);
+            params.append("_raw=").append(urlEncDirect(body == null ? "" : body));
+        }
+        return "focusctl|" + path + "|" + ts + "|" + nonce + "|" + params;
+    }
+
+    private static String encodeDirectValue(Object v) {
+        if (v instanceof Boolean) return ((Boolean) v) ? "1" : "0";
+        if (v instanceof Integer || v instanceof Long) return v.toString();
+        if (v instanceof Number) {
+            double d = ((Number) v).doubleValue();
+            if (!Double.isNaN(d) && !Double.isInfinite(d)
+                    && d == Math.floor(d) && Math.abs(d) < 1e15) {
+                return Long.toString((long) d);
+            }
+            return v.toString();
+        }
+        return urlEncDirect(v.toString());
+    }
+
+    private static String urlEncDirect(String s) {
+        try {
+            return java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20");
+        } catch (Exception e) { return s; }
+    }
+
+    /** 16-byte base64-url nonce. */
+    public static String randomNonce() {
+        byte[] buf = new byte[16];
+        new SecureRandom().nextBytes(buf);
+        return Base64.encodeToString(buf, Base64.NO_WRAP | Base64.URL_SAFE | Base64.NO_PADDING);
+    }
 }
