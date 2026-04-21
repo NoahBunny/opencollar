@@ -12,7 +12,6 @@ build/
 *.apk
 *.idsig
 *.spec
-_build_config.py
 *.egg-info/
 
 # Android build artifacts + signing

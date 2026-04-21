@@ -111,14 +111,11 @@ Dependencies are installed at runtime by the installer.
 `build-win.py` wraps PyInstaller. **Must run on Windows** — PyInstaller cannot cross-compile.
 
 ```powershell
-python build-win.py                    # Builds FocusLock.exe + FocusLock-Paired.exe + Watchdog
+python build-win.py                    # Builds FocusLock.exe + FocusLock-Watchdog.exe
 python build-win.py --skip-sign        # Skip self-signed code signing (CI default)
-python build-win.py --paired-only      # Paired variant only
-python build-win.py --homelab URL      # Bake a homelab URL into the build
-python build-win.py --pubkey FILE      # Bake Lion's RSA pubkey into the Paired build
 ```
 
-Output: `dist/FocusLock-Paired.exe`, `dist/FocusLock.exe`, `dist/FocusLock-Watchdog.exe`.
+Output: `dist/FocusLock.exe`, `dist/FocusLock-Watchdog.exe`.
 
 ### Reproducibility
 

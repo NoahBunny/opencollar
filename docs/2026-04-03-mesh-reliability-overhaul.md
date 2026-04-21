@@ -98,7 +98,7 @@ Windows uses compiled .exe files, so the mesh module is bundled inside:
 python build-win.py --skip-sign
 ```
 
-Then copy the new `FocusLock-Paired.exe` to each Windows machine.
+Then copy the new `FocusLock.exe` to each Windows machine.
 
 Alternatively, if the Windows collars run from source (not .exe), just restart -- they import `focuslock_mesh.py` at startup.
 

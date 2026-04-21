@@ -7,7 +7,7 @@ Consensual remote device restriction ecosystem. Lion controls, Bunny obeys, Coll
 - **The Collar** (`com.focuslock`) — invisible app on Bunny's phone (HTTP server, device admin, payment listener, SMS, Lovense, camera, geofence)
 - **Bunny Tasker** (`com.bunnytasker`) — visible companion on Bunny's phone (stats, subscriptions, self-lock, messaging, QR pairing)
 - **Lion's Share** (`com.focusctl`) — controller app on Lion's phone (lock/unlock, timer, paywall, photo tasks, Lovense, geofence, inbox)
-- **Desktop Collar** — Windows (`FocusLock-Paired.exe`) and Linux (`focuslock-desktop.py`) system tray enforcement, vault mode
+- **Desktop Collar** — Windows (`FocusLock.exe`) and Linux (`focuslock-desktop.py`) system tray enforcement, vault mode
 - **Bridge** (optional homelab) — ADB enforcement, mail service, Ollama LLM eval, subscription tracking
 - **Vault Mesh** — E2E encrypted (AES-256-GCM + RSA-OAEP), RSA-signed orders, zero-knowledge relay
 - **Legacy plaintext endpoints removed** — server only speaks vault
@@ -56,7 +56,7 @@ aapt2 compile -> aapt2 link -> javac -> d8 -> zip -> zipalign -> apksigner
 
 ### Windows Desktop
 ```bash
-python build-win.py              # Builds FocusLock.exe, FocusLock-Paired.exe, FocusLock-Watchdog.exe
+python build-win.py              # Builds FocusLock.exe, FocusLock-Watchdog.exe
 python build-win.py --skip-sign  # Skip code signing
 ```
 
