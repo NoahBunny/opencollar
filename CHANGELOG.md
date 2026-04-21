@@ -8,6 +8,14 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+### Added
+- `docs/QA-v1.2.0-mesh.md` — manual QA script for the 1-lion + 3-slave mesh topology. Complements `docs/MANUAL-QA.md` (single-device fundamentals). Exercises pairing (incl. C5 fingerprint pin regression), order propagation, C1 signature gate + replay, messaging (incl. C4 mandatory-reply regression), per-device + target=all release, and the P2 paywall hardening regression sanity tour. Protocol-level 7-test vault driver + 9-test C1 gate driver both green against a throwaway local mesh as of 2026-04-21.
+
+### Post-v1.2.0 notes (pending follow-ups captured in `docs/PUBLISHABLE-ROADMAP.md`)
+- Desktop exe dedup — `FocusLock.exe` and `FocusLock-Paired.exe` are functionally identical; the `_build_config.py` variant bake is vestigial (no runtime code reads it).
+- Node.js 20 GH Actions deprecation — bump `actions/checkout` et al before 2026-09-16.
+- `docs/MANUAL-QA.md` caveat for Android 14+ `foregroundServiceType=location` headless-start crash (not a v1.2.0 regression).
+
 ## [1.2.0] — 2026-04-21
 
 All six audit criticals closed (C1–C6). Ships P2 paywall hardening (server as single writer), deadline-bound tasks, desktop registry race fix, audit-driven server + installer hardening, and the Bunny Tasker / Lion's Share signature fixes (C4, C5). The last critical, C1 (slave HTTP signature verification), landed in this release — The Collar's local HTTP endpoints now require an RSA-signed payload from the paired lion or the same-phone bunny key, with per-request nonce + ±5 min timestamp window for replay protection.

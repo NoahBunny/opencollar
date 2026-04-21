@@ -1,10 +1,40 @@
 # Publishable Roadmap
 
-Path from current state (~70% publishable) to a clean v1.0.0 public release.
+## Status — 2026-04-21
 
-Organized by phase. Each phase ships independently — if priorities change mid-stream, the repo ends each phase in a better state than it started.
+Publication path from an operator-only tree to a public repo is **done**. v1.0.0 shipped 2026-04-15, v1.1.0 the same day, **v1.2.0 on 2026-04-21** closes the last of the six audit CRITICALs (C1 slave HTTP signature verification) and every H-series finding. CI is fully green across lint + format + py3.10/3.11/3.12 tests + CodeQL + Scorecard. Every release carries Sigstore provenance + SBOM + SHA256SUMS + APK cert fingerprints.
+
+The per-phase plan below is preserved as historical context. Everything in Phases 0–9 is shipped — search the CHANGELOG or commit log by keyword if You need to trace a specific item.
+
+## Post-v1.0 — in-flight & next
+
+Ordered roughly by priority. Smaller than pre-v1.0 phase granularity — these are weeks of work total, not months.
+
+### Short-term (next 1–2 sessions)
+
+- **Hardware QA against v1.2.0** — execute `docs/QA-v1.2.0-mesh.md` + `docs/MANUAL-QA.md` on the Pixel 10 rig (serial `57261FDCR004ZQ`). Protocol-level QA (7 vault + 9 C1 gate = 16 tests) already green via `/tmp/v120-qa/drive.py`; UI-bound tests still need a human with the device.
+- **Desktop exe dedup** — `FocusLock.exe` and `FocusLock-Paired.exe` are built from the same source; the variant bake in `_build_config.py` is never read at runtime, so both exes ship ~600B apart and are functionally identical. Either (a) drop `FocusLock.exe` and rename `-Paired` to the canonical name, or (b) wire `focuslock-desktop-win.py` to prefer baked `BUILD_HOMELAB_URL` / `BUILD_LION_PUBKEY` / `BUILD_MESH_PIN` over missing config. (a) is the simpler answer; (b) only useful if We ever distribute pre-configured builds to specific bunnies.
+- **Node.js 20 actions deprecation** — GitHub Actions on Node.js 20 removed 2026-09-16. Bump `actions/checkout`, `actions/setup-python`, `actions/upload-artifact`, `actions/download-artifact` pins in `ci.yml` + `release.yml` + `codeql.yml` + `scorecard.yml` to Node-24-capable versions (Dependabot should auto-propose). Current workflows log the deprecation warning on every run.
+- **Collar headless-start note** — document in `docs/MANUAL-QA.md` the Android 14+ behaviour: `adb shell am start-foreground-service com.focuslock/.ControlService` on a fresh install crashes with `SecurityException: Starting FGS with type location requires FOREGROUND_SERVICE_LOCATION`, because the service's `foregroundServiceType=location|specialUse` needs runtime-granted location before any start. The normal ConsentActivity path handles this; adb-driven bring-up for headless QA does not. Already surfaced via `docs/QA-v1.2.0-mesh.md`; promote to MANUAL-QA so it's discoverable.
+- **IMAP mock maintenance** — the `_install_fake_imap` helper in `tests/test_payment.py` now mocks `list / select / search / fetch`. Any future change to `shared/focuslock_payment.py`'s IMAP walk shape needs to update this helper in the same commit. Consider extracting the folder-walk into a small helper + test against a real `imaplib` spec object.
+
+### Medium-term
+
+- **UI automation for pairing / release flows** — §1a direct-pair fingerprint pin and §1b QR-pair are gated by human interaction. Appium + an espresso harness could drive them, but that's 1–2 days of scaffolding per app × 3 apps. Only worth it if pairing-flow regressions become a pattern.
+- **README download badges** — point at `/releases/latest/download/<filename>` for APKs + EXEs. Optional polish.
+- **Supply-chain gap scan** — re-run Scorecard after Node.js actions bump. Address any new findings that arise from bumping the action versions.
+
+### Strategic decisions — still deferred
+
+1. **Contribution policy for crypto / enforcement code** — outsider PRs touching vault, pairing, or paywall need a structured review process. `CONTRIBUTING.md` hand-waves this; firm it up when the first outside PR lands.
+2. **Hosted relay** — README currently implies a community-hostable relay exists. Either stand one up (operational burden) or drop the implication and go fully self-host-only in `docs/SELF-HOSTING.md`.
+3. **Contribution review SLA** — expect a public security report within 90 days of v1.0 going public; draft a triage workflow before it arrives, not after.
 
 ---
+
+## Historical reference: Phase 0–9 plan (pre-v1.0)
+
+The sections below drove the 70%-publishable → v1.0 work. All complete — preserved for traceability.
 
 ## Phase 0 — Pre-flight hygiene (half-day)
 
