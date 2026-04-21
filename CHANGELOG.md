@@ -11,9 +11,11 @@ starting with v1.0.0.
 ### Added
 - `docs/QA-v1.2.0-mesh.md` — manual QA script for the 1-lion + 3-slave mesh topology. Complements `docs/MANUAL-QA.md` (single-device fundamentals). Exercises pairing (incl. C5 fingerprint pin regression), order propagation, C1 signature gate + replay, messaging (incl. C4 mandatory-reply regression), per-device + target=all release, and the P2 paywall hardening regression sanity tour. Protocol-level 7-test vault driver + 9-test C1 gate driver both green against a throwaway local mesh as of 2026-04-21.
 
+### Changed
+- **CI: migrated all GitHub Actions to Node.js 24 runtimes ahead of the 2026-09-16 runner cliff.** Full log audit (`gh api … /logs | grep "Node.js 20"`) across `ci.yml` + `release.yml` + `codeql.yml` + `scorecard.yml` surfaced nine Node-20 actions. Coordinated bumps: `actions/checkout` v4→v6.0.2, `actions/setup-python` v5→v6.2.0, `actions/setup-java` v4→v5.2.0, `android-actions/setup-android` v3→v4.0.1, `actions/upload-artifact` v4→v7.0.1, `actions/download-artifact` v4→v8.0.1, `codecov/codecov-action` v5→v6.0.0 (also eliminates the transitive `actions/github-script` v7 warning surfaced inside codecov), `actions/attest-build-provenance` v2→v4.1.0, `softprops/action-gh-release` v2→v3.0.0, `github/codeql-action` (init/analyze/upload-sarif) v3→v4.35.2. `ossf/scorecard-action` stays at v2.4.3 (already Node 24). All pins remain SHA-locked with tag comments. `.github/dependabot.yml` now groups all github-actions bumps into one PR/week to prevent queue-exhaustion (previous 5-PR limit was blocking proposals); `open-pull-requests-limit` raised to 10 as belt-and-braces. Supersedes Dependabot PRs #1/#2/#3/#4/#7.
+
 ### Post-v1.2.0 notes (pending follow-ups captured in `docs/PUBLISHABLE-ROADMAP.md`)
 - Desktop exe dedup — `FocusLock.exe` and `FocusLock-Paired.exe` are functionally identical; the `_build_config.py` variant bake is vestigial (no runtime code reads it).
-- Node.js 20 GH Actions deprecation — bump `actions/checkout` et al before 2026-09-16.
 - `docs/MANUAL-QA.md` caveat for Android 14+ `foregroundServiceType=location` headless-start crash (not a v1.2.0 regression).
 
 ## [1.2.0] — 2026-04-21
