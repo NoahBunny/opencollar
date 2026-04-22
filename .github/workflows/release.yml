@@ -73,6 +73,12 @@ jobs:
           cp android/slave/*-signed.apk      staged/focuslock-${{ github.ref_name }}.apk
           cp android/companion/*-signed.apk  staged/bunnytasker-${{ github.ref_name }}.apk
           cp android/controller/*-signed.apk staged/focusctl-${{ github.ref_name }}.apk
+          # Unversioned aliases so README can link directly to
+          # https://github.com/.../releases/latest/download/<name>-latest.apk
+          # (tagged copies remain available for pinning).
+          cp staged/focuslock-${{ github.ref_name }}.apk    staged/focuslock-latest.apk
+          cp staged/bunnytasker-${{ github.ref_name }}.apk  staged/bunnytasker-latest.apk
+          cp staged/focusctl-${{ github.ref_name }}.apk     staged/focusctl-latest.apk
           ls -la staged/
 
       - name: Extract signing cert fingerprints
@@ -124,6 +130,8 @@ jobs:
           for f in dist/*.exe; do
             base=$(basename "$f" .exe)
             cp "$f" "staged/${base}-${{ github.ref_name }}.exe"
+            # Unversioned alias for releases/latest/download/<base>-latest.exe URLs.
+            cp "$f" "staged/${base}-latest.exe"
           done
           ls -la staged/
 

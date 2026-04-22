@@ -12,14 +12,14 @@ A multi-platform ecosystem for **consensual** remote device restriction. The Lio
 
 Get the latest signed artifacts from the [**GitHub Releases page**](https://github.com/NoahBunny/opencollar/releases/latest). Every release ships:
 
-- Three APKs: `focuslock-vX.Y.Z.apk` (Collar), `bunnytasker-vX.Y.Z.apk`, `focusctl-vX.Y.Z.apk` (Lion's Share)
-- Two Windows executables: `FocusLock-vX.Y.Z.exe`, `FocusLock-Watchdog-vX.Y.Z.exe`
+- Three APKs: `focuslock-vX.Y.Z.apk` (Collar), `bunnytasker-vX.Y.Z.apk`, `focusctl-vX.Y.Z.apk` (Lion's Share) — plus unversioned `focuslock-latest.apk` / `bunnytasker-latest.apk` / `focusctl-latest.apk` aliases
+- Two Windows executables: `FocusLock-vX.Y.Z.exe`, `FocusLock-Watchdog-vX.Y.Z.exe` — plus unversioned `FocusLock-latest.exe` / `FocusLock-Watchdog-latest.exe` aliases
 - `SBOM.cdx.json` (CycloneDX software bill of materials)
 - `SHA256SUMS.txt` (hashes of every artifact)
 - `APK-CERTS.txt` (APK signing-cert SHA-256 fingerprints — compare before sideloading)
 - Sigstore build-provenance attestations (verify with `gh attestation verify`)
 
-Direct download URLs follow the pattern `https://github.com/NoahBunny/opencollar/releases/latest/download/<filename>` — substitute the exact filename from the release page. The Linux desktop collar runs from source; see `docs/BUILD.md`.
+Direct download URLs follow the pattern `https://github.com/NoahBunny/opencollar/releases/latest/download/<filename>`. For always-latest bookmarks use the unversioned aliases — e.g. `https://github.com/NoahBunny/opencollar/releases/latest/download/focuslock-latest.apk`. For reproducibility, pin to a tag and use the versioned filenames instead. Each alias is byte-identical to its tagged twin within a release — `SHA256SUMS.txt` and `APK-CERTS.txt` list both filenames so either verifies. The Linux desktop collar runs from source; see `docs/BUILD.md`.
 
 > ⚠️ **Read first:** This software handles real money, real devices, and a real power dynamic. Install it only on devices you own or with the explicit, informed, freely-given consent of the device owner. Installing it on someone's device without their knowledge or against their will may be a criminal offence. **The authors will not help you do that.** Full terms in [`DISCLAIMER.md`](../DISCLAIMER.md).
 
