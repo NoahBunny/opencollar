@@ -1,0 +1,140 @@
+name: UI (Appium)
+
+# Runs the §1a direct-pair fingerprint pin regression test on an
+# Android emulator. NOT PR-gating at launch — promote to pull_request
+# trigger only after 10 consecutive green runs, per the pilot plan.
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Weekly, Monday 06:00 UTC.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ui-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  direct-pair:
+    name: §1a direct-pair fingerprint pin
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          packages: "build-tools;35.0.0 platforms;android-36"
+
+      - name: Resolve ANDROID_SDK
+        run: echo "ANDROID_SDK=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+
+      - name: Build slave APK (The Collar)
+        working-directory: android/slave
+        run: bash build.sh
+
+      - name: Build companion APK (Bunny Tasker)
+        working-directory: android/companion
+        run: bash build.sh
+
+      - name: Build controller APK (Lion's Share)
+        working-directory: android/controller
+        run: bash build.sh
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "20"
+
+      - name: Install Appium 2 + UiAutomator2 driver
+        run: |
+          npm install -g appium@2
+          appium driver install uiautomator2
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python deps
+        run: pip install -e '.[ui]' cryptography
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Start Appium in background
+        run: |
+          mkdir -p /tmp/appium
+          nohup appium --port 4723 --log /tmp/appium/appium.log --log-level info &
+          # Wait for /status to be reachable.
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:4723/status >/dev/null; then
+              echo "Appium ready."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Appium failed to start within 30s"
+          cat /tmp/appium/appium.log || true
+          exit 1
+
+      - name: Run §1a direct-pair UI tests on AVD
+        uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
+        with:
+          api-level: 33
+          target: default
+          arch: x86_64
+          profile: pixel_6
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: |
+            adb install -r android/slave/*-signed.apk
+            adb install -r android/companion/*-signed.apk
+            adb install -r android/controller/*-signed.apk
+
+            # Android-14+ FGS-type enforcement mitigation — harmless on API 33.
+            adb shell pm grant com.focuslock android.permission.ACCESS_FINE_LOCATION || true
+
+            # Port 8432 collision sanity check.
+            adb shell 'ss -tln 2>/dev/null | grep -q :8432 && echo PORT_IN_USE' | grep -v PORT_IN_USE || {
+              echo "Port 8432 already bound before Collar start — abort."; exit 1; }
+
+            RUN_UI_TESTS=1 APPIUM_SERVER=http://127.0.0.1:4723 \
+              pytest tests/ui/ -v --maxfail=1 -p no:xdist
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        run: |
+          mkdir -p /tmp/ui-artifacts
+          cp /tmp/appium/appium.log /tmp/ui-artifacts/ 2>/dev/null || true
+          adb logcat -d > /tmp/ui-artifacts/logcat.txt 2>/dev/null || true
+          adb shell uiautomator dump /sdcard/dump.xml 2>/dev/null || true
+          adb pull /sdcard/dump.xml /tmp/ui-artifacts/ 2>/dev/null || true
+          adb shell screencap /sdcard/screen.png 2>/dev/null || true
+          adb pull /sdcard/screen.png /tmp/ui-artifacts/ 2>/dev/null || true
+          ls -la /tmp/ui-artifacts/ || true
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ui-diagnostics
+          path: /tmp/ui-artifacts/
+          if-no-files-found: warn
+          retention-days: 14

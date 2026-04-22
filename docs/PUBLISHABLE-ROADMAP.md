@@ -20,7 +20,12 @@ Ordered roughly by priority. Smaller than pre-v1.0 phase granularity — these a
 
 ### Medium-term
 
-- **UI automation for pairing / release flows** — §1a direct-pair fingerprint pin and §1b QR-pair are gated by human interaction. Appium + an espresso harness could drive them, but that's 1–2 days of scaffolding per app × 3 apps. Only worth it if pairing-flow regressions become a pattern.
+- **UI automation for pairing / release flows** *(pilot in-flight 2026-04-21 on branch `ui/direct-pair-fingerprint-pilot`)*. Three UI flows aren't covered by any automated test today:
+  - **§1a direct-pair fingerprint pin** (Audit C5 regression) — Lion's Share Setup → Pair Direct (LAN) flow. Assertions: correct fp → `PAIRED direct (fingerprint verified): <url>`; wrong fp → `Pair ABORTED: fingerprint mismatch. expected=<X> got=<Y>` AND `focus_lock_lion_pubkey` still empty in `Settings.Global` on bunny; blank fp → `PAIRED direct (UNVERIFIED fp=<fp>): <url>` terminal status. Harness lives in `tests/ui/` (pytest + Appium UiAutomator2, opt-in via `RUN_UI_TESTS=1`). CI: `.github/workflows/ui.yml` on `workflow_dispatch` + weekly cron, drives an API-33 AOSP AVD. NOT PR-gating yet — graduates after 10 consecutive green runs OR one real regression caught.
+  - **§1b QR-pair** — deferred to a follow-up PR. The camera-bypass hook is a MITM primitive if it ships in release, needs its own threat-model lens.
+  - **§4b mandatory-reply auto-lock** (Audit C4 regression) — deferred to a follow-up PR. Needs a Python-side signed-order forging rig (~150 lines mirroring `PairingManager.sign`) plus a time-travel mechanism.
+
+  Harness is reusable for §1b/§4b with ≤30 lines of new fixture code each; conftest intentionally does not pre-build their primitives.
 - ~~**README download badges**~~ — done (partial). CI / CodeQL / Scorecard / latest-release / license badges are live at the top of `docs/README.md`; a "Download" section documents the `github.com/.../releases/latest/download/<filename>` URL pattern and points at the Releases page (filenames include the tag, so a truly stable-filename link would need a `release.yml` change to additionally upload unversioned aliases — deferred).
 - **Stable-filename release aliases** (new follow-up) — consider extending `release.yml` to also upload unversioned copies (`focuslock-latest.apk`, `FocusLock-latest.exe`, etc.) so the README can link directly to `releases/latest/download/focuslock-latest.apk`. Small workflow-only change.
 - **Supply-chain gap scan** — re-run Scorecard after Node.js actions bump. Address any new findings that arise from bumping the action versions. *(Partially verified 2026-04-21 — Scorecard run on main post-PR #10 was green with no new high-severity findings.)*

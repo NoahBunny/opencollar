@@ -2152,8 +2152,12 @@ public class MainActivity extends Activity {
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding(48, 24, 48, 0);
 
+        // Stable content-descriptions below double as Appium selectors for the
+        // direct-pair UI test (tests/ui/test_direct_pair_fingerprint.py) and as
+        // a11y hints for TalkBack — don't rename without updating the test.
         EditText ipInput = new EditText(this);
         ipInput.setHint("Bunny's IP or hostname (e.g. 192.168.1.50)");
+        ipInput.setContentDescription("pair_dlg_ip");
         ipInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
         ipInput.setTextColor(0xFFe0e0e0);
         ipInput.setHintTextColor(0xFF555555);
@@ -2163,6 +2167,7 @@ public class MainActivity extends Activity {
 
         EditText portInput = new EditText(this);
         portInput.setHint("Port (default: 8432)");
+        portInput.setContentDescription("pair_dlg_port");
         portInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
         portInput.setText("8432");
         portInput.setTextColor(0xFFe0e0e0);
@@ -2181,6 +2186,7 @@ public class MainActivity extends Activity {
         // typing it here lets us detect MITM key swap at pair time.
         EditText fpInput = new EditText(this);
         fpInput.setHint("Fingerprint (16 hex chars from Bunny Tasker)");
+        fpInput.setContentDescription("pair_dlg_fingerprint");
         fpInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
         fpInput.setTextColor(0xFFe0e0e0);
         fpInput.setHintTextColor(0xFF555555);

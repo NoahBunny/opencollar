@@ -55,6 +55,13 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.8",
 ]
+# UI automation harness — §1a direct-pair fingerprint pin regression
+# test (tests/ui/). Opt-in via RUN_UI_TESTS=1; see tests/ui/README.md.
+# Appium + UiAutomator2 driver + a running emulator required at runtime.
+ui = [
+    "appium-python-client>=4",
+    "pytest>=7",
+]
 
 [project.urls]
 Homepage = "https://github.com/NoahBunny/opencollar"
