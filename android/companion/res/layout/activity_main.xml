@@ -310,6 +310,21 @@
                 android:layout_height="wrap_content"
                 android:textColor="#3a3a4a"
                 android:textSize="9sp" />
+
+            <TextView
+                android:id="@+id/btn_pair_reset"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Reset"
+                android:textColor="#6a5a7a"
+                android:textSize="10sp"
+                android:paddingStart="12dp"
+                android:paddingEnd="4dp"
+                android:minHeight="32dp"
+                android:gravity="center_vertical"
+                android:clickable="true"
+                android:focusable="true"
+                android:contentDescription="btn_pair_reset" />
         </LinearLayout>
 
         <!-- Main content (hidden when not paired) -->

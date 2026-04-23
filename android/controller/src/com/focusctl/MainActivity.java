@@ -2252,9 +2252,24 @@ public class MainActivity extends Activity {
                 return;
             }
             if (resp.contains("\"error\"")) {
+                // The Collar's doPair returns clearable:true when it's already
+                // paired with a different lion_pubkey — recoverable via Bunny
+                // Tasker's Reset button. Show a dialog with the server's own
+                // hint text rather than dumping raw JSON at the user.
+                if (resp.contains("\"clearable\":true")) {
+                    String hint = parseJsonStr(resp, "hint");
+                    showPairConflictDialog(bunnyUrl, hint);
+                    return;
+                }
                 setStatus("Pair failed: " + resp);
                 return;
             }
+
+            // Idempotent re-pair: same lion key POSTed twice returns
+            // action:already-paired instead of a fresh pair. Surface the
+            // distinction so the user knows their retry was absorbed,
+            // rather than thinking they started a new pairing.
+            boolean alreadyPaired = resp.contains("\"action\":\"already-paired\"");
 
             // Extract bunny_pubkey from response
             String bunnyPubB64 = parseJsonStr(resp, "bunny_pubkey");
@@ -2303,14 +2318,36 @@ public class MainActivity extends Activity {
                 .putString("pair_mode", "direct")
                 .apply();
             handler.post(() -> setActiveBunny(newId));
+            String prefix = alreadyPaired ? "RE-CONFIRMED direct" : "PAIRED direct";
             if (!expectedFingerprint.isEmpty()) {
-                setStatus("PAIRED direct (fingerprint verified): " + fBunnyUrl);
+                setStatus(prefix + " (fingerprint verified): " + fBunnyUrl);
             } else {
-                setStatus("PAIRED direct (UNVERIFIED fp=" + receivedFp + "): " + fBunnyUrl);
+                setStatus(prefix + " (UNVERIFIED fp=" + receivedFp + "): " + fBunnyUrl);
             }
         } catch (Exception e) {
             setStatus("Pair error: " + e.getMessage());
         }
+    }
+
+    /** Surface the Collar's "already paired with a different lion key"
+     *  response in plain English — the server/Collar supplies the hint
+     *  text, we just frame it. Clickable "Retry" walks the user through
+     *  the reset on Bunny's side (which clears the Collar's stored lion
+     *  pubkey via POST /api/pair-reset) and then re-runs the pair. */
+    private void showPairConflictDialog(String bunnyUrl, String hint) {
+        final String msg = hint != null && !hint.isEmpty()
+            ? hint
+            : "The Collar is already paired with a different Lion key. "
+                + "Ask Bunny to tap 'Reset pair state' in Bunny Tasker, "
+                + "then try pairing again.";
+        handler.post(() -> {
+            new android.app.AlertDialog.Builder(MainActivity.this)
+                .setTitle("Already paired — reset required")
+                .setMessage(msg)
+                .setPositiveButton("OK", null)
+                .show();
+            setStatus("Pair blocked: Collar paired with another Lion key");
+        });
     }
 
     private void createMesh(String serverUrl) {

@@ -126,6 +126,15 @@ public class MainActivity extends Activity {
         btnShowQr.setOnClickListener(v -> showJoinMeshDialog());
         btnShowQr.setOnLongClickListener(v -> { showDirectPairingInfo(); return true; });
 
+        // Bunny-authorised reset of the Collar's stored lion pairing state.
+        // Visible only when paired. Recovery path for a half-completed pair
+        // (fingerprint mismatch, Lion app crash mid-response) that would
+        // otherwise require reinstalling the Collar.
+        TextView btnPairReset = (TextView) findViewById(fid("btn_pair_reset"));
+        if (btnPairReset != null) {
+            btnPairReset.setOnClickListener(v -> showPairResetConfirmDialog());
+        }
+
         // Show pairing state — hide everything when not paired
         if (PairingManager.isPaired(getContentResolver())) {
             sectionPairing.setVisibility(View.GONE);
@@ -705,6 +714,41 @@ public class MainActivity extends Activity {
         double hours = ms / 3600000.0;
         if (hours < 1) return String.format("%.0fm", ms / 60000.0);
         return String.format("%.1fh", hours);
+    }
+
+    /**
+     * Confirmation + submit for the bunny-authorised pair reset. Clears the
+     * stored lion_pubkey on the Collar via a signed /api/pair-reset POST so
+     * the user can recover from a half-completed pair without reinstall.
+     */
+    private void showPairResetConfirmDialog() {
+        String lionKey = PairingManager.getLionKey(getContentResolver());
+        String fp = lionKey.length() >= 16
+            ? lionKey.substring(0, 8) + "..." + lionKey.substring(lionKey.length() - 8)
+            : "(unpaired)";
+        String msg = "Forget the current Lion pairing?\n\n"
+            + "Currently paired with: " + fp + "\n\n"
+            + "After reset the Lion will need to pair again. Use this if pairing "
+            + "got stuck (fingerprint mismatch, Lion app crashed mid-setup) and "
+            + "Lion's Share reports 'already paired — clearable'.";
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Reset pair state")
+            .setMessage(msg)
+            .setPositiveButton("Reset", (d, w) -> executor.execute(this::doPairReset))
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    private void doPairReset() {
+        boolean ok = postToCollar("/api/pair-reset", "{}");
+        handler.post(() -> {
+            if (ok) {
+                statusText.setText("Pair state reset — Lion can now pair again");
+                recreate();
+            } else {
+                statusText.setText("Pair reset failed — check Collar logs");
+            }
+        });
     }
 
     /**
