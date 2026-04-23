@@ -857,6 +857,7 @@ public class ControlService extends Service {
             else if (path.equals("/api/photo-task") && method.equals("POST")) { resp = doPhotoTask(body); }
             else if (path.equals("/api/release-forever") && method.equals("POST")) { resp = doReleaseForever(); }
             else if (path.equals("/api/pair") && method.equals("POST")) { resp = doPair(body); }
+            else if (path.equals("/api/pair-reset") && method.equals("POST")) { resp = doPairReset(); }
             else if (path.equals("/api/set-checkin") && method.equals("POST")) { resp = doSetCheckin(body); }
             else if (path.equals("/api/clear-geofence") && method.equals("POST")) { resp = doClearGeofence(); }
             else if (path.equals("/api/set-volume") && method.equals("POST")) { resp = doSetVolume(body); }
@@ -1678,16 +1679,48 @@ public class ControlService extends Service {
     private String doPair(String body) {
         String lionPubKey = jval(body, "lion_pubkey");
         if (lionPubKey == null || lionPubKey.isEmpty()) return "{\"error\":\"lion_pubkey required\"}";
-        // Check if already paired
-        String existing = gstr("focus_lock_lion_pubkey");
-        if (!existing.isEmpty()) return "{\"error\":\"already paired\"}";
-        // Store lion's public key
-        Settings.Global.putString(getContentResolver(), "focus_lock_lion_pubkey", lionPubKey);
-        // Return bunny's public key for the lion to store
         String bunnyPubKey = gstr("focus_lock_bunny_pubkey");
+        String existing = gstr("focus_lock_lion_pubkey");
+        if (!existing.isEmpty()) {
+            // Idempotent: the same caller retrying after a flaky response gets
+            // the same success payload back instead of a wall. Prevents the
+            // "Collar thinks it's paired, Lion thinks it isn't" stuck state.
+            if (existing.equals(lionPubKey)) {
+                Log.i(TAG, "doPair: idempotent re-pair from same lion key");
+                return "{\"ok\":true,\"action\":\"already-paired\",\"bunny_pubkey\":\"" + esc(bunnyPubKey) + "\"}";
+            }
+            // Different key → genuine conflict. Tell the caller there's a
+            // recovery path instead of a dead-end. Bunny must authorize the
+            // reset (POST /api/pair-reset, bunny-signed) before a new lion can pair.
+            Log.w(TAG, "doPair: different lion key offered; existing fingerprint="
+                + existing.substring(0, Math.min(8, existing.length())) + "...");
+            return "{\"error\":\"already paired\",\"clearable\":true,"
+                + "\"hint\":\"Bunny must tap 'Reset pair state' in Bunny Tasker, then retry.\"}";
+        }
+        Settings.Global.putString(getContentResolver(), "focus_lock_lion_pubkey", lionPubKey);
         Log.i(TAG, "PAIRED with Lion. Key fingerprint: " +
             lionPubKey.substring(0, Math.min(8, lionPubKey.length())) + "...");
         return "{\"ok\":true,\"action\":\"paired\",\"bunny_pubkey\":\"" + esc(bunnyPubKey) + "\"}";
+    }
+
+    /**
+     * Bunny-authorised reset of the stored lion pairing state. Lets the user
+     * recover from a half-completed pair (e.g. fingerprint mismatch, Lion's
+     * Share killed mid-response) without reinstalling the Collar. Requires a
+     * bunny-signed request via SigVerifier (same-phone Bunny Tasker); the
+     * handler() dispatcher runs the signature gate before this method is
+     * called, so by the time we're here the caller is proven to be bunny.
+     */
+    private String doPairReset() {
+        String existing = gstr("focus_lock_lion_pubkey");
+        if (existing.isEmpty()) {
+            return "{\"ok\":true,\"action\":\"already-unpaired\"}";
+        }
+        Settings.Global.putString(getContentResolver(), "focus_lock_lion_pubkey", "");
+        Settings.Global.putLong(getContentResolver(), "focus_lock_lion_last_seen", 0L);
+        Log.w(TAG, "PAIR RESET (bunny-authorised). Cleared lion fingerprint="
+            + existing.substring(0, Math.min(8, existing.length())) + "...");
+        return "{\"ok\":true,\"action\":\"pair-reset\"}";
     }
 
     private String doReleaseForever() {
@@ -3425,6 +3458,10 @@ public class ControlService extends Service {
                     skipped++;
                     continue;
                 }
+                // Our slot decrypted → Lion has approved us. Reset the
+                // register-node-request backoff counter so any future
+                // re-registration starts from attempt 0.
+                vaultClearRegisterBackoff();
 
                 synchronized (meshVersion) {
                     if (ver > meshVersion.get()) {
@@ -3475,29 +3512,70 @@ public class ControlService extends Service {
         }
     }
 
+    /** Exponential backoff schedule for register-node-request retries.
+     *  Wall-clock minutes between consecutive attempts: 0, 1, 5, 15, 60, 60…
+     *  Replaces the old flat 1-hour throttle, which could leave a genuinely
+     *  new node stuck for 59 minutes if the first request raced Lion approval. */
+    private static final long[] VAULT_REGISTER_BACKOFF_MS = {
+        0L,
+        1 * 60_000L,
+        5 * 60_000L,
+        15 * 60_000L,
+        60 * 60_000L,
+    };
+
     /** Submit an unsigned register-node-request so Lion's Share can approve us. */
     private void vaultRegisterIfNeeded(String meshUrl, String meshId, String mySlotId, byte[] myPubDer) {
         try {
-            // Throttle: don't re-request more than once per hour
-            long lastReq = 0;
-            try { lastReq = Long.parseLong(gstr("focus_lock_vault_last_register_req")); } catch (Exception e) {}
             long now = System.currentTimeMillis();
-            if (now - lastReq < 3600 * 1000L) return;
+            long lastReq = 0L;
+            int attempt = 0;
+            try { lastReq = Long.parseLong(gstr("focus_lock_vault_last_register_req")); } catch (Exception e) {}
+            try { attempt = Integer.parseInt(gstr("focus_lock_vault_register_attempt")); } catch (Exception e) {}
+            int idx = Math.min(attempt, VAULT_REGISTER_BACKOFF_MS.length - 1);
+            long minGap = VAULT_REGISTER_BACKOFF_MS[idx];
+            if (lastReq > 0 && (now - lastReq) < minGap) return;
+
+            // Prefer the node_id assigned at joinMesh time. The previous
+            // "pixel" fallback collapsed every un-joined phone onto the same
+            // server-side identity, so Lion approving one approved all — and
+            // a bunny that joined a new mesh later would keep reporting under
+            // the old "pixel" handle, desyncing the pending queue.
+            String nodeId = gstr("focus_lock_mesh_node_id");
+            if (nodeId.isEmpty()) {
+                Log.w(TAG, "vault: no focus_lock_mesh_node_id set — skipping register-node-request "
+                    + "until joinMesh assigns one (avoids clobbering the pending queue)");
+                return;
+            }
 
             String pubB64 = android.util.Base64.encodeToString(myPubDer, android.util.Base64.NO_WRAP);
-            String nodeId = gstr("focus_lock_mesh_node_id");
-            if (nodeId.isEmpty()) nodeId = "pixel";
             String body = "{\"node_id\":\"" + esc(nodeId)
                 + "\",\"node_type\":\"phone\""
                 + ",\"node_pubkey\":\"" + pubB64 + "\"}";
             String resp = vaultHttpPost(meshUrl + "/vault/" + meshId + "/register-node-request", body);
             if (resp != null) {
-                Log.w(TAG, "vault: posted register-node-request (slot=" + mySlotId + ")");
+                Log.w(TAG, "vault: posted register-node-request (slot=" + mySlotId
+                    + " attempt=" + (attempt + 1) + " nextGapMin="
+                    + (VAULT_REGISTER_BACKOFF_MS[Math.min(attempt + 1, VAULT_REGISTER_BACKOFF_MS.length - 1)] / 60_000L) + ")");
                 Settings.Global.putString(getContentResolver(),
                     "focus_lock_vault_last_register_req", String.valueOf(now));
+                Settings.Global.putString(getContentResolver(),
+                    "focus_lock_vault_register_attempt", String.valueOf(attempt + 1));
             }
         } catch (Exception e) {
             Log.w(TAG, "vault: register-node-request failed: " + e.getMessage());
+        }
+    }
+
+    /** Clear the register-node backoff counter once a vault blob lands that
+     *  includes our slot — means Lion approved us and the retry loop has done
+     *  its job. Called from vaultSync's successful-slot path. */
+    private void vaultClearRegisterBackoff() {
+        if (!gstr("focus_lock_vault_register_attempt").isEmpty()
+                || !gstr("focus_lock_vault_last_register_req").isEmpty()) {
+            Settings.Global.putString(getContentResolver(), "focus_lock_vault_register_attempt", "");
+            Settings.Global.putString(getContentResolver(), "focus_lock_vault_last_register_req", "");
+            Log.i(TAG, "vault: register backoff cleared (slot landed)");
         }
     }
 
