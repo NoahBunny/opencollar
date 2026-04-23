@@ -1635,6 +1635,12 @@ class PairingRegistry:
         except Exception as e:
             logger.warning("Failed to save pairing registry to %s: %s", self.path, e)
 
+    # Short TTL (10 min) matches the user's attention window during setup and
+    # bounds the time a stale passphrase leaves a room for MITM on the relay.
+    # Was 1h — empirically too long, users typed one code an hour after
+    # generating it and got an opaque "not found" with no hint it had expired.
+    TTL_SECONDS = 600
+
     def register(self, passphrase, bunny_pubkey, node_id):
         with self.lock:
             self.entries[passphrase.upper()] = {
@@ -1643,21 +1649,28 @@ class PairingRegistry:
                 "lion_pubkey": None,
                 "lion_node_id": None,
                 "paired": False,
-                "expires_at": time.time() + 3600,
+                "expires_at": time.time() + self.TTL_SECONDS,
             }
             self._save()
 
     def claim(self, passphrase, lion_pubkey, lion_node_id):
+        entry, _ = self.claim_or_reason(passphrase, lion_pubkey, lion_node_id)
+        return entry
+
+    def claim_or_reason(self, passphrase, lion_pubkey, lion_node_id):
+        """Same as claim() but also returns why the claim failed on None."""
         with self.lock:
             key = passphrase.upper()
             entry = self.entries.get(key)
-            if not entry or time.time() > entry["expires_at"]:
-                return None
+            if not entry:
+                return None, "not_registered"
+            if time.time() > entry["expires_at"]:
+                return None, "expired"
             entry["lion_pubkey"] = lion_pubkey
             entry["lion_node_id"] = lion_node_id
             entry["paired"] = True
             self._save()
-            return entry
+            return entry, "ok"
 
     def get_pending_pairing(self, node_id):
         """Check if node_id has a pairing waiting (Lion claimed but Bunny hasn't received yet)."""
@@ -3624,11 +3637,29 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 node_id = data.get("node_id", "")
                 node_type = data.get("node_type", "unknown")
                 node_pubkey = data.get("node_pubkey", "")
+                # Short hash of the pubkey for structured logs — lets an operator
+                # grep the access log and confirm which key made the request
+                # without logging the full key. Matches the hash shape used by
+                # /api/pair/vault-status/<mesh_id>.
+                import hashlib as _h
+
+                pk_hash = _h.sha256(node_pubkey.encode("utf-8")).hexdigest()[:16] if node_pubkey else ""
                 if not node_id or not node_pubkey:
+                    logger.info(
+                        "Vault register-node-request BAD_REQUEST: mesh=%s node=%r pubkey_hash=%s",
+                        mesh_id,
+                        node_id,
+                        pk_hash,
+                    )
                     self.respond(400, {"error": "node_id and node_pubkey required"})
                     return
                 if _vault_store.is_rejected(mesh_id, node_pubkey):
-                    logger.warning("Vault register-node-request DENIED (rejected): mesh=%s node=%s", mesh_id, node_id)
+                    logger.warning(
+                        "Vault register-node-request DENIED (rejected): mesh=%s node=%s pubkey_hash=%s",
+                        mesh_id,
+                        node_id,
+                        pk_hash,
+                    )
                     self.respond(403, {"error": "node rejected"})
                     return
                 # Security: key rotation (same node_id, new pubkey) goes to pending
@@ -3644,7 +3675,13 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         "requested_at": int(time.time()),
                     },
                 )
-                logger.info("Vault register-node-request (pending): mesh=%s node=%s", mesh_id, node_id)
+                logger.info(
+                    "Vault register-node-request PENDING: mesh=%s node=%s type=%s pubkey_hash=%s",
+                    mesh_id,
+                    node_id,
+                    node_type,
+                    pk_hash,
+                )
                 self.respond(200, {"ok": True, "status": "pending"})
 
             else:
@@ -3687,9 +3724,29 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if not passphrase or not lion_pubkey:
                 self.respond(400, {"error": "passphrase and lion_pubkey required"})
                 return
-            entry = _pairing_registry.claim(passphrase, lion_pubkey, lion_node_id)
+            entry, reason = _pairing_registry.claim_or_reason(passphrase, lion_pubkey, lion_node_id)
             if not entry:
-                self.respond(404, {"error": "passphrase not found or expired"})
+                if reason == "expired":
+                    self.respond(
+                        410,
+                        {
+                            "error": "passphrase expired",
+                            "reason": "expired",
+                            "hint": f"pairing codes live {_pairing_registry.TTL_SECONDS // 60} min — "
+                            "ask Bunny to generate a fresh one in Bunny Tasker > Join Mesh",
+                        },
+                    )
+                else:
+                    self.respond(
+                        404,
+                        {
+                            "error": "passphrase not found",
+                            "reason": "not_registered",
+                            "hint": "double-check the code (case-insensitive, hyphen-separated) "
+                            "and confirm Bunny completed the Join Mesh step",
+                        },
+                    )
+                logger.info("Pair claim failed: %s reason=%s", passphrase.upper(), reason)
                 return
             logger.info("Pair claimed: %s by %s", passphrase.upper(), lion_node_id)
             self.respond(200, {"ok": True, "paired": True, "bunny_pubkey": entry.get("bunny_pubkey", "")})
@@ -4172,6 +4229,58 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     "paired": entry.get("paired", False),
                     "bunny_pubkey": entry.get("bunny_pubkey", ""),
                     "lion_pubkey": entry.get("lion_pubkey") or "",
+                },
+            )
+
+        elif self.path.startswith("/api/pair/vault-status/"):
+            # Admin-only diagnostic: shows who's queued / approved / rejected
+            # for a given mesh's vault. Surfaces why a slave is stuck at the
+            # "vault says I'm not a recipient yet" phase without requiring
+            # the operator to SSH in and cat nodes_*.json.
+            import urllib.parse as _up
+
+            parsed = _up.urlparse(self.path)
+            params = _up.parse_qs(parsed.query)
+            token = params.get("admin_token", [""])[0]
+            if not token:
+                auth_header = self.headers.get("Authorization", "")
+                if auth_header.startswith("Bearer "):
+                    token = auth_header[7:]
+            if not _is_valid_admin_auth(token):
+                self.respond(403, {"error": "invalid admin_token"})
+                return
+            mesh_id = parsed.path.split("/")[-1].strip()
+            if not mesh_id:
+                self.respond(400, {"error": "mesh_id required"})
+                return
+
+            def _strip_pubkey(node):
+                """Return a node entry with the full pubkey replaced by a short
+                hash, so a diagnostic dump shared in a support thread can't leak
+                the full key. Caller can still correlate entries by the hash."""
+                import hashlib
+
+                n = dict(node)
+                pk = n.pop("node_pubkey", "")
+                if pk:
+                    n["pubkey_hash"] = hashlib.sha256(pk.encode("utf-8")).hexdigest()[:16]
+                return n
+
+            approved = [_strip_pubkey(n) for n in _vault_store.get_nodes(mesh_id)]
+            pending = [_strip_pubkey(n) for n in _vault_store.get_pending_nodes(mesh_id)]
+            rejected = _vault_store.get_rejected_nodes(mesh_id)
+            self.respond(
+                200,
+                {
+                    "mesh_id": mesh_id,
+                    "approved": approved,
+                    "pending": pending,
+                    "rejected": rejected,
+                    "counts": {
+                        "approved": len(approved),
+                        "pending": len(pending),
+                        "rejected": len(rejected),
+                    },
                 },
             )
 
