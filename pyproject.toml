@@ -76,6 +76,9 @@ minversion = "7.0"
 testpaths = ["tests"]
 pythonpath = ["shared", "."]
 addopts = "-ra --strict-markers"
+markers = [
+    "ui: opt-in UI spike — requires UI_TESTS=1 env var + connected adb device (Waydroid).",
+]
 
 [tool.coverage.run]
 source = ["shared"]
