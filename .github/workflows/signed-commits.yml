@@ -1,0 +1,90 @@
+name: Signed Commits
+
+# Fail a PR if any commit in the PR range modifies an enforcement-sensitive
+# path without a valid signature. Path list mirrors the §Review gate for
+# enforcement-sensitive code section in CONTRIBUTING.md and the CODEOWNERS
+# entries. Docs, tests, and CHANGELOG remain unsigned-friendly so that
+# drive-by documentation improvements aren't blocked by the requirement.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signed-commits-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify signatures on sensitive paths
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout with full history
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Check signatures on commits touching sensitive paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          # Sensitive paths — regex alternation. Matches any path that STARTS
+          # with one of these prefixes. Kept in sync with .github/CODEOWNERS.
+          SENSITIVE_REGEX='^(shared/focuslock_vault\.py|shared/focuslock_mesh\.py|shared/focuslock_payment\.py|shared/focuslock_penalties\.py|shared/focuslock_config\.py|shared/focuslock_sync\.py|shared/banks\.json|focuslock_mesh\.py|focuslock_ntfy\.py|focuslock-mail\.py|focuslock-desktop\.py|focuslock-desktop-win\.py|watchdog-win\.pyw|build-win\.py|android/(slave|controller|companion)/|installers/|\.github/workflows/|\.github/dependabot\.yml|\.github/CODEOWNERS)'
+
+          echo "Checking commits in range ${BASE_SHA}..${HEAD_SHA}"
+          mapfile -t COMMITS < <(git rev-list "${BASE_SHA}..${HEAD_SHA}")
+          if [ ${#COMMITS[@]} -eq 0 ]; then
+            echo "No commits in PR range — nothing to verify."
+            exit 0
+          fi
+          echo "PR carries ${#COMMITS[@]} commit(s)."
+
+          UNSIGNED_SENSITIVE=()
+          for sha in "${COMMITS[@]}"; do
+            # Files touched by this commit (merge commits: use -m to show
+            # combined diff; normal commits unaffected).
+            touched=$(git show --no-renames --name-only --format='' "$sha" | sed '/^$/d' || true)
+            if [ -z "$touched" ]; then
+              continue
+            fi
+
+            # Does any touched path hit the sensitive regex?
+            if ! echo "$touched" | grep -qE "$SENSITIVE_REGEX"; then
+              continue
+            fi
+
+            # %G? signature status: G=good, U=good-untrusted, X=expired,
+            # Y=expired-key, R=revoked, B=bad, N=none, E=missing-key, etc.
+            # Accept only G or U — anything else fails the check.
+            status=$(git log -1 --format='%G?' "$sha")
+            case "$status" in
+              G|U)
+                echo "::notice ::commit $sha is signed ($status) and touches a sensitive path."
+                ;;
+              *)
+                echo "::error ::commit $sha touches sensitive path(s) but is not signed (%G?=$status)."
+                # Echo the offending paths so the contributor knows what to sign around.
+                echo "$touched" | grep -E "$SENSITIVE_REGEX" | while read -r f; do
+                  echo "::error ::  sensitive path changed: $f"
+                done
+                UNSIGNED_SENSITIVE+=("$sha")
+                ;;
+            esac
+          done
+
+          if [ ${#UNSIGNED_SENSITIVE[@]} -ne 0 ]; then
+            echo ""
+            echo "FAIL — ${#UNSIGNED_SENSITIVE[@]} commit(s) modify enforcement-sensitive paths without a signature."
+            echo "See CONTRIBUTING.md §Commit signing for how to sign retroactively."
+            echo "  git rebase --exec 'git commit --amend --no-edit -S' ${BASE_SHA}..HEAD"
+            exit 1
+          fi
+
+          echo "OK — all commits touching sensitive paths are signed."
