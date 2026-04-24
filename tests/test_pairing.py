@@ -442,3 +442,68 @@ class TestVaultRegisterNodeRequestLogs:
 
         assert re.search(r"pubkey_hash=[0-9a-f]{16}\b", msg)
         assert "type=phone" in msg
+
+
+class TestLogSanitizationHelpers:
+    """Regression cover for _sanitize_log + _passphrase_hint.
+
+    CodeQL py/log-injection and py/clear-text-logging-sensitive-data both
+    originally flagged focuslock-mail.py pairing log sites; the helpers
+    under test are the surgical fixes. If either stops escaping CR/LF or
+    starts echoing the passphrase verbatim, CodeQL will flag the alerts
+    again on the next scan.
+    """
+
+    def test_sanitize_escapes_newlines(self, mail_module):
+        assert mail_module._sanitize_log("abc\ndef") == "abc\\ndef"
+
+    def test_sanitize_escapes_carriage_returns(self, mail_module):
+        assert mail_module._sanitize_log("abc\rdef") == "abc\\rdef"
+
+    def test_sanitize_escapes_nul(self, mail_module):
+        assert mail_module._sanitize_log("abc\x00def") == "abc\\0def"
+
+    def test_sanitize_handles_none(self, mail_module):
+        assert mail_module._sanitize_log(None) == "<none>"
+
+    def test_sanitize_coerces_non_string(self, mail_module):
+        assert mail_module._sanitize_log(42) == "42"
+
+    def test_sanitize_passes_clean_strings_through(self, mail_module):
+        assert mail_module._sanitize_log("normal-id-123") == "normal-id-123"
+
+    def test_sanitize_blocks_log_forgery(self, mail_module):
+        # Classic attack: attacker-controlled id ends a line early + injects
+        # a forged "APPROVED" line the operator might trust.
+        malicious = "bogus-node\nVault register-node-request APPROVED: mesh=x"
+        out = mail_module._sanitize_log(malicious)
+        assert "\n" not in out
+        assert out.startswith("bogus-node\\nVault")
+
+    def test_passphrase_hint_is_stable_hex(self, mail_module):
+        h = mail_module._passphrase_hint("tiger-eagle-fox-lily")
+        assert len(h) == 8
+        assert all(c in "0123456789abcdef" for c in h)
+
+    def test_passphrase_hint_normalizes_case_and_whitespace(self, mail_module):
+        # claim_or_reason normalizes the same way — hints must match so an
+        # operator can grep one hint across register / claim / claim-failed.
+        a = mail_module._passphrase_hint("TIGER-EAGLE-FOX-LILY")
+        b = mail_module._passphrase_hint("  tiger-eagle-fox-lily  ")
+        c = mail_module._passphrase_hint("tiger-eagle-fox-lily")
+        assert a == b == c
+
+    def test_passphrase_hint_does_not_echo_passphrase(self, mail_module):
+        secret = "super-secret-passphrase-abc123"
+        h = mail_module._passphrase_hint(secret)
+        assert secret not in h
+        assert secret.lower() not in h
+
+    def test_passphrase_hint_different_inputs_different_hints(self, mail_module):
+        a = mail_module._passphrase_hint("tiger-eagle-fox-lily")
+        b = mail_module._passphrase_hint("tiger-eagle-fox-lime")
+        assert a != b
+
+    def test_passphrase_hint_handles_empty(self, mail_module):
+        assert mail_module._passphrase_hint("") == "<empty>"
+        assert mail_module._passphrase_hint(None) == "<empty>"

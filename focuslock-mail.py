@@ -98,6 +98,38 @@ def _revoke_session_token(token):
         return False
 
 
+def _sanitize_log(value) -> str:
+    """Escape CR / LF / NUL in user-provided strings before substituting into
+    log records.
+
+    Closes py/log-injection (CodeQL): a caller who sends a node_id, mesh_id,
+    or similar value containing newlines could otherwise forge fake log
+    entries (first line ends with an expected-format message, next line
+    is attacker-chosen content that operators might read as real).
+    """
+    if value is None:
+        return "<none>"
+    s = value if isinstance(value, str) else str(value)
+    return s.replace("\r", "\\r").replace("\n", "\\n").replace("\x00", "\\0")
+
+
+def _passphrase_hint(passphrase) -> str:
+    """First 8 hex chars of sha256(normalized passphrase). Non-reversible.
+
+    Lets an operator grep the log and correlate register / claim /
+    claim-failed entries for the same passphrase without the passphrase
+    itself appearing in the log (py/clear-text-logging-sensitive-data).
+    Normalization (strip + lowercase) matches `PairingRegistry.claim_or_reason`
+    so all three log sites produce the same hint for the same code.
+    """
+    if not passphrase:
+        return "<empty>"
+    import hashlib
+
+    normalized = str(passphrase).strip().lower().encode("utf-8")
+    return hashlib.sha256(normalized).hexdigest()[:8]
+
+
 def _compute_source_sha256():
     """sha256 of this module's source file (the running mail service).
 
@@ -3646,9 +3678,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 pk_hash = _h.sha256(node_pubkey.encode("utf-8")).hexdigest()[:16] if node_pubkey else ""
                 if not node_id or not node_pubkey:
                     logger.info(
-                        "Vault register-node-request BAD_REQUEST: mesh=%s node=%r pubkey_hash=%s",
-                        mesh_id,
-                        node_id,
+                        "Vault register-node-request BAD_REQUEST: mesh=%s node=%s pubkey_hash=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
                         pk_hash,
                     )
                     self.respond(400, {"error": "node_id and node_pubkey required"})
@@ -3656,8 +3688,8 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 if _vault_store.is_rejected(mesh_id, node_pubkey):
                     logger.warning(
                         "Vault register-node-request DENIED (rejected): mesh=%s node=%s pubkey_hash=%s",
-                        mesh_id,
-                        node_id,
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
                         pk_hash,
                     )
                     self.respond(403, {"error": "node rejected"})
@@ -3677,9 +3709,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 )
                 logger.info(
                     "Vault register-node-request PENDING: mesh=%s node=%s type=%s pubkey_hash=%s",
-                    mesh_id,
-                    node_id,
-                    node_type,
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    _sanitize_log(node_type),
                     pk_hash,
                 )
                 self.respond(200, {"ok": True, "status": "pending"})
@@ -3713,7 +3745,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(400, {"error": "passphrase required"})
                 return
             _pairing_registry.register(passphrase, bunny_pubkey, node_id)
-            logger.info("Pair register: %s node=%s", passphrase.upper(), node_id)
+            logger.info("Pair register: hint=%s node=%s", _passphrase_hint(passphrase), _sanitize_log(node_id))
             self.respond(200, {"ok": True, "passphrase": passphrase.upper()})
 
         elif self.path == "/api/pair/claim":
@@ -3746,9 +3778,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                             "and confirm Bunny completed the Join Mesh step",
                         },
                     )
-                logger.info("Pair claim failed: %s reason=%s", passphrase.upper(), reason)
+                logger.info("Pair claim failed: hint=%s reason=%s", _passphrase_hint(passphrase), _sanitize_log(reason))
                 return
-            logger.info("Pair claimed: %s by %s", passphrase.upper(), lion_node_id)
+            logger.info("Pair claimed: hint=%s by %s", _passphrase_hint(passphrase), _sanitize_log(lion_node_id))
             self.respond(200, {"ok": True, "paired": True, "bunny_pubkey": entry.get("bunny_pubkey", "")})
 
         elif self.path == "/api/pair/lookup":
