@@ -45,6 +45,22 @@ Please include:
 
 If a report is critical and under active exploitation, expedited timelines apply. Reporters are credited in the release notes unless they request otherwise.
 
+## Coordinated disclosure + CVE publication
+
+The 90-day window above is the **embargo**: the interval between initial report and public disclosure during which the issue is discussed only privately between the reporter, the maintainer, and anyone explicitly looped in for patch review. Embargo ends on the earliest of:
+
+- Patch release (the release notes naming the issue end the embargo)
+- Day 90 after initial report (calendar days, not business days)
+- Active exploitation in the wild (maintainer may accelerate disclosure to protect users)
+- Reporter request for early disclosure
+- Reporter request for *extended* embargo — granted on a case-by-case basis when the reporter has downstream coordination pending (e.g., another project using the same code path, a CVE numbering authority still processing, or an academic paper in review). Requests should accompany the initial report.
+
+**CVE publication.** For High and Critical severity, the maintainer files a [GitHub Security Advisory (GHSA)](https://docs.github.com/en/code-security/security-advisories) on the repository and requests a CVE identifier through GHSA's built-in CNA workflow. Medium severity gets a GHSA without a CVE request unless the reporter specifically wants one or downstream impact is likely. Low severity is handled in the standard release notes.
+
+A published GHSA includes: affected component, affected version range, CVSS v3.1 score (maintainer's estimate, reporter may dispute), fix version, mitigation guidance, and reporter credit (with the reporter's name, handle, or the word "anonymous" per their preference).
+
+Reporters who find the disclosure handling unsatisfactory should name that concern directly in the report thread — we'd rather talk through a disagreement than have a report go public in frustration.
+
 ## What is not a vulnerability
 
 This is a **consensual** device-restriction tool. The following are intended behavior:
