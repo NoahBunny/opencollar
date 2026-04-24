@@ -1,10 +1,25 @@
 # Publishable Roadmap
 
-## Status — 2026-04-24
+## Status — 2026-04-24 (late)
 
 Publication path from an operator-only tree to a public repo is **done**. v1.0.0 shipped 2026-04-15, v1.1.0 the same day, **v1.2.0 on 2026-04-21** closes the last of the six audit CRITICALs (C1 slave HTTP signature verification) and every H-series finding. CI is fully green across lint + format + py3.10/3.11/3.12 tests + CodeQL + Scorecard. Every release carries Sigstore provenance + SBOM + SHA256SUMS + APK cert fingerprints.
 
-**PR #16 (`5605572`, merged 2026-04-24)** landed three initiatives bundled: pairing recovery-flow strengthening (server TTL tightening, reason-coded 410/404 responses, idempotent re-pair, exponential register backoff, pair-reset endpoint, admin-only vault-status diagnostic, `docs/QA-pairing.md` standing checklist), honest hosted-relay framing (README drops the "Bunny Dev hosted" phrasing + adds the resource/complexity summary for prospective operators), and contribution-policy tightening (`.github/CODEOWNERS`, `signed-commits.yml` CI check, `CONTRIBUTING.md §Review gate` + §Commit signing, `SECURITY.md §Coordinated disclosure + CVE publication`). Tests 360 → 398. CodeQL caught log-injection + cleartext-passphrase-logging in the new pair logs; fixed by a `_sanitize_log` helper + dropping the passphrase from log entries entirely (use `bunny_pubkey_hash` for cross-log correlation instead).
+**PR #16 (`5605572`, merged 2026-04-24)** landed three initiatives bundled: pairing recovery-flow strengthening, honest hosted-relay framing, and contribution-policy tightening.
+
+**Post-PR-#16 hands-on device QA session (2026-04-24 late)** — surfaced a **class of multi-tenant correctness bugs** when running consumer meshes against the operator-shared `focus.wildhome.ca` relay. Every server-side singleton that wasn't keyed by `mesh_id` turned out to be an operator-only affordance. A focused audit found 7 findings (1 BLOCKER, 3 HIGH, 2 MEDIUM, 1 LOW). Six are fixed in this session; one remains:
+
+- ✅ **`/admin/order` mesh routing** (BLOCKER #1) — now resolves `_orders_registry.get(req_mesh_id)` instead of always mutating operator globals.
+- ✅ **Desktop heartbeat + penalty per-mesh** (HIGH #2+#3) — `_get_desktop_registry(mesh_id)` factory; `/webhook/desktop-penalty` routes via `_server_apply_order` instead of operator ADB.
+- ✅ **`PairingRegistry` mesh-scoped** (HIGH #4) — composite key `{mesh_id}:{passphrase}`; HTTP handlers require `mesh_id`.
+- ❌ **IMAP payment scanner per-mesh** (MEDIUM #5) — still scans only operator's configured IMAP, applies via `OPERATOR_MESH_ID`. Non-operator meshes' `set-payment-email` silently ignored. ~90 min, needs per-mesh scanner thread or per-mesh polling loop. **Next session's top priority.**
+- ✅ **Web-session mesh context** (MEDIUM #6 — *"wrong key"* on Web Remote QR) — approve path iterates meshes for signature match; `_is_valid_admin_auth(token, mesh_id=…)` scopes session tokens.
+- ✅ **ntfy push per-mesh** (LOW #7, surfaced during QA) — `_get_ntfy_topic(mesh_id)` derives `focuslock-{mesh_id}` so consumer meshes wake on push instead of 30s vault poll. Verified sub-second propagation live.
+
+Also addressed this session: **consumer-install design pivot** — the `Settings.Global`-via-`WRITE_SECURE_SETTINGS` pattern requires adb during setup, which isn't acceptable for consumer deployments. Lion's Share already uses SharedPreferences for its own state (verified 0 writes, 2 legacy-fallback reads only). Collar + Bunny Tasker redesign (Phase 2 of "No-adb consumer install") is deferred — strategy choice between ContentProvider / AndroidKeyStore+server-authoritative / Device-Owner-QR-provisioning needs a design round after reading how much state is already server-authoritative vs phone-authoritative.
+
+Consent + release hygiene: **bunny-initiated pair-reset removed** (violated the *"only Lion or factory reset can release"* contract); **mutual admin re-activation nag wired** on both sides (high-priority full-screen-intent notification when peer admin is removed); **prior-launcher capture now uses `MATCH_DEFAULT_ONLY`** so Release Forever restores the user's actual launcher (Fossify etc.) instead of stock.
+
+Pegasus deploy verified live: `/api/pair/register` + `/api/pair/claim` correctly require `mesh_id`; consumer mesh `DNfs4xCZM-HY` has its own ntfy topic + payment ledger + desktop registry + pair state.
 
 The per-phase plan below is preserved as historical context. Everything in Phases 0–9 is shipped — search the CHANGELOG or commit log by keyword if You need to trace a specific item.
 
@@ -27,6 +42,25 @@ Ordered roughly by priority. Smaller than pre-v1.0 phase granularity — these a
 - ~~**README download badges**~~ — done (partial). CI / CodeQL / Scorecard / latest-release / license badges are live at the top of `docs/README.md`; a "Download" section documents the `github.com/.../releases/latest/download/<filename>` URL pattern and points at the Releases page (filenames include the tag, so a truly stable-filename link would need a `release.yml` change to additionally upload unversioned aliases — deferred).
 - ~~**Stable-filename release aliases**~~ — done 2026-04-24 in PR #16 (`b1bfdc6`). `.github/workflows/release.yml` now copies each versioned artifact to a `-latest` alias (`focuslock-latest.apk`, `bunnytasker-latest.apk`, `focusctl-latest.apk`, `FocusLock-latest.exe`, `FocusLock-Watchdog-latest.exe`) during the Flatten step, so Sigstore attestation + SHA256SUMS cover them by content hash and the Release upload globs sweep them up for free. README can now link `releases/latest/download/focuslock-latest.apk` without discovering the current tag first. Validation deferred to the next `v*` tag — the workflow YAML diff is small enough to read confidently, and the pattern matches how the versioned names already work.
 - **Supply-chain gap scan** — re-run Scorecard after Node.js actions bump. Address any new findings that arise from bumping the action versions. *(Partially verified 2026-04-21 — Scorecard run on main post-PR #10 was green with no new high-severity findings.)*
+
+### Open bugs from 2026-04-24 device QA session
+
+- **Web Remote QR pairing fails with "wrong key"** — Lion's Share → Web Remote → Scan QR fails at signature verify or session-lookup. Flagged during hands-on QA. Likely related to the C1 audit sig-verifier changes or a session-id format mismatch between `web/index.html`'s QR payload and `controller/MainActivity.java:1137 onActivityResult QR_SCAN_REQUEST` handler. Reproducer: open Lion's Share → Web Remote section → scan the QR generated at `focus.wildhome.ca/web-login?s=<session>`. Triage path: capture the exact error string + the logcat line from `focusctl` around the scan — should narrow to either sig-sign, sig-verify, or session-resolve.
+
+### Large-scope initiative: No-adb consumer install (surfaced 2026-04-24)
+
+The current install pattern requires `pm grant android.permission.WRITE_SECURE_SETTINGS` via adb during setup — because `Settings.Global.focus_lock_*` is the state-sharing layer between Collar + Bunny Tasker (anti-tamper: survives "Clear Data"). That's fine for a supervised Lion-with-cable setup moment, but **not acceptable for consumer-installable production flows** where no cable is available. Breaks OnePlus / ColorOS devices entirely (ColorOS blocks `pm grant` for signature permissions by default).
+
+Three-phase migration — documented in conversation 2026-04-24:
+
+- ~~**Phase 1 — Lion's Share local state to SharedPreferences**~~ *(2026-04-24 — already done, no change needed)*. Investigation turned up only 2 references to `Settings.Global` in `controller/MainActivity.java` (lines 131, 1742) — both are **legacy-fallback READS** wrapped in try/catch, not writes. `Settings.Global.getString` doesn't require `WRITE_SECURE_SETTINGS`; any permission-denied path just returns null and Lion's Share falls through to its SharedPreferences source of truth. All Lion's Share state (lion privkey, mesh_url, mesh_id, pin, active bunny slot, vault_mode) was already stored in `prefs.edit().put*(...)` via the multi-bunny slot scheme — confirmed by grep of the controller module. Verified on OnePlus (ColorOS, `pm grant` refused) — v70 launches + runs without any security exception. Legacy fallback reads kept in place for migration compat with users upgrading from the pre-multi-bunny adb-provisioned setup.
+- **Phase 2 — Collar + Bunny Tasker client-state redesign** *(multi-session, ~4h + design review)*. Three strategies evaluated:
+  - **A.** ContentProvider exposed by Collar, Bunny Tasker queries it. No perm. Loses Clear-Data resistance.
+  - **B.** Hardware-backed AndroidKeyStore + server-authoritative state. Local is cache, authoritative state on mesh server. Clear-Data wipes cache but not enforcement. Needs server-side "suspicious re-pair detected → $500 tamper" logic. **Closest to where P2 paywall hardening (2026-04-17) already moved things.**
+  - **C.** Device Owner via QR provisioning. DPM prevents Clear-Data + uninstall. Requires factory reset at setup. Strongest but highest user cost.
+- **Phase 3 — Bunny Tasker + Collar migration + server-side tamper-reappear detection**. Dependent on Phase 2 strategy choice. Must preserve the admin-reactivation nag + mutual-admin monitor added 2026-04-24 (independent of `Settings.Global`).
+
+Strategy choice for Phase 2 is deferred — needs a proper design round after reading how much state is already server-authoritative vs phone-authoritative.
 
 ### Strategic decisions — still deferred
 

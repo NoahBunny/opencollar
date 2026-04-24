@@ -108,6 +108,7 @@ public class MainActivity extends Activity {
     private long scheduledAtMs = 0;  // 0 = send immediately
     private boolean isLocked = false;
     private int lastEscapes = 0;
+    private int lastPaywall = 0;
 
     // Tab views
     private View pageSimple, pageAdvanced, pageInbox;
@@ -413,6 +414,11 @@ public class MainActivity extends Activity {
 
         // Bunny balance display
         String paywall = parseJsonStr(json, "paywall");
+        try {
+            lastPaywall = paywall.isEmpty() ? 0 : Integer.parseInt(paywall);
+        } catch (NumberFormatException e) {
+            lastPaywall = 0;
+        }
         if (balanceDisplay != null) {
             String bal = (paywall.isEmpty() || paywall.equals("0")) ? "$0" : "$" + paywall;
             balanceDisplay.setText(bal);
@@ -1098,6 +1104,13 @@ public class MainActivity extends Activity {
 
     // ── Web Remote: scan QR code to approve a web session ──
     private static final int QR_SCAN_REQUEST = 9001;
+    // ── Pair Direct: scan Bunny Tasker's pair-QR to fill IP + fingerprint ──
+    private static final int PAIR_QR_SCAN_REQUEST = 9002;
+    // Pending pair-QR fields — populated by the PAIR_QR_SCAN_REQUEST handler,
+    // consumed + cleared by the next doPairDirect() dialog open.
+    private String pendingPairIp = "";
+    private String pendingPairPort = "";
+    private String pendingPairFp = "";
 
     private void doWebRemoteScan() {
         // Try launching a QR scanner via Intent (ZXing Barcode Scanner, Google Lens, etc.)
@@ -1184,6 +1197,38 @@ public class MainActivity extends Activity {
                 });
             } else {
                 setStatus("Not a Lion's Share QR code");
+            }
+        } else if (requestCode == PAIR_QR_SCAN_REQUEST && resultCode == RESULT_OK && data != null) {
+            // Bunny Tasker's direct-pair QR — payload shape (per
+            // PairingManager.buildQrPayload): {"t":"fl","f":<fp>,"l":<lan>,"s":<ts>,"p":<port>}
+            String scanned = data.getStringExtra("SCAN_RESULT");
+            if (scanned == null || scanned.isEmpty()) {
+                setStatus("Scan cancelled");
+                return;
+            }
+            try {
+                org.json.JSONObject qr = new org.json.JSONObject(scanned);
+                if (!"fl".equals(qr.optString("t"))) {
+                    setStatus("Not a FocusLock pair QR");
+                    return;
+                }
+                String lan = qr.optString("l", "");
+                String ts = qr.optString("s", "");
+                String fp = qr.optString("f", "");
+                int port = qr.optInt("p", 8432);
+                // Prefer LAN IP; Tailscale as fallback. Lion can always edit.
+                String ip = !lan.isEmpty() ? lan : ts;
+                if (ip.isEmpty()) {
+                    setStatus("Pair QR missing IP");
+                    return;
+                }
+                pendingPairIp = ip;
+                pendingPairPort = String.valueOf(port);
+                pendingPairFp = fp;
+                setStatus("QR scanned — verify fingerprint");
+                doPairDirect();  // re-open with fields pre-filled
+            } catch (org.json.JSONException e) {
+                setStatus("Pair QR parse failed: " + e.getMessage());
             }
         }
     }
@@ -2193,11 +2238,41 @@ public class MainActivity extends Activity {
         fpInput.setLayoutParams(fpLp);
         layout.addView(fpInput);
 
+        // Consume any pending scan from a just-returned PAIR_QR_SCAN_REQUEST.
+        // Cleared here so re-opening the dialog without a fresh scan shows
+        // empty fields.
+        if (!pendingPairIp.isEmpty()) {
+            ipInput.setText(pendingPairIp);
+            pendingPairIp = "";
+        }
+        if (!pendingPairPort.isEmpty()) {
+            portInput.setText(pendingPairPort);
+            pendingPairPort = "";
+        }
+        if (!pendingPairFp.isEmpty()) {
+            fpInput.setText(pendingPairFp);
+            pendingPairFp = "";
+        }
+
         new AlertDialog.Builder(this)
             .setTitle("Direct Pair")
             .setMessage("Enter the Bunny's IP/hostname AND the 16-char fingerprint shown in their Bunny Tasker pairing screen. "
                 + "The fingerprint detects a MITM key swap — if you skip it, anyone on the network can impersonate the bunny.")
             .setView(layout)
+            .setNeutralButton("Scan QR", (d, w) -> {
+                // Launch any ZXing-compatible scanner; on result, the
+                // PAIR_QR_SCAN_REQUEST branch of onActivityResult parses
+                // the Bunny's pair payload and re-opens this dialog with
+                // the fields pre-filled.
+                try {
+                    android.content.Intent scanIntent = new android.content.Intent(
+                        "com.google.zxing.client.android.SCAN");
+                    scanIntent.putExtra("SCAN_MODE", "QR_CODE_MODE");
+                    startActivityForResult(scanIntent, PAIR_QR_SCAN_REQUEST);
+                } catch (Exception e) {
+                    setStatus("No QR scanner installed — enter IP + fingerprint manually");
+                }
+            })
             .setPositiveButton("Pair", (d, w) -> {
                 String ip = ipInput.getText().toString().trim();
                 String port = portInput.getText().toString().trim();
@@ -2330,23 +2405,23 @@ public class MainActivity extends Activity {
     }
 
     /** Surface the Collar's "already paired with a different lion key"
-     *  response in plain English — the server/Collar supplies the hint
-     *  text, we just frame it. Clickable "Retry" walks the user through
-     *  the reset on Bunny's side (which clears the Collar's stored lion
-     *  pubkey via POST /api/pair-reset) and then re-runs the pair. */
+     *  response in plain English. Post-2026-04-24 there is NO in-app
+     *  recovery: only the *current* Lion (via Release Forever) or a
+     *  factory reset can unpair the Collar. The hint text comes from
+     *  the Collar; we just frame it. */
     private void showPairConflictDialog(String bunnyUrl, String hint) {
         final String msg = hint != null && !hint.isEmpty()
             ? hint
-            : "The Collar is already paired with a different Lion key. "
-                + "Ask Bunny to tap 'Reset pair state' in Bunny Tasker, "
-                + "then try pairing again.";
+            : "The Collar is already paired with a different Lion. Only the "
+                + "current Lion (via Release Forever) or a factory reset can "
+                + "unpair this Collar.";
         handler.post(() -> {
             new android.app.AlertDialog.Builder(MainActivity.this)
-                .setTitle("Already paired — reset required")
+                .setTitle("Already paired — different Lion")
                 .setMessage(msg)
                 .setPositiveButton("OK", null)
                 .show();
-            setStatus("Pair blocked: Collar paired with another Lion key");
+            setStatus("Pair blocked: Collar paired with another Lion");
         });
     }
 
@@ -2700,9 +2775,19 @@ public class MainActivity extends Activity {
     }
 
     private void doGamble() {
+        String preview;
+        if (lastPaywall > 0) {
+            int headsPw = (lastPaywall + 1) / 2;  // integer ceil(n/2)
+            int tailsPw = lastPaywall * 2;
+            preview = "Current paywall: $" + lastPaywall + "\n\n"
+                + "Heads = halved to $" + headsPw + "\n"
+                + "Tails = doubled to $" + tailsPw + "\n\nAre you sure?";
+        } else {
+            preview = "Coin flip!\n\nHeads = paywall halved\nTails = paywall DOUBLED\n\nAre you sure?";
+        }
         new AlertDialog.Builder(this)
             .setTitle("Double or Nothing")
-            .setMessage("Coin flip!\n\nHeads = paywall halved\nTails = paywall DOUBLED\n\nAre you sure?")
+            .setMessage(preview)
             .setPositiveButton("FLIP", (d, w) -> {
                 setStatus("Flipping...");
                 executor.execute(() -> {

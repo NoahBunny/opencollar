@@ -55,8 +55,12 @@ _SESSION_TOKEN_TTL = 8 * 3600  # 8 hours — long enough for a work session
 _session_tokens_lock = threading.Lock()
 
 
-def _issue_session_token(session_id):
-    """Mint a new scoped session token tied to a web session."""
+def _issue_session_token(session_id, mesh_id=""):
+    """Mint a new scoped session token tied to a web session. Multi-tenant:
+    the token is bound to `mesh_id` (the mesh whose Lion approved the web
+    session); subsequent admin calls must request actions against that
+    mesh or get rejected by _is_valid_admin_auth. Empty mesh_id means
+    operator-scope (matches master ADMIN_TOKEN semantics)."""
     with _session_tokens_lock:
         # Prune expired tokens
         now_ts = time.time()
@@ -68,13 +72,19 @@ def _issue_session_token(session_id):
             "issued_at": now_ts,
             "expires_at": now_ts + _SESSION_TOKEN_TTL,
             "session_id": session_id,
+            "mesh_id": mesh_id,
         }
         return token
 
 
-def _is_valid_admin_auth(token):
+def _is_valid_admin_auth(token, mesh_id=None):
     """Check if a token is either the master ADMIN_TOKEN or a live session token.
-    Constant-time comparison to prevent timing attacks."""
+    Constant-time comparison to prevent timing attacks.
+
+    Multi-tenant: when `mesh_id` is provided, session tokens must be scoped
+    to that mesh (the one whose Lion approved the web session). A consumer
+    mesh's session token cannot authorize orders against a different mesh.
+    Master ADMIN_TOKEN bypasses this — the operator controls every mesh."""
     if not token or not ADMIN_TOKEN:
         return False
     if hmac.compare_digest(token, ADMIN_TOKEN):
@@ -86,6 +96,12 @@ def _is_valid_admin_auth(token):
         if entry["expires_at"] < time.time():
             del _active_session_tokens[token]
             return False
+        if mesh_id is not None:
+            # Scoped check: the token must be for this mesh, OR operator-scoped
+            # (empty mesh_id in the token means "no restriction").
+            bound = entry.get("mesh_id", "") or ""
+            if bound and bound != mesh_id:
+                return False
         return True
 
 
@@ -396,22 +412,37 @@ _ntfy_topic = _cfg.get("ntfy_topic", "")
 _ntfy_enabled = _cfg.get("ntfy_enabled", False) and ntfy_mod is not None
 
 
-def _get_ntfy_topic():
-    """Resolve ntfy topic — may depend on mesh_id created after startup."""
+def _get_ntfy_topic(mesh_id: str = "") -> str:
+    """Resolve ntfy topic for `mesh_id` — one topic per mesh so a publish
+    only wakes subscribers on that mesh. Pre-2026-04-24 the server used
+    a single config-wide topic, so every consumer mesh silently fell
+    back to its 30s vault poll (audit followup #7). Operator mesh keeps
+    its legacy topic (from config) for continuity; every other mesh
+    derives `focuslock-{mesh_id}`."""
+    if mesh_id:
+        # Per-mesh topic. Operator's explicitly-configured topic wins
+        # ONLY for the operator mesh, so consumer meshes always get
+        # their own deterministic topic regardless of config.
+        if OPERATOR_MESH_ID and mesh_id == OPERATOR_MESH_ID and _ntfy_topic:
+            return _ntfy_topic
+        return f"focuslock-{mesh_id}"
+    # Fallback when the caller doesn't know a mesh_id — matches old behavior.
     if _ntfy_topic:
         return _ntfy_topic
-    # Auto-derive from first mesh account if available
     if _mesh_accounts and _mesh_accounts.meshes:
         mid = next(iter(_mesh_accounts.meshes))
         return f"focuslock-{mid}"
     return ""
 
 
-def ntfy_fn(version):
-    """Best-effort ntfy publish. Called after order mutations."""
+def ntfy_fn(version, mesh_id: str = ""):
+    """Best-effort ntfy publish. Called after order mutations.
+    `mesh_id` (optional) scopes the topic so only that mesh's slaves get
+    woken up — otherwise every publish fires the operator's topic and
+    consumer meshes never receive wake-ups."""
     if not _ntfy_enabled:
         return
-    topic = _get_ntfy_topic()
+    topic = _get_ntfy_topic(mesh_id)
     if topic:
         ntfy_mod.ntfy_publish(topic, version, _ntfy_server)
 
@@ -1241,7 +1272,82 @@ _ISO_CODES = load_iso_codes(_banks_path)
 MIN_PAYMENT = float(_cfg.get("banking", {}).get("min_payment", 0.01))
 MAX_PAYMENT = float(_cfg.get("banking", {}).get("max_payment", 10000))
 
+# ── Per-mesh desktop registry ──
+# Legacy singleton `desktop_registry` at focuslock-mail.py:1244 persists the
+# operator mesh's collared desktops; consumer meshes get their own registry
+# at `_DESKTOP_REGISTRIES_DIR/{mesh_id}.json`. Without per-mesh isolation,
+# a desktop collar offline on mesh B would fire the $50 dead-man's-switch
+# penalty into the operator mesh's paywall (audit 2026-04-24 HIGH #2+#3).
+_DESKTOP_REGISTRIES_DIR = os.path.join(os.path.dirname(MESH_ORDERS_FILE), "desktops")
+_desktop_registries: dict = {}
+_desktop_registries_lock = threading.Lock()
+
+
+def _get_desktop_registry(mesh_id: str) -> "mesh.DesktopRegistry":
+    with _desktop_registries_lock:
+        reg = _desktop_registries.get(mesh_id)
+        if reg is None:
+            if OPERATOR_MESH_ID and mesh_id == OPERATOR_MESH_ID:
+                reg = desktop_registry  # legacy operator singleton
+            else:
+                os.makedirs(_DESKTOP_REGISTRIES_DIR, exist_ok=True)
+                path = os.path.join(_DESKTOP_REGISTRIES_DIR, f"{mesh_id}.json")
+                reg = mesh.DesktopRegistry(persist_path=path)
+            _desktop_registries[mesh_id] = reg
+        return reg
+
+
+def _iter_desktop_registries():
+    """Yield (mesh_id, registry) for every known mesh + the operator. Used
+    by the heartbeat checker thread to penalize per-mesh instead of always
+    against the operator's ADB."""
+    # Operator first (legacy singleton)
+    if OPERATOR_MESH_ID:
+        yield OPERATOR_MESH_ID, _get_desktop_registry(OPERATOR_MESH_ID)
+    # Every mesh that has ever had a heartbeat
+    with _desktop_registries_lock:
+        registries = dict(_desktop_registries)
+    for mid, reg in registries.items():
+        if OPERATOR_MESH_ID and mid == OPERATOR_MESH_ID:
+            continue  # already yielded
+        yield mid, reg
+
+
+# ── Per-mesh payment ledger ──
+# Legacy singleton (focus.wildhome.ca's operator mesh and nothing else) is
+# kept at _LEDGER_PATH for backward compat on read; new per-mesh ledgers
+# land in _LEDGERS_DIR/{mesh_id}.json. Multi-tenant servers (one relay
+# hosting many Lion/Bunny meshes) need strict isolation — a fresh mesh
+# must see an empty ledger even if the relay has been running for months
+# against another mesh's IMAP account.
 _LEDGER_PATH = os.path.join(os.path.dirname(MESH_ORDERS_FILE), "payment_ledger.json")
+_LEDGERS_DIR = os.path.join(os.path.dirname(MESH_ORDERS_FILE), "ledgers")
+_payment_ledgers: dict = {}
+_payment_ledgers_lock = threading.Lock()
+
+
+def _get_payment_ledger(mesh_id: str) -> "mesh.PaymentLedger":
+    """Per-mesh ledger factory. For the operator mesh (OPERATOR_MESH_ID) we
+    read/write the legacy _LEDGER_PATH so historic operator entries stay
+    visible. All other meshes get their own file under _LEDGERS_DIR — fresh
+    ledger on first access so a newly-created mesh starts empty regardless
+    of how long the relay has been running."""
+    with _payment_ledgers_lock:
+        ledger = _payment_ledgers.get(mesh_id)
+        if ledger is None:
+            if OPERATOR_MESH_ID and mesh_id == OPERATOR_MESH_ID:
+                path = _LEDGER_PATH  # legacy operator ledger
+            else:
+                os.makedirs(_LEDGERS_DIR, exist_ok=True)
+                path = os.path.join(_LEDGERS_DIR, f"{mesh_id}.json")
+            ledger = mesh.PaymentLedger(persist_path=path)
+            _payment_ledgers[mesh_id] = ledger
+        return ledger
+
+
+# Back-compat alias — callers that don't know a mesh_id get the operator's
+# ledger (or an anonymous singleton before OPERATOR_MESH_ID is populated).
+# Prefer _get_payment_ledger(mesh_id) everywhere else.
 payment_ledger = mesh.PaymentLedger(persist_path=_LEDGER_PATH)
 
 # ── Per-mesh message history (roadmap #6) ──
@@ -1305,41 +1411,68 @@ from focuslock_llm import generate_task_with_llm, verify_photo_with_llm
 
 
 def check_desktop_heartbeats():
-    """Check registered desktops. If a collared PC goes silent for 2 weeks, penalize."""
+    """Check registered desktops across every mesh. If a collared PC goes
+    silent for 2 weeks, penalize on *its* mesh's paywall — not the
+    operator's (audit 2026-04-24 HIGH #2+#3). Pre-fix the loop only knew
+    about the singleton registry + mutated operator ADB; consumer meshes'
+    offline desktops either didn't trigger anything (their heartbeats
+    dropped on the floor) or penalized the wrong mesh."""
     while True:
         try:
             now_ts = time.time()
-            for hostname, info in desktop_registry.snapshot().items():
-                last_ts = info.get("last_seen_ts", 0)
-                if last_ts == 0:
-                    continue
-                silence_days = (now_ts - last_ts) / 86400
+            for mid, reg in _iter_desktop_registries():
+                for hostname, info in reg.snapshot().items():
+                    last_ts = info.get("last_seen_ts", 0)
+                    if last_ts == 0:
+                        continue
+                    silence_days = (now_ts - last_ts) / 86400
 
-                # 1 week — warn Lion via pinned message on phone
-                if silence_days >= DESKTOP_WARN_DAYS and not info.get("warned", False):
-                    logger.warning("DESKTOP WARNING: %s silent for %.0f days", hostname, silence_days)
-                    adb.put(
-                        "focus_lock_pinned_message", f"Desktop collar offline: {hostname} ({silence_days:.0f} days)"
-                    )
-                    desktop_registry.mark_warned(hostname)
+                    # 1 week — warn via the mesh's pinned message.
+                    if silence_days >= DESKTOP_WARN_DAYS and not info.get("warned", False):
+                        logger.warning(
+                            "DESKTOP WARNING: mesh=%s host=%s silent for %.0f days",
+                            mid,
+                            hostname,
+                            silence_days,
+                        )
+                        pinned_msg = f"Desktop collar offline: {hostname} ({silence_days:.0f} days)"
+                        if mid == OPERATOR_MESH_ID:
+                            # Operator keeps the ADB write (belt-and-suspenders
+                            # for the single-phone-per-operator install path).
+                            adb.put("focus_lock_pinned_message", pinned_msg)
+                        else:
+                            target_orders = _resolve_orders(mid)
+                            if target_orders is not None:
+                                target_orders.set("pinned_message", pinned_msg)
+                        reg.mark_warned(hostname)
 
-                # 2 weeks — penalty
-                if silence_days >= DESKTOP_PENALTY_DAYS:
-                    last_penalty = info.get("last_penalty_ts", 0)
-                    days_since_penalty = (now_ts - last_penalty) / 86400 if last_penalty else 999
-                    if days_since_penalty >= DESKTOP_ESCALATE_DAYS:
-                        logger.warning("DESKTOP PENALTY: %s silent %.0f days — adding $50", hostname, silence_days)
-                        # Add $50 to paywall
-                        pw_str = adb.get("focus_lock_paywall")
-                        pw = 0
-                        try:
-                            pw = int(pw_str) if pw_str and pw_str != "null" else 0
-                        except Exception as e:
-                            logger.warning("Failed to parse paywall value %r: %s", pw_str, e)
-                        pw += 50
-                        adb.put("focus_lock_paywall", str(pw))
-                        adb.put_str("focus_lock_message", f"Desktop collar offline: {hostname}. $50 penalty applied.")
-                        desktop_registry.mark_penalized(hostname, now_ts)
+                    # 2 weeks — $50 penalty on that mesh's paywall.
+                    if silence_days >= DESKTOP_PENALTY_DAYS:
+                        last_penalty = info.get("last_penalty_ts", 0)
+                        days_since_penalty = (now_ts - last_penalty) / 86400 if last_penalty else 999
+                        if days_since_penalty >= DESKTOP_ESCALATE_DAYS:
+                            logger.warning(
+                                "DESKTOP PENALTY: mesh=%s host=%s silent %.0f days — adding $50",
+                                mid,
+                                hostname,
+                                silence_days,
+                            )
+                            applied = _server_apply_order(mid, "add-paywall", {"amount": 50})
+                            if applied is None and mid == OPERATOR_MESH_ID:
+                                # Legacy ADB fallback for operator's pre-mesh-registry phones.
+                                pw_str = adb.get("focus_lock_paywall")
+                                pw = 0
+                                try:
+                                    pw = int(pw_str) if pw_str and pw_str != "null" else 0
+                                except Exception as e:
+                                    logger.warning("Failed to parse paywall value %r: %s", pw_str, e)
+                                pw += 50
+                                adb.put("focus_lock_paywall", str(pw))
+                                adb.put_str(
+                                    "focus_lock_message",
+                                    f"Desktop collar offline: {hostname}. $50 penalty applied.",
+                                )
+                            reg.mark_penalized(hostname, now_ts)
 
         except Exception:
             logger.exception("Desktop heartbeat checker error")
@@ -1376,7 +1509,7 @@ def _server_apply_order(mesh_id, action, params):
             logger.warning("server apply %s: gossip push failed: %s", action, e)
     if ntfy_fn:
         try:
-            ntfy_fn(orders.version)
+            ntfy_fn(orders.version, mesh_id)
         except Exception:
             pass
     return result
@@ -1671,11 +1804,21 @@ class PairingRegistry:
     # generating it and got an opaque "not found" with no hint it had expired.
     TTL_SECONDS = 600
 
-    def register(self, passphrase, bunny_pubkey, node_id):
+    @staticmethod
+    def _key(mesh_id, passphrase):
+        """Composite key — scoping by mesh_id prevents cross-mesh passphrase
+        collisions on a multi-tenant server. Legacy empty-mesh_id entries
+        from pre-2026-04-24 use the bare uppercased passphrase (still
+        accessible via register/claim with mesh_id=''), but new entries all
+        carry a mesh_id so two meshes' identical passphrase can coexist."""
+        return f"{mesh_id}:{passphrase.upper()}" if mesh_id else passphrase.upper()
+
+    def register(self, passphrase, bunny_pubkey, node_id, mesh_id=""):
         with self.lock:
-            self.entries[passphrase.upper()] = {
+            self.entries[self._key(mesh_id, passphrase)] = {
                 "bunny_pubkey": bunny_pubkey,
                 "bunny_node_id": node_id,
+                "mesh_id": mesh_id,
                 "lion_pubkey": None,
                 "lion_node_id": None,
                 "paired": False,
@@ -1683,45 +1826,63 @@ class PairingRegistry:
             }
             self._save()
 
-    def claim(self, passphrase, lion_pubkey, lion_node_id):
-        entry, _ = self.claim_or_reason(passphrase, lion_pubkey, lion_node_id)
+    def claim(self, passphrase, lion_pubkey, lion_node_id, mesh_id=""):
+        entry, _ = self.claim_or_reason(passphrase, lion_pubkey, lion_node_id, mesh_id)
         return entry
 
-    def claim_or_reason(self, passphrase, lion_pubkey, lion_node_id):
-        """Same as claim() but also returns why the claim failed on None."""
+    def claim_or_reason(self, passphrase, lion_pubkey, lion_node_id, mesh_id=""):
+        """Same as claim() but also returns why the claim failed on None.
+        Multi-tenant: claim lookup is scoped to `mesh_id` — a Lion on mesh A
+        cannot claim a Bunny's pairing from mesh B even if the passphrases
+        happen to collide."""
         with self.lock:
-            key = passphrase.upper()
+            key = self._key(mesh_id, passphrase)
             entry = self.entries.get(key)
             if not entry:
                 return None, "not_registered"
             if time.time() > entry["expires_at"]:
                 return None, "expired"
+            # Cross-check: the entry's own mesh_id field must match, guarding
+            # against legacy-key collisions during the migration window.
+            if mesh_id and entry.get("mesh_id", "") != mesh_id:
+                return None, "not_registered"
             entry["lion_pubkey"] = lion_pubkey
             entry["lion_node_id"] = lion_node_id
             entry["paired"] = True
             self._save()
             return entry, "ok"
 
-    def get_pending_pairing(self, node_id):
-        """Check if node_id has a pairing waiting (Lion claimed but Bunny hasn't received yet)."""
+    def get_pending_pairing(self, node_id, mesh_id=""):
+        """Check if node_id has a pairing waiting (Lion claimed but Bunny
+        hasn't received yet). Scoped by mesh_id to avoid cross-mesh
+        delivery — a Bunny on mesh A must not be handed Lion A's pubkey
+        for a claim that happened on mesh B's registry slot."""
         with self.lock:
             for _phrase, entry in self.entries.items():
-                if entry.get("bunny_node_id") == node_id and entry.get("lion_pubkey") and not entry.get("delivered"):
+                if entry.get("bunny_node_id") != node_id:
+                    continue
+                if mesh_id and entry.get("mesh_id", "") != mesh_id:
+                    continue
+                if entry.get("lion_pubkey") and not entry.get("delivered"):
                     return entry
             return None
 
-    def mark_delivered(self, node_id):
+    def mark_delivered(self, node_id, mesh_id=""):
         """Mark pairing as delivered to Bunny."""
         with self.lock:
             for entry in self.entries.values():
-                if entry.get("bunny_node_id") == node_id and entry.get("lion_pubkey"):
+                if entry.get("bunny_node_id") != node_id:
+                    continue
+                if mesh_id and entry.get("mesh_id", "") != mesh_id:
+                    continue
+                if entry.get("lion_pubkey"):
                     entry["delivered"] = True
                     self._save()
                     break
 
-    def status(self, passphrase):
+    def status(self, passphrase, mesh_id=""):
         with self.lock:
-            entry = self.entries.get(passphrase.upper())
+            entry = self.entries.get(self._key(mesh_id, passphrase))
             if not entry or time.time() > entry["expires_at"]:
                 return None
             return entry
@@ -1845,7 +2006,7 @@ class MeshAccountStore:
                 "auth_token": auth_token,
                 "invite_code": invite_code,
                 "invite_expires_at": int(time.time()) + self.INVITE_TTL_S,
-                "invite_consumed": False,
+                "invite_uses": 0,
                 "pin": pin,
                 "created_at": int(time.time()),
                 "nodes": {},
@@ -1862,14 +2023,17 @@ class MeshAccountStore:
             account = self._find_by_invite(invite_code)
             if not account:
                 return None, "invalid invite code"
-            # Check expiry
+            # Check expiry. TTL is the only rate-limit; invite codes are
+            # reusable so one Lion can onboard multiple slaves (additional
+            # phones, desktop collars, household devices) with a single code.
+            # To rotate, the Lion regenerates the invite — which overwrites
+            # the old one on the account.
             expires = account.get("invite_expires_at", 0)
             if expires and time.time() > expires:
                 return None, "invite code expired"
-            # Check one-time use
-            if account.get("invite_consumed"):
-                return None, "invite code already used"
-            account["invite_consumed"] = True
+            # Track reuse count for operator diagnostics + future rate-limit
+            # hooks. Not enforced as a cap today.
+            account["invite_uses"] = int(account.get("invite_uses", 0)) + 1
             account["nodes"][node_id] = {
                 "type": node_type,
                 "joined_at": int(time.time()),
@@ -2553,9 +2717,81 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             self.respond(200, {"ok": True})
 
         elif self.path == "/webhook/bunny-message":
+            # Bunny-signed. Previously unauth'd (deferred in the 2026-04-17
+            # hardening commit per CHANGELOG line 83). The webhook fires
+            # send_evidence() — a LAN attacker could previously inject a
+            # "self-lock" text and the Lion would receive false evidence
+            # email. Signature binds each request to the registered
+            # bunny_pubkey under (mesh_id, node_id).
+            #
+            # Canonical payload: "{mesh_id}|{node_id}|bunny-message|{ts_i}"
+            # Reuses the shape of /api/mesh/{id}/gamble + /api/mesh/{id}/escape-event.
+            mesh_id = data.get("mesh_id", "")
+            node_id = data.get("node_id", "")
+            ts = data.get("ts", 0)
+            signature = data.get("signature", "")
+            if not signature:
+                self.respond(
+                    403,
+                    {"error": "signature required", "min_companion_version": 53},
+                )
+                return
+            if not mesh_id or not node_id:
+                self.respond(400, {"error": "mesh_id and node_id required"})
+                return
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            account = _mesh_accounts.get(mesh_id)
+            if not account:
+                self.respond(404, {"error": "mesh not found"})
+                return
+            try:
+                ts_i = int(ts)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            now_ms = int(time.time() * 1000)
+            if abs(now_ms - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+            node = account.get("nodes", {}).get(node_id)
+            if not node:
+                self.respond(403, {"error": "node not registered in mesh"})
+                return
+            bunny_pubkey = node.get("bunny_pubkey", "")
+            if not bunny_pubkey:
+                self.respond(403, {"error": "no bunny_pubkey on file for node"})
+                return
+            payload = f"{mesh_id}|{node_id}|bunny-message|{ts_i}"
+            try:
+                import base64 as _b64
+
+                from cryptography.hazmat.primitives import hashes, serialization
+                from cryptography.hazmat.primitives.asymmetric import padding
+
+                pub_der = _b64.b64decode(bunny_pubkey)
+                pub = serialization.load_der_public_key(pub_der)
+                sig_bytes = _b64.b64decode(signature)
+                pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
+            except Exception as e:
+                logger.warning(
+                    "bunny-message sig verify failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    e,
+                )
+                self.respond(403, {"error": "invalid signature"})
+                return
             text = data.get("text", "")
             msg_type = data.get("type", "message")
-            logger.info("Bunny message (%s): %s", msg_type, text)
+            logger.info(
+                "Bunny message: mesh=%s node=%s pubkey_hash=%s type=%s",
+                _sanitize_log(mesh_id),
+                _sanitize_log(node_id),
+                _pubkey_fingerprint(bunny_pubkey),
+                _sanitize_log(msg_type),
+            )
             if msg_type == "self-lock":
                 send_evidence(f"Bunny self-locked: {text}", "self-lock")
             else:
@@ -2563,10 +2799,18 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             self.respond(200, {"ok": True})
 
         elif self.path == "/webhook/desktop-penalty":
+            # Multi-tenant (audit 2026-04-24 HIGH #2): the penalty must
+            # land on the calling mesh's orders doc, not the server's
+            # ADB-connected phone (which is operator-only). Pre-fix, a
+            # desktop collar on mesh B that fired a penalty mutated the
+            # operator's paywall via `adb.put("focus_lock_paywall", ...)`.
             if not ADMIN_TOKEN:
                 self.respond(503, {"error": "admin_token not configured"})
                 return
-            if not _is_valid_admin_auth(data.get("admin_token", "")):
+            mesh_id = data.get("mesh_id", "") or OPERATOR_MESH_ID or ""
+            # Session tokens must be scoped to this mesh; master
+            # ADMIN_TOKEN crosses all meshes.
+            if not _is_valid_admin_auth(data.get("admin_token", ""), mesh_id=mesh_id):
                 self.respond(403, {"error": "invalid admin_token"})
                 return
             # Clamp caller-supplied amount as defense-in-depth even with auth.
@@ -2580,18 +2824,28 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(400, {"error": f"amount must be 0-{DESKTOP_PENALTY_MAX}"})
                 return
             reason = data.get("reason", "Desktop penalty")
-            logger.warning("DESKTOP PENALTY: $%s — %s", amount, reason)
-            pw_str = adb.get("focus_lock_paywall")
-            pw = 0
-            try:
-                pw = int(pw_str) if pw_str and pw_str != "null" else 0
-            except Exception as e:
-                logger.warning("Failed to parse paywall value %r: %s", pw_str, e)
-            pw += amount
-            adb.put("focus_lock_paywall", str(pw))
-            adb.put_str("focus_lock_message", f"{reason}. ${amount} added.")
+            logger.warning("DESKTOP PENALTY: mesh=%s $%s — %s", mesh_id, amount, reason)
+            # Route through _server_apply_order so the paywall write lands
+            # on the mesh's orders doc + propagates via vault blob to any
+            # vault-mode slaves. For the operator mesh this also keeps the
+            # ADB write (server is single writer — no legacy dual-write).
+            applied = _server_apply_order(mesh_id, "add-paywall", {"amount": amount}) if mesh_id else None
+            if applied is None:
+                # Mesh unknown — fall back to operator ADB write for
+                # backward compat with pre-mesh-aware collars.
+                pw_str = adb.get("focus_lock_paywall")
+                pw = 0
+                try:
+                    pw = int(pw_str) if pw_str and pw_str != "null" else 0
+                except Exception as e:
+                    logger.warning("Failed to parse paywall value %r: %s", pw_str, e)
+                pw += amount
+                adb.put("focus_lock_paywall", str(pw))
+                adb.put_str("focus_lock_message", f"{reason}. ${amount} added.")
+            else:
+                pw = applied.get("paywall", 0)
             send_evidence(f"{reason}: ${amount} penalty applied. New paywall: ${pw}", "desktop penalty")
-            self.respond(200, {"ok": True, "new_paywall": pw})
+            self.respond(200, {"ok": True, "new_paywall": pw, "mesh_id": mesh_id})
 
         # ── Admin API (enforcement infrastructure) ──
         # Without mesh_id: operates on operator's mesh (backwards compat).
@@ -2661,7 +2915,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 return
             else:
                 token = data.get("admin_token", "")
-                if not _is_valid_admin_auth(token):
+                req_mesh_id = data.get("mesh_id", "")
+                # Scope the token check to the requested mesh — a session
+                # token minted for mesh A cannot authorize orders against
+                # mesh B (only the master ADMIN_TOKEN crosses meshes).
+                scope_mesh = req_mesh_id or OPERATOR_MESH_ID or ""
+                if not _is_valid_admin_auth(token, mesh_id=scope_mesh):
                     self.respond(403, {"error": "invalid admin_token"})
                     return
 
@@ -2683,13 +2942,77 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 )
                 return
 
+            # Admin-authed gamble (web UI relay-mode entry point). The
+            # bunny-signed /api/mesh/{id}/gamble path serves phones that hold
+            # the bunny privkey but not admin_token; this path serves the
+            # Lion's Share web UI, which holds admin_token but not the bunny
+            # privkey. Both run the RNG + math server-side and delegate the
+            # setter to the existing gamble-resolved action, so phones and
+            # the web UI can't produce divergent outcomes. Response shape
+            # matches /api/mesh/{id}/gamble so the web UI's LAN-mode and
+            # relay-mode branches read the same keys.
+            if action == "gamble":
+                target = req_mesh_id or OPERATOR_MESH_ID
+                target_orders = _resolve_orders(target)
+                try:
+                    old_pw = int(target_orders.get("paywall", "0") or "0")
+                except (ValueError, TypeError):
+                    old_pw = 0
+                if old_pw <= 0:
+                    self.respond(409, {"error": "no paywall to gamble"})
+                    return
+                import math as _math_g
+                import secrets as _secrets_g
+
+                heads = _secrets_g.SystemRandom().choice([True, False])
+                new_pw = _math_g.ceil(old_pw / 2) if heads else old_pw * 2
+                result_str = "heads" if heads else "tails"
+                apply_result = _server_apply_order(target, "gamble-resolved", {"paywall": new_pw, "result": result_str})
+                if not apply_result:
+                    self.respond(500, {"error": "apply failed"})
+                    return
+                logger.info(
+                    "Admin gamble: mesh=%s old=%s result=%s new=%s",
+                    target,
+                    old_pw,
+                    result_str,
+                    new_pw,
+                )
+                self.respond(
+                    200,
+                    {
+                        "ok": True,
+                        "result": result_str,
+                        "old_paywall": old_pw,
+                        "new_paywall": new_pw,
+                    },
+                )
+                return
+
             if req_mesh_id and req_mesh_id != OPERATOR_MESH_ID:
                 if _mesh_accounts.is_vault_only(req_mesh_id):
                     self.respond(403, {"error": "vault_only mesh — admin plaintext orders refused"})
                     return
+            # Route to the REQUESTED mesh's orders doc, not the operator's.
+            # Pre-2026-04-24 this always passed `mesh_orders` (the operator
+            # mesh's singleton), so every non-operator Lion's admin action
+            # silently landed in the operator's state. Multi-tenant bug #1
+            # from the 2026-04-24 audit. `mesh_peers` stays operator-scoped:
+            # it's the home-LAN gossip peer registry for the operator's own
+            # devices, not a consumer-mesh construct.
+            #
+            # `lion_pubkey` is intentionally left empty here — the caller
+            # already authenticated via admin_token (or a mesh-scoped
+            # session_token), so handle_mesh_order doesn't need to
+            # additionally verify a Lion signature. Passing a non-empty
+            # lion_pubkey would force a second auth layer the admin-API
+            # contract doesn't require, and the pre-fix code path passed
+            # `get_lion_pubkey()` which was empty on pure-relay servers.
+            target_mesh = req_mesh_id or OPERATOR_MESH_ID
+            target_orders = _resolve_orders(target_mesh)
             result = mesh.handle_mesh_order(
                 data,
-                mesh_orders,
+                target_orders,
                 mesh_peers,
                 MESH_NODE_ID,
                 apply_fn=mesh_apply_order,
@@ -2702,7 +3025,6 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             action = data.get("action", "")
             params = data.get("params", {})
             vault_ok = True
-            target_mesh = req_mesh_id or OPERATOR_MESH_ID
             if action:
                 try:
                     _admin_order_to_vault_blob(action, params, target_mesh)
@@ -2711,7 +3033,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     vault_ok = False
             if ntfy_fn:
                 try:
-                    ntfy_fn(mesh_orders.version)
+                    ntfy_fn(target_orders.version, target_mesh)
                 except Exception:
                     pass  # ntfy is best-effort; gossip handles consistency
             if not vault_ok and _mesh_accounts.is_vault_only(target_mesh):
@@ -3090,11 +3412,16 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 logger.warning("payments sig verify failed: mesh=%s node=%s err=%s", mesh_id, node_id, e)
                 self.respond(403, {"error": "invalid signature"})
                 return
-            # Snapshot entries under ledger lock, filter + slice outside
-            with payment_ledger.lock:
-                entries = [e for e in payment_ledger.entries if int(e.get("timestamp", 0)) >= since_i]
+            # Per-mesh ledger — a Bunny on mesh X must not see a Bunny on
+            # mesh Y's payment history. Non-operator meshes get fresh ledgers
+            # at _get_payment_ledger(mesh_id).
+            ledger = _get_payment_ledger(mesh_id)
+            with ledger.lock:
+                entries = [e for e in ledger.entries if int(e.get("timestamp", 0)) >= since_i]
             entries = list(reversed(entries))[:200]  # newest first, hard cap
-            orders = _orders_registry.get(OPERATOR_MESH_ID)
+            # total_paid_cents lives on the mesh's orders doc, so already
+            # per-mesh — just read from the request's mesh not the operator's.
+            orders = _orders_registry.get(mesh_id)
             try:
                 total_paid_cents = int(orders.get("total_paid_cents", 0) or 0) if orders else 0
             except (ValueError, TypeError):
@@ -3735,30 +4062,43 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             self.respond(200, {"ok": True})
 
         elif self.path == "/api/pair/register":
-            # Bunny registers for relay-based pairing
+            # Bunny registers for relay-based pairing. Requires mesh_id so
+            # passphrases on a multi-tenant server are scoped per-mesh —
+            # without it, two Lions generating the same short code could
+            # cross-wire their Bunnies' pubkeys (audit 2026-04-24 HIGH #4).
             passphrase = data.get("passphrase", "").strip()
             bunny_pubkey = data.get("pubkey", data.get("bunny_pubkey", ""))
             node_id = data.get("node_id", "")
+            mesh_id = data.get("mesh_id", "")
             if not passphrase:
                 self.respond(400, {"error": "passphrase required"})
                 return
-            _pairing_registry.register(passphrase, bunny_pubkey, node_id)
+            if not mesh_id:
+                self.respond(400, {"error": "mesh_id required"})
+                return
+            _pairing_registry.register(passphrase, bunny_pubkey, node_id, mesh_id=mesh_id)
             logger.info(
-                "Pair register: node=%s bunny_pubkey_hash=%s",
+                "Pair register: mesh=%s node=%s bunny_pubkey_hash=%s",
+                _sanitize_log(mesh_id),
                 _sanitize_log(node_id),
                 _pubkey_fingerprint(bunny_pubkey),
             )
             self.respond(200, {"ok": True, "passphrase": passphrase.upper()})
 
         elif self.path == "/api/pair/claim":
-            # Lion claims a pairing by passphrase
+            # Lion claims a pairing by passphrase — must supply mesh_id so
+            # the claim only matches registrations in that mesh's scope.
             passphrase = data.get("passphrase", "").strip()
             lion_pubkey = data.get("lion_pubkey", "")
             lion_node_id = data.get("lion_node_id", "")
+            mesh_id = data.get("mesh_id", "")
             if not passphrase or not lion_pubkey:
                 self.respond(400, {"error": "passphrase and lion_pubkey required"})
                 return
-            entry, reason = _pairing_registry.claim_or_reason(passphrase, lion_pubkey, lion_node_id)
+            if not mesh_id:
+                self.respond(400, {"error": "mesh_id required"})
+                return
+            entry, reason = _pairing_registry.claim_or_reason(passphrase, lion_pubkey, lion_node_id, mesh_id=mesh_id)
             if not entry:
                 if reason == "expired":
                     self.respond(
@@ -3863,7 +4203,13 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 qr_url = f"{scheme}://{host}/web-login?s={session_id}"
                 self.respond(200, {"session_id": session_id, "qr_url": qr_url})
             elif action == "approve":
-                # Lion's Share app signs the session_id with Lion's RSA private key
+                # Lion's Share app signs the session_id with Lion's RSA private key.
+                # Multi-tenant: the session is not pre-scoped to a mesh, so we
+                # iterate every mesh account and try verify against each
+                # lion_pubkey. First match wins — that mesh becomes the session's
+                # scope, and its admin_token is what the web UI receives on poll.
+                # Pre-2026-04-24 this only checked the operator mesh's lion_pubkey,
+                # so every consumer mesh Lion saw "invalid signature" ("wrong key").
                 session_id = data.get("session_id", "")
                 signature = data.get("signature", "")
                 session = _web_sessions.get(session_id)
@@ -3873,55 +4219,90 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 if session["approved"]:
                     self.respond(200, {"ok": True, "status": "already_approved"})
                     return
-                # Verify Lion's RSA signature on the session_id
-                lion_pub = get_lion_pubkey()
-                if not lion_pub:
-                    # Try mesh account lion_pubkey for operator mesh
-                    if OPERATOR_MESH_ID:
-                        acct = _mesh_accounts.meshes.get(OPERATOR_MESH_ID)
-                        if acct:
-                            lion_pub = acct.get("lion_pubkey", "")
-                if not lion_pub:
-                    self.respond(500, {"error": "no lion pubkey configured"})
+
+                matched_mesh_id = None
+                payload = {"session_id": session_id}
+                # Try the operator first (fast path for single-mesh installs).
+                operator_pub = get_lion_pubkey()
+                if not operator_pub and OPERATOR_MESH_ID:
+                    op_acct = _mesh_accounts.meshes.get(OPERATOR_MESH_ID)
+                    if op_acct:
+                        operator_pub = op_acct.get("lion_pubkey", "")
+                if operator_pub:
+                    try:
+                        if mesh.verify_signature(payload, signature, operator_pub):
+                            matched_mesh_id = OPERATOR_MESH_ID or ""
+                    except Exception:
+                        pass
+                # Fan out across consumer meshes if operator didn't match.
+                if matched_mesh_id is None:
+                    for mid, acct in _mesh_accounts.meshes.items():
+                        if mid == OPERATOR_MESH_ID:
+                            continue  # already tried
+                        pub = acct.get("lion_pubkey", "")
+                        if not pub:
+                            continue
+                        try:
+                            if mesh.verify_signature(payload, signature, pub):
+                                matched_mesh_id = mid
+                                break
+                        except Exception:
+                            continue
+
+                if matched_mesh_id is None:
+                    logger.warning("Web session approve DENIED (no mesh matched): %s...", session_id[:8])
+                    self.respond(403, {"error": "invalid signature — no Lion key matched"})
                     return
-                try:
-                    verified = mesh.verify_signature({"session_id": session_id}, signature, lion_pub)
-                except Exception:
-                    verified = False
-                if not verified:
-                    logger.warning("Web session approve DENIED (bad signature): %s...", session_id[:8])
-                    self.respond(403, {"error": "invalid signature — must be signed by Lion's private key"})
-                    return
+
                 session["approved"] = True
-                logger.info("Web session approved (signature verified): %s...", session_id[:8])
+                # Bind the approved session to the matching mesh so the poll
+                # endpoint returns a token scoped to that mesh only.
+                session["mesh_id"] = matched_mesh_id
+                logger.info(
+                    "Web session approved: session=%s... mesh=%s",
+                    session_id[:8],
+                    _sanitize_log(matched_mesh_id or "(operator)"),
+                )
                 self.respond(200, {"ok": True, "status": "approved"})
             else:
                 self.respond(400, {"error": "unknown action"})
 
         elif self.path == "/webhook/desktop-heartbeat":
+            # Multi-tenant (2026-04-24 audit HIGH #3): routes to the mesh's
+            # own DesktopRegistry instead of a server-wide singleton. A
+            # desktop collar on mesh B now shows up to mesh B, not mesh A.
+            # mesh_id is optional for backward compat with old collars —
+            # falls back to OPERATOR_MESH_ID (== the legacy singleton).
             hostname = data.get("hostname", "unknown")
-            logger.debug("Desktop heartbeat: %s", hostname)
+            mesh_id = data.get("mesh_id", "") or OPERATOR_MESH_ID or ""
+            logger.debug("Desktop heartbeat: mesh=%s host=%s", mesh_id, hostname)
             try:
-                desktop_registry.heartbeat(hostname, name=data.get("name", ""))
-                # Push desktop info to phone so Lion's Share can see it
-                # Format: hostname:name:online;hostname:name:online
-                desktop_summary = desktop_registry.summary_line(time.time())
-                for dev in adb.devices:
-                    subprocess.run(
-                        [
-                            "adb",
-                            "-s",
-                            dev,
-                            "shell",
-                            "settings",
-                            "put",
-                            "global",
-                            "focus_lock_desktops",
-                            desktop_summary,
-                        ],
-                        timeout=10,
-                        capture_output=True,
-                    )
+                reg = _get_desktop_registry(mesh_id) if mesh_id else desktop_registry
+                reg.heartbeat(hostname, name=data.get("name", ""))
+                # ADB-push of `focus_lock_desktops` summary is an operator-
+                # specific affordance (Lion's Share on the operator's phone
+                # reads it via Settings.Global). Don't do it for consumer
+                # meshes — ADB points at one phone and that phone belongs to
+                # the operator, not to consumer-mesh Lions. Consumer meshes
+                # pick up desktop-online state via the orders doc instead.
+                if mesh_id == OPERATOR_MESH_ID:
+                    desktop_summary = reg.summary_line(time.time())
+                    for dev in adb.devices:
+                        subprocess.run(
+                            [
+                                "adb",
+                                "-s",
+                                dev,
+                                "shell",
+                                "settings",
+                                "put",
+                                "global",
+                                "focus_lock_desktops",
+                                desktop_summary,
+                            ],
+                            timeout=10,
+                            capture_output=True,
+                        )
             except Exception as e:
                 logger.warning("Desktop heartbeat registry error: %s", e)
             self.respond(200, {"ok": True})
@@ -4003,13 +4384,18 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 # P0 fix: issue a scoped session token instead of the master
                 # ADMIN_TOKEN. The session token expires after 8 hours and can
                 # be revoked server-side without rotating the real admin_token.
-                scoped_token = _issue_session_token(session_id)
+                # Multi-tenant (2026-04-24): bind the token to the mesh whose
+                # Lion approved it — subsequent /admin/order calls with a
+                # different mesh_id get 403.
+                bound_mesh = session.get("mesh_id", "") or ""
+                scoped_token = _issue_session_token(session_id, bound_mesh)
                 self.respond(
                     200,
                     {
                         "approved": True,
                         "session_token": scoped_token,
                         "expires_in": _SESSION_TOKEN_TTL,
+                        "mesh_id": bound_mesh,
                     },
                 )
                 # One-time use: delete after successful retrieval

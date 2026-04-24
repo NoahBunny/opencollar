@@ -279,12 +279,19 @@ class TestPairClaimHTTPShape:
     (Bunny-Tasker-hint text) so any shape drift is a UX regression."""
 
     def test_happy_path_returns_bunny_pubkey(self, live_server, mail_module):
-        # Seed a fresh registration via the server's PairingRegistry singleton
+        # Seed a fresh registration via the server's PairingRegistry singleton.
+        # Multi-tenant (2026-04-24): register + claim both require mesh_id.
         passphrase = "HAPPY-PATH-CLAIM"
-        mail_module._pairing_registry.register(passphrase, "bunny-pk-happy", "bun-happy")
+        mesh_id = "test-mesh-happy"
+        mail_module._pairing_registry.register(passphrase, "bunny-pk-happy", "bun-happy", mesh_id=mesh_id)
         status, body = _http_post(
             f"{live_server}/api/pair/claim",
-            {"passphrase": passphrase, "lion_pubkey": "lion-pk-happy", "lion_node_id": "lion-happy"},
+            {
+                "passphrase": passphrase,
+                "lion_pubkey": "lion-pk-happy",
+                "lion_node_id": "lion-happy",
+                "mesh_id": mesh_id,
+            },
         )
         assert status == 200
         assert body == {"ok": True, "paired": True, "bunny_pubkey": "bunny-pk-happy"}
@@ -292,7 +299,12 @@ class TestPairClaimHTTPShape:
     def test_unknown_passphrase_returns_404_with_hint(self, live_server):
         status, body = _http_post(
             f"{live_server}/api/pair/claim",
-            {"passphrase": "NEVER-BEEN-REGISTERED-XYZ", "lion_pubkey": "lion-pk", "lion_node_id": "lion-1"},
+            {
+                "passphrase": "NEVER-BEEN-REGISTERED-XYZ",
+                "lion_pubkey": "lion-pk",
+                "lion_node_id": "lion-1",
+                "mesh_id": "test-mesh-unk",
+            },
         )
         assert status == 404
         assert body["reason"] == "not_registered"
@@ -302,12 +314,19 @@ class TestPairClaimHTTPShape:
 
     def test_expired_passphrase_returns_410_with_ttl_hint(self, live_server, mail_module):
         passphrase = "EXPIRED-PASS-CLAIM"
-        mail_module._pairing_registry.register(passphrase, "bunny-pk-exp", "bun-exp")
-        # Force expiry (claim_or_reason will see time.time() > expires_at)
-        mail_module._pairing_registry.entries[passphrase]["expires_at"] = time.time() - 1
+        mesh_id = "test-mesh-exp"
+        mail_module._pairing_registry.register(passphrase, "bunny-pk-exp", "bun-exp", mesh_id=mesh_id)
+        # Force expiry — composite key is "{mesh_id}:{PASSPHRASE}"
+        key = f"{mesh_id}:{passphrase.upper()}"
+        mail_module._pairing_registry.entries[key]["expires_at"] = time.time() - 1
         status, body = _http_post(
             f"{live_server}/api/pair/claim",
-            {"passphrase": passphrase, "lion_pubkey": "lion-pk-exp", "lion_node_id": "lion-exp"},
+            {
+                "passphrase": passphrase,
+                "lion_pubkey": "lion-pk-exp",
+                "lion_node_id": "lion-exp",
+                "mesh_id": mesh_id,
+            },
         )
         assert status == 410
         assert body["reason"] == "expired"
@@ -369,7 +388,7 @@ def _seed_mesh_account(mail_module, mesh_id):
         "auth_token": "test-token",
         "invite_code": "",
         "invite_expires_at": 0,
-        "invite_consumed": True,
+        "invite_uses": 0,
         "pin": "0000",
         "created_at": int(time.time()),
         "nodes": {},
@@ -511,3 +530,468 @@ class TestLogSanitizationHelpers:
     def test_pubkey_fingerprint_handles_empty(self, mail_module):
         assert mail_module._pubkey_fingerprint("") == "<empty>"
         assert mail_module._pubkey_fingerprint(None) == "<empty>"
+
+
+class TestInviteCodeReusable:
+    """Invite codes are reusable within the TTL so one Lion can onboard
+    multiple slaves (additional phones, desktops, household devices) with
+    a single code. TTL is the only rate-limit; invite_uses is tracked for
+    diagnostics + future rate-limit hooks but not enforced today."""
+
+    def test_two_different_nodes_can_join_same_invite(self, mail_module):
+
+        # Fresh MeshAccounts so this test doesn't collide with operator data
+        import tempfile
+
+        tmpdir = tempfile.mkdtemp(prefix="invite_reuse_")
+        fresh = mail_module.MeshAccountStore(persist_dir=tmpdir)
+        try:
+            account = fresh.create("lion-pub-xyz", pin="1111")
+            code = account["invite_code"]
+
+            # First slave joins
+            got1, err1 = fresh.join(code, "phone-a", "phone", "bunny-pub-a")
+            assert err1 is None, f"first join failed: {err1}"
+            assert got1 is not None
+            assert "phone-a" in got1["nodes"]
+            assert got1["invite_uses"] == 1
+
+            # Second slave joins with the SAME code — must succeed, no
+            # "invite code already used" rejection.
+            got2, err2 = fresh.join(code, "desktop-b", "desktop", "bunny-pub-b")
+            assert err2 is None, f"second join failed: {err2}"
+            assert got2 is not None
+            assert "desktop-b" in got2["nodes"]
+            # Both nodes now on the account.
+            assert set(got2["nodes"].keys()) == {"phone-a", "desktop-b"}
+            assert got2["invite_uses"] == 2
+        finally:
+            import shutil
+
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_expired_invite_still_rejected(self, mail_module):
+        """TTL remains the hard gate — reusable doesn't mean forever."""
+
+        import tempfile
+
+        tmpdir = tempfile.mkdtemp(prefix="invite_expired_")
+        fresh = mail_module.MeshAccountStore(persist_dir=tmpdir)
+        try:
+            account = fresh.create("lion-pub-exp", pin="2222")
+            # Force expiry
+            fresh.meshes[account["mesh_id"]]["invite_expires_at"] = int(time.time()) - 60
+            got, err = fresh.join(account["invite_code"], "phone-x", "phone", "bunny-pub-x")
+            assert got is None
+            assert err == "invite code expired"
+        finally:
+            import shutil
+
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_invalid_invite_still_rejected(self, mail_module):
+        """Unknown code is still a 400 — reuse doesn't loosen that."""
+        got, err = mail_module._mesh_accounts.join("NEVER-ISSUED-ZZZ", "phone-y", "phone", "bunny-pub-y")
+        assert got is None
+        assert err == "invalid invite code"
+
+
+class TestPairingRegistryMeshScoped:
+    """Multi-tenant server: passphrases are scoped per-mesh so two Lions
+    independently generating the same short code can't cross-wire their
+    Bunnies' pubkeys. Audit 2026-04-24 HIGH #4. Registration without a
+    mesh_id is rejected by the HTTP endpoint; PairingRegistry itself
+    accepts empty mesh_id for legacy compat, but the claim path refuses
+    to cross the scope."""
+
+    def test_same_passphrase_two_meshes_does_not_collide(self, mail_module):
+        reg = mail_module.PairingRegistry(persist_path=None)
+        phrase = "WOLF-42-BEAR"
+        reg.register(phrase, "bunny-A-pubkey", "bunny-A-node", mesh_id="mesh-A")
+        reg.register(phrase, "bunny-B-pubkey", "bunny-B-node", mesh_id="mesh-B")
+
+        # Lion A claims in mesh A's scope — gets Bunny A's pubkey
+        entry_a, reason_a = reg.claim_or_reason(phrase, "lion-A-pk", "lion-A-node", mesh_id="mesh-A")
+        assert reason_a == "ok"
+        assert entry_a["bunny_pubkey"] == "bunny-A-pubkey"
+
+        # Lion B claims in mesh B's scope — gets Bunny B's pubkey (not A's)
+        entry_b, reason_b = reg.claim_or_reason(phrase, "lion-B-pk", "lion-B-node", mesh_id="mesh-B")
+        assert reason_b == "ok"
+        assert entry_b["bunny_pubkey"] == "bunny-B-pubkey"
+
+    def test_claim_wrong_mesh_returns_not_registered(self, mail_module):
+        reg = mail_module.PairingRegistry(persist_path=None)
+        reg.register("SHARED-CODE", "bunny-X-pk", "bunny-X", mesh_id="mesh-X")
+        # Trying to claim the same passphrase under a different mesh must
+        # look empty to Lion-Y, regardless of Lion-Y's own signature.
+        entry, reason = reg.claim_or_reason("SHARED-CODE", "lion-Y-pk", "lion-Y", mesh_id="mesh-Y")
+        assert entry is None
+        assert reason == "not_registered"
+
+    def test_http_register_requires_mesh_id(self, live_server):
+        status, body = _http_post(
+            f"{live_server}/api/pair/register",
+            {"passphrase": "NEEDS-MESH", "bunny_pubkey": "x", "node_id": "n"},
+        )
+        assert status == 400
+        assert "mesh_id" in body.get("error", "")
+
+    def test_http_claim_requires_mesh_id(self, live_server):
+        status, body = _http_post(
+            f"{live_server}/api/pair/claim",
+            {"passphrase": "NEEDS-MESH", "lion_pubkey": "x", "lion_node_id": "n"},
+        )
+        assert status == 400
+        assert "mesh_id" in body.get("error", "")
+
+
+class TestAdminOrderMeshRouting:
+    """Multi-tenant routing fix (audit 2026-04-24 BLOCKER #1): `/admin/order`
+    must mutate the mesh named in `mesh_id`, not the operator's globals.
+    Pre-fix every non-operator Lion's admin action silently wrote to the
+    operator mesh's orders doc."""
+
+    @pytest.fixture
+    def seeded(self, mail_module, monkeypatch):
+        import tempfile
+
+        # Fresh MeshAccountStore so test meshes don't leak
+        tmpdir = tempfile.mkdtemp(prefix="admin_route_")
+        original = mail_module._mesh_accounts
+        store = mail_module.MeshAccountStore(persist_dir=tmpdir)
+
+        # Two meshes, each with its own orders doc
+        acct_a = store.create("lion-a-pubkey", pin="1111")
+        acct_b = store.create("lion-b-pubkey", pin="2222")
+        orders_a = mail_module._orders_registry.get_or_create(acct_a["mesh_id"])
+        orders_b = mail_module._orders_registry.get_or_create(acct_b["mesh_id"])
+        orders_a.set("paywall", "0")
+        orders_b.set("paywall", "0")
+
+        # Bind a known ADMIN_TOKEN and swap in the fresh store
+        token = "test-admin-route-" + str(int(time.time() * 1000))
+        monkeypatch.setattr(mail_module, "ADMIN_TOKEN", token)
+        monkeypatch.setattr(mail_module, "_mesh_accounts", store)
+        monkeypatch.setattr(mail_module, "OPERATOR_MESH_ID", acct_a["mesh_id"])
+
+        try:
+            yield {
+                "admin_token": token,
+                "mesh_a": acct_a["mesh_id"],
+                "mesh_b": acct_b["mesh_id"],
+            }
+        finally:
+            import shutil
+
+            mail_module._orders_registry.docs.pop(acct_a["mesh_id"], None)
+            mail_module._orders_registry.docs.pop(acct_b["mesh_id"], None)
+            monkeypatch.setattr(mail_module, "_mesh_accounts", original)
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_order_on_mesh_b_does_not_affect_mesh_a(self, live_server, seeded, mail_module):
+        status, _ = _http_post(
+            f"{live_server}/admin/order",
+            {
+                "admin_token": seeded["admin_token"],
+                "mesh_id": seeded["mesh_b"],
+                "action": "add-paywall",
+                "params": {"amount": 42},
+            },
+        )
+        assert status == 200
+        pw_a = int(mail_module._orders_registry.get(seeded["mesh_a"]).get("paywall", "0"))
+        pw_b = int(mail_module._orders_registry.get(seeded["mesh_b"]).get("paywall", "0"))
+        assert pw_b == 42, "mesh B's paywall should have received the add"
+        assert pw_a == 0, "mesh A (operator) must not leak mesh B's admin order"
+
+
+class TestPerMeshPaymentLedger:
+    """Multi-tenant server (focus.wildhome.ca hosting many Lion meshes)
+    must isolate payment history per mesh. Pre-2026-04-24 the ledger was
+    a singleton — a Bunny on mesh X would fetch the Bunny-on-mesh-Y's
+    history and see entries from the old operator mesh even after a
+    fresh mesh create + uninstall-reinstall of both apps. Fixed with
+    `_get_payment_ledger(mesh_id)` and per-file persistence under
+    `_LEDGERS_DIR`. The operator mesh still reads/writes the legacy
+    `payment_ledger.json` for historical continuity."""
+
+    def test_fresh_mesh_starts_with_empty_ledger(self, mail_module):
+        """A new mesh_id returns an empty ledger — no bleed from any
+        existing singleton or other mesh."""
+        mesh_id = "fresh-mesh-" + str(int(time.time() * 1000))
+        ledger = mail_module._get_payment_ledger(mesh_id)
+        assert ledger.entries == []
+
+    def test_writes_to_one_mesh_invisible_to_another(self, mail_module):
+        mesh_a = "iso-mesh-a-" + str(int(time.time() * 1000))
+        mesh_b = "iso-mesh-b-" + str(int(time.time() * 1000))
+        ledger_a = mail_module._get_payment_ledger(mesh_a)
+        ledger_b = mail_module._get_payment_ledger(mesh_b)
+        ledger_a.add_entry("payment", 50.0, source="bank-ref-mesh-a", description="Test deposit A")
+        # Same instance returned on re-fetch (cached)
+        assert mail_module._get_payment_ledger(mesh_a) is ledger_a
+        # Different mesh sees nothing
+        assert ledger_b.entries == []
+        # Re-fetch mesh_a still has the entry
+        again_a = mail_module._get_payment_ledger(mesh_a)
+        assert len(again_a.entries) == 1
+        assert again_a.entries[0]["amount"] == 50.0
+
+    def test_operator_mesh_uses_legacy_path_for_continuity(self, mail_module, monkeypatch):
+        """Operator mesh keeps reading/writing the legacy
+        payment_ledger.json so historic entries don't disappear when the
+        per-mesh refactor lands. Non-operator meshes go to _LEDGERS_DIR."""
+        monkeypatch.setattr(mail_module, "OPERATOR_MESH_ID", "the-operator")
+        # Clear cache so the factory re-evaluates OPERATOR_MESH_ID
+        with mail_module._payment_ledgers_lock:
+            mail_module._payment_ledgers.clear()
+        op_ledger = mail_module._get_payment_ledger("the-operator")
+        other_ledger = mail_module._get_payment_ledger("some-tenant")
+        assert op_ledger.persist_path == mail_module._LEDGER_PATH
+        assert other_ledger.persist_path != mail_module._LEDGER_PATH
+        assert mail_module._LEDGERS_DIR in other_ledger.persist_path
+
+
+class TestPerMeshDesktopRegistry:
+    """Multi-tenant desktop heartbeat isolation (audit 2026-04-24 HIGH #2+#3).
+    A desktop collar on mesh B's heartbeat must register to mesh B — not
+    the server-wide singleton — and its $50 silent-for-2-weeks penalty
+    must land on mesh B's paywall, not on the operator ADB-connected
+    phone. Pre-fix both flows went to `desktop_registry` + `adb.put(
+    'focus_lock_paywall')` regardless of which mesh the collar belonged to."""
+
+    def test_fresh_mesh_has_empty_desktop_registry(self, mail_module):
+        mesh_id = "desktop-fresh-" + str(int(time.time() * 1000))
+        reg = mail_module._get_desktop_registry(mesh_id)
+        assert reg.snapshot() == {}
+
+    def test_heartbeat_isolation_between_meshes(self, mail_module):
+        mesh_a = "desktop-iso-a-" + str(int(time.time() * 1000))
+        mesh_b = "desktop-iso-b-" + str(int(time.time() * 1000))
+        reg_a = mail_module._get_desktop_registry(mesh_a)
+        reg_b = mail_module._get_desktop_registry(mesh_b)
+        reg_a.heartbeat("workstation-a", name="A-lab")
+        assert "workstation-a" in reg_a.snapshot()
+        assert reg_b.snapshot() == {}  # mesh B sees nothing from mesh A
+        # Re-fetching returns the cached instance
+        assert mail_module._get_desktop_registry(mesh_a) is reg_a
+
+    def test_penalty_webhook_routes_to_request_mesh(self, live_server, mail_module, monkeypatch):
+        """/webhook/desktop-penalty with a mesh_id must mutate that mesh's
+        orders doc, not the operator's ADB global."""
+        import tempfile
+
+        tmpdir = tempfile.mkdtemp(prefix="desktop_pen_")
+        store = mail_module.MeshAccountStore(persist_dir=tmpdir)
+        acct = store.create("lion-desktop-pen", pin="3333")
+        mesh_id = acct["mesh_id"]
+        orders = mail_module._orders_registry.get_or_create(mesh_id)
+        orders.set("paywall", "0")
+
+        token = "test-desktop-pen-" + str(int(time.time() * 1000))
+        monkeypatch.setattr(mail_module, "ADMIN_TOKEN", token)
+        monkeypatch.setattr(mail_module, "_mesh_accounts", store)
+
+        status, body = _http_post(
+            f"{live_server}/webhook/desktop-penalty",
+            {
+                "admin_token": token,
+                "mesh_id": mesh_id,
+                "amount": 42,
+                "reason": "test desktop offline",
+            },
+        )
+        try:
+            assert status == 200
+            assert body["mesh_id"] == mesh_id
+            pw = int(mail_module._orders_registry.get(mesh_id).get("paywall", "0"))
+            assert pw == 42
+        finally:
+            import shutil
+
+            mail_module._orders_registry.docs.pop(mesh_id, None)
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+class TestBunnyMessageSigned:
+    """/webhook/bunny-message now requires a bunny-signed payload. Pins the
+    auth gate (missing/bad/expired-ts/unknown-node/unknown-mesh → 403 or 404)
+    and the happy path (200 + send_evidence invoked) so an unauth regression
+    fails loudly rather than silently reopening the spoofable-evidence
+    channel the 2026-04-17 hardening commit deferred.
+
+    Canonical payload: "{mesh_id}|{node_id}|bunny-message|{ts_i}" signed
+    with SHA256withRSA + PKCS1v15, DER-pubkey base64'd into the mesh account
+    node record. Matches the format already used by /api/mesh/{id}/gamble
+    + /api/mesh/{id}/escape-event."""
+
+    @staticmethod
+    def _bunny_keypair():
+        """Fresh RSA-2048 keypair for one test. Returns (privkey_obj,
+        pubkey_b64) — privkey usable for signing, pubkey_b64 ready to
+        drop into the mesh account node record."""
+        import base64
+
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        priv = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pub_der = priv.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        return priv, base64.b64encode(pub_der).decode()
+
+    @staticmethod
+    def _sign(priv, payload):
+        import base64
+
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import padding
+
+        sig = priv.sign(payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
+        return base64.b64encode(sig).decode()
+
+    @pytest.fixture
+    def seeded(self, mail_module):
+        """Seed a mesh with a single node holding a known bunny pubkey.
+        Yields the pieces the test needs to construct signed requests."""
+        mesh_id = "bunnymsg-mesh-" + str(int(time.time() * 1000))
+        node_id = "bunny-phone-1"
+        priv, pub_b64 = self._bunny_keypair()
+        _seed_mesh_account(mail_module, mesh_id)
+        mail_module._mesh_accounts.meshes[mesh_id]["nodes"][node_id] = {
+            "node_id": node_id,
+            "bunny_pubkey": pub_b64,
+            "registered_at": int(time.time()),
+        }
+        try:
+            yield {"mesh_id": mesh_id, "node_id": node_id, "priv": priv, "pub_b64": pub_b64}
+        finally:
+            mail_module._mesh_accounts.meshes.pop(mesh_id, None)
+
+    def _post(self, url, body):
+        import urllib.error
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read().decode())
+
+    def test_missing_signature_returns_403_with_version_hint(self, live_server, seeded):
+        """No signature field → 403 + min_companion_version hint so older
+        Bunny Taskers know to update rather than silently fail."""
+        status, body = self._post(
+            f"{live_server}/webhook/bunny-message",
+            {"text": "hi", "type": "message"},
+        )
+        assert status == 403
+        assert body["error"] == "signature required"
+        assert body["min_companion_version"] == 53
+
+    def test_bad_signature_returns_403(self, live_server, seeded):
+        ts = int(time.time() * 1000)
+        status, body = self._post(
+            f"{live_server}/webhook/bunny-message",
+            {
+                "text": "hi",
+                "type": "message",
+                "mesh_id": seeded["mesh_id"],
+                "node_id": seeded["node_id"],
+                "ts": ts,
+                "signature": "AAAA" + "=" * 340,  # valid base64, wrong sig
+            },
+        )
+        assert status == 403
+        assert body["error"] == "invalid signature"
+
+    def test_ts_out_of_window_returns_403(self, live_server, seeded):
+        # Sign correctly but against a stale timestamp; server must reject
+        # before even checking the signature.
+        stale_ts = int(time.time() * 1000) - 10 * 60 * 1000  # 10 min ago
+        payload = f"{seeded['mesh_id']}|{seeded['node_id']}|bunny-message|{stale_ts}"
+        sig = self._sign(seeded["priv"], payload)
+        status, body = self._post(
+            f"{live_server}/webhook/bunny-message",
+            {
+                "text": "old news",
+                "type": "message",
+                "mesh_id": seeded["mesh_id"],
+                "node_id": seeded["node_id"],
+                "ts": stale_ts,
+                "signature": sig,
+            },
+        )
+        assert status == 403
+        assert body["error"] == "ts out of window"
+
+    def test_unknown_node_returns_403(self, live_server, seeded):
+        ts = int(time.time() * 1000)
+        payload = f"{seeded['mesh_id']}|not-a-real-node|bunny-message|{ts}"
+        sig = self._sign(seeded["priv"], payload)
+        status, body = self._post(
+            f"{live_server}/webhook/bunny-message",
+            {
+                "text": "hi",
+                "type": "message",
+                "mesh_id": seeded["mesh_id"],
+                "node_id": "not-a-real-node",
+                "ts": ts,
+                "signature": sig,
+            },
+        )
+        assert status == 403
+        assert body["error"] == "node not registered in mesh"
+
+    def test_unknown_mesh_returns_404(self, live_server, seeded):
+        ts = int(time.time() * 1000)
+        payload = f"ghost-mesh|{seeded['node_id']}|bunny-message|{ts}"
+        sig = self._sign(seeded["priv"], payload)
+        status, body = self._post(
+            f"{live_server}/webhook/bunny-message",
+            {
+                "text": "hi",
+                "type": "message",
+                "mesh_id": "ghost-mesh",
+                "node_id": seeded["node_id"],
+                "ts": ts,
+                "signature": sig,
+            },
+        )
+        assert status == 404
+        assert body["error"] == "mesh not found"
+
+    def test_valid_signature_fires_evidence(self, live_server, seeded, mail_module, monkeypatch):
+        """Happy path: correct sig → 200 + send_evidence invoked with the
+        self-lock framing. The send_evidence stub captures args so the test
+        can confirm routing (self-lock vs plain message) is preserved."""
+        captured = []
+        monkeypatch.setattr(mail_module, "send_evidence", lambda body, kind: captured.append((body, kind)))
+        ts = int(time.time() * 1000)
+        payload = f"{seeded['mesh_id']}|{seeded['node_id']}|bunny-message|{ts}"
+        sig = self._sign(seeded["priv"], payload)
+        status, body = self._post(
+            f"{live_server}/webhook/bunny-message",
+            {
+                "text": "locked for 30 min",
+                "type": "self-lock",
+                "mesh_id": seeded["mesh_id"],
+                "node_id": seeded["node_id"],
+                "ts": ts,
+                "signature": sig,
+            },
+        )
+        assert status == 200
+        assert body == {"ok": True}
+        assert len(captured) == 1
+        evidence_body, evidence_kind = captured[0]
+        assert evidence_kind == "self-lock"
+        assert "locked for 30 min" in evidence_body

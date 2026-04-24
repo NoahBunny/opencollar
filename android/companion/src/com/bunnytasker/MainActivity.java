@@ -126,13 +126,18 @@ public class MainActivity extends Activity {
         btnShowQr.setOnClickListener(v -> showJoinMeshDialog());
         btnShowQr.setOnLongClickListener(v -> { showDirectPairingInfo(); return true; });
 
-        // Bunny-authorised reset of the Collar's stored lion pairing state.
-        // Visible only when paired. Recovery path for a half-completed pair
-        // (fingerprint mismatch, Lion app crash mid-response) that would
-        // otherwise require reinstalling the Collar.
+        // Pair-reset button intentionally hidden: per the consensual design
+        // (CLAUDE.md: "Release Forever button (Lion only)"), only the Lion
+        // or a factory reset can release the Collar. Previously Bunny
+        // Tasker exposed a "Reset pair state" button that POSTed to
+        // /api/pair-reset on the Collar — a bunny-initiated escape path
+        // that broke the power-dynamic contract. The XML view still exists
+        // for backwards compat with older layouts; we just don't wire a
+        // click listener and force it hidden below in the paired-section
+        // visibility block.
         TextView btnPairReset = (TextView) findViewById(fid("btn_pair_reset"));
         if (btnPairReset != null) {
-            btnPairReset.setOnClickListener(v -> showPairResetConfirmDialog());
+            btnPairReset.setVisibility(View.GONE);
         }
 
         // Show pairing state — hide everything when not paired
@@ -148,6 +153,11 @@ public class MainActivity extends Activity {
             sectionPairing.setVisibility(View.VISIBLE);
             sectionPaired.setVisibility(View.GONE);
             sectionMainContent.setVisibility(View.GONE);
+            // No cable in production — when Bunny Tasker opens unpaired and
+            // the Collar isn't yet device-admin, kick the user into the
+            // Collar's Terms-of-Surrender screen so the full flow happens
+            // inside the normal UI path. Safe to call repeatedly.
+            maybeLaunchCollarConsent();
         }
 
         // Subscription buttons
@@ -269,9 +279,24 @@ public class MainActivity extends Activity {
                             postEventToServer("tamper_removed", "companion-detected");
                             postToCollar("/api/lock",
                                 "{\"message\":\"Collar admin removed.\",\"mode\":\"basic\",\"shame\":1,\"target\":\"phone\"}");
+                            // Full-screen reactivation prompt — mirrors the
+                            // Collar-side nag for Bunny Tasker's admin.
+                            // launchAdminNag de-dupes on Android's side via a
+                            // fixed notif id, and the 0→1 gate above ensures
+                            // we only fire once per removal event.
+                            launchAdminNag(collarAdmin,
+                                "Collar admin was removed. Tap to reactivate — until then, "
+                                    + "a $1000 penalty is on the paywall and the Collar can't enforce anything.");
                         }
                     } else {
+                        int wasRemoved = Settings.Global.getInt(getContentResolver(), "focus_lock_collar_admin_removed", 0);
                         Settings.Global.putInt(getContentResolver(), "focus_lock_collar_admin_removed", 0);
+                        if (wasRemoved == 1) {
+                            // Admin restored — cancel the persistent nag.
+                            try {
+                                getSystemService(android.app.NotificationManager.class).cancel(97);
+                            } catch (Exception ignored) {}
+                        }
                     }
                 } catch (Exception e) {}
             }
@@ -321,7 +346,7 @@ public class MainActivity extends Activity {
                         "{\"message\":\"Subscription overdue. Pay your " + subTier + " tribute.\""
                         + ",\"mode\":\"basic\",\"shame\":1,\"target\":\"phone\"}");
                     if (ok) active = 1;
-                    sendWebhook("/webhook/bunny-message",
+                    sendSignedBunnyWebhook("/webhook/bunny-message", "bunny-message",
                         "{\"text\":\"Auto-locked for overdue " + subTier + " subscription\",\"type\":\"overdue-lock\"}");
                 }
             }
@@ -716,40 +741,13 @@ public class MainActivity extends Activity {
         return String.format("%.1fh", hours);
     }
 
-    /**
-     * Confirmation + submit for the bunny-authorised pair reset. Clears the
-     * stored lion_pubkey on the Collar via a signed /api/pair-reset POST so
-     * the user can recover from a half-completed pair without reinstall.
-     */
-    private void showPairResetConfirmDialog() {
-        String lionKey = PairingManager.getLionKey(getContentResolver());
-        String fp = lionKey.length() >= 16
-            ? lionKey.substring(0, 8) + "..." + lionKey.substring(lionKey.length() - 8)
-            : "(unpaired)";
-        String msg = "Forget the current Lion pairing?\n\n"
-            + "Currently paired with: " + fp + "\n\n"
-            + "After reset the Lion will need to pair again. Use this if pairing "
-            + "got stuck (fingerprint mismatch, Lion app crashed mid-setup) and "
-            + "Lion's Share reports 'already paired — clearable'.";
-        new android.app.AlertDialog.Builder(this)
-            .setTitle("Reset pair state")
-            .setMessage(msg)
-            .setPositiveButton("Reset", (d, w) -> executor.execute(this::doPairReset))
-            .setNegativeButton("Cancel", null)
-            .show();
-    }
-
-    private void doPairReset() {
-        boolean ok = postToCollar("/api/pair-reset", "{}");
-        handler.post(() -> {
-            if (ok) {
-                statusText.setText("Pair state reset — Lion can now pair again");
-                recreate();
-            } else {
-                statusText.setText("Pair reset failed — check Collar logs");
-            }
-        });
-    }
+    // showPairResetConfirmDialog + doPairReset removed 2026-04-24: the
+    // bunny-initiated pair reset was a consensual-design violation —
+    // "only Lion or factory reset can remove the Collar" (CLAUDE.md).
+    // The visible button was hidden in onCreate; the Collar endpoint
+    // at /api/pair-reset now falls through to 403. Half-completed-pair
+    // recovery requires reinstalling the Collar, which is gated on the
+    // Lion releasing the device admin first.
 
     /**
      * Serverless pairing info: show the bunny's IP/port + key fingerprint so the Lion can
@@ -788,26 +786,97 @@ public class MainActivity extends Activity {
             }
         } catch (Exception e) {}
 
-        StringBuilder msg = new StringBuilder();
-        msg.append("Direct (serverless) pairing — give your Lion these details:\n\n");
+        // Build pair payload — same fields Lion's Share expects to parse.
+        // PairingManager.buildQrPayload gives us a compact JSON {t,f,l,s,p}.
+        String payload = PairingManager.buildQrPayload(getContentResolver(), lanIp, tsIp);
+        String jsEscapedPayload = payload.replace("\\", "\\\\").replace("'", "\\'");
+
+        // Text-fallback info shown under the QR so operators without a scanner
+        // can still read IP + fingerprint off the screen.
+        StringBuilder textInfo = new StringBuilder();
+        textInfo.append("<div style='color:#e0e0e0;font-family:sans-serif;font-size:13px;margin-top:16px'>");
         if (!lanIp.isEmpty()) {
-            msg.append("LAN IP:\n  ").append(lanIp).append(":8432\n\n");
+            textInfo.append("<b>LAN:</b> ").append(lanIp).append(":8432<br>");
         }
         if (!tsIp.isEmpty()) {
-            msg.append("Tailscale IP:\n  ").append(tsIp).append(":8432\n\n");
+            textInfo.append("<b>Tailscale:</b> ").append(tsIp).append(":8432<br>");
         }
         if (lanIp.isEmpty() && tsIp.isEmpty()) {
-            msg.append("(no network detected — check WiFi)\n\n");
+            textInfo.append("<span style='color:#e74c3c'>no network detected — check WiFi</span><br>");
         }
-        msg.append("Fingerprint:\n  ").append(fingerprint).append("\n\n");
-        msg.append("In Lion's Share: tap Setup > Pair Direct (LAN) and enter the IP above.\n\n");
-        msg.append("Both devices must be on the same network (LAN, Tailscale, or VPN).");
+        textInfo.append("<b>Fingerprint:</b> ").append(fingerprint).append("<br>");
+        textInfo.append("</div>");
+
+        // WebView + inline HTML: loads assets/qrcode.min.js (qrcode-generator
+        // 1.4.4, vendored from web/qrcode.min.js), renders at version auto /
+        // error-correction M, big enough to scan from a comfortable distance.
+        String html = "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            + "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            + "<style>body{margin:0;padding:16px;background:#0a0a10;text-align:center}"
+            + "#qr{display:inline-block;background:#fff;padding:12px;border-radius:8px}"
+            + "#qr img{width:260px;height:260px;image-rendering:pixelated;display:block}</style>"
+            + "</head><body>"
+            + "<div id='qr'></div>" + textInfo.toString()
+            + "<script src='file:///android_asset/qrcode.min.js'></script>"
+            + "<script>(function(){"
+            + "  try {"
+            + "    var q = qrcode(0, 'M');"
+            + "    q.addData('" + jsEscapedPayload + "');"
+            + "    q.make();"
+            + "    document.getElementById('qr').innerHTML = q.createImgTag(6, 0);"
+            + "  } catch (e) {"
+            + "    document.getElementById('qr').innerText = 'QR render error: ' + e.message;"
+            + "  }"
+            + "})();</script>"
+            + "</body></html>";
+
+        android.webkit.WebView wv = new android.webkit.WebView(this);
+        wv.getSettings().setJavaScriptEnabled(true);
+        // file:///android_asset/ access enabled by default on older WebView;
+        // explicitly permit for newer Android revisions.
+        wv.getSettings().setAllowFileAccess(true);
+        wv.setBackgroundColor(0xFF0a0a10);
+        wv.loadDataWithBaseURL("file:///android_asset/", html, "text/html", "utf-8", null);
 
         new android.app.AlertDialog.Builder(this)
-            .setTitle("Direct Pair Info")
-            .setMessage(msg.toString())
+            .setTitle("Direct Pair — scan from Lion's Share")
+            .setView(wv)
             .setPositiveButton("OK", null)
             .show();
+    }
+
+    /** On first run, if the Collar package is installed but not yet active
+     *  as device admin, kick the user through ConsentActivity. The Collar
+     *  has no launcher icon by design (CLAUDE.md: "invisible app"), so
+     *  without this handoff the ToS + device-admin grant would require an
+     *  adb command — which isn't acceptable for the production flow where
+     *  no cable is present. Safe to re-enter: ConsentActivity is
+     *  singleTask + no-ops if consent is already stored. */
+    private void maybeLaunchCollarConsent() {
+        try {
+            android.content.pm.PackageManager pm = getPackageManager();
+            pm.getPackageInfo("com.focuslock", 0);
+        } catch (android.content.pm.PackageManager.NameNotFoundException e) {
+            // Collar not installed — nothing to consent to.
+            return;
+        }
+        try {
+            android.content.ComponentName collarAdmin = new android.content.ComponentName(
+                "com.focuslock", "com.focuslock.AdminReceiver");
+            android.app.admin.DevicePolicyManager dpm = (android.app.admin.DevicePolicyManager)
+                getSystemService(DEVICE_POLICY_SERVICE);
+            if (dpm != null && dpm.isAdminActive(collarAdmin)) {
+                return;  // already set up
+            }
+            android.content.Intent consent = new android.content.Intent();
+            consent.setComponent(new android.content.ComponentName(
+                "com.focuslock", "com.focuslock.ConsentActivity"));
+            consent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(consent);
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker",
+                "Collar consent launch skipped: " + e.getMessage());
+        }
     }
 
     private void showJoinMeshDialog() {
@@ -1085,7 +1154,7 @@ public class MainActivity extends Activity {
                 handler.post(() -> subStatus.setText("Subscribe failed: " + err));
                 return;
             }
-            sendWebhook("/webhook/bunny-message",
+            sendSignedBunnyWebhook("/webhook/bunny-message", "bunny-message",
                 "{\"text\":\"Subscribed to " + tier + " ($" + amount + "/wk)\",\"type\":\"subscription\"}");
             // Optimistic UI update; authoritative sub_tier/sub_due arrive via
             // the next vault blob (usually within ~30s).
@@ -1596,7 +1665,7 @@ public class MainActivity extends Activity {
                     // Track payment in Settings.Global (survives app reinstalls)
                     long totalPaid = Settings.Global.getLong(getContentResolver(), "focus_lock_total_paid_cents", 0);
                     Settings.Global.putLong(getContentResolver(), "focus_lock_total_paid_cents", totalPaid + amt * 100L);
-                    sendWebhook("/webhook/bunny-message",
+                    sendSignedBunnyWebhook("/webhook/bunny-message", "bunny-message",
                         "{\"text\":\"Paid " + tier + " subscription early ($" + amt + ")\",\"type\":\"prepay\"}");
                     handler.post(() -> {
                         subStatus.setText(tier.toUpperCase() + " — paid early! Next due in 7d");
@@ -1688,7 +1757,7 @@ public class MainActivity extends Activity {
                 handler.post(() -> subStatus.setText("Unsubscribe failed: " + err));
                 return;
             }
-            sendWebhook("/webhook/bunny-message",
+            sendSignedBunnyWebhook("/webhook/bunny-message", "bunny-message",
                 "{\"text\":\"Unsubscribed from " + tier + " (fee: $" + fee + ")\",\"type\":\"unsubscription\"}");
             handler.post(() -> subStatus.setText("Cancelled. $" + fee + " fee charged (syncing...)"));
         } catch (Exception e) {
@@ -1713,7 +1782,7 @@ public class MainActivity extends Activity {
                     if (ok) {
                         // Track usage locally (mesh order from Lion controls the cap)
                         Settings.Global.putInt(getContentResolver(), "focus_lock_free_unlocks", used + 1);
-                        sendWebhook("/webhook/bunny-message",
+                        sendSignedBunnyWebhook("/webhook/bunny-message", "bunny-message",
                             "{\"text\":\"Used free Gold unlock\",\"type\":\"free-unlock\"}");
                         handler.post(() -> statusText.setText("Free unlock used!"));
                     } else {
@@ -1739,7 +1808,7 @@ public class MainActivity extends Activity {
                         + ",\"mode\":\"basic\",\"shame\":1,\"target\":\"phone\"}");
 
                     if (ok) {
-                        sendWebhook("/webhook/bunny-message",
+                        sendSignedBunnyWebhook("/webhook/bunny-message", "bunny-message",
                             "{\"text\":\"Self-locked for " + minutes + " minutes\",\"type\":\"self-lock\"}");
                         handler.post(() -> statusText.setText("Self-locked for " + minutes + "m"));
                     } else {
@@ -2357,6 +2426,66 @@ public class MainActivity extends Activity {
             } catch (Exception e) { /* try next */ }
         }
         android.util.Log.e("BunnyTasker", "All homelab URLs failed for " + path);
+    }
+
+    /** Bunny-signed variant of sendWebhook for endpoints that require a
+     *  signature over "{mesh_id}|{node_id}|{event_type}|{ts}". Reads
+     *  mesh_id / node_id / bunny_privkey from Settings.Global, merges
+     *  ts + signature into the caller-supplied inner JSON, and posts to
+     *  path. If mesh/node/key are missing (pre-join state) the call is
+     *  skipped with a warning — don't spam the server with unsigned
+     *  requests that will only get 403'd.
+     *
+     *  Companion v53 (2.20): see CHANGELOG entry for /webhook/bunny-message
+     *  which moved from unauth'd to bunny-signed as a "clean break, no grace
+     *  period" update coordinated with the server. */
+    private void sendSignedBunnyWebhook(String path, String eventType, String innerJson) {
+        String meshId = gstr("focus_lock_mesh_id");
+        String nodeId = gstr("focus_lock_mesh_node_id");
+        String bunnyPrivB64 = gstr("focus_lock_bunny_privkey");
+        if (meshId.isEmpty() || nodeId.isEmpty() || bunnyPrivB64.isEmpty()) {
+            android.util.Log.w("BunnyTasker",
+                "sendSignedBunnyWebhook(" + path + ") skipped: not yet paired/joined");
+            return;
+        }
+        try {
+            long ts = System.currentTimeMillis();
+            String payload = meshId + "|" + nodeId + "|" + eventType + "|" + ts;
+            byte[] privBytes = android.util.Base64.decode(bunnyPrivB64, android.util.Base64.NO_WRAP);
+            java.security.spec.PKCS8EncodedKeySpec spec =
+                new java.security.spec.PKCS8EncodedKeySpec(privBytes);
+            java.security.PrivateKey priv =
+                java.security.KeyFactory.getInstance("RSA").generatePrivate(spec);
+            java.security.Signature sig = java.security.Signature.getInstance("SHA256withRSA");
+            sig.initSign(priv);
+            sig.update(payload.getBytes("UTF-8"));
+            String signature = android.util.Base64.encodeToString(
+                sig.sign(), android.util.Base64.NO_WRAP);
+
+            // Merge mesh_id / node_id / ts / signature into the inner JSON.
+            // innerJson is expected to be a JSON object "{...}" — strip the
+            // trailing "}", append our fields, re-close. Cheap + matches
+            // the hand-rolled JSON style used elsewhere in this file.
+            String inner = innerJson.trim();
+            if (!inner.startsWith("{") || !inner.endsWith("}")) {
+                android.util.Log.e("BunnyTasker",
+                    "sendSignedBunnyWebhook(" + path + ") bad innerJson shape");
+                return;
+            }
+            String body;
+            if (inner.equals("{}")) {
+                body = "{\"mesh_id\":\"" + meshId + "\",\"node_id\":\"" + nodeId
+                    + "\",\"ts\":" + ts + ",\"signature\":\"" + signature + "\"}";
+            } else {
+                body = inner.substring(0, inner.length() - 1)
+                    + ",\"mesh_id\":\"" + meshId + "\",\"node_id\":\"" + nodeId
+                    + "\",\"ts\":" + ts + ",\"signature\":\"" + signature + "\"}";
+            }
+            sendWebhook(path, body);
+        } catch (Exception e) {
+            android.util.Log.e("BunnyTasker",
+                "sendSignedBunnyWebhook(" + path + ") sign failed: " + e.getMessage());
+        }
     }
 
     private String fetchFromHomelab(String path) {

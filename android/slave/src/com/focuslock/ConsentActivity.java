@@ -212,15 +212,44 @@ public class ConsentActivity extends Activity {
             .show();
     }
 
-    /** Store the current default home launcher so we can return to it on unlock. */
+    /** Store the current default home launcher so we can return to it on unlock.
+     *  Resolves the user's *current* default (e.g. Fossify Launcher) via
+     *  MATCH_DEFAULT_ONLY first; only falls back to "first non-Collar launcher
+     *  in the enumeration" if no default is set. Without MATCH_DEFAULT_ONLY we
+     *  would take whichever launcher PackageManager happened to enumerate
+     *  first — often the stock launcher even when the user has switched to
+     *  a third-party. */
     private void storePriorHomePkg() {
         Intent homeIntent = new Intent(Intent.ACTION_MAIN);
         homeIntent.addCategory(Intent.CATEGORY_HOME);
+
+        // Preferred path: whatever the user has currently set as default.
+        try {
+            ResolveInfo info = getPackageManager().resolveActivity(
+                homeIntent, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY);
+            if (info != null && info.activityInfo != null) {
+                String pkg = info.activityInfo.packageName;
+                // Skip ourselves (FocusActivity declares CATEGORY_HOME) and
+                // the "android" chooser pseudo-activity that resolves when
+                // no default is set.
+                if (!"com.focuslock".equals(pkg) && !"android".equals(pkg)) {
+                    Settings.Global.putString(getContentResolver(),
+                        "focus_lock_prior_home_pkg", pkg);
+                    return;
+                }
+            }
+        } catch (Exception e) { /* fall through to enumeration */ }
+
+        // Fallback: first non-Collar launcher in the full enumeration. Used
+        // only when the user has no default set (chooser appears on HOME
+        // press) — still better than capturing stock when the user installed
+        // a third-party launcher but never picked one as default.
         List<ResolveInfo> homes = getPackageManager().queryIntentActivities(homeIntent, 0);
         for (ResolveInfo ri : homes) {
-            if (!"com.focuslock".equals(ri.activityInfo.packageName)) {
+            String pkg = ri.activityInfo.packageName;
+            if (!"com.focuslock".equals(pkg) && !"android".equals(pkg)) {
                 Settings.Global.putString(getContentResolver(),
-                    "focus_lock_prior_home_pkg", ri.activityInfo.packageName);
+                    "focus_lock_prior_home_pkg", pkg);
                 return;
             }
         }

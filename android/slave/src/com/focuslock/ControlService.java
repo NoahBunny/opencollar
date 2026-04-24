@@ -355,6 +355,12 @@ public class ControlService extends Service {
                                         // applied server-side by tamper-recorded(kind=detected).
                                         // The new paywall lands back here via the next vault pull.
                                         ControlService.postEventToServer(ControlService.this, "tamper_detected", null);
+                                        // Full-screen reactivation prompt — brings up the Android
+                                        // admin-activation dialog so the user can re-grant without
+                                        // navigating Settings manually. Fires once per 0→1 flip.
+                                        launchAdminActivation(btAdmin,
+                                            "Bunny Tasker admin was removed. Tap to reactivate — until then, "
+                                                + "the Collar keeps the phone locked and $500 is on the paywall.");
                                     }
                                     Settings.Global.putInt(getContentResolver(), "focus_lock_active", 1);
                                     Settings.Global.putLong(getContentResolver(), "focus_lock_locked_at",
@@ -369,6 +375,11 @@ public class ControlService extends Service {
                                 ComponentName btAdmin2 = new ComponentName("com.bunnytasker", "com.bunnytasker.AdminReceiver");
                                 if (dpm().isAdminActive(btAdmin2)) {
                                     Settings.Global.putInt(getContentResolver(), "focus_lock_bt_admin_removed", 0);
+                                    // Cancel the persistent admin-nag notification
+                                    // (id 97 — matches launchAdminActivation).
+                                    try {
+                                        getSystemService(NotificationManager.class).cancel(97);
+                                    } catch (Exception ignored) {}
                                 }
                             } catch (Exception e) {}
                         }
@@ -857,7 +868,12 @@ public class ControlService extends Service {
             else if (path.equals("/api/photo-task") && method.equals("POST")) { resp = doPhotoTask(body); }
             else if (path.equals("/api/release-forever") && method.equals("POST")) { resp = doReleaseForever(); }
             else if (path.equals("/api/pair") && method.equals("POST")) { resp = doPair(body); }
-            else if (path.equals("/api/pair-reset") && method.equals("POST")) { resp = doPairReset(); }
+            // /api/pair-reset removed 2026-04-24: the bunny-initiated reset
+            // broke the "only Lion or factory reset" release contract. Path
+            // now returns 403 (falls through to the default rejection below).
+            // If a half-completed pair ever needs recovery, reinstall the
+            // Collar — which requires device admin to be disabled first,
+            // which requires Lion consent via the release flow.
             else if (path.equals("/api/set-checkin") && method.equals("POST")) { resp = doSetCheckin(body); }
             else if (path.equals("/api/clear-geofence") && method.equals("POST")) { resp = doClearGeofence(); }
             else if (path.equals("/api/set-volume") && method.equals("POST")) { resp = doSetVolume(body); }
@@ -1689,13 +1705,17 @@ public class ControlService extends Service {
                 Log.i(TAG, "doPair: idempotent re-pair from same lion key");
                 return "{\"ok\":true,\"action\":\"already-paired\",\"bunny_pubkey\":\"" + esc(bunnyPubKey) + "\"}";
             }
-            // Different key → genuine conflict. Tell the caller there's a
-            // recovery path instead of a dead-end. Bunny must authorize the
-            // reset (POST /api/pair-reset, bunny-signed) before a new lion can pair.
+            // Different key → genuine conflict. The Collar is already paired
+            // to a different Lion; no in-app recovery path exists by design
+            // (bunny-initiated pair-reset was removed 2026-04-24 to preserve
+            // the "only Lion or factory reset" release contract). The current
+            // Lion must complete Release Forever first; then a fresh pair.
             Log.w(TAG, "doPair: different lion key offered; existing fingerprint="
                 + existing.substring(0, Math.min(8, existing.length())) + "...");
-            return "{\"error\":\"already paired\",\"clearable\":true,"
-                + "\"hint\":\"Bunny must tap 'Reset pair state' in Bunny Tasker, then retry.\"}";
+            return "{\"error\":\"already paired\",\"clearable\":false,"
+                + "\"hint\":\"Collar is paired with a different Lion. Only the "
+                + "current Lion (via Release Forever) or a factory reset can "
+                + "unpair this Collar.\"}";
         }
         Settings.Global.putString(getContentResolver(), "focus_lock_lion_pubkey", lionPubKey);
         Log.i(TAG, "PAIRED with Lion. Key fingerprint: " +
@@ -1703,25 +1723,13 @@ public class ControlService extends Service {
         return "{\"ok\":true,\"action\":\"paired\",\"bunny_pubkey\":\"" + esc(bunnyPubKey) + "\"}";
     }
 
-    /**
-     * Bunny-authorised reset of the stored lion pairing state. Lets the user
-     * recover from a half-completed pair (e.g. fingerprint mismatch, Lion's
-     * Share killed mid-response) without reinstalling the Collar. Requires a
-     * bunny-signed request via SigVerifier (same-phone Bunny Tasker); the
-     * handler() dispatcher runs the signature gate before this method is
-     * called, so by the time we're here the caller is proven to be bunny.
-     */
-    private String doPairReset() {
-        String existing = gstr("focus_lock_lion_pubkey");
-        if (existing.isEmpty()) {
-            return "{\"ok\":true,\"action\":\"already-unpaired\"}";
-        }
-        Settings.Global.putString(getContentResolver(), "focus_lock_lion_pubkey", "");
-        Settings.Global.putLong(getContentResolver(), "focus_lock_lion_last_seen", 0L);
-        Log.w(TAG, "PAIR RESET (bunny-authorised). Cleared lion fingerprint="
-            + existing.substring(0, Math.min(8, existing.length())) + "...");
-        return "{\"ok\":true,\"action\":\"pair-reset\"}";
-    }
+    // doPairReset removed 2026-04-24: the bunny-initiated pair reset was a
+    // consensual-design violation — the release contract is "only Lion or
+    // factory reset can remove the Collar" (CLAUDE.md: Release Forever is
+    // Lion-only). Half-completed-pair recovery now requires reinstalling
+    // the Collar, which requires device admin off, which requires a signed
+    // Release from the Lion. The dispatch entry at handler() above now
+    // falls through to the default 403 for /api/pair-reset.
 
     private String doReleaseForever() {
         Log.w(TAG, "RELEASE FOREVER — tearing down cage permanently");

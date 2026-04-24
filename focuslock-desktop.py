@@ -1219,7 +1219,16 @@ def send_heartbeat():
         import socket
 
         hostname = socket.gethostname()
-        data = json.dumps({"hostname": hostname, "type": "desktop"}).encode()
+        # Include mesh_id so the relay routes the heartbeat to *this*
+        # mesh's DesktopRegistry. Without it the relay falls back to
+        # OPERATOR_MESH_ID (legacy single-tenant path).
+        data = json.dumps(
+            {
+                "hostname": hostname,
+                "type": "desktop",
+                "mesh_id": MESH_ID,
+            }
+        ).encode()
         req = urllib.request.Request(
             f"{HOMELAB_URL}/webhook/desktop-heartbeat",
             data=data,
@@ -1527,6 +1536,7 @@ class CollarApp(Gtk.Application):
                     "amount": 30,
                     "reason": f"Desktop consent declined ({socket.gethostname()})",
                     "admin_token": ADMIN_TOKEN,
+                    "mesh_id": MESH_ID,
                 }
                 data = json.dumps(payload).encode()
                 req = urllib.request.Request(

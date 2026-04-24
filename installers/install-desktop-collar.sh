@@ -6,8 +6,33 @@
 # Mirrors phone lock state to desktop via loginctl session lock
 set -e
 
+# --non-interactive: fail fast instead of waiting for stdin prompts. Useful
+# for re-enslave-watcher + automated deploys (CLAUDE.md). Requires
+# FOCUSLOCK_HOMELAB or FOCUSLOCK_HOMELAB_HOST (+ Tailscale discovery) to be set.
+NON_INTERACTIVE=0
+for arg in "$@"; do
+    case "$arg" in
+        --non-interactive|-n) NON_INTERACTIVE=1 ;;
+    esac
+done
+if [ "$NON_INTERACTIVE" = 0 ] && [ ! -t 0 ]; then
+    # No TTY attached — assume automated. Avoid blocking on prompts.
+    NON_INTERACTIVE=1
+fi
+
 echo "=== FocusLock Desktop Collar Installer ==="
 echo ""
+
+# Pre-cache sudo so later sudo calls don't prompt mid-install. Fails fast
+# instead of hanging on a password prompt the user can't see.
+if ! sudo -n true 2>/dev/null; then
+    if [ "$NON_INTERACTIVE" = 1 ]; then
+        echo "ERROR: sudo requires a password and stdin isn't a TTY. Aborting." >&2
+        exit 1
+    fi
+    echo "sudo needs your password (will be cached for the rest of this install):"
+    sudo -v
+fi
 
 # Detect distro
 if [ -f /etc/os-release ]; then
@@ -62,7 +87,8 @@ command -v loginctl &>/dev/null || {
 if ! fc-list | grep -qi lexend; then
     echo "=== Installing Lexend font ==="
     mkdir -p ~/.local/share/fonts/l
-    curl -sL "https://github.com/googlefonts/lexend/raw/main/fonts/variable/Lexend%5BHEXP%2Cwght%5D.ttf" \
+    # -m 15: hard timeout so a slow/offline GitHub doesn't block install forever.
+    curl -sL -m 15 "https://github.com/googlefonts/lexend/raw/main/fonts/variable/Lexend%5BHEXP%2Cwght%5D.ttf" \
         -o ~/.local/share/fonts/l/Lexend.ttf 2>/dev/null && fc-cache -f ~/.local/share/fonts/ 2>/dev/null
 fi
 
@@ -139,6 +165,10 @@ if [ -z "$HOMELAB" ] && command -v tailscale &>/dev/null && [ -n "$HOMELAB_HOSTN
     fi
 fi
 if [ -z "$HOMELAB" ]; then
+    if [ "$NON_INTERACTIVE" = 1 ]; then
+        echo "ERROR: FOCUSLOCK_HOMELAB not set and --non-interactive mode. Set it and retry." >&2
+        exit 1
+    fi
     read -p "Homelab URL (e.g. http://x.x.x.x:8434): " HOMELAB
     if [ -z "$HOMELAB" ]; then
         echo "ERROR: Homelab URL is required."
