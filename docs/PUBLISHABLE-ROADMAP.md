@@ -28,7 +28,7 @@ Ordered roughly by priority. Smaller than pre-v1.0 phase granularity — these a
 ### Strategic decisions — still deferred
 
 1. **Contribution policy for crypto / enforcement code** — outsider PRs touching vault, pairing, or paywall need a structured review process. `CONTRIBUTING.md` hand-waves this; firm it up when the first outside PR lands.
-2. **Hosted relay** — README currently implies a community-hostable relay exists. Either stand one up (operational burden) or drop the implication and go fully self-host-only in `docs/SELF-HOSTING.md`.
+2. **Hosted relay** — *Partial close 2026-04-23: option C (soft middle) applied.* The README's Setup Options table + Hosted Relay Signup section now explicitly state that **no community relay is currently operated**, self-host is the only active path, and link to `docs/SELF-HOSTING.md` with a resource/complexity summary (Python 3.10+, ~256 MB RAM, $5/mo VPS, domain + TLS reverse proxy, ~30–60 min setup). The aspirational signup flow is preserved for whoever eventually stands one up. The underlying decision — stand up an operator-run relay, or formalize the project as self-host-only — remains open. Revisit once either (a) someone commits to operational responsibility or (b) public feedback indicates the current framing is misleading.
 3. **Contribution review SLA** — expect a public security report within 90 days of v1.0 going public; draft a triage workflow before it arrives, not after.
 
 ---
