@@ -1,0 +1,59 @@
+# CODEOWNERS — automatic reviewer assignment for sensitive paths.
+#
+# GitHub requests review from the listed owner(s) when a PR changes any
+# matching path. Combined with a "Require review from Code Owners" branch
+# protection rule on `main`, this becomes a hard gate: no enforcement-
+# sensitive merge without explicit maintainer approval.
+#
+# Syntax: <path-glob> <@owner> [<@owner> ...]
+# First-match wins — order matters, most-specific last.
+
+# Default: maintainer reviews anything not covered below.
+*                                       @NoahBunny
+
+# Crypto + mesh protocol — highest scrutiny.
+/shared/focuslock_vault.py              @NoahBunny
+/shared/focuslock_mesh.py               @NoahBunny
+/focuslock_mesh.py                      @NoahBunny
+/focuslock_ntfy.py                      @NoahBunny
+
+# Payment parsing — moves real money; anti-self-pay logic.
+/shared/focuslock_payment.py            @NoahBunny
+/shared/banks.json                      @NoahBunny
+
+# Paywall + enforcement math.
+/shared/focuslock_penalties.py          @NoahBunny
+
+# Config schema — validates trust boundaries.
+/shared/focuslock_config.py             @NoahBunny
+/shared/focuslock_sync.py               @NoahBunny
+
+# Server: relay, admin API, webhook, pairing registry.
+/focuslock-mail.py                      @NoahBunny
+
+# Desktop collars.
+/focuslock-desktop.py                   @NoahBunny
+/focuslock-desktop-win.py               @NoahBunny
+/watchdog-win.pyw                       @NoahBunny
+/build-win.py                           @NoahBunny
+
+# Android apps — device admin, signing, HTTP gate, pairing.
+/android/slave/                         @NoahBunny
+/android/controller/                    @NoahBunny
+/android/companion/                     @NoahBunny
+
+# Installers — sudoers rules, systemd units, privilege boundaries.
+/installers/                            @NoahBunny
+
+# CI + release tooling — supply-chain surface.
+/.github/workflows/                     @NoahBunny
+/.github/dependabot.yml                 @NoahBunny
+/.github/CODEOWNERS                     @NoahBunny
+
+# Security + policy docs.
+/SECURITY.md                            @NoahBunny
+/CONTRIBUTING.md                        @NoahBunny
+/CODE_OF_CONDUCT.md                     @NoahBunny
+/LICENSE                                @NoahBunny
+/docs/THREAT-MODEL.md                   @NoahBunny
+/docs/VAULT-DESIGN.md                   @NoahBunny
