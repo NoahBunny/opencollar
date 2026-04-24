@@ -113,21 +113,19 @@ def _sanitize_log(value) -> str:
     return s.replace("\r", "\\r").replace("\n", "\\n").replace("\x00", "\\0")
 
 
-def _passphrase_hint(passphrase) -> str:
-    """First 8 hex chars of sha256(normalized passphrase). Non-reversible.
+def _pubkey_fingerprint(pubkey_b64) -> str:
+    """First 16 hex chars of sha256(pubkey) — log-safe identifier.
 
-    Lets an operator grep the log and correlate register / claim /
-    claim-failed entries for the same passphrase without the passphrase
-    itself appearing in the log (py/clear-text-logging-sensitive-data).
-    Normalization (strip + lowercase) matches `PairingRegistry.claim_or_reason`
-    so all three log sites produce the same hint for the same code.
+    Not password hashing — pubkeys are public material by definition, and
+    this fingerprint is a non-reversible correlation token for log grep.
+    Matches the shape used by /api/pair/vault-status/<mesh_id> so an
+    operator can cross-reference between diagnostic API output and logs.
     """
-    if not passphrase:
+    if not pubkey_b64:
         return "<empty>"
     import hashlib
 
-    normalized = str(passphrase).strip().lower().encode("utf-8")
-    return hashlib.sha256(normalized).hexdigest()[:8]
+    return hashlib.sha256(str(pubkey_b64).encode("utf-8")).hexdigest()[:16]
 
 
 def _compute_source_sha256():
@@ -3745,7 +3743,11 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(400, {"error": "passphrase required"})
                 return
             _pairing_registry.register(passphrase, bunny_pubkey, node_id)
-            logger.info("Pair register: hint=%s node=%s", _passphrase_hint(passphrase), _sanitize_log(node_id))
+            logger.info(
+                "Pair register: node=%s bunny_pubkey_hash=%s",
+                _sanitize_log(node_id),
+                _pubkey_fingerprint(bunny_pubkey),
+            )
             self.respond(200, {"ok": True, "passphrase": passphrase.upper()})
 
         elif self.path == "/api/pair/claim":
@@ -3778,9 +3780,15 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                             "and confirm Bunny completed the Join Mesh step",
                         },
                     )
-                logger.info("Pair claim failed: hint=%s reason=%s", _passphrase_hint(passphrase), _sanitize_log(reason))
+                logger.info(
+                    "Pair claim failed: reason=%s lion_node=%s", _sanitize_log(reason), _sanitize_log(lion_node_id)
+                )
                 return
-            logger.info("Pair claimed: hint=%s by %s", _passphrase_hint(passphrase), _sanitize_log(lion_node_id))
+            logger.info(
+                "Pair claimed: lion_node=%s bunny_pubkey_hash=%s",
+                _sanitize_log(lion_node_id),
+                _pubkey_fingerprint(entry.get("bunny_pubkey", "")),
+            )
             self.respond(200, {"ok": True, "paired": True, "bunny_pubkey": entry.get("bunny_pubkey", "")})
 
         elif self.path == "/api/pair/lookup":

@@ -445,13 +445,17 @@ class TestVaultRegisterNodeRequestLogs:
 
 
 class TestLogSanitizationHelpers:
-    """Regression cover for _sanitize_log + _passphrase_hint.
+    """Regression cover for _sanitize_log + _pubkey_fingerprint.
 
-    CodeQL py/log-injection and py/clear-text-logging-sensitive-data both
-    originally flagged focuslock-mail.py pairing log sites; the helpers
-    under test are the surgical fixes. If either stops escaping CR/LF or
-    starts echoing the passphrase verbatim, CodeQL will flag the alerts
-    again on the next scan.
+    CodeQL py/log-injection originally flagged the register-node-request
+    and pair log sites; _sanitize_log is the surgical fix. If it stops
+    escaping CR/LF the alerts resurface on the next scan.
+
+    _pubkey_fingerprint replaces the earlier passphrase-based log
+    correlation: pubkeys are public material, so hashing them for log
+    grep doesn't raise py/weak-sensitive-data-hashing the way hashing
+    the passphrase did. The pair endpoints now log bunny_pubkey_hash
+    instead of any passphrase-derived token.
     """
 
     def test_sanitize_escapes_newlines(self, mail_module):
@@ -480,30 +484,30 @@ class TestLogSanitizationHelpers:
         assert "\n" not in out
         assert out.startswith("bogus-node\\nVault")
 
-    def test_passphrase_hint_is_stable_hex(self, mail_module):
-        h = mail_module._passphrase_hint("tiger-eagle-fox-lily")
-        assert len(h) == 8
+    def test_pubkey_fingerprint_is_16_hex(self, mail_module):
+        h = mail_module._pubkey_fingerprint("MIIBIjANBgkqhkiG9w0BAQEFA...")
+        assert len(h) == 16
         assert all(c in "0123456789abcdef" for c in h)
 
-    def test_passphrase_hint_normalizes_case_and_whitespace(self, mail_module):
-        # claim_or_reason normalizes the same way — hints must match so an
-        # operator can grep one hint across register / claim / claim-failed.
-        a = mail_module._passphrase_hint("TIGER-EAGLE-FOX-LILY")
-        b = mail_module._passphrase_hint("  tiger-eagle-fox-lily  ")
-        c = mail_module._passphrase_hint("tiger-eagle-fox-lily")
-        assert a == b == c
+    def test_pubkey_fingerprint_matches_vault_status_shape(self, mail_module):
+        # /api/pair/vault-status masks pubkeys the same way; logs must use
+        # identical shape so grep correlates between API + log output.
+        pub = "some-pubkey-blob"
+        import hashlib
 
-    def test_passphrase_hint_does_not_echo_passphrase(self, mail_module):
-        secret = "super-secret-passphrase-abc123"
-        h = mail_module._passphrase_hint(secret)
-        assert secret not in h
-        assert secret.lower() not in h
+        expected = hashlib.sha256(pub.encode("utf-8")).hexdigest()[:16]
+        assert mail_module._pubkey_fingerprint(pub) == expected
 
-    def test_passphrase_hint_different_inputs_different_hints(self, mail_module):
-        a = mail_module._passphrase_hint("tiger-eagle-fox-lily")
-        b = mail_module._passphrase_hint("tiger-eagle-fox-lime")
+    def test_pubkey_fingerprint_does_not_echo_input(self, mail_module):
+        pub = "AAAABBBBCCCCDDDD"
+        h = mail_module._pubkey_fingerprint(pub)
+        assert pub not in h
+
+    def test_pubkey_fingerprint_different_keys_different_hashes(self, mail_module):
+        a = mail_module._pubkey_fingerprint("key-a")
+        b = mail_module._pubkey_fingerprint("key-b")
         assert a != b
 
-    def test_passphrase_hint_handles_empty(self, mail_module):
-        assert mail_module._passphrase_hint("") == "<empty>"
-        assert mail_module._passphrase_hint(None) == "<empty>"
+    def test_pubkey_fingerprint_handles_empty(self, mail_module):
+        assert mail_module._pubkey_fingerprint("") == "<empty>"
+        assert mail_module._pubkey_fingerprint(None) == "<empty>"
