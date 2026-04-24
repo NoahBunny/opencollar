@@ -64,7 +64,7 @@
         android:id="@+id/setup_vault_mode"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Vault mode (experimental — encrypts orders end-to-end)"
+        android:text="Vault mode (encrypts orders end-to-end)"
         android:textSize="13sp"
         android:textColor="#cccccc"
         android:layout_marginTop="8dp"

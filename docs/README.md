@@ -117,7 +117,7 @@ The cache refreshes every 30 minutes and lazily on unknown-signature blobs (rate
 
 ### Two Trust Tiers
 
-- **Public relay (Bunny Dev hosted):** no `OPERATOR_MESH_ID`, no admin API, no signing keys. Pure ciphertext blob store. Zero-knowledge by construction.
+- **Public relay:** no `OPERATOR_MESH_ID`, no admin API, no signing keys. Pure ciphertext blob store. Zero-knowledge by construction. (Anyone can run one — see the [Hosted Relay Signup](#hosted-relay-signup) section below for the current operational status.)
 - **Self-hosted / homelab:** `OPERATOR_MESH_ID` set, admin API scoped to that mesh only. Relay has its own keypair and signs admin orders (same trust domain as the operator — the operator IS the Lion).
 
 Legacy plaintext endpoints (`/mesh/sync`, `/mesh/order`, `/mesh/status`, `/desktop-status`) have been **removed**. The server only speaks vault. See `docs/VAULT-DESIGN.md` for the full threat model.
@@ -156,18 +156,28 @@ When setting up a new mesh, the Lion chooses how orders are relayed:
 
 | Option | What it is | Privacy | Cost |
 |--------|-----------|---------|------|
-| **Hosted relay** | Orders encrypted, stored on a shared server | Server can't read content | Free (community server) |
+| **Hosted relay** | Orders encrypted, stored on a shared server | Server can't read content | Depends on operator — **none currently run**, see below |
 | **Self-host** | Your own relay on a VPS or home server | You control everything | $5-10/mo VPS or free on home hardware |
 | **P2P (Tailscale)** | Direct phone-to-phone, no relay | No third party at all | Free (Tailscale free tier) |
 
 ### Hosted Relay Signup
 
-Visit `/signup` on the relay server. Paste your Lion public key, get an invite code. Tell your Bunny the invite code and the relay URL. Done.
+> **Status: no community relay is currently operated.** The protocol supports one and the signup flow at `/signup` is deployment-ready, but there is no URL to point you at today. **Self-host is the only active path** — see [`docs/SELF-HOSTING.md`](SELF-HOSTING.md) for the full walkthrough (DNS → first pair takes 30–60 min for someone comfortable with VPS + DNS basics).
 
-- Rate limited: 3 meshes per hour per IP
-- Invite codes expire after 24 hours (one-time use)
-- Per-mesh vault quotas: 100MB storage default
-- Per-mesh order isolation: your orders are separate from everyone else's
+**If you're thinking of running one yourself:** the server is small — Python 3.10+, ~256 MB RAM, one inbound port behind TLS, runs comfortably on a $5/mo VPS or a home box. Complexity is in the prerequisites, not the code:
+
+- A domain name you control (any subdomain works)
+- A reverse proxy that terminates TLS — Caddy auto-provisions Let's Encrypt with a two-line config, nginx + certbot works too
+- Basic `systemd` + Linux admin comfort
+- Ongoing operational responsibility: patching, log review, rate-limit tuning, abuse response
+
+Once you're running, the `/signup` flow is self-service:
+
+- Visit `/signup` on your relay server in a browser
+- Paste your Lion's RSA pubkey, get an invite code
+- Tell your Bunny the relay URL and invite code
+
+Self-service signup is rate-limited (3 meshes/hour/IP), invite codes expire after 24 hours (one-time use), per-mesh vault quotas default to 100 MB, and `operator_mesh_id` scoping means operators cannot see across meshes. Full docs in [`docs/SELF-HOSTING.md`](SELF-HOSTING.md) and [`docs/CONFIG.md`](CONFIG.md).
 
 ### Self-Hosted Homelab (optional, adds features)
 

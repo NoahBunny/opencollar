@@ -177,6 +177,19 @@ jobs:
         run: |
           mkdir -p release
           find artifacts -type f \( -name '*.apk' -o -name '*.exe' -o -name 'SBOM.cdx.json' -o -name 'APK-CERTS.txt' \) -exec cp {} release/ \;
+          # Stable-filename aliases so the README can link at
+          # releases/latest/download/focuslock-latest.apk without
+          # discovering the tag. Byte-identical copies — the Sigstore
+          # attestation and SHA256SUMS entry for the versioned artifact
+          # therefore also cover the alias (attested by content hash).
+          (
+            cd release
+            cp "focuslock-${GITHUB_REF_NAME}.apk"           focuslock-latest.apk
+            cp "bunnytasker-${GITHUB_REF_NAME}.apk"         bunnytasker-latest.apk
+            cp "focusctl-${GITHUB_REF_NAME}.apk"            focusctl-latest.apk
+            cp "FocusLock-${GITHUB_REF_NAME}.exe"           FocusLock-latest.exe
+            cp "FocusLock-Watchdog-${GITHUB_REF_NAME}.exe"  FocusLock-Watchdog-latest.exe
+          )
           ls -la release/
 
       - name: Generate SHA256SUMS.txt
