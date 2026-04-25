@@ -1060,9 +1060,16 @@ public class ControlService extends Service {
         applyToggle(body, "dim", "focus_lock_dim");
         applyToggle(body, "mute", "focus_lock_mute");
         String paywall = jval(body, "paywall");
-        String pw = paywall != null ? paywall : "0";
-        Settings.Global.putString(getContentResolver(), "focus_lock_paywall", pw);
-        Settings.Global.putString(getContentResolver(), "focus_lock_paywall_original", pw);
+        // Paywall is accumulated debt that persists across lock sessions —
+        // never reset it just because a fresh lock arrived without an explicit
+        // amount. Mirrors mesh_apply_order's `if "paywall" in params` guard
+        // (focuslock-mail.py:555). The previous unconditional write of "0"
+        // when the field was missing was clobbering the server's authoritative
+        // ledger every time Lion issued a quick-lock without typing an amount.
+        if (paywall != null && !paywall.isEmpty()) {
+            Settings.Global.putString(getContentResolver(), "focus_lock_paywall", paywall);
+            Settings.Global.putString(getContentResolver(), "focus_lock_paywall_original", paywall);
+        }
         Settings.Global.putLong(getContentResolver(), "focus_lock_locked_at", System.currentTimeMillis());
         String compliment = jval(body, "compliment");
         Settings.Global.putString(getContentResolver(), "focus_lock_compliment",
@@ -1119,6 +1126,10 @@ public class ControlService extends Service {
                 Runtime.getRuntime().exec(new String[]{"pm", "disable-user", "--user", "0", pkg});
             }
         } catch (Exception e) { Log.w(TAG, "Escape hatch lockdown failed", e); }
+        // Re-capture the user's current default launcher so Release Forever /
+        // unlock restores what was active at lock time (Fossify, etc.) instead
+        // of whatever was default at consent time.
+        capturePriorHomeBeforeLock();
         launchFocus();
         lovenseLockPulse(); // Start Lovense pulsing during lock
         return "{\"ok\":true,\"action\":\"locked\"}";
@@ -1307,6 +1318,18 @@ public class ControlService extends Service {
         return "{\"ok\":true,\"action\":\"entrapped\"}";
     }
 
+    /** Kick an immediate vault runtime push so Lion's Share / desktop collars
+     *  see new state within ~1-2s instead of waiting up to 10s for the next
+     *  gossip tick. Mirrors the trigger already in the send-message handler.
+     *  Vault-mode only; no-op otherwise (the legacy /mesh/status path covers
+     *  non-vault meshes). */
+    private void kickRuntimePush() {
+        if (Settings.Global.getInt(getContentResolver(), "focus_lock_vault_mode", 0) != 1) return;
+        new Thread(() -> {
+            try { vaultRuntimePush(); } catch (Exception ignored) {}
+        }).start();
+    }
+
     private String doAddPaywall(String body) {
         String amountStr = jval(body, "amount");
         if (amountStr == null) return "{\"error\":\"amount required\"}";
@@ -1317,6 +1340,7 @@ public class ControlService extends Service {
             try { current = Integer.parseInt(cur); } catch (Exception e) {}
             int total = current + add;
             Settings.Global.putString(getContentResolver(), "focus_lock_paywall", String.valueOf(total));
+            kickRuntimePush();
             return "{\"ok\":true,\"paywall\":\"" + total + "\"}";
         } catch (NumberFormatException e) {
             return "{\"error\":\"invalid amount\"}";
@@ -1356,6 +1380,7 @@ public class ControlService extends Service {
     private String doClearPaywall() {
         Settings.Global.putString(getContentResolver(), "focus_lock_paywall", "0");
         Settings.Global.putString(getContentResolver(), "focus_lock_paywall_original", "0");
+        kickRuntimePush();
         return "{\"ok\":true,\"action\":\"paywall_cleared\"}";
     }
 
@@ -1482,6 +1507,7 @@ public class ControlService extends Service {
         Settings.Global.putString(getContentResolver(), "focus_lock_geofence_lon", lon);
         Settings.Global.putString(getContentResolver(), "focus_lock_geofence_radius_m",
             radius != null ? radius : "100");
+        kickRuntimePush();
         return "{\"ok\":true,\"action\":\"geofence_set\",\"lat\":" + lat + ",\"lon\":" + lon +
             ",\"radius\":" + (radius != null ? radius : "100") + "}";
     }
@@ -1490,7 +1516,50 @@ public class ControlService extends Service {
         Settings.Global.putString(getContentResolver(), "focus_lock_geofence_lat", "");
         Settings.Global.putString(getContentResolver(), "focus_lock_geofence_lon", "");
         Settings.Global.putString(getContentResolver(), "focus_lock_geofence_radius_m", "");
+        kickRuntimePush();
         return "{\"ok\":true,\"action\":\"geofence_cleared\"}";
+    }
+
+    /** Confine to the Collar's current location with a configurable radius
+     *  (default 100m). Single-step replacement for the old two-step
+     *  get-location → set-geofence dance, which silently broke in vault mode
+     *  because vault append is fire-and-forget — Lion's Share never got the
+     *  location response back, so set-geofence was never called.
+     *
+     *  Reads GPS via LocationManager (Collar already holds ACCESS_FINE_LOCATION).
+     *  Tries NETWORK_PROVIDER first (fast, cached), then GPS_PROVIDER as a
+     *  fallback. If neither has a fix, returns an error — caller (Lion's Share)
+     *  can surface it via the next runtime push or admin status. */
+    private String doConfineHome(String body) {
+        String radius = jval(body, "radius");
+        if (radius == null || radius.isEmpty()) radius = "100";
+        try {
+            android.location.LocationManager lm =
+                (android.location.LocationManager) getSystemService(LOCATION_SERVICE);
+            android.location.Location loc = null;
+            try {
+                loc = lm.getLastKnownLocation(android.location.LocationManager.NETWORK_PROVIDER);
+            } catch (SecurityException e) { /* fall through to GPS */ }
+            if (loc == null) {
+                try {
+                    loc = lm.getLastKnownLocation(android.location.LocationManager.GPS_PROVIDER);
+                } catch (SecurityException e) { /* nothing we can do */ }
+            }
+            if (loc == null) {
+                return "{\"error\":\"no location fix available — try again outside or wait for GPS\"}";
+            }
+            String lat = String.valueOf(loc.getLatitude());
+            String lon = String.valueOf(loc.getLongitude());
+            Settings.Global.putString(getContentResolver(), "focus_lock_geofence_lat", lat);
+            Settings.Global.putString(getContentResolver(), "focus_lock_geofence_lon", lon);
+            Settings.Global.putString(getContentResolver(), "focus_lock_geofence_radius_m", radius);
+            kickRuntimePush();
+            Log.i(TAG, "Confined to home: lat=" + lat + " lon=" + lon + " radius=" + radius);
+            return "{\"ok\":true,\"action\":\"confined_home\",\"lat\":" + lat
+                + ",\"lon\":" + lon + ",\"radius\":" + radius + "}";
+        } catch (Exception e) {
+            return "{\"error\":\"confine-home failed: " + e.getMessage() + "\"}";
+        }
     }
 
     private String doSetCheckin(String body) {
@@ -1687,6 +1756,7 @@ public class ControlService extends Service {
             Settings.Global.putString(getContentResolver(), "focus_lock_paywall", paywall);
             Settings.Global.putString(getContentResolver(), "focus_lock_paywall_original", paywall);
         }
+        capturePriorHomeBeforeLock();
         launchFocus();
         lovenseLockPulse();
         return "{\"ok\":true,\"action\":\"photo_task_assigned\"}";
@@ -2202,6 +2272,35 @@ public class ControlService extends Service {
         return null;
     }
 
+    /** Re-capture the user's *current* default home launcher and store it for
+     *  later restoration. Called before every lock so a launcher swap that
+     *  happened after the initial consent-time capture (e.g. user installed
+     *  Fossify and made it default) is picked up. ConsentActivity does the
+     *  same dance once at consent; this keeps it fresh.
+     *
+     *  Skip the write if the resolved default is com.focuslock itself (we're
+     *  already locked, so resolveActivity returns FocusActivity) or "android"
+     *  (the chooser pseudo-activity returned when no default is set). In
+     *  either case the existing stored value is more useful than overwriting
+     *  with garbage. */
+    private void capturePriorHomeBeforeLock() {
+        try {
+            Intent homeIntent = new Intent(Intent.ACTION_MAIN);
+            homeIntent.addCategory(Intent.CATEGORY_HOME);
+            android.content.pm.ResolveInfo info = getPackageManager().resolveActivity(
+                homeIntent, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY);
+            if (info == null || info.activityInfo == null) return;
+            String pkg = info.activityInfo.packageName;
+            if ("com.focuslock".equals(pkg) || "android".equals(pkg)) return;
+            String prior = Settings.Global.getString(getContentResolver(), "focus_lock_prior_home_pkg");
+            if (pkg.equals(prior)) return;  // unchanged, skip the write
+            Settings.Global.putString(getContentResolver(), "focus_lock_prior_home_pkg", pkg);
+            Log.i(TAG, "Captured prior home launcher: " + pkg + " (was " + prior + ")");
+        } catch (Exception e) {
+            Log.w(TAG, "capturePriorHomeBeforeLock failed: " + e);
+        }
+    }
+
     private String doAdbPort() {
         // Use shell to find ADB wireless debug port (uid 2000 LISTEN sockets)
         String port = "0";
@@ -2546,8 +2645,23 @@ public class ControlService extends Service {
                     } catch (Exception e) {
                         Log.e(TAG, "Vault runtime push error", e);
                     }
+                    try {
+                        // Plaintext signed mirror of the runtime state of record
+                        // (paywall, sub_due, etc) so server-side scanners
+                        // (compound interest, IMAP credit) see live values.
+                        // Vault blobs stay opaque to the server; this is a
+                        // narrow whitelist sent in addition.
+                        stateMirrorPush();
+                    } catch (Exception e) {
+                        Log.e(TAG, "State mirror push error", e);
+                    }
                 }
-                try { Thread.sleep(30000); } catch (Exception e) {}
+                // Was 30s — lowered to 10s 2026-04-24 to match the
+                // focuslock_mesh.py gossip_interval default and to cap the
+                // ntfy-fallback propagation lag at 10s instead of 30s.
+                // Battery impact is negligible (vaultSync is a no-op when no
+                // new blobs, vaultRuntimePush dedups on body hash).
+                try { Thread.sleep(10000); } catch (Exception e) {}
             }
         });
         gossipThread.setDaemon(true);
@@ -2730,6 +2844,7 @@ public class ControlService extends Service {
             case "unlock": result = doUnlock(); break;
             case "set-geofence": result = doSetGeofence(body); break;
             case "clear-geofence": result = doClearGeofence(); break;
+            case "confine-home": result = doConfineHome(body); break;
             case "add-paywall": result = doAddPaywall(body); break;
             case "clear-paywall": result = doClearPaywall(); break;
             case "payment-received": {
@@ -3966,6 +4081,116 @@ public class ControlService extends Service {
         } catch (Exception e) {
             Log.e(TAG, "vaultRuntimePush error", e);
         }
+    }
+
+    /** Plaintext signed mirror of the runtime state of record (paywall,
+     *  paywall_original, sub_tier, sub_due, lock_active, locked_at,
+     *  unlock_at, free_unlocks) to /api/mesh/{id}/state-mirror so the
+     *  server's _orders_registry stays coherent for compound-interest +
+     *  IMAP-credit scanners that read it. The vault blob remains the
+     *  source of truth for clients; this is a derived view for the
+     *  server side only.
+     *
+     *  Trust model: mirrors fields the Collar already enforces locally
+     *  (a tampered Collar can lie here, but it can also just refuse to
+     *  enforce the lock — same blast radius). Signed with bunny_privkey,
+     *  same auth as escape-event / unsubscribe.
+     *
+     *  Dedup: idempotent re-sends are cheap server-side, but skip if the
+     *  payload hash matches the last successful push so we don't spam
+     *  every 30s with the same body. */
+    private String lastStateMirrorHash = "";
+
+    private void stateMirrorPush() {
+        try {
+            String meshId = gstr("focus_lock_mesh_id");
+            String meshUrl = gstr("focus_lock_mesh_url");
+            String nodeId = gstr("focus_lock_mesh_node_id");
+            String bunnyPrivB64 = gstr("focus_lock_bunny_privkey");
+            if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty() || bunnyPrivB64.isEmpty()) return;
+
+            // Build the whitelisted state map. Keep this in sync with
+            // STATE_MIRROR_FIELDS in focuslock-mail.py.
+            java.util.TreeMap<String, Object> state = new java.util.TreeMap<>();
+            state.put("paywall", gstr("focus_lock_paywall"));
+            state.put("paywall_original", gstr("focus_lock_paywall_original"));
+            state.put("sub_tier", gstr("focus_lock_sub_tier"));
+            state.put("sub_due",
+                Settings.Global.getLong(getContentResolver(), "focus_lock_sub_due", 0));
+            state.put("lock_active",
+                Settings.Global.getInt(getContentResolver(), "focus_lock_active", 0));
+            state.put("locked_at",
+                Settings.Global.getLong(getContentResolver(), "focus_lock_locked_at", 0));
+            state.put("unlock_at",
+                Settings.Global.getLong(getContentResolver(), "focus_lock_unlock_at", 0));
+            state.put("free_unlocks",
+                Settings.Global.getInt(getContentResolver(), "focus_lock_free_unlocks", 0));
+
+            // Canonical JSON for stable hashing across runs.
+            String stateJson = canonicalJsonForState(state);
+            byte[] hash = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(stateJson.getBytes("UTF-8"));
+            StringBuilder hexSb = new StringBuilder();
+            for (byte b : hash) hexSb.append(String.format("%02x", b));
+            String stateHashHex = hexSb.toString();
+
+            if (stateHashHex.equals(lastStateMirrorHash)) return;
+
+            long ts = System.currentTimeMillis();
+            String payload = meshId + "|" + nodeId + "|state-mirror|" + ts + "|" + stateHashHex;
+            byte[] privBytes = android.util.Base64.decode(bunnyPrivB64, android.util.Base64.NO_WRAP);
+            java.security.spec.PKCS8EncodedKeySpec spec =
+                new java.security.spec.PKCS8EncodedKeySpec(privBytes);
+            java.security.PrivateKey priv = java.security.KeyFactory.getInstance("RSA").generatePrivate(spec);
+            java.security.Signature sig = java.security.Signature.getInstance("SHA256withRSA");
+            sig.initSign(priv);
+            sig.update(payload.getBytes("UTF-8"));
+            String signature = android.util.Base64.encodeToString(sig.sign(), android.util.Base64.NO_WRAP);
+
+            String body = "{\"node_id\":\"" + nodeId
+                + "\",\"ts\":" + ts
+                + ",\"state\":" + stateJson
+                + ",\"signature\":\"" + signature + "\"}";
+
+            java.net.URL url = new java.net.URL(meshUrl + "/api/mesh/" + meshId + "/state-mirror");
+            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(10_000);
+            conn.setReadTimeout(10_000);
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.getOutputStream().write(body.getBytes("UTF-8"));
+            int code = conn.getResponseCode();
+            if (code == 200) {
+                lastStateMirrorHash = stateHashHex;
+            } else if (code >= 400) {
+                Log.w(TAG, "state-mirror POST returned " + code);
+            }
+            conn.disconnect();
+        } catch (Exception e) {
+            Log.w(TAG, "stateMirrorPush: " + e.getMessage());
+        }
+    }
+
+    /** Sorted-key, compact JSON of a flat string/number map. Matches the
+     *  Python side's json.dumps(state, sort_keys=True, separators=(",", ":")). */
+    private String canonicalJsonForState(java.util.TreeMap<String, Object> state) {
+        StringBuilder sb = new StringBuilder("{");
+        boolean first = true;
+        for (java.util.Map.Entry<String, Object> e : state.entrySet()) {
+            if (!first) sb.append(",");
+            first = false;
+            sb.append("\"").append(e.getKey()).append("\":");
+            Object v = e.getValue();
+            if (v instanceof Number) {
+                sb.append(v.toString());
+            } else {
+                String s = v == null ? "" : v.toString();
+                sb.append("\"").append(s.replace("\\", "\\\\").replace("\"", "\\\"")).append("\"");
+            }
+        }
+        sb.append("}");
+        return sb.toString();
     }
 
     private void meshGossip() {

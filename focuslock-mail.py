@@ -447,6 +447,20 @@ def ntfy_fn(version, mesh_id: str = ""):
         ntfy_mod.ntfy_publish(topic, version, _ntfy_server)
 
 
+def _messages_publish_ntfy(mesh_id: str):
+    """Wake-up ping for /messages/{send,edit,delete}. Reuses the same topic
+    as orders so subscribers refresh both inboxes and order state on a single
+    wake. The version field is just a monotonic seed (server time) — clients
+    treat any wake as 'refresh now'; the value itself is ignored on the
+    messages path."""
+    if not _ntfy_enabled:
+        return
+    try:
+        ntfy_fn(int(time.time() * 1000), mesh_id)
+    except Exception as e:
+        logger.warning("messages ntfy publish failed: mesh=%s err=%s", _sanitize_log(mesh_id), e)
+
+
 # Lion's public key for signature verification — loaded from phone on first sync
 _lion_pubkey = ""
 
@@ -496,10 +510,59 @@ def mesh_local_status():
     }
 
 
+def _ensure_relay_node_registered(mesh_id):
+    """Idempotently register the relay's pubkey as an approved vault node for
+    `mesh_id`. Required so vaultSync on the Collar accepts relay-signed blobs
+    written by _admin_order_to_vault_blob — without this, every server-driven
+    mutation (subscribe, compound interest, payment-received, set-geofence,
+    set-curfew, escape penalties …) silently drops on consumer meshes because
+    the Collar's signature check goes lion → self → approved-nodes and the
+    relay is in none of those sets.
+
+    Trust model note: registering the relay as an approved signer doesn't let
+    the relay decrypt order *contents* (still zero-knowledge for Lion-issued
+    orders — Lion's apiVault path is unchanged). It only lets the relay write
+    server-derived state-mirror blobs that clients trust. On the operator's own
+    mesh this was always the case; this fix extends the same property to the
+    consumer meshes the relay hosts. Bootstrap only — done at mesh-create
+    time and during startup backfill, never re-confirmed at mutation time so
+    a tampered _vault_store cannot escalate into a forged-signer bypass."""
+    if not RELAY_PUBKEY_DER_B64:
+        return False
+    nodes = _vault_store.get_nodes(mesh_id)
+    for n in nodes:
+        if n.get("node_id") == "relay":
+            # Re-register only if pubkey rotated — uncommon but cheap to handle.
+            if n.get("node_pubkey") != RELAY_PUBKEY_DER_B64:
+                _vault_store.add_node(
+                    mesh_id,
+                    {
+                        "node_id": "relay",
+                        "node_type": "server",
+                        "node_pubkey": RELAY_PUBKEY_DER_B64,
+                        "registered_at": int(time.time()),
+                    },
+                )
+                logger.info("relay vault key rotated for mesh=%s", _sanitize_log(mesh_id))
+            return True
+    _vault_store.add_node(
+        mesh_id,
+        {
+            "node_id": "relay",
+            "node_type": "server",
+            "node_pubkey": RELAY_PUBKEY_DER_B64,
+            "registered_at": int(time.time()),
+        },
+    )
+    logger.info("relay registered as approved vault node for mesh=%s", _sanitize_log(mesh_id))
+    return True
+
+
 def _admin_order_to_vault_blob(action, params, mesh_id=None):
     """Write an admin order as a relay-signed vault RPC blob so vault-mode slaves pick it up.
     Uses the RELAY's private key (P6.5 zero-knowledge compliance — Lion's key never on server).
-    Only works for the operator's mesh (admin API is operator-scoped)."""
+    Works for any mesh once the relay is registered as an approved vault node
+    (auto-handled by _ensure_relay_node_registered, called at mesh-create + startup)."""
     if not RELAY_PRIVKEY_PEM:
         logger.info("vault blob write skipped: no relay keypair")
         return
@@ -2482,6 +2545,31 @@ def _relay_self_register():
 _relay_self_register()
 
 
+def _relay_backfill_consumer_meshes():
+    """Backfill: register the relay as an approved vault node for every
+    consumer mesh that doesn't already have it. Pre-fix consumer meshes were
+    created without auto-relay-registration, so server-driven mutations on
+    those meshes silently dropped at the Collar's signature check. One-shot
+    on startup; new meshes get the registration via _ensure_relay_node_registered
+    in the create() path."""
+    if not RELAY_PUBKEY_DER_B64:
+        return
+    fixed = 0
+    for mesh_id in list(_mesh_accounts.meshes.keys()):
+        if mesh_id == OPERATOR_MESH_ID:
+            continue  # Operator handled by _relay_self_register()
+        try:
+            if _ensure_relay_node_registered(mesh_id):
+                fixed += 1
+        except Exception as e:
+            logger.warning("relay backfill failed for mesh=%s: %s", _sanitize_log(mesh_id), e)
+    if fixed:
+        logger.info("relay backfilled as approved vault node for %d consumer mesh(es)", fixed)
+
+
+_relay_backfill_consumer_meshes()
+
+
 # In-memory daily blob counter per mesh — resets on date change.
 # Key: (mesh_id, "YYYYMMDD"), Value: count.
 _daily_blob_counts: dict = {}
@@ -3058,6 +3146,18 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(429, {"error": "rate limit exceeded — max 3 meshes per hour"})
                 return
             account = _mesh_accounts.create(lion_pubkey, client_ip=client_ip)
+            # Auto-register the relay as an approved vault signer for this
+            # new mesh so server-driven mutations (subscribe, compound
+            # interest, payment-received, set-geofence …) propagate to the
+            # Collar. Without this, the Collar's vaultSync rejects relay-
+            # signed blobs and every server-side state change silently drops
+            # on the consumer mesh. Idempotent.
+            try:
+                _ensure_relay_node_registered(account["mesh_id"])
+            except Exception as e:
+                logger.warning(
+                    "relay node auto-register failed for %s: %s", _sanitize_log(account.get("mesh_id", "")), e
+                )
             new_mesh_id = account["mesh_id"]
             # Create a per-mesh OrdersDocument (isolated from operator's mesh)
             new_orders = _orders_registry.get_or_create(new_mesh_id)
@@ -3108,6 +3208,70 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     "pin": account["pin"],
                 },
             )
+
+        # ── Lion-authed auto-accept toggle ──
+        # Path: /api/mesh/{mesh_id}/auto-accept
+        # Body: {state: "on"|"off", ts, signature}
+        # signature = SHA256withRSA over "mesh_id|auto-accept|state|ts" with
+        # the Lion's private key (verified against account.lion_pubkey).
+        # When ON, register-node-request goes straight to the approved list
+        # instead of the pending queue — but key rotation (existing node_id,
+        # new pubkey) still requires manual approval to close the takeover
+        # vector documented at docs/VAULT-DESIGN.md:266.
+        elif self.path.startswith("/api/mesh/") and self.path.endswith("/auto-accept"):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 4 or parts[3] != "auto-accept":
+                self.respond(400, {"error": "bad path"})
+                return
+            mesh_id = parts[2]
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            account = _mesh_accounts.get(mesh_id)
+            if not account:
+                self.respond(404, {"error": "mesh not found"})
+                return
+            state = (data.get("state", "") or "").lower()
+            signature = data.get("signature", "")
+            if state not in ("on", "off"):
+                self.respond(400, {"error": "state must be 'on' or 'off'"})
+                return
+            try:
+                ts_i = int(data.get("ts", 0) or 0)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            now_ms = int(time.time() * 1000)
+            if abs(now_ms - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+            lion_pubkey = account.get("lion_pubkey", "")
+            if not lion_pubkey:
+                self.respond(403, {"error": "no lion_pubkey on file for mesh"})
+                return
+            payload = f"{mesh_id}|auto-accept|{state}|{ts_i}"
+            try:
+                import base64 as _b64
+
+                from cryptography.hazmat.primitives import hashes, serialization
+                from cryptography.hazmat.primitives.asymmetric import padding
+
+                pub_der = _b64.b64decode(lion_pubkey)
+                pub = serialization.load_der_public_key(pub_der)
+                sig_bytes = _b64.b64decode(signature)
+                pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
+            except Exception as e:
+                logger.warning("auto-accept sig verify failed: mesh=%s err=%s", _sanitize_log(mesh_id), e)
+                self.respond(403, {"error": "invalid signature"})
+                return
+            account["auto_accept_nodes"] = state == "on"
+            _mesh_accounts._save(mesh_id)
+            logger.warning(
+                "Auto-accept %s for mesh=%s",
+                "ENABLED" if state == "on" else "disabled",
+                _sanitize_log(mesh_id),
+            )
+            self.respond(200, {"ok": True, "auto_accept_nodes": account["auto_accept_nodes"]})
 
         # ── Bunny-authed subscribe (landmine #20 fix) ──
         # Path: /api/mesh/{mesh_id}/subscribe
@@ -3588,6 +3752,164 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 return
             self.respond(200, {"ok": True, "event_type": event_type, **result})
 
+        # ── Slave-authed runtime → orders state mirror (vault-mode escape hatch) ──
+        # Path: /api/mesh/{mesh_id}/state-mirror
+        # Body: {node_id, ts, state: {…whitelisted fields…}, signature}
+        # signature = SHA256withRSA over "mesh_id|node_id|state-mirror|ts|state_sha256_hex"
+        #
+        # Why this exists: in vault-mode the server stores opaque encrypted blobs
+        # and can't read order contents — _orders_registry[mesh_id] therefore stays
+        # at zero for paywall / sub_due / lock_active / etc. Server-side scanners
+        # (compound interest, IMAP payment crediting, /admin/status dashboards)
+        # operate on stale state. The Collar mirrors its current authoritative
+        # values back via this signed plaintext endpoint so those scanners see
+        # reality. Trust model unchanged: the Collar already enforces the lock
+        # locally, so trusting it to assert "paywall is $X" is no weaker than
+        # trusting it to enforce "lock is on".
+        #
+        # Whitelisted state fields below cover compound-interest + payment-
+        # crediting needs. Add carefully — anything writable here is writable
+        # by a tampered Collar.
+        elif self.path.startswith("/api/mesh/") and self.path.endswith("/state-mirror"):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 4 or parts[3] != "state-mirror":
+                self.respond(400, {"error": "bad path"})
+                return
+            mesh_id = parts[2]
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            account = _mesh_accounts.get(mesh_id)
+            if not account:
+                self.respond(404, {"error": "mesh not found"})
+                return
+            node_id = data.get("node_id", "")
+            state = data.get("state", {})
+            signature = data.get("signature", "")
+            if not node_id or not signature or not isinstance(state, dict):
+                self.respond(400, {"error": "node_id, state (object), signature required"})
+                return
+            try:
+                ts_i = int(data.get("ts", 0) or 0)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            now_ms = int(time.time() * 1000)
+            if abs(now_ms - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+            # Resolve a verification pubkey for this node. Phone Collar signs
+            # with bunny_privkey (matches the pairing-flow bunny_pubkey). Desktop
+            # collars don't have a bunny_pubkey — they sign with their vault
+            # node_privkey (the same key Lion approved during register-node).
+            # Try bunny first, fall back to vault node lookup.
+            node = account.get("nodes", {}).get(node_id) or {}
+            candidate_pubkeys = []
+            bunny_pubkey = node.get("bunny_pubkey", "")
+            if bunny_pubkey:
+                candidate_pubkeys.append(("bunny", bunny_pubkey))
+            for vnode in _vault_store.get_nodes(mesh_id):
+                if vnode.get("node_id") == node_id and vnode.get("node_pubkey"):
+                    candidate_pubkeys.append(("vault-node", vnode["node_pubkey"]))
+                    break
+            if not candidate_pubkeys:
+                self.respond(403, {"error": "no signing pubkey on file for node"})
+                return
+
+            # Canonical-JSON the state dict so signing + verification agree on
+            # ordering. Sign the sha256 hex of that canonical encoding rather
+            # than the raw JSON so the signed payload stays a fixed length.
+            import hashlib as _hashlib_sm
+
+            try:
+                state_canonical = json.dumps(state, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            except (TypeError, ValueError):
+                self.respond(400, {"error": "state must be JSON-serializable"})
+                return
+            state_hash_hex = _hashlib_sm.sha256(state_canonical).hexdigest()
+            payload = f"{mesh_id}|{node_id}|state-mirror|{ts_i}|{state_hash_hex}"
+            verified_with = None
+            try:
+                import base64 as _b64_sm
+
+                from cryptography.hazmat.primitives import hashes as _hh_sm
+                from cryptography.hazmat.primitives import serialization as _ser_sm
+                from cryptography.hazmat.primitives.asymmetric import padding as _pad_sm
+
+                sig_bytes = _b64_sm.b64decode(signature)
+                for role, pk_b64 in candidate_pubkeys:
+                    try:
+                        pub_der = _b64_sm.b64decode(pk_b64)
+                        pub = _ser_sm.load_der_public_key(pub_der)
+                        pub.verify(sig_bytes, payload.encode("utf-8"), _pad_sm.PKCS1v15(), _hh_sm.SHA256())
+                        verified_with = role
+                        break
+                    except Exception:
+                        continue
+            except Exception as e:
+                logger.warning(
+                    "state-mirror sig decode failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    e,
+                )
+                self.respond(403, {"error": "invalid signature"})
+                return
+            if verified_with is None:
+                logger.warning(
+                    "state-mirror sig verify failed: mesh=%s node=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                )
+                self.respond(403, {"error": "invalid signature"})
+                return
+
+            # Whitelist of mirrorable fields — keep narrow. Compound-interest
+            # accrual + payment-crediting need paywall / paywall_original /
+            # sub_tier / sub_due / lock_active / locked_at to be live. Anything
+            # beyond that should be a separate signed endpoint with its own
+            # threat model, not a generic catch-all.
+            STATE_MIRROR_FIELDS = {
+                "paywall",
+                "paywall_original",
+                "sub_tier",
+                "sub_due",
+                "lock_active",
+                "locked_at",
+                "unlock_at",
+                "free_unlocks",
+            }
+            orders = _orders_registry.get(mesh_id)
+            if orders is None:
+                # First mirror push from a brand-new mesh — provision the doc
+                # so subsequent scans see it. _server_apply_order does the same
+                # via get_or_create.
+                orders = _orders_registry.get_or_create(mesh_id)
+            applied = []
+            for k, v in state.items():
+                if k not in STATE_MIRROR_FIELDS:
+                    continue
+                # Coerce ints/longs to str for orders.set — orders doc stores
+                # strings (matches the /vault/{id}/since blob shape applied on
+                # the slave). Compound-interest scanner re-parses to int.
+                if isinstance(v, bool):
+                    v = "1" if v else "0"
+                orders.set(k, str(v) if v is not None else "")
+                applied.append(k)
+            if applied:
+                # Don't bump_version — this is a derived mirror, not a Lion
+                # order. The vault blob is still the source of truth for the
+                # client side; we only need _orders_registry coherent for
+                # server-side scans.
+                logger.info(
+                    "state-mirror: mesh=%s node=%s signer=%s fields=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    verified_with,
+                    ",".join(applied),
+                )
+            self.respond(200, {"ok": True, "applied": applied, "signer": verified_with})
+
         # ── Bunny-authed deadline-task completion ──
         # Path: /api/mesh/{mesh_id}/deadline-task/clear
         # Body: {node_id, ts, signature}
@@ -3697,9 +4019,11 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             self.path.endswith("/messages/send")
             or self.path.endswith("/messages/fetch")
             or self.path.endswith("/messages/mark")
+            or self.path.endswith("/messages/edit")
+            or self.path.endswith("/messages/delete")
         ):
             parts = self.path.strip("/").split("/")
-            # ["api", "mesh", "{mesh_id}", "messages", "send" | "fetch" | "mark"]
+            # ["api", "mesh", "{mesh_id}", "messages", "send" | "fetch" | "mark" | "edit" | "delete"]
             if len(parts) != 5 or parts[3] != "messages":
                 self.respond(400, {"error": "bad path"})
                 return
@@ -3729,6 +4053,14 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             now_ms = int(time.time() * 1000)
             if abs(now_ms - ts_i) > 5 * 60 * 1000:
                 self.respond(403, {"error": "ts out of window"})
+                return
+
+            # edit + delete are Lion-only — Bunny cannot rewrite history.
+            # The server enforces this even if a tampered Bunny client tries
+            # to send `from: "lion"` because the signature must verify against
+            # account.lion_pubkey, which Bunny does not hold.
+            if op in ("edit", "delete") and from_who != "lion":
+                self.respond(403, {"error": "edit/delete is lion-only"})
                 return
 
             # Resolve verifier pubkey: bunny = node.bunny_pubkey, lion = account.lion_pubkey
@@ -3773,6 +4105,32 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     limit_i = 50
                 limit_i = max(1, min(limit_i, 200))
                 payload = f"{mesh_id}|{node_id}|{from_who}|{since_i}|{ts_i}"
+            elif op == "edit":
+                # Lion-only edit. Payload binds the message id + new text so a
+                # MITM cannot swap a Lion-signed edit onto a different message.
+                # The text in the payload is the plaintext for plaintext edits
+                # or the "[e2ee]" marker for E2EE edits — same convention as send.
+                edit_message_id = data.get("message_id", "")
+                edit_text = data.get("text", "")
+                if not edit_message_id:
+                    self.respond(400, {"error": "message_id required"})
+                    return
+                if not isinstance(edit_text, str) or not edit_text.strip():
+                    self.respond(400, {"error": "text required"})
+                    return
+                if len(edit_text) > 4000:
+                    self.respond(413, {"error": "text too long (max 4000)"})
+                    return
+                payload = f"{mesh_id}|{node_id}|{from_who}|edit|{edit_message_id}|{edit_text}|{ts_i}"
+            elif op == "delete":
+                # Lion-only delete. Tombstone semantics: the message stays in
+                # the store but renders as deleted to Bunny. Lion still sees
+                # the original (audit trail).
+                del_message_id = data.get("message_id", "")
+                if not del_message_id:
+                    self.respond(400, {"error": "message_id required"})
+                    return
+                payload = f"{mesh_id}|{node_id}|{from_who}|delete|{del_message_id}|{ts_i}"
             else:  # mark
                 message_id = data.get("message_id", "")
                 status = (data.get("status", "") or "").lower()
@@ -3840,6 +4198,11 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     pinned,
                     mandatory,
                 )
+                # ntfy push so subscribers (Bunny Tasker, Lion's Share, Collar,
+                # desktops) refresh the inbox immediately instead of waiting
+                # for the next 5-10s poll. Same topic as orders; clients
+                # already wake on it for vault updates.
+                _messages_publish_ntfy(mesh_id)
                 self.respond(200, {"ok": True, "message": msg})
             elif op == "fetch":
                 with store.lock:
@@ -3853,6 +4216,42 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         "since": since_i,
                     },
                 )
+            elif op == "edit":
+                new_ct = data.get("ciphertext", "") if data.get("encrypted") else ""
+                new_key = data.get("encrypted_key", "") if data.get("encrypted") else ""
+                new_iv = data.get("iv", "") if data.get("encrypted") else ""
+                result = store.edit(
+                    edit_message_id,
+                    edit_text,
+                    new_ciphertext=new_ct if isinstance(new_ct, str) else "",
+                    new_encrypted_key=new_key if isinstance(new_key, str) else "",
+                    new_iv=new_iv if isinstance(new_iv, str) else "",
+                    ts=ts_i,
+                )
+                if "error" in result:
+                    self.respond(404 if result["error"] == "not found" else 400, result)
+                    return
+                logger.info(
+                    "Message edited: mesh=%s id=%s by=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(edit_message_id),
+                    from_who,
+                )
+                _messages_publish_ntfy(mesh_id)
+                self.respond(200, {"ok": True, "message": result.get("message")})
+            elif op == "delete":
+                result = store.delete_message(del_message_id, deleted_by=from_who, ts=ts_i)
+                if "error" in result:
+                    self.respond(404, result)
+                    return
+                logger.info(
+                    "Message deleted: mesh=%s id=%s by=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(del_message_id),
+                    from_who,
+                )
+                _messages_publish_ntfy(mesh_id)
+                self.respond(200, {"ok": True, "message": result.get("message")})
             else:  # mark
                 if status == "read":
                     # Reader identity = signing party ("bunny" or "lion").
@@ -3934,6 +4333,19 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     len(blob.get("slots", {})),
                     len(blob.get("ciphertext", "")),
                 )
+                # ntfy push wake-up so subscribers (Collar, desktops, Bunny
+                # Tasker, Lion's Share) trigger an immediate vault poll
+                # instead of waiting up to 30s for the next tick. Payload is
+                # only the new version number — zero-knowledge by design.
+                # This is the vault-mode equivalent of the ntfy_fn call in
+                # _server_apply_order; without it, vault-only meshes lose all
+                # push-based propagation since orders never go through the
+                # _server_apply_order path.
+                if ntfy_fn:
+                    try:
+                        ntfy_fn(version, mesh_id)
+                    except Exception as e:
+                        logger.warning("vault append ntfy publish failed: %s", e)
                 self.respond(200, {"ok": True, "version": version})
 
             elif action == "register-node":
@@ -4020,9 +4432,69 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     self.respond(403, {"error": "node rejected"})
                     return
                 # Security: key rotation (same node_id, new pubkey) goes to pending
-                # queue like any new node. Lion must approve. Auto-approve was removed
-                # because it allowed unauthenticated pubkey replacement — an attacker
-                # who knew a mesh_id + node_id could replace any node's key.
+                # queue like any new node. Lion must approve. The legacy
+                # always-auto-approve was removed because it allowed
+                # unauthenticated pubkey replacement (attacker with
+                # mesh_id + node_id could swap any node's key).
+                #
+                # Lion can opt the mesh into auto-acceptance by toggling
+                # account["auto_accept_nodes"] = true via the /auto-accept
+                # endpoint below. While active, register-node-request goes
+                # straight to the approved list. Closes the friction of
+                # approving every consumer-mesh device while keeping the
+                # opt-in explicit + auditable (logged each time).
+                auto_accept = bool(account.get("auto_accept_nodes", False))
+                if auto_accept:
+                    # Even on auto-accept, refuse a key rotation if a node
+                    # with this id already exists with a different pubkey.
+                    # That path still requires explicit Lion approval — same
+                    # threat model as the original removal: don't let a
+                    # latecomer silently replace an established node's key.
+                    rotation_conflict = False
+                    for n in _vault_store.get_nodes(mesh_id):
+                        if n.get("node_id") == node_id and n.get("node_pubkey") != node_pubkey:
+                            rotation_conflict = True
+                            break
+                    if rotation_conflict:
+                        _vault_store.add_pending_node(
+                            mesh_id,
+                            {
+                                "node_id": node_id,
+                                "node_type": node_type,
+                                "node_pubkey": node_pubkey,
+                                "requested_at": int(time.time()),
+                            },
+                        )
+                        logger.warning(
+                            "Vault register-node-request PENDING (key rotation, auto-accept skipped): mesh=%s node=%s pubkey_hash=%s",
+                            _sanitize_log(mesh_id),
+                            _sanitize_log(node_id),
+                            pk_hash,
+                        )
+                        self.respond(
+                            200, {"ok": True, "status": "pending", "reason": "key rotation needs lion approval"}
+                        )
+                        return
+                    _vault_store.add_node(
+                        mesh_id,
+                        {
+                            "node_id": node_id,
+                            "node_type": node_type,
+                            "node_pubkey": node_pubkey,
+                            "registered_at": int(time.time()),
+                            "auto_accepted": True,
+                        },
+                    )
+                    _vault_store.remove_pending_node(mesh_id, node_id)
+                    logger.warning(
+                        "Vault register-node-request AUTO-ACCEPTED: mesh=%s node=%s type=%s pubkey_hash=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                        _sanitize_log(node_type),
+                        pk_hash,
+                    )
+                    self.respond(200, {"ok": True, "status": "approved", "auto_accepted": True})
+                    return
                 _vault_store.add_pending_node(
                     mesh_id,
                     {

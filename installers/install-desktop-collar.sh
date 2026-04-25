@@ -98,16 +98,35 @@ echo "=== Installing daemon ==="
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-sudo mkdir -p /opt/focuslock
-sudo cp "$PROJECT_DIR/focuslock-desktop.py" /opt/focuslock/
-sudo cp "$PROJECT_DIR/focuslock_mesh.py" /opt/focuslock/
-sudo cp "$PROJECT_DIR/focuslock-tray.py" /opt/focuslock/ 2>/dev/null || true
+sudo mkdir -p /opt/focuslock /opt/focuslock/web
+
+# Daemon entrypoint + root-level mesh / ntfy modules
+for f in focuslock-desktop.py focuslock_mesh.py focuslock_ntfy.py; do
+    if [ ! -f "$PROJECT_DIR/$f" ]; then
+        echo "FATAL: $PROJECT_DIR/$f missing — repo is incomplete." >&2
+        exit 1
+    fi
+    sudo cp "$PROJECT_DIR/$f" /opt/focuslock/
+done
+sudo chmod 755 /opt/focuslock/focuslock-desktop.py
+
+# Shared modules — focuslock-desktop.py imports focuslock_http, focuslock_sync,
+# focuslock_config; deploy the whole shared/focuslock_*.py family so future
+# import additions don't silently crashloop the daemon.
+shared_count=0
+for src in "$PROJECT_DIR/shared/"focuslock_*.py; do
+    [ -f "$src" ] || continue
+    sudo cp "$src" /opt/focuslock/
+    shared_count=$((shared_count + 1))
+done
+echo "  $shared_count shared modules installed"
+
+# Icons (collar lockscreen + tray)
 sudo cp "$PROJECT_DIR/icons/collar-icon.png" /opt/focuslock/ 2>/dev/null || \
     sudo cp "$PROJECT_DIR/collar-icon.png" /opt/focuslock/ 2>/dev/null || true
 sudo cp "$PROJECT_DIR/icons/collar-icon-gold.png" /opt/focuslock/ 2>/dev/null || true
-sudo chmod 755 /opt/focuslock/focuslock-desktop.py /opt/focuslock/focuslock-tray.py 2>/dev/null
 
-# Install crown tray icons
+# Crown tray icons (per-user)
 mkdir -p ~/.config/focuslock/icons
 for icon in crown-gold.png crown-gray.png; do
     cp "$PROJECT_DIR/icons/$icon" ~/.config/focuslock/icons/ 2>/dev/null || true
@@ -126,33 +145,19 @@ if [ ! -f ~/.config/focuslock/lion_pubkey.pem ]; then
 fi
 
 # Install web UI (enables desktop as mesh server)
-sudo mkdir -p /opt/focuslock/web
 if [ -f "$PROJECT_DIR/web/index.html" ]; then
     sudo cp "$PROJECT_DIR/web/index.html" /opt/focuslock/web/
     echo "  Web UI installed"
 fi
 
-# Install shared config module
-sudo cp "$PROJECT_DIR/shared/focuslock_config.py" /opt/focuslock/ 2>/dev/null || true
-
-# Tray autostart
-mkdir -p ~/.config/autostart
-cat > ~/.config/autostart/focuslock-tray.desktop << 'TRAYEOF'
-[Desktop Entry]
-Type=Application
-Name=FocusLock Tray
-Exec=/usr/bin/python3 /opt/focuslock/focuslock-tray.py
-Hidden=false
-NoDisplay=true
-X-GNOME-Autostart-enabled=true
-X-KDE-autostart-after=panel
-TRAYEOF
-
 # Install systemd user service
 echo "=== Installing systemd user service ==="
 mkdir -p ~/.config/systemd/user
 
-# Detect homelab — try env var, then Tailscale discovery, then prompt
+# Detect homelab — env var, then Tailscale discovery. Optional: consumer
+# installs against a public mesh relay use ~/.config/focuslock/config.json
+# (mesh_url + mesh_id + vault_mode) and don't need a homelab at all. Only
+# the operator-side ADB bridge / standing-orders sync features require it.
 HOMELAB="${FOCUSLOCK_HOMELAB:-}"
 HOMELAB_HOSTNAME="${FOCUSLOCK_HOMELAB_HOST:-}"
 if [ -z "$HOMELAB" ] && command -v tailscale &>/dev/null && [ -n "$HOMELAB_HOSTNAME" ]; then
@@ -165,15 +170,23 @@ if [ -z "$HOMELAB" ] && command -v tailscale &>/dev/null && [ -n "$HOMELAB_HOSTN
     fi
 fi
 if [ -z "$HOMELAB" ]; then
-    if [ "$NON_INTERACTIVE" = 1 ]; then
-        echo "ERROR: FOCUSLOCK_HOMELAB not set and --non-interactive mode. Set it and retry." >&2
-        exit 1
+    if [ -f ~/.config/focuslock/config.json ] && grep -q '"mesh_url"' ~/.config/focuslock/config.json; then
+        echo "No homelab configured — using ~/.config/focuslock/config.json (consumer mesh-relay install)."
+    elif [ "$NON_INTERACTIVE" = 1 ]; then
+        echo "No homelab and no ~/.config/focuslock/config.json — daemon will start but won't pair." >&2
+        echo "Set FOCUSLOCK_HOMELAB or write a config.json with mesh_url/mesh_id before pairing." >&2
+    else
+        echo ""
+        echo "No homelab detected. Two paths:"
+        echo "  [1] consumer / mesh-relay install (recommended) — pair via Bunny Tasker QR later"
+        echo "  [2] homelab install — ADB bridge, standing-orders sync, etc."
+        read -p "Homelab URL (blank for [1]): " HOMELAB
     fi
-    read -p "Homelab URL (e.g. http://x.x.x.x:8434): " HOMELAB
-    if [ -z "$HOMELAB" ]; then
-        echo "ERROR: Homelab URL is required."
-        exit 1
-    fi
+fi
+
+ENV_HOMELAB_LINE=""
+if [ -n "$HOMELAB" ]; then
+    ENV_HOMELAB_LINE="Environment=FOCUSLOCK_HOMELAB=$HOMELAB"
 fi
 
 cat > ~/.config/systemd/user/focuslock-desktop.service << EOF
@@ -190,7 +203,7 @@ RestartSec=1
 Environment=DISPLAY=:0
 Environment=WAYLAND_DISPLAY=wayland-0
 Environment=XDG_RUNTIME_DIR=/run/user/$(id -u)
-Environment=FOCUSLOCK_HOMELAB=$HOMELAB
+$ENV_HOMELAB_LINE
 
 [Install]
 WantedBy=graphical-session.target
@@ -255,20 +268,30 @@ SUDOERS_EOF
 sudo chmod 440 "$SUDOERS_FILE"
 echo "  Sudoers rule installed: $SUDOERS_FILE"
 
-# Standing orders
-echo ""
-echo "=== Installing standing orders ==="
-FOCUSLOCK_HOMELAB="$HOMELAB" bash "$SCRIPT_DIR/install-standing-orders.sh"
+# Standing orders (homelab-only — pulls Claude Code config from operator homelab)
+if [ -n "$HOMELAB" ]; then
+    echo ""
+    echo "=== Installing standing orders ==="
+    FOCUSLOCK_HOMELAB="$HOMELAB" bash "$SCRIPT_DIR/install-standing-orders.sh" || \
+        echo "  standing-orders sync failed (non-fatal — collar daemon still installed)"
+fi
 
 echo ""
 echo "=== Desktop collar installed ==="
 echo ""
-echo "  Homelab: $HOMELAB"
+if [ -n "$HOMELAB" ]; then
+    echo "  Homelab: $HOMELAB"
+fi
 echo "  Status:  systemctl --user status focuslock-desktop"
 echo "  Logs:    journalctl --user -u focuslock-desktop -f"
 echo ""
 echo "  Lock method: loginctl (compositor-native, inescapable)"
 echo "  Wallpaper: custom cairo-generated lock screen"
-echo "  Heartbeat: every 30s to homelab"
-echo "  Standing orders: synced from homelab every 5 min"
+if [ -n "$HOMELAB" ]; then
+    echo "  Heartbeat: every 30s to homelab"
+    echo "  Standing orders: synced from homelab every 5 min"
+else
+    echo "  Mesh: configure ~/.config/focuslock/config.json (mesh_url + mesh_id + vault_mode)"
+    echo "        then restart: systemctl --user restart focuslock-desktop"
+fi
 echo ""

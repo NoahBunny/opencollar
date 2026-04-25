@@ -402,12 +402,22 @@
                 android:minHeight="0dp" />
         </LinearLayout>
 
-        <LinearLayout
-            android:id="@+id/messages_container"
+        <ScrollView
+            android:id="@+id/messages_scroll"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:layout_marginBottom="8dp" />
+            android:layout_height="380dp"
+            android:fillViewport="true"
+            android:background="#08070d"
+            android:padding="6dp"
+            android:layout_marginBottom="8dp">
+
+            <LinearLayout
+                android:id="@+id/messages_container"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+
+        </ScrollView>
 
         </LinearLayout> <!-- end section_messages -->
 

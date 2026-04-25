@@ -1,0 +1,303 @@
+{
+  "_comment": "Banking app packages and payment detection config for FocusLock. Users can override via config.json banking.app_packages or Android Settings.Global focus_lock_bank_packages (semicolon-delimited).",
+
+  "canada": [
+    {"package": "ca.tangerine.clients.banking.app", "name": "Tangerine"},
+    {"package": "com.td", "name": "TD Canada Trust"},
+    {"package": "com.rbc.mobile.android", "name": "RBC Royal Bank"},
+    {"package": "com.bmo.mobile", "name": "BMO"},
+    {"package": "com.scotiabank.banking", "name": "Scotiabank"},
+    {"package": "com.cibc.android.mobi", "name": "CIBC"},
+    {"package": "ca.bnc.android", "name": "National Bank"},
+    {"package": "com.desjardins.mobile", "name": "Desjardins"},
+    {"package": "com.pcfinancial.mobile", "name": "Simplii Financial"},
+    {"package": "com.eqbank.eqbank", "name": "EQ Bank"},
+    {"package": "com.wealthsimple.trade", "name": "Wealthsimple"},
+    {"package": "ca.hsbc.hsbccanada", "name": "HSBC Canada"},
+    {"package": "ca.manulife.MobileBanking", "name": "Manulife"},
+    {"package": "com.meridian.android", "name": "Meridian"},
+    {"package": "com.coastcapitalsavings.dcu", "name": "Coast Capital"},
+    {"package": "com.atb.ATBMobile", "name": "ATB Financial"},
+    {"package": "ca.laurentianbank.mobileapp", "name": "Laurentian Bank"}
+  ],
+
+  "usa": [
+    {"package": "com.chase.sig.android", "name": "Chase"},
+    {"package": "com.infonow.bofa", "name": "Bank of America"},
+    {"package": "com.konylabs.capitalone", "name": "Capital One"},
+    {"package": "com.wf.wellsfargomobile", "name": "Wells Fargo"},
+    {"package": "com.usaa.mobile.android.usaa", "name": "USAA"},
+    {"package": "com.ally.MobileBanking", "name": "Ally Bank"},
+    {"package": "com.pnc.ecommerce.mobile", "name": "PNC"},
+    {"package": "com.citi.citimobile", "name": "Citibank"},
+    {"package": "com.usbank.mobilebanking", "name": "US Bank"},
+    {"package": "com.truist.mobile", "name": "Truist"},
+    {"package": "com.discoverfinancial.mobile", "name": "Discover"},
+    {"package": "com.navyfederal.android", "name": "Navy Federal"},
+    {"package": "com.sofi.mobile", "name": "SoFi"},
+    {"package": "com.marcus.android", "name": "Marcus by Goldman Sachs"},
+    {"package": "com.americanexpress.android.acctsvcs.us", "name": "American Express"},
+    {"package": "com.schwab.mobile", "name": "Charles Schwab"}
+  ],
+
+  "uk": [
+    {"package": "com.rbs.mobile.android.natwest", "name": "NatWest"},
+    {"package": "uk.co.hsbc.hsbcukmobilebanking", "name": "HSBC UK"},
+    {"package": "com.barclays.android.barclaysmobilebanking", "name": "Barclays"},
+    {"package": "com.grppl.android.shell.BOS", "name": "Bank of Scotland"},
+    {"package": "com.starlingbank.android", "name": "Starling Bank"},
+    {"package": "co.uk.getmondo", "name": "Monzo"},
+    {"package": "com.grppl.android.shell.CMBlloydsTSB73", "name": "Lloyds"},
+    {"package": "com.grppl.android.shell.halifax", "name": "Halifax"},
+    {"package": "uk.co.metrobankonline.mobile.android.production", "name": "Metro Bank"},
+    {"package": "uk.co.tsb.newmobilebank", "name": "TSB"},
+    {"package": "uk.co.santander.santanderUK", "name": "Santander UK"},
+    {"package": "com.virginmoney.uk.mobile.android", "name": "Virgin Money"},
+    {"package": "co.uk.Nationwide.Mobile", "name": "Nationwide"}
+  ],
+
+  "eu_germany": [
+    {"package": "de.number26.android", "name": "N26"},
+    {"package": "de.ingdiba.bankingapp", "name": "ING Germany"},
+    {"package": "de.commbanking.mobil", "name": "Commerzbank"},
+    {"package": "com.db.pwcc.dbmobile", "name": "Deutsche Bank"}
+  ],
+
+  "eu_france": [
+    {"package": "com.bnpp.easybanking", "name": "BNP Paribas"},
+    {"package": "mobi.societegenerale.mobile.lappli", "name": "Societe Generale"},
+    {"package": "fr.creditagricole.androidapp", "name": "Credit Agricole"}
+  ],
+
+  "eu_italy": [
+    {"package": "com.latuabancaperandroid", "name": "Intesa Sanpaolo"},
+    {"package": "com.unicredit", "name": "UniCredit"}
+  ],
+
+  "eu_spain": [
+    {"package": "com.bbva.bbvacontigo", "name": "BBVA"},
+    {"package": "es.bancosantander.apps", "name": "Banco Santander"}
+  ],
+
+  "eu_netherlands": [
+    {"package": "nl.rabomobiel", "name": "Rabobank"},
+    {"package": "com.abnamro.nl.mobile.payments", "name": "ABN AMRO"}
+  ],
+
+  "eu_belgium": [
+    {"package": "com.kbc.mobile.android.phone.kbc", "name": "KBC"},
+    {"package": "be.belfius.directmobile.android", "name": "Belfius"}
+  ],
+
+  "australia": [
+    {"package": "org.westpac.bank", "name": "Westpac"},
+    {"package": "com.commbank.netbank", "name": "CommBank"},
+    {"package": "au.com.nab.mobile", "name": "NAB"},
+    {"package": "au.com.anz.android.gomoney", "name": "ANZ"},
+    {"package": "au.com.suncorp.marketplace", "name": "Suncorp"},
+    {"package": "au.com.macquarie.banking", "name": "Macquarie"},
+    {"package": "com.bendigobank.mobile", "name": "Bendigo Bank"},
+    {"package": "au.com.ingdirect.android", "name": "ING Australia"},
+    {"package": "au.com.up.money", "name": "Up Bank"}
+  ],
+
+  "india": [
+    {"package": "com.sbi.lotusintouch", "name": "SBI YONO"},
+    {"package": "com.snapwork.hdfc", "name": "HDFC Bank"},
+    {"package": "com.csam.icici.bank.imobile", "name": "ICICI iMobile"},
+    {"package": "com.axis.mobile", "name": "Axis Bank"},
+    {"package": "com.msf.kbank.mobile", "name": "Kotak Mahindra"},
+    {"package": "com.Version1", "name": "PNB ONE"},
+    {"package": "com.bankofbaroda.mconnect", "name": "Bank of Baroda"},
+    {"package": "com.infrasoft.uboi", "name": "Union Bank"},
+    {"package": "com.iexceed.ib.digitalbankingprod", "name": "Indian Bank"},
+    {"package": "in.irisbyyes.app", "name": "Yes Bank"},
+    {"package": "net.one97.paytm", "name": "Paytm"},
+    {"package": "com.phonepe.app", "name": "PhonePe"},
+    {"package": "com.google.android.apps.nbu.paisa.user", "name": "Google Pay India"}
+  ],
+
+  "japan": [
+    {"package": "jp.mufg.bk.applisp.app", "name": "MUFG Bank"},
+    {"package": "jp.co.smbc.direct", "name": "SMBC"},
+    {"package": "jp.co.mizuhobank.banking", "name": "Mizuho"},
+    {"package": "jp.japanpost.jp_bank.bankbookapp", "name": "Japan Post Bank"},
+    {"package": "jp.co.rakuten_bank.rakutenbank", "name": "Rakuten Bank"}
+  ],
+
+  "south_korea": [
+    {"package": "com.kbstar.kbbank", "name": "KB Kookmin"},
+    {"package": "com.shinhan.sbanking", "name": "Shinhan"},
+    {"package": "com.wooribank.smart.npib", "name": "Woori"},
+    {"package": "com.kebhana.hanapush", "name": "KEB Hana"},
+    {"package": "nh.smart.banking", "name": "NH NongHyup"}
+  ],
+
+  "brazil": [
+    {"package": "br.com.bb.android", "name": "Banco do Brasil"},
+    {"package": "com.itau", "name": "Itau"},
+    {"package": "com.bradesco", "name": "Bradesco"},
+    {"package": "com.santander.app", "name": "Santander Brasil"},
+    {"package": "com.nu.production", "name": "Nubank"},
+    {"package": "br.com.intermedium", "name": "Inter"},
+    {"package": "com.c6bank.app", "name": "C6 Bank"}
+  ],
+
+  "mexico": [
+    {"package": "com.bancomer.mbanking", "name": "BBVA Mexico"},
+    {"package": "org.microemu.android.model.common.VTUserApplicationBNRTMB", "name": "Banorte"},
+    {"package": "com.citibanamex.banamexmobile", "name": "Citibanamex"},
+    {"package": "mx.bancosantander.supermovil", "name": "Santander Mexico"}
+  ],
+
+  "singapore": [
+    {"package": "com.dbs.sg.dbsmbanking", "name": "DBS"},
+    {"package": "com.ocbc.mobile", "name": "OCBC"},
+    {"package": "com.uob.mighty.app", "name": "UOB"},
+    {"package": "air.app.scb.breeze.android.main.sg.prod", "name": "Standard Chartered SG"}
+  ],
+
+  "hong_kong": [
+    {"package": "hk.com.hsbc.hsbchkmobilebanking", "name": "HSBC HK"},
+    {"package": "com.hangseng.rbmobile", "name": "Hang Seng"},
+    {"package": "com.bochk.app.aos", "name": "Bank of China HK"},
+    {"package": "com.scb.breezebanking.hk", "name": "Standard Chartered HK"}
+  ],
+
+  "south_africa": [
+    {"package": "com.sbg.mobile.phone", "name": "Standard Bank"},
+    {"package": "za.co.fnb.connect.itt", "name": "FNB"},
+    {"package": "za.co.nedbank.roa", "name": "Nedbank"},
+    {"package": "com.barclays.absa.banking", "name": "ABSA"},
+    {"package": "capitec.acuity.mobile.prod", "name": "Capitec"},
+    {"package": "bank.discovery.banking.production.release", "name": "Discovery Bank"}
+  ],
+
+  "uae": [
+    {"package": "com.emiratesnbd.android", "name": "Emirates NBD"},
+    {"package": "com.adcb.bank", "name": "ADCB"},
+    {"package": "com.vipera.ts.starter.MashreqAE", "name": "Mashreq"},
+    {"package": "com.fab.personalbanking", "name": "First Abu Dhabi Bank"}
+  ],
+
+  "nordic": [
+    {"package": "fi.nordea.mobilebank", "name": "Nordea Finland"},
+    {"package": "se.nordea.mobilebank", "name": "Nordea Sweden"},
+    {"package": "no.nordea.mobilebank", "name": "Nordea Norway"},
+    {"package": "dk.nordea.mobilebank", "name": "Nordea Denmark"},
+    {"package": "com.danskebank.mobilebank3.dk", "name": "Danske Bank"},
+    {"package": "se.seb.privatkund", "name": "SEB"},
+    {"package": "com.handelsbanken.mobile.android", "name": "Handelsbanken"},
+    {"package": "no.apps.dnbnor", "name": "DNB"},
+    {"package": "se.swedbank.mobil", "name": "Swedbank"}
+  ],
+
+  "global_payment_apps": [
+    {"package": "com.paypal.android.p2pmobile", "name": "PayPal"},
+    {"package": "com.venmo", "name": "Venmo"},
+    {"package": "com.squareup.cash", "name": "Cash App"},
+    {"package": "com.zellepay.zelle", "name": "Zelle"},
+    {"package": "com.transferwise.android", "name": "Wise"},
+    {"package": "com.revolut.revolut", "name": "Revolut"},
+    {"package": "com.google.android.apps.walletnfcrel", "name": "Google Wallet"},
+    {"package": "com.samsung.android.spay", "name": "Samsung Wallet"},
+    {"package": "com.remitly.androidapp", "name": "Remitly"},
+    {"package": "com.worldremit.android", "name": "WorldRemit"},
+    {"package": "com.westernunion.android.mtapp", "name": "Western Union"},
+    {"package": "com.moneygram.app", "name": "MoneyGram"},
+    {"package": "com.moneybookers.skrillpayments", "name": "Skrill"},
+    {"package": "com.moneybookers.skrillpayments.neteller", "name": "Neteller"}
+  ],
+
+  "payment_providers": [
+    {
+      "name": "Interac",
+      "senders": ["interac.ca", "payments.interac", "tangerine.ca", "noreply@tangerine"],
+      "keywords": ["e-transfer", "etransfer", "virement", "autodeposit"]
+    },
+    {
+      "name": "Zelle",
+      "senders": ["zellepay.com", "zelle"],
+      "keywords": ["zelle", "sent you"]
+    },
+    {
+      "name": "PayPal",
+      "senders": ["paypal.com", "paypal."],
+      "keywords": ["payment received", "you've got money", "sent you"]
+    },
+    {
+      "name": "Venmo",
+      "senders": ["venmo.com"],
+      "keywords": ["paid you", "venmo"]
+    },
+    {
+      "name": "Wise",
+      "senders": ["wise.com", "transferwise.com"],
+      "keywords": ["transfer", "received", "credited"]
+    },
+    {
+      "name": "Revolut",
+      "senders": ["revolut.com"],
+      "keywords": ["received", "transfer", "payment"]
+    },
+    {
+      "name": "Cash App",
+      "senders": ["cash.app", "square.com"],
+      "keywords": ["sent you", "cash app", "payment"]
+    },
+    {
+      "name": "Western Union",
+      "senders": ["westernunion.com"],
+      "keywords": ["transfer", "money transfer", "pickup"]
+    },
+    {
+      "name": "MoneyGram",
+      "senders": ["moneygram.com"],
+      "keywords": ["transfer", "money transfer"]
+    },
+    {
+      "name": "Remitly",
+      "senders": ["remitly.com"],
+      "keywords": ["transfer", "delivered", "deposited"]
+    },
+    {
+      "name": "WorldRemit",
+      "senders": ["worldremit.com"],
+      "keywords": ["transfer", "sent", "received"]
+    },
+    {
+      "name": "UPI/IMPS (India)",
+      "senders": ["sbi.co.in", "hdfcbank.com", "icicibank.com", "axisbank.com"],
+      "keywords": ["credited", "received", "UPI", "IMPS", "NEFT"]
+    },
+    {
+      "name": "PIX (Brazil)",
+      "senders": ["nubank.com.br", "itau.com.br", "bradesco.com.br", "bb.com.br"],
+      "keywords": ["pix", "transferência", "recebido", "creditado"]
+    }
+  ],
+
+  "transfer_keywords": {
+    "en": ["transfer", "deposited", "received", "sent you money", "payment", "credit", "incoming", "direct deposit", "e-transfer", "etransfer", "autodeposit"],
+    "fr": ["virement", "déposé", "reçu", "transfert", "paiement"],
+    "de": ["überweisung", "eingegangen", "gutgeschrieben", "erhalten"],
+    "es": ["transferencia", "recibido", "depósito", "pago"],
+    "pt": ["transferência", "recebido", "depósito", "pagamento"],
+    "it": ["trasferimento", "ricevuto", "deposito", "pagamento"],
+    "ja": ["振込", "入金", "受取"],
+    "ko": ["입금", "이체", "송금"],
+    "hi": ["जमा", "प्राप्त", "भुगतान"],
+    "ar": ["تحويل", "إيداع", "استلام"],
+    "nl": ["overschrijving", "ontvangen", "bijgeschreven", "storting"],
+    "sv": ["överföring", "insättning", "mottagen"],
+    "no": ["overføring", "innskudd", "mottatt"],
+    "da": ["overførsel", "indbetaling", "modtaget"]
+  },
+
+  "currency_patterns": {
+    "_comment": "Regex patterns for amount extraction — used by both Android and Python",
+    "symbol_first": "[$\\u20ac\\u00a3\\u00a5\\u20b9]\\s?(\\d+[.,]?\\d*)",
+    "symbol_after": "(\\d+[.,]\\d{2})\\s?[$\\u20ac\\u00a3\\u00a5\\u20b9]",
+    "iso_codes": "CAD|USD|EUR|GBP|AUD|NZD|SGD|INR|JPY|CHF|SEK|NOK|DKK|BRL|MXN|ZAR|HKD|KRW|THB|TWD|AED|SAR|ILS|PLN|CZK|HUF|TRY|PHP|IDR|MYR|VND|COP|PEN|ARS|CLP|EGP|KES|NGN|GHS|TZS"
+  }
+}

@@ -401,6 +401,105 @@ def _vault_poll_tick():
     return True
 
 
+# ── Plaintext signed state mirror (vault-mode only) ──
+# Mirrors authoritative runtime state into the server's _orders_registry so
+# server-side scanners (compound interest, IMAP credit, /admin/status) see
+# live values for vault-mode meshes. The vault blob remains opaque on the
+# server; this is a derived view sent in addition. See focuslock-mail.py
+# /api/mesh/{id}/state-mirror for the receiving end. Trust model: same as
+# any other registered slave-signed payload — tampered nodes can lie here
+# but they can also just refuse to enforce the lock.
+_state_mirror_running = False
+_state_mirror_last_hash = ""
+
+
+def _state_mirror_fields():
+    """Whitelist + extraction. Keep in sync with STATE_MIRROR_FIELDS in
+    focuslock-mail.py and the Java side in ControlService.stateMirrorPush."""
+    return {
+        "paywall": str(mesh_orders.get("paywall", "") or ""),
+        "paywall_original": str(mesh_orders.get("paywall_original", "") or ""),
+        "sub_tier": str(mesh_orders.get("sub_tier", "") or ""),
+        "sub_due": int(mesh_orders.get("sub_due", 0) or 0),
+        "lock_active": int(mesh_orders.get("lock_active", 0) or 0),
+        "locked_at": int(mesh_orders.get("locked_at", 0) or 0),
+        "unlock_at": int(mesh_orders.get("unlock_at", 0) or 0),
+        "free_unlocks": int(mesh_orders.get("free_unlocks", 0) or 0),
+    }
+
+
+def _state_mirror_push():
+    """Sign + POST current state to /api/mesh/{id}/state-mirror. Idempotent
+    on hash; skipped when MESH_URL/MESH_ID/vault keypair aren't set."""
+    global _state_mirror_last_hash
+    if not MESH_URL or not MESH_ID or not _vault_privkey_pem:
+        return
+    try:
+        import base64 as _b64
+        import hashlib as _hashlib
+
+        from cryptography.hazmat.primitives import hashes as _hh
+        from cryptography.hazmat.primitives import serialization as _ser
+        from cryptography.hazmat.primitives.asymmetric import padding as _pad
+
+        state = _state_mirror_fields()
+        state_canonical = json.dumps(state, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        state_hash_hex = _hashlib.sha256(state_canonical).hexdigest()
+        if state_hash_hex == _state_mirror_last_hash:
+            return  # no change, skip the POST
+        ts_ms = int(time.time() * 1000)
+        payload = f"{MESH_ID}|{MESH_NODE_ID}|state-mirror|{ts_ms}|{state_hash_hex}"
+        priv = _ser.load_pem_private_key(_vault_privkey_pem.encode(), password=None)
+        sig_bytes = priv.sign(payload.encode("utf-8"), _pad.PKCS1v15(), _hh.SHA256())
+        signature = _b64.b64encode(sig_bytes).decode("ascii")
+        body = json.dumps(
+            {
+                "node_id": MESH_NODE_ID,
+                "ts": ts_ms,
+                "state": state,
+                "signature": signature,
+            }
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            f"{MESH_URL}/api/mesh/{MESH_ID}/state-mirror",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status == 200:
+                _state_mirror_last_hash = state_hash_hex
+            else:
+                logger.warning("state-mirror POST returned %s", resp.status)
+    except urllib.error.HTTPError as e:
+        # 403 = node not registered yet (waiting for Lion approval) — quiet
+        # log; vault-side register flow handles the registration.
+        if e.code == 403:
+            logger.debug("state-mirror: node not yet registered (HTTP 403)")
+        else:
+            logger.warning("state-mirror HTTP %s: %s", e.code, e.reason)
+    except Exception as e:
+        logger.warning("state-mirror push failed: %s", e)
+
+
+def _state_mirror_tick():
+    """GLib timer callback — runs the push on a background thread."""
+    global _state_mirror_running
+    if _state_mirror_running:
+        return True
+    _state_mirror_running = True
+
+    def _run():
+        global _state_mirror_running
+        try:
+            _state_mirror_push()
+        finally:
+            _state_mirror_running = False
+
+    threading.Thread(target=_run, daemon=True).start()
+    return True
+
+
 _lion_pubkey = ""
 LION_PUBKEY_FILE = os.path.join(MESH_CONFIG_DIR, "lion_pubkey.pem")
 
@@ -1445,6 +1544,11 @@ class CollarApp(Gtk.Application):
             # Vault poll replaces plaintext direct sync for server communication
             GLib.timeout_add_seconds(POLL_INTERVAL, _vault_poll_tick)
             logger.info("Vault poll started (replaces plaintext sync to server)")
+            # Plaintext signed state mirror — keeps the server's _orders_registry
+            # coherent for compound-interest + IMAP scanners on vault-mode meshes.
+            # 30s interval matches the phone Collar's stateMirrorPush cadence.
+            GLib.timeout_add_seconds(30, _state_mirror_tick)
+            logger.info("State-mirror push started (30s interval, vault-mode only)")
         else:
             # Direct sync fallback — outbound poll to phone/homelab every 5s
             GLib.timeout_add_seconds(POLL_INTERVAL, _direct_sync_tick)
@@ -1850,7 +1954,7 @@ class CollarApp(Gtk.Application):
 
             # Message — below icon (icon bottom is ~H/2 + 515)
             # Truncate for wallpaper; GTK label + HTML page show full text.
-            msg = state.message or "No PC for now."
+            msg = state.message or "Locked out by your Lion."
             if len(msg) > 80:
                 msg = msg[:77] + "..."
             ctx.select_font_face("Lexend", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
@@ -2034,7 +2138,7 @@ for (var i = 0; i < c.length; i++) {
         card.append(div)
 
         # Lock message
-        self.msg_label = Gtk.Label(label=state.message or "No PC for now.")
+        self.msg_label = Gtk.Label(label=state.message or "Locked out by your Lion.")
         self.msg_label.add_css_class("collar-message")
         self.msg_label.set_wrap(True)
         self.msg_label.set_max_width_chars(50)
@@ -2119,7 +2223,7 @@ for (var i = 0; i < c.length; i++) {
         for _win in self.windows:
             try:
                 if hasattr(self, "msg_label") and self.msg_label:
-                    self.msg_label.set_label(state.message or "No PC for now.")
+                    self.msg_label.set_label(state.message or "Locked out by your Lion.")
                 if hasattr(self, "paywall_label") and self.paywall_label:
                     self.paywall_label.set_label(f"${state.paywall} owed" if state.paywall else "")
                 if hasattr(self, "pinned_label") and self.pinned_label:
@@ -2270,7 +2374,7 @@ document.addEventListener("keydown", function(e) {{
     <div id="clock" class="clock">00:00</div>
     {f'<div class="tier">{_html.escape(state.sub_tier.upper())}</div>' if state.sub_tier else ""}
     <div class="divider"></div>
-    <div class="message">{_html.escape(state.message or "No PC for now.")}</div>
+    <div class="message">{_html.escape(state.message or "Locked out by your Lion.")}</div>
     {pinned_html}
     {paywall_html}
 </div>

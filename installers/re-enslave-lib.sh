@@ -22,11 +22,14 @@ SERVER_FILES=(
 )
 SERVER_ICON="collar-icon.png"
 
-# Desktop collar files that re-enslave-desktops.sh deploys
+# Desktop collar files that re-enslave-desktops.sh deploys.
+# focuslock_ntfy.py is also deployed via the shared/focuslock_*.py glob in
+# re-enslave-desktops.sh — listed explicitly here so the entrypoint deploy
+# loop picks it up even on installs that skip the shared glob.
 DESKTOP_FILES=(
     "focuslock-desktop.py"
     "focuslock_mesh.py"
-    "focuslock-tray.py"
+    "focuslock_ntfy.py"
 )
 
 # ── Logging helpers ──

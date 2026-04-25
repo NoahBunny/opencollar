@@ -88,10 +88,18 @@ fi
 echo "Compiling resources..."
 aapt2 compile --dir res -o compiled.zip
 
+# Sync banks.json into assets so the bank-app picker can read the canonical
+# package list. Single source of truth in shared/banks.json.
+if [ -f ../../shared/banks.json ]; then
+    mkdir -p assets
+    cp ../../shared/banks.json assets/banks.json
+fi
+
 echo "Linking..."
 # -A assets bundles files at /assets/... inside the APK so WebView can load
 # them via file:///android_asset/. Used for qrcode.min.js which renders the
-# pair QR in the Direct Pair dialog.
+# pair QR in the Direct Pair dialog, and banks.json which seeds the
+# banking-app picker.
 ASSETS_FLAG=""
 if [ -d assets ]; then
     ASSETS_FLAG="-A assets"

@@ -12,6 +12,7 @@ import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.ToggleButton;
@@ -40,6 +41,8 @@ public class MainActivity extends Activity {
     };
 
     private TextView statusView, tierBadge, balanceDisplay;
+    private android.widget.Button btnConfineHome;
+    private boolean lastGeofenceActive = false;
     private EditText messageInput, timerInput, taskInput, taskRepsInput, paywallInput, complimentInput;
     private EditText offerCounterInput;
     private TextView offerTextView;
@@ -78,6 +81,8 @@ public class MainActivity extends Activity {
     }
     private final LocalSnapshot localSnapshot = new LocalSnapshot();
     private volatile boolean vaultRegistered = false;
+    private Thread ntfyThread;
+    private volatile boolean ntfyRunning = false;
     private volatile byte[] lionPubDerCache = null;
 
     /**
@@ -225,7 +230,18 @@ public class MainActivity extends Activity {
         findViewById(getId("btn_play_audio")).setOnClickListener(v -> doPlayAudio());
         findViewById(getId("btn_speak")).setOnClickListener(v -> doSpeak());
         findViewById(getId("btn_set_geofence")).setOnClickListener(v -> doSetGeofence());
-        findViewById(getId("btn_confine_home")).setOnClickListener(v -> doConfineHome());
+        btnConfineHome = (android.widget.Button) findViewById(getId("btn_confine_home"));
+        btnConfineHome.setOnClickListener(v -> {
+            // Toggle: if a geofence is currently active, release it; otherwise
+            // confine to current location. Saves a separate UI element while
+            // matching the user's mental model ("press once to confine, press
+            // again to release").
+            if (lastGeofenceActive) {
+                doReleaseConfinement();
+            } else {
+                doConfineHome();
+            }
+        });
         findViewById(getId("btn_pin_message")).setOnClickListener(v -> doPinMessage());
         findViewById(getId("btn_force_sub")).setOnClickListener(v -> doForceSub());
         try { findViewById(getId("btn_deadline_task")).setOnClickListener(v -> doDeadlineTask()); } catch (Exception e) {}
@@ -255,15 +271,17 @@ public class MainActivity extends Activity {
         findViewById(getId("btn_clear_balance")).setOnClickListener(v -> doClearBalance());
         findViewById(getId("btn_set_balance")).setOnClickListener(v -> doSetBalance());
 
-        // Quick add $ buttons
+        // Quick add $ buttons. The optimistic balance display uses lastPaywall
+        // (the most recent confirmed value from the runtime poll), NOT the
+        // paywallInput field — that field stages amounts for the *next* Lock
+        // order and accumulates per-click for that purpose, so reading from
+        // it after a clear-paywall produced a "+50 → showed 250 → settled
+        // back to 50" UI flicker. The next runtime poll reconfirms the value
+        // (line 422-426).
         for (int[] pair : new int[][]{{getId("btn_add_1"), 1}, {getId("btn_add_5"), 5}, {getId("btn_add_10"), 10}, {getId("btn_add_25"), 25}, {getId("btn_add_50"), 50}}) {
             final int amount = pair[1];
             findViewById(pair[0]).setOnClickListener(v -> {
-                String cur = paywallInput.getText().toString().trim();
-                int current = 0;
-                try { current = Integer.parseInt(cur); } catch (Exception e) {}
-                int newVal = current + amount;
-                paywallInput.setText(String.valueOf(newVal));
+                int newVal = lastPaywall + amount;
                 if (balanceDisplay != null) {
                     balanceDisplay.setText("$" + newVal);
                     balanceDisplay.setTextColor(0xFFFFD700);
@@ -342,6 +360,15 @@ public class MainActivity extends Activity {
         };
         handler.postDelayed(vaultPoller, 4000);
 
+        // ntfy push subscriber — wakes up immediate refreshInbox + vault poll
+        // on Bunny-/server-issued events (new message, edit, delete, lock
+        // status change). Without this Lion's Share was poll-only at 5s
+        // cadence; vault appends + /messages/* now publish ntfy on the
+        // server (focuslock-mail.py) so the chat thread updates within
+        // ~1s of any change. Mirrors the Collar's ControlService.ntfySubscribeLoop
+        // and Bunny Tasker's MainActivity.ntfySubscribeLoop.
+        startNtfySubscriber();
+
         timerTicker = () -> {
             if (isLocked && timerEndMs > 0) {
                 long rem = timerEndMs - System.currentTimeMillis();
@@ -404,7 +431,28 @@ public class MainActivity extends Activity {
             sb.append("UNLOCKED");
             if (!meshId.isEmpty()) sb.append(" | Mesh online");
         }
+        // Surface geofence_active so the user sees a persistent indicator
+        // that confine-home / set-geofence took effect (previously only the
+        // transient setStatus() message on the button click confirmed it,
+        // and the next poll wiped that). Field is provided by the Collar's
+        // buildRuntimeBodyMap (ControlService.java:959).
+        boolean geofenceActive = parseJsonBool(json, "geofence_active");
+        if (geofenceActive) {
+            String radius = parseJsonStr(json, "geofence_radius");
+            sb.append(" | 📍 ");  // 📍
+            if (!radius.isEmpty() && !radius.equals("0")) {
+                sb.append(radius).append("m");
+            } else {
+                sb.append("Confined");
+            }
+        }
         statusView.setText(sb.toString());
+
+        // Toggle the Confine button label based on whether a geofence is set.
+        lastGeofenceActive = geofenceActive;
+        if (btnConfineHome != null) {
+            btnConfineHome.setText(geofenceActive ? "Release Home" : "Confine Home");
+        }
 
         View statusBar = findViewById(getId("status_bar"));
         if (statusBar != null) statusBar.setBackgroundColor(isLocked ? 0xFFcc8800 : 0xFFDAA520);
@@ -1406,6 +1454,59 @@ public class MainActivity extends Activity {
         statusLine.setTextSize(11);
         statusLine.setText("Loading…");
         container.addView(statusLine);
+
+        // Auto-accept toggle row — Lion-signed flag stored on the server.
+        // While ON, register-node-request goes straight to approved. Key
+        // rotation (existing node_id, new pubkey) still requires a manual
+        // approve to close the takeover vector at docs/VAULT-DESIGN.md:266.
+        final TextView autoAcceptLabel = new TextView(this);
+        autoAcceptLabel.setTextColor(0xFFcccccc);
+        autoAcceptLabel.setTextSize(13);
+        autoAcceptLabel.setText("Auto-accept new nodes (off)");
+        autoAcceptLabel.setPadding(0, 16, 0, 4);
+        container.addView(autoAcceptLabel);
+        final TextView autoAcceptHint = new TextView(this);
+        autoAcceptHint.setTextColor(0xFF888888);
+        autoAcceptHint.setTextSize(10);
+        autoAcceptHint.setText("New devices added while ON skip the approval queue. Tap to toggle.");
+        container.addView(autoAcceptHint);
+        autoAcceptLabel.setOnClickListener(v -> {
+            executor.execute(() -> {
+                // Toggle by inferring current state from the label text — saves
+                // a fetch round-trip; the response from /auto-accept tells us
+                // the new state and we update the label from that.
+                boolean curOn = autoAcceptLabel.getText().toString().endsWith("(on)");
+                String newState = curOn ? "off" : "on";
+                long ts = System.currentTimeMillis();
+                String payload = meshId + "|auto-accept|" + newState + "|" + ts;
+                String sig;
+                try { sig = VaultCrypto.signString(payload, lionPriv); }
+                catch (Exception e) {
+                    handler.post(() -> autoAcceptHint.setText("Sign failed: " + e.getMessage()));
+                    return;
+                }
+                org.json.JSONObject body = new org.json.JSONObject();
+                try {
+                    body.put("state", newState);
+                    body.put("ts", ts);
+                    body.put("signature", sig);
+                } catch (Exception e) { return; }
+                String resp = meshPost(meshUrl + "/api/mesh/" + meshId + "/auto-accept", body.toString());
+                final boolean okOn = resp != null && resp.contains("\"auto_accept_nodes\":true");
+                final boolean okOff = resp != null && resp.contains("\"auto_accept_nodes\":false");
+                handler.post(() -> {
+                    if (okOn) {
+                        autoAcceptLabel.setText("Auto-accept new nodes (on)");
+                        autoAcceptHint.setText("Auto-accept ENABLED. Disable when done onboarding.");
+                    } else if (okOff) {
+                        autoAcceptLabel.setText("Auto-accept new nodes (off)");
+                        autoAcceptHint.setText("Auto-accept disabled. New devices land in the pending queue.");
+                    } else {
+                        autoAcceptHint.setText("Toggle failed: " + (resp == null ? "no response" : resp));
+                    }
+                });
+            });
+        });
 
         final android.widget.ScrollView scroll = new android.widget.ScrollView(this);
         final LinearLayout list = new LinearLayout(this);
@@ -2665,6 +2766,93 @@ public class MainActivity extends Activity {
     // -- Recurring Fine --
 
     private void doStartFine() {
+        // Custom amount + interval input. Was a fixed-list .setItems() dialog
+        // that combined poorly with .setMessage() on some Android versions
+        // and gave Lion no way to enter a non-preset amount. Now: free-form
+        // $ + minutes inputs with sensible defaults plus quick-set chips.
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(48, 24, 48, 8);
+
+        TextView lbl1 = new TextView(this);
+        lbl1.setText("Amount per interval ($):");
+        lbl1.setTextColor(0xFFcccccc);
+        lbl1.setTextSize(13);
+        root.addView(lbl1);
+        EditText amountInput = new EditText(this);
+        amountInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        amountInput.setText("10");
+        amountInput.setTextColor(0xFFffe6a8);
+        amountInput.setTextSize(18);
+        amountInput.setBackgroundColor(0xFF111118);
+        amountInput.setPadding(24, 18, 24, 18);
+        root.addView(amountInput);
+
+        TextView lbl2 = new TextView(this);
+        lbl2.setText("Interval (minutes):");
+        lbl2.setTextColor(0xFFcccccc);
+        lbl2.setTextSize(13);
+        lbl2.setPadding(0, 16, 0, 0);
+        root.addView(lbl2);
+        EditText intervalInput = new EditText(this);
+        intervalInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        intervalInput.setText("60");
+        intervalInput.setTextColor(0xFFffe6a8);
+        intervalInput.setTextSize(18);
+        intervalInput.setBackgroundColor(0xFF111118);
+        intervalInput.setPadding(24, 18, 24, 18);
+        root.addView(intervalInput);
+
+        LinearLayout chips = new LinearLayout(this);
+        chips.setOrientation(LinearLayout.HORIZONTAL);
+        chips.setPadding(0, 12, 0, 0);
+        for (int v : new int[]{5, 10, 25, 50}) {
+            final int amt = v;
+            android.widget.Button b = new android.widget.Button(this);
+            b.setText("$" + amt);
+            b.setTextSize(12);
+            b.setTextColor(0xFFee8833);
+            b.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF1a1608));
+            LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(0, 96, 1f);
+            blp.setMargins(4, 0, 4, 0);
+            b.setLayoutParams(blp);
+            b.setOnClickListener(v2 -> amountInput.setText(String.valueOf(amt)));
+            chips.addView(b);
+        }
+        root.addView(chips);
+
+        new AlertDialog.Builder(this)
+            .setTitle("Start Recurring Fine")
+            .setView(root)
+            .setPositiveButton("START", (d, w) -> {
+                int amount = 10;
+                int interval = 60;
+                try { amount = Integer.parseInt(amountInput.getText().toString().trim()); }
+                catch (NumberFormatException nfe) { /* default */ }
+                try { interval = Integer.parseInt(intervalInput.getText().toString().trim()); }
+                catch (NumberFormatException nfe) { /* default */ }
+                if (amount <= 0 || interval <= 0) {
+                    setStatus("Fine cancelled (invalid amount or interval)");
+                    return;
+                }
+                final int fAmount = amount;
+                final int fInterval = interval;
+                setStatus("Starting $" + fAmount + " every " + fInterval + "m fine...");
+                executor.execute(() -> {
+                    String r = meshOrder("start-fine",
+                        "{\"amount\":\"" + fAmount + "\",\"interval\":\""
+                            + fInterval + "\"}");
+                    setStatus(r != null && r.contains("ok")
+                        ? "Fine active: $" + fAmount + " every " + fInterval + "m"
+                        : "Failed");
+                });
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    @SuppressWarnings("unused")
+    private void doStartFineLegacy_unused() {
         String[] amounts = {"$5/hr", "$10/hr", "$15/hr", "$20/hr", "$25/hr", "$50/hr"};
         int[] values = {5, 10, 15, 20, 25, 50};
         new AlertDialog.Builder(this)
@@ -2913,21 +3101,34 @@ public class MainActivity extends Activity {
     private void doConfineHome() {
         new AlertDialog.Builder(this)
             .setTitle("Confine to Home")
-            .setMessage("Get current location and set a 100m geofence.\n\nPhone will auto-lock with $100 paywall if it leaves.")
+            .setMessage("Set a 100m geofence at the bunny's current location.\n\nPhone will auto-lock with $100 paywall if it leaves.")
             .setPositiveButton("CONFINE", (d, w) -> {
-                setStatus("Getting location...");
+                setStatus("Confining...");
                 executor.execute(() -> {
-                    String locResp = api("/api/get-location", "{}");
-                    if (locResp == null || !locResp.contains("\"lat\":")) {
-                        setStatus("Failed to get location");
-                        return;
-                    }
-                    String lat = parseJsonNumStr(locResp, "lat");
-                    String lon = parseJsonNumStr(locResp, "lon");
-                    String json = "{\"lat\":\"" + lat
-                        + "\",\"lon\":\"" + lon + "\",\"radius\":\"100\"}";
-                    String r = api("/api/set-geofence", json);
-                    setStatus(r.contains("ok") ? "Confined (100m radius)" : "Failed");
+                    // Single-action confine-home: Collar reads its own GPS and
+                    // sets the geofence atomically. The previous two-step
+                    // get-location → set-geofence dance silently broke in
+                    // vault mode because vault append is fire-and-forget —
+                    // Lion's Share never got the location response back.
+                    String r = api("/api/confine-home", "{\"radius\":\"100\"}");
+                    setStatus(r != null && r.contains("ok") ? "Confined (100m radius)"
+                        : (r != null && r.contains("no location fix") ? "No GPS fix — try again outside"
+                            : "Failed"));
+                });
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    private void doReleaseConfinement() {
+        new AlertDialog.Builder(this)
+            .setTitle("Release Confinement")
+            .setMessage("Clear the home geofence. Bunny can leave without auto-lock.")
+            .setPositiveButton("RELEASE", (d, w) -> {
+                setStatus("Releasing...");
+                executor.execute(() -> {
+                    String r = api("/api/clear-geofence", "{}");
+                    setStatus(r != null && r.contains("ok") ? "Geofence cleared" : "Failed");
                 });
             })
             .setNegativeButton("Cancel", null)
@@ -3305,24 +3506,16 @@ public class MainActivity extends Activity {
         executor.execute(() -> {
             String meshResp = currentStatusJson();
             String ledgerResp = meshGet("/mesh/ledger?limit=20");
-            // Phase D: in vault mode, the slave embeds the message history
-            // directly in its runtime body (see ControlService.java
-            // buildRuntimeBodyMap). Read it from there instead of polling
-            // the legacy /mesh/messages relay endpoint, which the
-            // vault_only server returns 410 for anyway.
-            //
-            // updateMessageThread() does its own indexOf("\"messages\":")
-            // walk so we can hand it the same string we use for status.
-            // Non-vault mode keeps the legacy poll for backward compat
-            // with meshes that haven't migrated yet.
-            String msgsResp;
-            if (vaultMode && !"direct".equals(pairMode)) {
-                msgsResp = meshResp;
-            } else {
-                // Roadmap #6: signed fetch of the per-mesh log. The legacy
-                // /mesh/messages relay path was 410'd server-side.
-                msgsResp = fetchLionMessages(0, 30);
-            }
+            // Always fetch the chat thread from the server's signed message
+            // store (/api/mesh/{id}/messages/fetch). In vault mode the runtime
+            // body's "messages" array only carries the Collar's local
+            // dispatch history (Lion's outgoing routed through vault) — it
+            // doesn't include Bunny's outgoing messages, which go directly
+            // to the server's message store via /api/mesh/{id}/messages/send.
+            // Reading from the server in vault mode picks up both directions.
+            // doSendInboxMessage now also posts to /messages/send in vault
+            // mode so Lion's vault messages land here too.
+            String msgsResp = fetchLionMessages(0, 30);
             final String msgsRespFinal = msgsResp;
             handler.post(() -> {
                 deviceCardsContainer.removeAllViews();
@@ -3483,7 +3676,16 @@ public class MainActivity extends Activity {
 
     private void updateMessageThread(String msgsResp) {
         LinearLayout thread = (LinearLayout) findViewById(getId("lion_message_thread"));
-        if (thread == null || msgsResp == null) return;
+        if (thread == null) {
+            android.util.Log.w("focusctl", "updateMessageThread: thread view is null (lion_message_thread not found)");
+            return;
+        }
+        if (msgsResp == null) {
+            android.util.Log.w("focusctl", "updateMessageThread: msgsResp is null");
+            return;
+        }
+        android.util.Log.i("focusctl", "updateMessageThread: msgsResp len=" + msgsResp.length()
+            + " has-messages=" + msgsResp.contains("\"messages\":"));
         thread.removeAllViews();
         try {
             // Parse messages array
@@ -3498,25 +3700,38 @@ public class MainActivity extends Activity {
             }
             String arrJson = msgsResp.substring(arrStart, arrEnd + 1);
 
-            // Parse each message object
-            int pos = 0;
-            int count = 0;
-            while (pos < arrJson.length() && count < 30) {
-                int objStart = arrJson.indexOf("{", pos);
-                if (objStart < 0) break;
-                int d = 0; int objEnd = objStart;
-                for (int i = objStart; i < arrJson.length(); i++) {
-                    if (arrJson.charAt(i) == '{') d++;
-                    else if (arrJson.charAt(i) == '}') { d--; if (d == 0) { objEnd = i; break; } }
+            // Server returns newest-first; we walk the array, collect raw
+            // object strings, then iterate in REVERSE so the chat thread
+            // reads oldest-at-top → newest-at-bottom (SMS convention).
+            // Combined with auto-scroll-to-bottom, the freshest message is
+            // always visible.
+            java.util.List<String> objs = new java.util.ArrayList<>();
+            int scanPos = 0;
+            while (scanPos < arrJson.length() && objs.size() < 30) {
+                int s = arrJson.indexOf("{", scanPos);
+                if (s < 0) break;
+                int dd = 0; int e = s;
+                for (int i = s; i < arrJson.length(); i++) {
+                    if (arrJson.charAt(i) == '{') dd++;
+                    else if (arrJson.charAt(i) == '}') { dd--; if (dd == 0) { e = i; break; } }
                 }
-                String obj = arrJson.substring(objStart, objEnd + 1);
+                objs.add(arrJson.substring(s, e + 1));
+                scanPos = e + 1;
+            }
+            java.util.Collections.reverse(objs);
+
+            int count = 0;
+            for (String obj : objs) {
                 String from = parseJsonStr(obj, "from");
                 String text = parseJsonStr(obj, "text");
+                String msgId = parseJsonStr(obj, "id");
                 boolean encrypted = obj.contains("\"encrypted\":true") || obj.contains("\"encrypted\": true");
                 boolean pinned = obj.contains("\"pinned\":true") || obj.contains("\"pinned\": true");
                 boolean mandatory = obj.contains("\"mandatory_reply\":true");
                 boolean replied = obj.contains("\"replied\":true");
                 boolean isPraise = obj.contains("\"praise\":true") || obj.contains("\"praise\": true");
+                boolean isDeleted = obj.contains("\"deleted\":true") || obj.contains("\"deleted\": true");
+                boolean isEdited = obj.contains("\"edited_at\":");
                 // New schema (#6) ships read_by as a JSON array of reader
                 // identities. Vault-mode history still emits the legacy
                 // read_by_bunny boolean.
@@ -3567,23 +3782,70 @@ public class MainActivity extends Activity {
                 if (pinned) suffix += " [pinned]";
                 if (mandatory && !replied) suffix += " [MUST REPLY]";
                 if (fromBunny) suffix += " (" + readByBunny + ")";
+                // Lion-only tombstone: Lion sees original text + a [deleted]
+                // badge (full audit). Bunny Tasker renders [deleted] in
+                // place of the text.
+                if (isDeleted) suffix += "  [deleted]";
+                if (isEdited && !isDeleted) suffix += "  (edited)";
                 if (hasAttachment) suffix += " \uD83D\uDCF7";
 
-                // Container for text + optional image
+                // SMS-app-style bubble row: vertical wrapper holding the
+                // bubble and a small timestamp underneath, aligned by author.
+                // Lion = self → right; bunny/system/praise → left.
+                boolean fromSelf = !fromBunny && !isSystem;
+                LinearLayout row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.VERTICAL);
+                LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                rowLp.setMargins(0, 4, 0, 4);
+                row.setLayoutParams(rowLp);
+
+                // The bubble itself — wrap_content, rounded, max 78% width.
                 LinearLayout msgBox = new LinearLayout(this);
                 msgBox.setOrientation(LinearLayout.VERTICAL);
-                msgBox.setBackgroundColor(bgColor);
-                msgBox.setPadding(16, 10, 16, 10);
+                msgBox.setPadding(20, 14, 20, 14);
+                android.graphics.drawable.GradientDrawable bubbleBg =
+                    new android.graphics.drawable.GradientDrawable();
+                bubbleBg.setColor(bgColor);
+                bubbleBg.setCornerRadius(28f);
+                msgBox.setBackground(bubbleBg);
                 LinearLayout.LayoutParams boxLp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-                boxLp.setMargins(0, 0, 0, 4);
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                boxLp.gravity = fromSelf ? android.view.Gravity.END : android.view.Gravity.START;
+                boxLp.leftMargin = fromSelf ? 80 : 0;
+                boxLp.rightMargin = fromSelf ? 0 : 80;
                 msgBox.setLayoutParams(boxLp);
 
                 TextView tv = new TextView(this);
                 tv.setText(prefix + suffix + "\n" + text);
                 tv.setTextColor(textColor);
-                tv.setTextSize(12);
+                tv.setTextSize(13);
+                int maxBubblePx = (int) (getResources().getDisplayMetrics().widthPixels * 0.78);
+                tv.setMaxWidth(maxBubblePx);
                 msgBox.addView(tv);
+                row.addView(msgBox);
+
+                // Timestamp under the bubble, dim, on the same edge.
+                String tsStr = parseJsonNumStr(obj, "ts");
+                if (tsStr != null && !tsStr.isEmpty()) {
+                    try {
+                        long mts = Long.parseLong(tsStr);
+                        if (mts > 0) {
+                            TextView tsView = new TextView(this);
+                            tsView.setText(formatRelativeTimeForChat(mts));
+                            tsView.setTextColor(0xFF6a6275);
+                            tsView.setTextSize(10);
+                            tsView.setPadding(8, 2, 8, 0);
+                            LinearLayout.LayoutParams tsLp = new LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.WRAP_CONTENT,
+                                LinearLayout.LayoutParams.WRAP_CONTENT);
+                            tsLp.gravity = fromSelf ? android.view.Gravity.END
+                                                    : android.view.Gravity.START;
+                            tsView.setLayoutParams(tsLp);
+                            row.addView(tsView);
+                        }
+                    } catch (NumberFormatException nfe) { /* skip ts */ }
+                }
 
                 // Load attachment image if present
                 if (hasAttachment) {
@@ -3620,9 +3882,23 @@ public class MainActivity extends Activity {
                     });
                 }
 
-                thread.addView(msgBox);
+                // Long-press → Lion edit/delete/history menu. Lion has full
+                // control regardless of message origin. Bunny Tasker has no
+                // equivalent (Bunny cannot edit or delete messages).
+                if (msgId != null && !msgId.isEmpty() && !isSystem) {
+                    final String fMsgId = msgId;
+                    final String fText = text;
+                    final boolean fEncrypted = encrypted;
+                    final boolean fIsDeleted = isDeleted;
+                    final boolean fIsEdited = isEdited;
+                    final String fObj = obj;
+                    row.setOnLongClickListener(v -> {
+                        showLionMessageActions(fMsgId, fText, fEncrypted, fIsDeleted, fIsEdited, fObj);
+                        return true;
+                    });
+                }
 
-                pos = objEnd + 1;
+                thread.addView(row);
                 count++;
             }
 
@@ -3633,7 +3909,26 @@ public class MainActivity extends Activity {
                 tv.setTextSize(11);
                 thread.addView(tv);
             }
-        } catch (Exception e) { /* parsing error */ }
+            android.util.Log.i("focusctl", "updateMessageThread: rendered " + count + " messages");
+            // Auto-scroll to the bottom so the freshest message is visible
+            // — SMS-app pattern. post() defers until layout completes.
+            ScrollView scroll = (ScrollView) findViewById(getId("lion_message_scroll"));
+            if (scroll != null) {
+                scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+            }
+        } catch (Exception e) {
+            android.util.Log.w("focusctl", "updateMessageThread parse/render error", e);
+        }
+    }
+
+    /** SMS-style "5m ago" / "2h ago" / "3d ago" / "just now" formatter. */
+    private String formatRelativeTimeForChat(long ts) {
+        if (ts <= 0) return "";
+        long diff = System.currentTimeMillis() - ts;
+        if (diff < 60_000) return "just now";
+        if (diff < 3_600_000) return (diff / 60_000) + "m ago";
+        if (diff < 86_400_000) return (diff / 3_600_000) + "h ago";
+        return (diff / 86_400_000) + "d ago";
     }
 
     private void updatePaymentHistory(String ledgerResp) {
@@ -3839,13 +4134,25 @@ public class MainActivity extends Activity {
 
             // Phase D: in vault mode, route through api() → apiVault →
             // /vault/{id}/append. The slave's vaultSync dispatches a
-            // send-message action that persists to history and triggers
-            // an immediate runtime push. Roadmap #6 replaced the dead
-            // /mesh/message legacy path with the bunny/lion-authed
-            // /api/mesh/{id}/messages/send endpoint for non-vault meshes.
+            // send-message action that persists to history (Collar local) +
+            // updates focus_lock_pinned_message + triggers an immediate
+            // runtime push.
+            //
+            // ALSO post to /api/mesh/{id}/messages/send (the bunny-/lion-authed
+            // server-side message store). Without this, vault-mode messages
+            // never reach Bunny Tasker's chat thread (which fetches from the
+            // server, not from the Collar's local history). Belt-and-
+            // suspenders: vault path is for fast Collar dispatch / pinned
+            // banner / runtime mirror; server-store path is for the chat
+            // thread on Bunny Tasker and for Lion's own multi-device sync.
             String r;
             if (vaultMode && !"direct".equals(pairMode)) {
                 r = api("/api/send-message", json.toString());
+                E2EEHelper.EncryptedMessage encVault = null;
+                if (E2EEHelper.canEncrypt(bunnyPubKey)) {
+                    encVault = E2EEHelper.encrypt(msg, bunnyPubKey);
+                }
+                postLionMessage(msg, pinAsNotif, mandatory, encVault);
             } else {
                 E2EEHelper.EncryptedMessage enc = null;
                 if (E2EEHelper.canEncrypt(bunnyPubKey)) {
@@ -3998,5 +4305,267 @@ public class MainActivity extends Activity {
                 }
             } catch (Exception e) {}
         });
+    }
+
+    // ── Lion-only message edit / delete (long-press menu) ──
+    // Server enforces lion-only via signature; this UI is Lion's surface for
+    // those actions. Bunny Tasker has no equivalent. Edit re-encrypts E2EE
+    // messages with the original recipient's pubkey. Delete is a tombstone
+    // (Lion sees original + badge; Bunny sees [deleted] in place of text).
+
+    private void showLionMessageActions(String msgId, String currentText, boolean encrypted,
+                                        boolean isDeleted, boolean isEdited, String rawObj) {
+        java.util.List<String> labels = new java.util.ArrayList<>();
+        java.util.List<Integer> codes = new java.util.ArrayList<>();
+        if (!isDeleted) {
+            labels.add("Edit"); codes.add(0);
+            labels.add("Delete"); codes.add(1);
+        }
+        if (isEdited || isDeleted) {
+            labels.add("View history"); codes.add(2);
+        }
+        if (labels.isEmpty()) return;
+        CharSequence[] arr = labels.toArray(new CharSequence[0]);
+        new AlertDialog.Builder(this)
+            .setTitle("Message")
+            .setItems(arr, (d, which) -> {
+                int code = codes.get(which);
+                if (code == 0) doEditMessage(msgId, currentText, encrypted);
+                else if (code == 1) doDeleteMessage(msgId);
+                else showMessageHistory(rawObj);
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    private void doEditMessage(String msgId, String currentText, boolean encrypted) {
+        EditText input = new EditText(this);
+        // For E2EE messages Lion can't see her own outgoing plaintext (it
+        // was encrypted to bunny's pubkey), so the EditText opens empty;
+        // for plaintext or decrypted-incoming messages we pre-fill so Lion
+        // can tweak rather than re-type from scratch.
+        input.setText(encrypted ? "" : (currentText == null ? "" : currentText));
+        input.setTextColor(0xFFe0e0e0);
+        input.setBackgroundColor(0xFF111118);
+        input.setPadding(32, 24, 32, 24);
+        new AlertDialog.Builder(this)
+            .setTitle("Edit message")
+            .setMessage(encrypted
+                ? "Original was encrypted — type the replacement plaintext (will be re-encrypted to bunny's key)."
+                : "Edit text:")
+            .setView(input)
+            .setPositiveButton("Save", (d, w) -> {
+                String newText = input.getText().toString().trim();
+                if (newText.isEmpty()) { setStatus("Edit cancelled (empty)"); return; }
+                executor.execute(() -> postLionMessageEdit(msgId, newText, encrypted));
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    private void doDeleteMessage(String msgId) {
+        new AlertDialog.Builder(this)
+            .setTitle("Delete message")
+            .setMessage("Bunny will see '[deleted]' in place of the text. You'll still see the original. This can't be undone.")
+            .setPositiveButton("DELETE", (d, w) -> {
+                executor.execute(() -> postLionMessageDelete(msgId));
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    private void showMessageHistory(String rawObj) {
+        // Render edit_history[] as a stack of prev_text entries. For E2EE
+        // messages the prev_text is the "[e2ee]" marker (Lion can't recover
+        // her own past plaintext encrypted to bunny). At least the timeline
+        // of edits is visible.
+        StringBuilder body = new StringBuilder();
+        try {
+            int hIdx = rawObj.indexOf("\"edit_history\":");
+            if (hIdx < 0) {
+                body.append("(no edit history)");
+            } else {
+                int arrStart = rawObj.indexOf("[", hIdx);
+                int depth = 0; int arrEnd = arrStart;
+                for (int i = arrStart; i < rawObj.length(); i++) {
+                    if (rawObj.charAt(i) == '[') depth++;
+                    else if (rawObj.charAt(i) == ']') { depth--; if (depth == 0) { arrEnd = i; break; } }
+                }
+                String hjson = rawObj.substring(arrStart, arrEnd + 1);
+                int p = 0; int idx = 1;
+                while (p < hjson.length()) {
+                    int s = hjson.indexOf("{", p);
+                    if (s < 0) break;
+                    int d = 0; int e = s;
+                    for (int i = s; i < hjson.length(); i++) {
+                        if (hjson.charAt(i) == '{') d++;
+                        else if (hjson.charAt(i) == '}') { d--; if (d == 0) { e = i; break; } }
+                    }
+                    String entry = hjson.substring(s, e + 1);
+                    String prev = parseJsonStr(entry, "prev_text");
+                    String ts = parseJsonNumStr(entry, "ts");
+                    body.append("v").append(idx++).append(" @ ").append(ts).append("\n")
+                        .append(prev == null ? "(empty)" : prev).append("\n\n");
+                    p = e + 1;
+                }
+                if (idx == 1) body.append("(no edit history)");
+            }
+        } catch (Exception e) { body.append("history parse error"); }
+        new AlertDialog.Builder(this)
+            .setTitle("Edit history")
+            .setMessage(body.toString())
+            .setPositiveButton("Close", null)
+            .show();
+    }
+
+    /** Sign + POST a lion-authored edit. Returns true on 200. */
+    private boolean postLionMessageEdit(String messageId, String newText, boolean reEncrypt) {
+        if (meshUrl.isEmpty() || meshId.isEmpty()) return false;
+        String lionPriv = prefs.getString("lion_privkey", "");
+        if (lionPriv.isEmpty()) {
+            handler.post(() -> setStatus("Edit failed: no lion_privkey"));
+            return false;
+        }
+        long ts = System.currentTimeMillis();
+        // Same convention as send: signed text is "[e2ee]" for encrypted edits
+        // (server stores opaque ciphertext); plaintext for plaintext edits.
+        E2EEHelper.EncryptedMessage enc = null;
+        String signedText = newText;
+        if (reEncrypt && E2EEHelper.canEncrypt(bunnyPubkeyB64)) {
+            enc = E2EEHelper.encrypt(newText, bunnyPubkeyB64);
+            if (enc != null) signedText = "[e2ee]";
+        }
+        String payload = meshId + "|controller|lion|edit|" + messageId
+            + "|" + signedText + "|" + ts;
+        try {
+            String signature = VaultCrypto.signString(payload, lionPriv);
+            org.json.JSONObject body = new org.json.JSONObject();
+            body.put("node_id", "controller");
+            body.put("from", "lion");
+            body.put("message_id", messageId);
+            body.put("text", signedText);
+            if (enc != null) {
+                body.put("encrypted", true);
+                body.put("ciphertext", enc.ciphertext);
+                body.put("encrypted_key", enc.encryptedKey);
+                body.put("iv", enc.iv);
+            }
+            body.put("ts", ts);
+            body.put("signature", signature);
+            String resp = meshPost(meshUrl + "/api/mesh/" + meshId + "/messages/edit", body.toString());
+            boolean ok = resp != null && resp.contains("\"ok\"");
+            handler.post(() -> {
+                setStatus(ok ? "Message edited" : "Edit failed");
+                if (ok) refreshInbox();
+            });
+            return ok;
+        } catch (Exception e) {
+            handler.post(() -> setStatus("Edit failed: " + e.getMessage()));
+            return false;
+        }
+    }
+
+    /** Sign + POST a lion-authored delete. Tombstone, not hard delete. */
+    private boolean postLionMessageDelete(String messageId) {
+        if (meshUrl.isEmpty() || meshId.isEmpty()) return false;
+        String lionPriv = prefs.getString("lion_privkey", "");
+        if (lionPriv.isEmpty()) {
+            handler.post(() -> setStatus("Delete failed: no lion_privkey"));
+            return false;
+        }
+        long ts = System.currentTimeMillis();
+        String payload = meshId + "|controller|lion|delete|" + messageId + "|" + ts;
+        try {
+            String signature = VaultCrypto.signString(payload, lionPriv);
+            org.json.JSONObject body = new org.json.JSONObject();
+            body.put("node_id", "controller");
+            body.put("from", "lion");
+            body.put("message_id", messageId);
+            body.put("ts", ts);
+            body.put("signature", signature);
+            String resp = meshPost(meshUrl + "/api/mesh/" + meshId + "/messages/delete", body.toString());
+            boolean ok = resp != null && resp.contains("\"ok\"");
+            handler.post(() -> {
+                setStatus(ok ? "Message deleted" : "Delete failed");
+                if (ok) refreshInbox();
+            });
+            return ok;
+        } catch (Exception e) {
+            handler.post(() -> setStatus("Delete failed: " + e.getMessage()));
+            return false;
+        }
+    }
+
+    /** Start the long-poll ntfy subscriber thread for this mesh. Topic
+     *  derives from mesh_id (focuslock-{mesh_id}) — same convention as the
+     *  Collar + Bunny Tasker. Wake-up triggers refreshInbox + an immediate
+     *  vault poll so messages, lock state, and balance changes land within
+     *  ~1s of a server publish. */
+    private void startNtfySubscriber() {
+        if (ntfyThread != null && ntfyThread.isAlive()) return;
+        if (meshId == null || meshId.isEmpty()) {
+            android.util.Log.i("focusctl", "ntfy: skipped (mesh_id not set yet)");
+            return;
+        }
+        String topic = "focuslock-" + meshId;
+        String server = "https://ntfy.sh";
+        ntfyRunning = true;
+        ntfyThread = new Thread(() -> ntfySubscribeLoop(server, topic), "ntfy-subscribe");
+        ntfyThread.setDaemon(true);
+        ntfyThread.start();
+        android.util.Log.w("focusctl", "ntfy subscriber started: " + server + "/" + topic);
+    }
+
+    private void ntfySubscribeLoop(String server, String topic) {
+        String since = String.valueOf(System.currentTimeMillis() / 1000 - 60);
+        int backoff = 1;
+        while (ntfyRunning) {
+            HttpURLConnection conn = null;
+            try {
+                String url = server + "/" + topic + "/json?since=" + since;
+                conn = (HttpURLConnection) new URL(url).openConnection();
+                conn.setRequestMethod("GET");
+                conn.setReadTimeout(90_000);
+                conn.setConnectTimeout(10_000);
+                BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(conn.getInputStream(), "UTF-8"));
+                String line;
+                while (ntfyRunning && (line = reader.readLine()) != null) {
+                    line = line.trim();
+                    if (line.isEmpty()) continue;
+                    try {
+                        org.json.JSONObject msg = new org.json.JSONObject(line);
+                        String msgId = msg.optString("id", "");
+                        if (!msgId.isEmpty()) since = msgId;
+                        String event = msg.optString("event", "");
+                        if ("open".equals(event) || "keepalive".equals(event)) continue;
+                        String body = msg.optString("message", "");
+                        if (!body.isEmpty()) {
+                            // Any wake = refresh state + inbox. The version
+                            // field in the body is informational; we don't
+                            // gate on it because a missed publish (e.g. ntfy
+                            // outage) would leave the client stuck.
+                            android.util.Log.w("focusctl", "ntfy: wake-up");
+                            handler.post(() -> {
+                                executor.execute(() -> {
+                                    if (vaultMode && !meshId.isEmpty()) {
+                                        try { vaultPollLoop(); } catch (Exception ignored) {}
+                                    }
+                                    try { refreshInbox(); } catch (Exception ignored) {}
+                                });
+                            });
+                        }
+                    } catch (Exception ignored) {}
+                }
+                reader.close();
+                backoff = 1;
+            } catch (Exception e) {
+                android.util.Log.i("focusctl", "ntfy: subscribe error: " + e);
+                try { Thread.sleep(backoff * 1000L); } catch (InterruptedException ie) { break; }
+                backoff = Math.min(backoff * 2, 60);
+            } finally {
+                if (conn != null) try { conn.disconnect(); } catch (Exception ignored) {}
+            }
+        }
     }
 }
