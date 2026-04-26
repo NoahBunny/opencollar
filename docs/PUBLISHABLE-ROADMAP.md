@@ -1,5 +1,15 @@
 # Publishable Roadmap
 
+## Status — 2026-04-26 (IMAP per-mesh — last MT-correctness item)
+
+`feat/imap-per-mesh-2026-04-26` closes the final multi-tenant correctness item from the 2026-04-24 audit. Single change set:
+
+- ✅ **IMAP payment scanner per-mesh** (audit MEDIUM #5) — `check_payment_emails_multi()` walks every known mesh per cycle; `_scan_mesh_imap_once()` is the per-mesh-per-cycle primitive; per-mesh `apply_fn` closures route `payment-received` through each mesh's `_server_apply_order` so vault-blob propagation works on consumer meshes too. Operator inherits the relay's static IMAP creds as fallback; consumer meshes are scanned only once Lion has configured `set-payment-email` for their mesh. Per-mesh ledger isolation (already in place) means the same Message-ID arriving on two meshes credits both. 7 new tests in `tests/test_payment.py::TestCheckPaymentEmailsMultiMesh` (482 → 489 passing).
+
+With this merge, every audit finding from 2026-04-24 is closed (BLOCKER #1, HIGH #2+#3+#4, MEDIUM #5+#6, LOW #7). The remaining open item from the previous status block is the **Web Remote QR "wrong key" bug** — likely closed by `6d47d1e`'s per-mesh session scoping, pending hardware re-test.
+
+---
+
 ## Status — 2026-04-25 (messaging + multi-tenant correctness II)
 
 Bundle landed on top of `6d47d1e` and ships the rest of the multi-tenant correctness work plus the long-pending Lion↔Bunny messaging feature. Five thematically distinct slices in one squash-merge PR:
@@ -11,7 +21,7 @@ Bundle landed on top of `6d47d1e` and ships the rest of the multi-tenant correct
 - ✅ **Generic mesh installer** — `installers/install-mesh.{sh,ps1}` + `installers/README.md`. `--mesh-id` and `--mesh-url` are required (no operator-specific defaults baked in); `--no-ntfy` and `--reset-keys` modifiers; idempotent re-runs preserve the existing vault keypair so prior Lion approvals stick.
 - ✅ **Log-injection hardening — every new server log on user-controlled input wrapped in `_sanitize_log()`**. Same threat model + helper PR #16 introduced for the pair-related logs; extended now to messaging, auto-accept, state-mirror, and relay-backfill log sites.
 
-**Web Remote QR "wrong key" bug** likely closed by the per-mesh session scoping in `6d47d1e` — needs hardware re-test to confirm. **IMAP payment scanner per-mesh (MEDIUM #5)** is unchanged and remains the top priority for the next session (~90 min, deferred per operator decision 2026-04-25).
+**Web Remote QR "wrong key" bug** likely closed by the per-mesh session scoping in `6d47d1e` — needs hardware re-test to confirm. **IMAP payment scanner per-mesh (MEDIUM #5)** — closed 2026-04-26 in `feat/imap-per-mesh-2026-04-26` (see status block above).
 
 ---
 
@@ -26,7 +36,7 @@ Publication path from an operator-only tree to a public repo is **done**. v1.0.0
 - ✅ **`/admin/order` mesh routing** (BLOCKER #1) — now resolves `_orders_registry.get(req_mesh_id)` instead of always mutating operator globals.
 - ✅ **Desktop heartbeat + penalty per-mesh** (HIGH #2+#3) — `_get_desktop_registry(mesh_id)` factory; `/webhook/desktop-penalty` routes via `_server_apply_order` instead of operator ADB.
 - ✅ **`PairingRegistry` mesh-scoped** (HIGH #4) — composite key `{mesh_id}:{passphrase}`; HTTP handlers require `mesh_id`.
-- ❌ **IMAP payment scanner per-mesh** (MEDIUM #5) — still scans only operator's configured IMAP, applies via `OPERATOR_MESH_ID`. Non-operator meshes' `set-payment-email` silently ignored. ~90 min, needs per-mesh scanner thread or per-mesh polling loop. **Next session's top priority. Deferred to next session per operator decision (2026-04-25).**
+- ✅ **IMAP payment scanner per-mesh** (MEDIUM #5) — closed 2026-04-26 in `feat/imap-per-mesh-2026-04-26`. `check_payment_emails_multi()` walks every known mesh per cycle, per-mesh apply_fn routes `payment-received` to the originating mesh's orders + vault blob, and per-mesh ledger isolation prevents cross-mesh dedup collisions on the same Message-ID.
 - ✅ **Web-session mesh context** (MEDIUM #6 — *"wrong key"* on Web Remote QR) — approve path iterates meshes for signature match; `_is_valid_admin_auth(token, mesh_id=…)` scopes session tokens.
 - ✅ **ntfy push per-mesh** (LOW #7, surfaced during QA) — `_get_ntfy_topic(mesh_id)` derives `focuslock-{mesh_id}` so consumer meshes wake on push instead of 30s vault poll. Verified sub-second propagation live.
 
@@ -44,7 +54,7 @@ Ordered roughly by priority. Smaller than pre-v1.0 phase granularity — these a
 
 ### Short-term (next 1–2 sessions)
 
-- **IMAP payment scanner per-mesh** (audit MEDIUM #5) — *next session's top priority, ~90 min*. The scanner still runs only against the operator's configured IMAP and credits payments to `OPERATOR_MESH_ID`; non-operator meshes' `set-payment-email` is silently ignored. Two viable shapes: (a) one scanner thread per mesh that has a `set-payment-email` configured, or (b) a single polling loop that walks `_mesh_accounts.meshes` per cycle and fetches each mesh's IMAP credentials. (b) is simpler if Bunnies share a single mailbox+filter setup; (a) is correct if each mesh wants independent credentials. Tests: extend `tests/test_payment.py::TestWalkImapFolders` with multi-mesh fixtures.
+- ~~**IMAP payment scanner per-mesh**~~ — done 2026-04-26 in `feat/imap-per-mesh-2026-04-26`. Picked shape (b)-of-(a): single polling loop walks every known mesh per cycle (`check_payment_emails_multi`), each mesh gets resolved with its own creds (operator inherits relay-static fallback, consumer meshes only scanned once Lion configures `set-payment-email`). Per-mesh `apply_fn` closures route `payment-received` through each mesh's `_server_apply_order` for vault-blob propagation. 7 new tests in `tests/test_payment.py::TestCheckPaymentEmailsMultiMesh`.
 - **Hardware QA against v1.2.0** — execute `docs/QA-v1.2.0-mesh.md` + `docs/MANUAL-QA.md` on the Pixel 10 rig (serial `57261FDCR004ZQ`). Protocol-level QA (7 vault + 9 C1 gate = 16 tests) already green via `/tmp/v120-qa/drive.py`; UI-bound tests still need a human with the device. Post-PR-#16: also walk `docs/QA-pairing.md` §1–§5 while the Pixel is paired — picks up the clearable-conflict dialog + Reset button + claim-expired / claim-unknown hint surfaces that landed in the same merge.
 - **Enable `main` branch protection rules** — *operator action, no code change.* The policy work in PR #16 lands CODEOWNERS + `signed-commits.yml` + the CONTRIBUTING gate, but the mechanical enforcement requires three toggles in GitHub → Settings → Branches → `main`: (1) ✅ Require signed commits, (2) ✅ Require review from Code Owners, (3) ✅ Require status checks → tick `Signed Commits / Verify signatures on sensitive paths` + the pre-existing CI/CodeQL/Scorecard checks. Without these, CODEOWNERS still auto-requests review and `signed-commits.yml` still reports — but neither blocks merges.
 - ~~**Desktop exe dedup**~~ — done. `build-win.py` now produces one canonical `FocusLock.exe` + `FocusLock-Watchdog.exe`; the vestigial `_build_config.py` variant bake and the unused `--paired-only` / `--generic-only` / `--homelab` / `--pin` / `--pubkey` CLI flags are gone. The collar's kill list in `focuslock-desktop-win.py` still catches legacy `FocusLock-Paired.exe` installs on first launch. See CHANGELOG [Unreleased].

@@ -1324,7 +1324,7 @@ desktop_registry = mesh.DesktopRegistry(persist_path=DESKTOP_REGISTRY_FILE)
 # ── IMAP: Payment Verification ──
 
 from focuslock_payment import (
-    check_payment_emails,
+    check_payment_emails_multi,
     load_iso_codes,
     load_payment_providers,
 )
@@ -1412,6 +1412,50 @@ def _get_payment_ledger(mesh_id: str) -> "mesh.PaymentLedger":
 # ledger (or an anonymous singleton before OPERATOR_MESH_ID is populated).
 # Prefer _get_payment_ledger(mesh_id) everywhere else.
 payment_ledger = mesh.PaymentLedger(persist_path=_LEDGER_PATH)
+
+
+# ── Per-mesh IMAP scanner contexts (audit MEDIUM #5, 2026-04-26) ──
+# Pre-fix: a single IMAP scanner thread polled the operator's mailbox and
+# credited every payment to OPERATOR_MESH_ID. Lion-issued `set-payment-email`
+# on consumer meshes was silently ignored — the per-mesh `payment_imap_*`
+# fields landed in orders but no thread ever read them.
+# Post-fix: one outer polling loop walks every known mesh per cycle, resolves
+# each mesh's own creds (with static fallback only for the operator), and
+# credits payments via per-mesh apply_fn so vault propagation works on
+# consumer meshes too.
+def _iter_imap_scan_contexts():
+    """Yield per-mesh scanner contexts. Re-evaluated each polling cycle so
+    newly-created meshes are picked up without a thread restart. Operator
+    mesh inherits the relay's static IMAP_HOST/MAIL_USER/MAIL_PASS as
+    fallback; consumer meshes are scanned only once Lion has configured
+    `set-payment-email` for that mesh."""
+    seen = set()
+    if OPERATOR_MESH_ID:
+        seen.add(OPERATOR_MESH_ID)
+        op_orders = _orders_registry.get(OPERATOR_MESH_ID)
+        if op_orders is not None:
+            yield {
+                "mesh_id": OPERATOR_MESH_ID,
+                "mesh_orders": op_orders,
+                "payment_ledger": _get_payment_ledger(OPERATOR_MESH_ID),
+                "apply_fn": (lambda action, params, _mid=OPERATOR_MESH_ID: _server_apply_order(_mid, action, params)),
+                "static_fallback": (IMAP_HOST, MAIL_USER, MAIL_PASS),
+            }
+    for mid in list(_orders_registry.docs.keys()):
+        if mid in seen or not mid:
+            continue
+        seen.add(mid)
+        orders = _orders_registry.get(mid)
+        if orders is None:
+            continue
+        yield {
+            "mesh_id": mid,
+            "mesh_orders": orders,
+            "payment_ledger": _get_payment_ledger(mid),
+            "apply_fn": (lambda action, params, _mid=mid: _server_apply_order(_mid, action, params)),
+            "static_fallback": None,
+        }
+
 
 # ── Per-mesh message history (roadmap #6) ──
 # Server-side append-only chat log, plaintext-scoped to the server.
@@ -5393,33 +5437,24 @@ if __name__ == "__main__":
     lan_discovery.start()
     logger.info("LAN discovery started (UDP beacon on :%s)", mesh.LAN_DISCOVERY_PORT)
 
-    # Start IMAP checker in background
+    # Start IMAP checker in background — multi-mesh polling loop walks every
+    # known mesh each cycle, scanning operator + any consumer mesh whose Lion
+    # has configured `set-payment-email`. Per-mesh apply_fn routes payment
+    # updates through _server_apply_order so total_paid_cents + paywall land
+    # in each mesh's orders doc AND propagate via vault blob — required for
+    # vault_only meshes. See landmine #20 and docs/STATE-OWNERSHIP.md Cat A.
     imap_thread = threading.Thread(
-        target=check_payment_emails,
+        target=check_payment_emails_multi,
         kwargs={
-            "imap_host": IMAP_HOST,
-            "mail_user": MAIL_USER,
-            "mail_pass": MAIL_PASS,
             "check_interval": IMAP_CHECK_INTERVAL,
+            "mesh_contexts_fn": _iter_imap_scan_contexts,
             "adb": adb,
-            "mesh_orders": mesh_orders,
-            "payment_ledger": payment_ledger,
             "providers": DEFAULT_PAYMENT_PROVIDERS,
             "iso_codes": _ISO_CODES,
             "min_payment": MIN_PAYMENT,
             "max_payment": MAX_PAYMENT,
             "phone_url": PHONE_URL,
             "phone_pin": str(_cfg.get("pin", "")),
-            "recipient_email": PARTNER_EMAIL,
-            # apply_fn routes payment updates through _server_apply_order so
-            # total_paid_cents + paywall land in the orders doc AND propagate
-            # via vault blob — required for vault_only meshes. See landmine
-            # #20 and docs/STATE-OWNERSHIP.md Category A.
-            "apply_fn": (
-                (lambda action, params: _server_apply_order(OPERATOR_MESH_ID, action, params))
-                if OPERATOR_MESH_ID
-                else None
-            ),
         },
         daemon=True,
     )
