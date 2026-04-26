@@ -1546,6 +1546,76 @@ class MessageStore:
                     return {"ok": True}
         return {"error": "not found"}
 
+    def edit(
+        self,
+        message_id: str,
+        new_text: str,
+        new_ciphertext: str = "",
+        new_encrypted_key: str = "",
+        new_iv: str = "",
+        ts: int = 0,
+    ) -> dict:
+        """Lion-only edit. Appends the prior live fields to edit_history[]
+        and overwrites with the new values. Caller must verify the signer is
+        Lion before invoking — MessageStore is unauthenticated by design.
+
+        For E2EE messages: pass the new ciphertext/encrypted_key/iv plus the
+        plaintext marker (typically "[e2ee]") as new_text. The history entry
+        captures whatever the prior live fields were so Lion's own client can
+        render the audit trail.
+        """
+        with self.lock:
+            for m in self.messages:
+                if m.get("id") != message_id:
+                    continue
+                if m.get("deleted"):
+                    return {"error": "cannot edit deleted message"}
+                history_entry: dict = {
+                    "ts": ts or int(time.time() * 1000),
+                    "prev_text": m.get("text", ""),
+                }
+                # Preserve E2EE bits in the history entry so Lion can decrypt
+                # her own past edits if she still has the recipient pubkey.
+                for k in ("ciphertext", "encrypted_key", "iv", "encrypted"):
+                    if k in m:
+                        history_entry[f"prev_{k}"] = m[k]
+                m.setdefault("edit_history", []).append(history_entry)
+                m["text"] = new_text
+                m["edited_at"] = history_entry["ts"]
+                if new_ciphertext or new_encrypted_key or new_iv:
+                    m["encrypted"] = True
+                    m["ciphertext"] = new_ciphertext
+                    m["encrypted_key"] = new_encrypted_key
+                    m["iv"] = new_iv
+                else:
+                    # Edit converts a previously-encrypted message to plaintext
+                    # only if Lion explicitly omitted the new ciphertext fields.
+                    # Kept conservative: leave encrypted=true alone if present;
+                    # caller should pass empty new_text + empty ciphertext to
+                    # explicitly downgrade.
+                    pass
+                self.save()
+                return {"ok": True, "message": m}
+        return {"error": "not found"}
+
+    def delete_message(self, message_id: str, deleted_by: str = "lion", ts: int = 0) -> dict:
+        """Lion-only tombstone. Marks the message deleted and records who/when.
+        Original text + ciphertext are preserved so Lion's own UI can still
+        render the original (Bunny's UI shows '[deleted]' instead). Caller
+        must verify the signer is Lion before invoking."""
+        with self.lock:
+            for m in self.messages:
+                if m.get("id") != message_id:
+                    continue
+                if m.get("deleted"):
+                    return {"ok": True, "message": m}  # idempotent
+                m["deleted"] = True
+                m["deleted_at"] = ts or int(time.time() * 1000)
+                m["deleted_by"] = deleted_by
+                self.save()
+                return {"ok": True, "message": m}
+        return {"error": "not found"}
+
 
 class DesktopRegistry:
     """Desktop collar heartbeat registry — thread-safe, JSON-persisted.

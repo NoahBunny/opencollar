@@ -62,9 +62,15 @@ if [ "$RELEASE" = "1" ]; then
     KEYSTORE_PASS="$FOCUSLOCK_KEYSTORE_PASS"
     KEY_ALIAS="${FOCUSLOCK_KEY_ALIAS:-focuslock}"
 else
-    # Generate debug keystore if missing
-    if [ ! -f debug.keystore ]; then
+    # Generate debug keystore if missing OR if an existing one is stale
+    # (e.g. left over from an older build.sh that used a different alias —
+    # the 4e5d157 companion-alias fix is one historical example). Checking
+    # the alias presence up-front catches this at generate-time instead of
+    # surfacing later as a confusing apksigner "entry does not contain a
+    # key" failure.
+    if ! keytool -list -keystore debug.keystore -storepass android -alias focuslock &>/dev/null; then
         echo "Generating debug keystore..."
+        rm -f debug.keystore
         keytool -genkey -v -keystore debug.keystore -alias focuslock \
             -keyalg RSA -keysize 2048 -validity 10000 \
             -storepass android -keypass android \

@@ -62,9 +62,11 @@ if [ "$RELEASE" = "1" ]; then
     KEYSTORE_PASS="$FOCUSLOCK_KEYSTORE_PASS"
     KEY_ALIAS="${FOCUSLOCK_KEY_ALIAS:-focusctl}"
 else
-    # Generate debug keystore if missing
-    if [ ! -f debug.keystore ]; then
+    # Regenerate if missing OR stale (wrong alias from an older build.sh).
+    # See the matching comment in android/slave/build.sh for context.
+    if ! keytool -list -keystore debug.keystore -storepass android -alias focusctl &>/dev/null; then
         echo "Generating debug keystore..."
+        rm -f debug.keystore
         keytool -genkey -v -keystore debug.keystore -alias focusctl \
             -keyalg RSA -keysize 2048 -validity 10000 \
             -storepass android -keypass android \

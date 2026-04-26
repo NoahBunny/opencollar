@@ -278,6 +278,123 @@ class TestGambleResolved:
         assert orders.get("paywall") == "0"
 
 
+class TestAdminGambleEndpoint:
+    """Admin-authed gamble via POST /admin/order — the relay-mode entry point
+    for the Lion's Share web UI (holds admin_token, not the bunny privkey).
+    Counterpart to the bunny-signed /api/mesh/{id}/gamble path. Pins:
+    auth gate, no-paywall short-circuit, outcome-application round-trip,
+    response shape matches the bunny-signed endpoint so the web UI reads
+    the same keys in both branches."""
+
+    @pytest.fixture
+    def live_server(self, mail_module):
+        import threading
+        from http.server import HTTPServer
+
+        server = HTTPServer(("127.0.0.1", 0), mail_module.WebhookHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_address[1]}"
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    @pytest.fixture
+    def admin_token(self, mail_module, monkeypatch):
+        import time as _t
+
+        token = "test-admin-" + str(int(_t.time() * 1000))
+        monkeypatch.setattr(mail_module, "ADMIN_TOKEN", token)
+        return token
+
+    @pytest.fixture
+    def seeded_mesh(self, mail_module, monkeypatch):
+        """Seed OPERATOR_MESH_ID + an orders doc so /admin/order has a
+        target to resolve. Paywall seeded to 100 so the RNG branches are
+        both exercisable (heads → 50, tails → 200). Uses get_or_create so
+        _server_apply_order's _orders_registry.get() finds the doc (plain
+        _resolve_orders falls back to the default mesh_orders on miss,
+        which wouldn't register under the test mesh_id)."""
+        mid = "test-mesh-gamble"
+        monkeypatch.setattr(mail_module, "OPERATOR_MESH_ID", mid)
+        orders = mail_module._orders_registry.get_or_create(mid)
+        orders.set("paywall", "100")
+        return mid
+
+    def _post(self, url, body):
+        import json
+        import urllib.error
+        import urllib.request
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read().decode())
+
+    def test_no_token_rejects_403(self, live_server, admin_token, seeded_mesh):
+        status, body = self._post(
+            f"{live_server}/admin/order",
+            {"action": "gamble", "mesh_id": seeded_mesh},
+        )
+        assert status == 403
+        assert body.get("error") == "invalid admin_token"
+
+    def test_wrong_token_rejects_403(self, live_server, admin_token, seeded_mesh):
+        # admin_token fixture installs the real token on the module; this
+        # test supplies a different one to confirm the comparison rejects.
+        assert admin_token
+        status, _body = self._post(
+            f"{live_server}/admin/order",
+            {"admin_token": "wrong", "action": "gamble", "mesh_id": seeded_mesh},
+        )
+        assert status == 403
+
+    def test_no_paywall_returns_409(self, live_server, admin_token, seeded_mesh, mail_module):
+        mail_module._orders_registry.get(seeded_mesh).set("paywall", "0")
+        status, body = self._post(
+            f"{live_server}/admin/order",
+            {"admin_token": admin_token, "action": "gamble", "mesh_id": seeded_mesh},
+        )
+        assert status == 409
+        assert body.get("error") == "no paywall to gamble"
+
+    def test_outcome_shape_and_math(self, live_server, admin_token, seeded_mesh, mail_module):
+        """Run the flip until both outcomes have been observed; verify the
+        response shape, that new_paywall matches the server-side math
+        (ceil(100/2)=50 on heads, 100*2=200 on tails), and that the orders
+        doc reflects the applied outcome."""
+        seen = set()
+        for _ in range(40):  # ≥1 heads and ≥1 tails within 40 flips is overwhelming
+            mail_module._orders_registry.get(seeded_mesh).set("paywall", "100")
+            status, body = self._post(
+                f"{live_server}/admin/order",
+                {"admin_token": admin_token, "action": "gamble", "mesh_id": seeded_mesh},
+            )
+            assert status == 200
+            assert body["ok"] is True
+            assert body["old_paywall"] == 100
+            assert body["result"] in ("heads", "tails")
+            if body["result"] == "heads":
+                assert body["new_paywall"] == 50
+            else:
+                assert body["new_paywall"] == 200
+            # Orders doc reflects the applied outcome.
+            applied_pw = int(mail_module._orders_registry.get(seeded_mesh).get("paywall", "0"))
+            assert applied_pw == body["new_paywall"]
+            seen.add(body["result"])
+            if seen >= {"heads", "tails"}:
+                break
+        assert seen == {"heads", "tails"}, f"RNG produced only {seen} in 40 flips"
+
+
 class TestUnsubscribeCharge:
     def test_bronze_charges_50(self, mail_module, orders):
         orders.set("paywall", "0")

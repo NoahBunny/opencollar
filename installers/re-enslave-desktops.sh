@@ -205,7 +205,7 @@ deploy_remote() {
     ssh -o ConnectTimeout=5 "$DEPLOY_USER@$addr" "bash -s" << REMOTE_EOF
 set -e
 sudo mkdir -p /opt/focuslock /opt/focuslock/web
-for f in focuslock-desktop.py focuslock_mesh.py focuslock-tray.py focuslock_*.py $SERVER_ICON lion_pubkey.pem; do
+for f in focuslock-desktop.py focuslock_mesh.py focuslock_*.py $SERVER_ICON lion_pubkey.pem; do
     [ -f /tmp/\$f ] && sudo install -D -m 644 /tmp/\$f /opt/focuslock/\$f && rm -f /tmp/\$f
 done
 # chmod no longer needed separately — `sudo install -D -m 0755` above

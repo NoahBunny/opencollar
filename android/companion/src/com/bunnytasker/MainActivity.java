@@ -11,6 +11,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.provider.MediaStore;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -19,6 +20,7 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.io.BufferedReader;
@@ -68,6 +70,9 @@ public class MainActivity extends Activity {
     private SharedPreferences prefs;
     private Runnable poller;
     private int meshSyncCounter = 0;
+    private int messageRefreshCounter = 0;
+    private Thread ntfyThread;
+    private volatile boolean ntfyRunning = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -77,6 +82,17 @@ public class MainActivity extends Activity {
         handler = new Handler(Looper.getMainLooper());
         executor = Executors.newSingleThreadExecutor();
         prefs = getSharedPreferences("bunnytasker", MODE_PRIVATE);
+
+        // Android 13+ requires runtime POST_NOTIFICATIONS grant; the manifest
+        // declaration alone is not enough. Without this, every notif this app
+        // posts (balance, confined, lion-message, admin-nag) is silently
+        // dropped by the system. Request it on first launch — Android remembers
+        // the grant so we only get prompted once.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 7301);
+        }
 
         statusText = (TextView) findViewById(fid("status_text"));
         statusBar = findViewById(fid("status_bar"));
@@ -126,13 +142,18 @@ public class MainActivity extends Activity {
         btnShowQr.setOnClickListener(v -> showJoinMeshDialog());
         btnShowQr.setOnLongClickListener(v -> { showDirectPairingInfo(); return true; });
 
-        // Bunny-authorised reset of the Collar's stored lion pairing state.
-        // Visible only when paired. Recovery path for a half-completed pair
-        // (fingerprint mismatch, Lion app crash mid-response) that would
-        // otherwise require reinstalling the Collar.
+        // Pair-reset button intentionally hidden: per the consensual design
+        // (CLAUDE.md: "Release Forever button (Lion only)"), only the Lion
+        // or a factory reset can release the Collar. Previously Bunny
+        // Tasker exposed a "Reset pair state" button that POSTed to
+        // /api/pair-reset on the Collar — a bunny-initiated escape path
+        // that broke the power-dynamic contract. The XML view still exists
+        // for backwards compat with older layouts; we just don't wire a
+        // click listener and force it hidden below in the paired-section
+        // visibility block.
         TextView btnPairReset = (TextView) findViewById(fid("btn_pair_reset"));
         if (btnPairReset != null) {
-            btnPairReset.setOnClickListener(v -> showPairResetConfirmDialog());
+            btnPairReset.setVisibility(View.GONE);
         }
 
         // Show pairing state — hide everything when not paired
@@ -148,6 +169,11 @@ public class MainActivity extends Activity {
             sectionPairing.setVisibility(View.VISIBLE);
             sectionPaired.setVisibility(View.GONE);
             sectionMainContent.setVisibility(View.GONE);
+            // No cable in production — when Bunny Tasker opens unpaired and
+            // the Collar isn't yet device-admin, kick the user into the
+            // Collar's Terms-of-Surrender screen so the full flow happens
+            // inside the normal UI path. Safe to call repeatedly.
+            maybeLaunchCollarConsent();
         }
 
         // Subscription buttons
@@ -181,25 +207,14 @@ public class MainActivity extends Activity {
         findViewById(fid("btn_selflock_60")).setOnClickListener(v -> doSelfLock(60));
         findViewById(fid("btn_selflock_120")).setOnClickListener(v -> doSelfLock(120));
 
-        // Pay button — opens configured banking app
-        btnPay.setOnClickListener(v -> {
-            try {
-                String bankPkg = Settings.Global.getString(getContentResolver(), "focus_lock_banking_app");
-                if (bankPkg == null || bankPkg.isEmpty()) {
-                    statusText.setText("No banking app configured");
-                    return;
-                }
-                Intent launch = getPackageManager().getLaunchIntentForPackage(bankPkg.trim());
-                if (launch != null) {
-                    launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    startActivity(launch);
-                } else {
-                    statusText.setText("Banking app not installed: " + bankPkg);
-                }
-            } catch (Exception e) {
-                statusText.setText("Banking app: " + e.getMessage());
-            }
-        });
+        // Pay button — opens configured banking app. Lookup order:
+        //   1. SharedPreferences "banking_app" (set by the picker on first tap;
+        //      consumer-install path, no adb needed)
+        //   2. Settings.Global focus_lock_banking_app (legacy adb-provisioned)
+        //   3. Picker dialog over installed apps that match shared/banks.json
+        // Long-press the Pay button to re-pick.
+        btnPay.setOnClickListener(v -> launchBankingApp(false));
+        btnPay.setOnLongClickListener(v -> { launchBankingApp(true); return true; });
 
         // Attach photo
         findViewById(fid("btn_attach")).setOnClickListener(v -> {
@@ -235,12 +250,100 @@ public class MainActivity extends Activity {
             startForegroundService(new Intent(this, BunnyService.class));
         } catch (Exception e) { android.util.Log.e("BunnyTasker", "error", e); }
 
+        // ntfy push subscriber — wakes up immediate meshSync on Lion-issued
+        // order changes. Mirrors ControlService.ntfySubscribeLoop on the Collar.
+        // Without this, the every-30s meshSync poll was the only refresh path,
+        // so order propagation to the Bunny Tasker UI lagged by up to 30s.
+        startNtfySubscriber();
+
         // Start polling
         poller = () -> {
             executor.execute(() -> refreshStats());
             handler.postDelayed(poller, 5000);
         };
         handler.post(poller);
+    }
+
+    /** Start the long-poll ntfy subscriber thread. Topic is derived from
+     *  mesh_id (focuslock-{mesh_id}) unless an explicit override was written
+     *  to focus_lock_ntfy_topic. Server is focus_lock_ntfy_server or ntfy.sh.
+     *  Wake-up triggers an immediate refreshStats() with meshSyncCounter
+     *  forced to fire — sub-second propagation when ntfy is reachable. */
+    private void startNtfySubscriber() {
+        if (ntfyThread != null && ntfyThread.isAlive()) return;
+        String meshId = gstr("focus_lock_mesh_id");
+        if (meshId.isEmpty()) {
+            android.util.Log.i("BunnyTasker", "ntfy: skipped (mesh_id not set yet)");
+            return;
+        }
+        String topic = gstr("focus_lock_ntfy_topic");
+        if (topic.isEmpty()) topic = "focuslock-" + meshId;
+        String server = gstr("focus_lock_ntfy_server");
+        if (server.isEmpty()) server = "https://ntfy.sh";
+        final String fServer = server;
+        final String fTopic = topic;
+        ntfyRunning = true;
+        ntfyThread = new Thread(() -> ntfySubscribeLoop(fServer, fTopic), "ntfy-subscribe");
+        ntfyThread.setDaemon(true);
+        ntfyThread.start();
+        android.util.Log.w("BunnyTasker", "ntfy subscriber started: " + server + "/" + topic);
+    }
+
+    private void ntfySubscribeLoop(String server, String topic) {
+        String since = String.valueOf(System.currentTimeMillis() / 1000 - 60);
+        int backoff = 1;
+        while (ntfyRunning) {
+            HttpURLConnection conn = null;
+            try {
+                String url = server + "/" + topic + "/json?since=" + since;
+                conn = (HttpURLConnection) new URL(url).openConnection();
+                conn.setRequestMethod("GET");
+                conn.setReadTimeout(90_000);
+                conn.setConnectTimeout(10_000);
+                BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(conn.getInputStream(), "UTF-8"));
+                String line;
+                while (ntfyRunning && (line = reader.readLine()) != null) {
+                    line = line.trim();
+                    if (line.isEmpty()) continue;
+                    try {
+                        JSONObject msg = new JSONObject(line);
+                        String msgId = msg.optString("id", "");
+                        if (!msgId.isEmpty()) since = msgId;
+                        String event = msg.optString("event", "");
+                        if ("open".equals(event) || "keepalive".equals(event)) continue;
+                        String body = msg.optString("message", "");
+                        if (!body.isEmpty()) {
+                            try {
+                                JSONObject data = new JSONObject(body);
+                                int ver = data.optInt("v", -1);
+                                if (ver >= 0) {
+                                    android.util.Log.w("BunnyTasker", "ntfy: wake-up v" + ver);
+                                    executor.execute(() -> {
+                                        try { meshSync(); } catch (Exception ignored) {}
+                                        try { refreshStats(); } catch (Exception ignored) {}
+                                        // Order updates often pair with a new
+                                        // message — refresh the inbox too so
+                                        // bunny sees lion's message instantly
+                                        // instead of waiting 10s for the next
+                                        // refreshMeshMessages tick.
+                                        try { refreshMeshMessages(); } catch (Exception ignored) {}
+                                    });
+                                }
+                            } catch (Exception ignored) {}
+                        }
+                    } catch (Exception ignored) {}
+                }
+                reader.close();
+                backoff = 1;
+            } catch (Exception e) {
+                android.util.Log.i("BunnyTasker", "ntfy: subscribe error: " + e);
+                try { Thread.sleep(backoff * 1000L); } catch (InterruptedException ie) { break; }
+                backoff = Math.min(backoff * 2, 60);
+            } finally {
+                if (conn != null) try { conn.disconnect(); } catch (Exception ignored) {}
+            }
+        }
     }
 
     private int fid(String name) {
@@ -269,15 +372,34 @@ public class MainActivity extends Activity {
                             postEventToServer("tamper_removed", "companion-detected");
                             postToCollar("/api/lock",
                                 "{\"message\":\"Collar admin removed.\",\"mode\":\"basic\",\"shame\":1,\"target\":\"phone\"}");
+                            // Full-screen reactivation prompt — mirrors the
+                            // Collar-side nag for Bunny Tasker's admin.
+                            // launchAdminNag de-dupes on Android's side via a
+                            // fixed notif id, and the 0→1 gate above ensures
+                            // we only fire once per removal event.
+                            launchAdminNag(collarAdmin,
+                                "Collar admin was removed. Tap to reactivate — until then, "
+                                    + "a $1000 penalty is on the paywall and the Collar can't enforce anything.");
                         }
                     } else {
+                        int wasRemoved = Settings.Global.getInt(getContentResolver(), "focus_lock_collar_admin_removed", 0);
                         Settings.Global.putInt(getContentResolver(), "focus_lock_collar_admin_removed", 0);
+                        if (wasRemoved == 1) {
+                            // Admin restored — cancel the persistent nag.
+                            try {
+                                getSystemService(android.app.NotificationManager.class).cancel(97);
+                            } catch (Exception ignored) {}
+                        }
                     }
                 } catch (Exception e) {}
             }
 
-            // Mesh sync every 6th poll (~30s) — pull orders from server
-            if (++meshSyncCounter >= 6) {
+            // Mesh sync every 2nd poll (~10s) — pull orders from server.
+            // Was every 6th poll (30s) but the user observed ~30s lag on
+            // order propagation; matches the Collar's lowered gossip
+            // interval. ntfy push (startNtfySubscriber) triggers an
+            // immediate sync on top of this for sub-second delivery.
+            if (++meshSyncCounter >= 2) {
                 meshSyncCounter = 0;
                 meshSync();
             }
@@ -291,6 +413,18 @@ public class MainActivity extends Activity {
             String mode = gstr("focus_lock_mode");
             String geofenceLat = gstr("focus_lock_geofence_lat");
             String geofenceLon = gstr("focus_lock_geofence_lon");
+            String geofenceRadius = gstr("focus_lock_geofence_radius_m");
+
+            // Persistent confined notification — visible state for the bunny
+            // when Lion has set a geofence. Shows / hides based on whether the
+            // geofence is currently set; idempotent on the radius value so we
+            // don't re-post (and re-sound, even though channel is silent) on
+            // every refresh tick.
+            if (!geofenceLat.isEmpty() && !geofenceLon.isEmpty()) {
+                showConfinedNotification(geofenceRadius);
+            } else {
+                clearConfinedNotification();
+            }
 
             // Subscription state
             String subTier = gstr("focus_lock_sub_tier");
@@ -321,7 +455,7 @@ public class MainActivity extends Activity {
                         "{\"message\":\"Subscription overdue. Pay your " + subTier + " tribute.\""
                         + ",\"mode\":\"basic\",\"shame\":1,\"target\":\"phone\"}");
                     if (ok) active = 1;
-                    sendWebhook("/webhook/bunny-message",
+                    sendSignedBunnyWebhook("/webhook/bunny-message", "bunny-message",
                         "{\"text\":\"Auto-locked for overdue " + subTier + " subscription\",\"type\":\"overdue-lock\"}");
                 }
             }
@@ -512,8 +646,27 @@ public class MainActivity extends Activity {
                         btnPrepay.setVisibility(View.GONE);
                     }
                 } else {
-                    subStatus.setText("No active subscription");
-                    subStatus.setTextColor(0xFF555555);
+                    // If a subscribe / unsubscribe attempt fired in the last 30s
+                    // and sub_tier hasn't propagated yet, keep the transient
+                    // status (success "syncing..." or failure error) visible
+                    // instead of overwriting with the "No active subscription"
+                    // default. Without this, the user never sees the failure
+                    // message because refreshStats wipes it within 5s.
+                    long pendingAt = prefs.getLong("sub_pending_at", 0);
+                    String pendingMsg = prefs.getString("sub_pending_msg", "");
+                    if (pendingAt > 0 && System.currentTimeMillis() - pendingAt < 30_000
+                            && !pendingMsg.isEmpty()) {
+                        subStatus.setText(pendingMsg);
+                        subStatus.setTextColor(prefs.getInt("sub_pending_color", 0xFFcc4444));
+                    } else {
+                        subStatus.setText("No active subscription");
+                        subStatus.setTextColor(0xFF555555);
+                        // Stale pending — clean it up
+                        if (pendingAt > 0 && System.currentTimeMillis() - pendingAt >= 30_000) {
+                            prefs.edit().remove("sub_pending_at").remove("sub_pending_msg")
+                                .remove("sub_pending_color").apply();
+                        }
+                    }
                     btnFreeUnlock.setVisibility(View.GONE);
                     btnPrepay.setVisibility(View.GONE);
                 }
@@ -533,8 +686,15 @@ public class MainActivity extends Activity {
                     btnSetupImap.setText("Update Email");
                 }
 
-                // Payment history + messages (refresh every 5th poll)
-                if (System.currentTimeMillis() % 25000 < 5000) {
+                // Payment history + messages: refresh every 2nd poll (~10s).
+                // Was a flaky `% 25000 < 5000` time-of-day gate that fired ~20%
+                // of polls with high variance — sometimes 5s gap, sometimes
+                // 50s+ between refreshes, depending on when the activity
+                // happened to start. ntfy push (startNtfySubscriber) also
+                // triggers an immediate refresh on order updates, so 10s is
+                // just the no-push fallback.
+                if (++messageRefreshCounter >= 2) {
+                    messageRefreshCounter = 0;
                     refreshPaymentHistory();
                     refreshMeshMessages();
                 }
@@ -716,40 +876,13 @@ public class MainActivity extends Activity {
         return String.format("%.1fh", hours);
     }
 
-    /**
-     * Confirmation + submit for the bunny-authorised pair reset. Clears the
-     * stored lion_pubkey on the Collar via a signed /api/pair-reset POST so
-     * the user can recover from a half-completed pair without reinstall.
-     */
-    private void showPairResetConfirmDialog() {
-        String lionKey = PairingManager.getLionKey(getContentResolver());
-        String fp = lionKey.length() >= 16
-            ? lionKey.substring(0, 8) + "..." + lionKey.substring(lionKey.length() - 8)
-            : "(unpaired)";
-        String msg = "Forget the current Lion pairing?\n\n"
-            + "Currently paired with: " + fp + "\n\n"
-            + "After reset the Lion will need to pair again. Use this if pairing "
-            + "got stuck (fingerprint mismatch, Lion app crashed mid-setup) and "
-            + "Lion's Share reports 'already paired — clearable'.";
-        new android.app.AlertDialog.Builder(this)
-            .setTitle("Reset pair state")
-            .setMessage(msg)
-            .setPositiveButton("Reset", (d, w) -> executor.execute(this::doPairReset))
-            .setNegativeButton("Cancel", null)
-            .show();
-    }
-
-    private void doPairReset() {
-        boolean ok = postToCollar("/api/pair-reset", "{}");
-        handler.post(() -> {
-            if (ok) {
-                statusText.setText("Pair state reset — Lion can now pair again");
-                recreate();
-            } else {
-                statusText.setText("Pair reset failed — check Collar logs");
-            }
-        });
-    }
+    // showPairResetConfirmDialog + doPairReset removed 2026-04-24: the
+    // bunny-initiated pair reset was a consensual-design violation —
+    // "only Lion or factory reset can remove the Collar" (CLAUDE.md).
+    // The visible button was hidden in onCreate; the Collar endpoint
+    // at /api/pair-reset now falls through to 403. Half-completed-pair
+    // recovery requires reinstalling the Collar, which is gated on the
+    // Lion releasing the device admin first.
 
     /**
      * Serverless pairing info: show the bunny's IP/port + key fingerprint so the Lion can
@@ -788,26 +921,97 @@ public class MainActivity extends Activity {
             }
         } catch (Exception e) {}
 
-        StringBuilder msg = new StringBuilder();
-        msg.append("Direct (serverless) pairing — give your Lion these details:\n\n");
+        // Build pair payload — same fields Lion's Share expects to parse.
+        // PairingManager.buildQrPayload gives us a compact JSON {t,f,l,s,p}.
+        String payload = PairingManager.buildQrPayload(getContentResolver(), lanIp, tsIp);
+        String jsEscapedPayload = payload.replace("\\", "\\\\").replace("'", "\\'");
+
+        // Text-fallback info shown under the QR so operators without a scanner
+        // can still read IP + fingerprint off the screen.
+        StringBuilder textInfo = new StringBuilder();
+        textInfo.append("<div style='color:#e0e0e0;font-family:sans-serif;font-size:13px;margin-top:16px'>");
         if (!lanIp.isEmpty()) {
-            msg.append("LAN IP:\n  ").append(lanIp).append(":8432\n\n");
+            textInfo.append("<b>LAN:</b> ").append(lanIp).append(":8432<br>");
         }
         if (!tsIp.isEmpty()) {
-            msg.append("Tailscale IP:\n  ").append(tsIp).append(":8432\n\n");
+            textInfo.append("<b>Tailscale:</b> ").append(tsIp).append(":8432<br>");
         }
         if (lanIp.isEmpty() && tsIp.isEmpty()) {
-            msg.append("(no network detected — check WiFi)\n\n");
+            textInfo.append("<span style='color:#e74c3c'>no network detected — check WiFi</span><br>");
         }
-        msg.append("Fingerprint:\n  ").append(fingerprint).append("\n\n");
-        msg.append("In Lion's Share: tap Setup > Pair Direct (LAN) and enter the IP above.\n\n");
-        msg.append("Both devices must be on the same network (LAN, Tailscale, or VPN).");
+        textInfo.append("<b>Fingerprint:</b> ").append(fingerprint).append("<br>");
+        textInfo.append("</div>");
+
+        // WebView + inline HTML: loads assets/qrcode.min.js (qrcode-generator
+        // 1.4.4, vendored from web/qrcode.min.js), renders at version auto /
+        // error-correction M, big enough to scan from a comfortable distance.
+        String html = "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            + "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            + "<style>body{margin:0;padding:16px;background:#0a0a10;text-align:center}"
+            + "#qr{display:inline-block;background:#fff;padding:12px;border-radius:8px}"
+            + "#qr img{width:260px;height:260px;image-rendering:pixelated;display:block}</style>"
+            + "</head><body>"
+            + "<div id='qr'></div>" + textInfo.toString()
+            + "<script src='file:///android_asset/qrcode.min.js'></script>"
+            + "<script>(function(){"
+            + "  try {"
+            + "    var q = qrcode(0, 'M');"
+            + "    q.addData('" + jsEscapedPayload + "');"
+            + "    q.make();"
+            + "    document.getElementById('qr').innerHTML = q.createImgTag(6, 0);"
+            + "  } catch (e) {"
+            + "    document.getElementById('qr').innerText = 'QR render error: ' + e.message;"
+            + "  }"
+            + "})();</script>"
+            + "</body></html>";
+
+        android.webkit.WebView wv = new android.webkit.WebView(this);
+        wv.getSettings().setJavaScriptEnabled(true);
+        // file:///android_asset/ access enabled by default on older WebView;
+        // explicitly permit for newer Android revisions.
+        wv.getSettings().setAllowFileAccess(true);
+        wv.setBackgroundColor(0xFF0a0a10);
+        wv.loadDataWithBaseURL("file:///android_asset/", html, "text/html", "utf-8", null);
 
         new android.app.AlertDialog.Builder(this)
-            .setTitle("Direct Pair Info")
-            .setMessage(msg.toString())
+            .setTitle("Direct Pair — scan from Lion's Share")
+            .setView(wv)
             .setPositiveButton("OK", null)
             .show();
+    }
+
+    /** On first run, if the Collar package is installed but not yet active
+     *  as device admin, kick the user through ConsentActivity. The Collar
+     *  has no launcher icon by design (CLAUDE.md: "invisible app"), so
+     *  without this handoff the ToS + device-admin grant would require an
+     *  adb command — which isn't acceptable for the production flow where
+     *  no cable is present. Safe to re-enter: ConsentActivity is
+     *  singleTask + no-ops if consent is already stored. */
+    private void maybeLaunchCollarConsent() {
+        try {
+            android.content.pm.PackageManager pm = getPackageManager();
+            pm.getPackageInfo("com.focuslock", 0);
+        } catch (android.content.pm.PackageManager.NameNotFoundException e) {
+            // Collar not installed — nothing to consent to.
+            return;
+        }
+        try {
+            android.content.ComponentName collarAdmin = new android.content.ComponentName(
+                "com.focuslock", "com.focuslock.AdminReceiver");
+            android.app.admin.DevicePolicyManager dpm = (android.app.admin.DevicePolicyManager)
+                getSystemService(DEVICE_POLICY_SERVICE);
+            if (dpm != null && dpm.isAdminActive(collarAdmin)) {
+                return;  // already set up
+            }
+            android.content.Intent consent = new android.content.Intent();
+            consent.setComponent(new android.content.ComponentName(
+                "com.focuslock", "com.focuslock.ConsentActivity"));
+            consent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(consent);
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker",
+                "Collar consent launch skipped: " + e.getMessage());
+        }
     }
 
     private void showJoinMeshDialog() {
@@ -995,6 +1199,10 @@ public class MainActivity extends Activity {
             // Also update HOMELAB for backward compat
             HOMELAB = serverUrl;
 
+            // mesh_id is now set — start ntfy subscriber so push wake-ups
+            // land instead of waiting for the 30s polling fallback.
+            startNtfySubscriber();
+
             handler.post(() -> {
                 // Transition UI to paired state
                 sectionPairing.setVisibility(View.GONE);
@@ -1038,19 +1246,45 @@ public class MainActivity extends Activity {
      *  device in the mesh. Replaces the pre-2026-04-15 local-only write
      *  (landmine #20) — previously a subscription chosen here lived only on
      *  this phone and was lost on device swap. */
+    /** Write a transient subscribe outcome that survives the next ~30s of
+     *  refreshStats overwrites. See line 620 of refreshStats — it now reads
+     *  these keys when sub_tier is empty so the success "(syncing...)" or
+     *  failure error stays visible long enough to read. Also fires a Toast
+     *  for errors so the user sees them even if the activity is scrolled. */
+    private void setSubPending(String msg, int color, boolean alsoToast) {
+        prefs.edit()
+            .putLong("sub_pending_at", System.currentTimeMillis())
+            .putString("sub_pending_msg", msg)
+            .putInt("sub_pending_color", color)
+            .apply();
+        handler.post(() -> {
+            subStatus.setText(msg);
+            subStatus.setTextColor(color);
+            if (alsoToast) {
+                android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
     private void postSubscribeToMesh(String tier, int amount) {
         String meshId = gstr("focus_lock_mesh_id");
         String meshUrl = gstr("focus_lock_mesh_url");
         String nodeId = gstr("focus_lock_mesh_node_id");
         if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty()) {
-            handler.post(() -> subStatus.setText("Not paired to a mesh yet"));
+            setSubPending("Not paired to a mesh yet", 0xFFcc4444, true);
             return;
         }
         long ts = System.currentTimeMillis();
         String payload = meshId + "|" + nodeId + "|" + tier + "|" + ts;
         String signature = PairingManager.sign(getContentResolver(), payload);
         if (signature == null || signature.isEmpty()) {
-            handler.post(() -> subStatus.setText("Subscribe failed (no key)"));
+            // Most common cause on consumer installs: bunny privkey isn't in
+            // Settings.Global because WRITE_SECURE_SETTINGS isn't granted, so
+            // PairingManager.generateKeypair silently failed. The user has to
+            // re-pair (or get the permission granted via adb) before signing
+            // can work — surface that explicitly.
+            setSubPending("Subscribe failed: no signing key (re-pair or grant WRITE_SECURE_SETTINGS)",
+                0xFFcc4444, true);
             return;
         }
         JSONObject body = new JSONObject();
@@ -1060,7 +1294,7 @@ public class MainActivity extends Activity {
             body.put("ts", ts);
             body.put("signature", signature);
         } catch (JSONException e) {
-            handler.post(() -> subStatus.setText("Subscribe failed (json)"));
+            setSubPending("Subscribe failed (json)", 0xFFcc4444, true);
             return;
         }
         try {
@@ -1082,17 +1316,18 @@ public class MainActivity extends Activity {
             conn.disconnect();
             if (code >= 400) {
                 final String err = sb.toString();
-                handler.post(() -> subStatus.setText("Subscribe failed: " + err));
+                setSubPending("Subscribe failed (HTTP " + code + "): " + err, 0xFFcc4444, true);
                 return;
             }
-            sendWebhook("/webhook/bunny-message",
+            sendSignedBunnyWebhook("/webhook/bunny-message", "bunny-message",
                 "{\"text\":\"Subscribed to " + tier + " ($" + amount + "/wk)\",\"type\":\"subscription\"}");
             // Optimistic UI update; authoritative sub_tier/sub_due arrive via
             // the next vault blob (usually within ~30s).
-            handler.post(() -> subStatus.setText(tier.toUpperCase() + " — $" + amount + "/week (syncing...)"));
+            setSubPending(tier.toUpperCase() + " — $" + amount + "/week (syncing...)",
+                0xFF44aa44, false);
         } catch (Exception e) {
             final String msg = e.getMessage();
-            handler.post(() -> subStatus.setText("Subscribe failed: " + msg));
+            setSubPending("Subscribe failed: " + msg, 0xFFcc4444, true);
         }
     }
 
@@ -1596,26 +1831,15 @@ public class MainActivity extends Activity {
                     // Track payment in Settings.Global (survives app reinstalls)
                     long totalPaid = Settings.Global.getLong(getContentResolver(), "focus_lock_total_paid_cents", 0);
                     Settings.Global.putLong(getContentResolver(), "focus_lock_total_paid_cents", totalPaid + amt * 100L);
-                    sendWebhook("/webhook/bunny-message",
+                    sendSignedBunnyWebhook("/webhook/bunny-message", "bunny-message",
                         "{\"text\":\"Paid " + tier + " subscription early ($" + amt + ")\",\"type\":\"prepay\"}");
                     handler.post(() -> {
                         subStatus.setText(tier.toUpperCase() + " — paid early! Next due in 7d");
                         subStatus.setTextColor(0xFF44aa44);
                     });
                 });
-                // Open banking app
-                try {
-                    String bankPkg = Settings.Global.getString(getContentResolver(), "focus_lock_banking_app");
-                    if (bankPkg != null && !bankPkg.isEmpty()) {
-                        Intent launch = getPackageManager().getLaunchIntentForPackage(bankPkg.trim());
-                        if (launch != null) {
-                            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                            startActivity(launch);
-                        }
-                    }
-                } catch (Exception e) {
-                    statusText.setText("Banking app: " + e.getMessage());
-                }
+                // Open banking app via the same picker chain the Pay button uses
+                launchBankingApp(false);
             })
             .setNegativeButton("Not yet", null)
             .show();
@@ -1688,7 +1912,7 @@ public class MainActivity extends Activity {
                 handler.post(() -> subStatus.setText("Unsubscribe failed: " + err));
                 return;
             }
-            sendWebhook("/webhook/bunny-message",
+            sendSignedBunnyWebhook("/webhook/bunny-message", "bunny-message",
                 "{\"text\":\"Unsubscribed from " + tier + " (fee: $" + fee + ")\",\"type\":\"unsubscription\"}");
             handler.post(() -> subStatus.setText("Cancelled. $" + fee + " fee charged (syncing...)"));
         } catch (Exception e) {
@@ -1713,7 +1937,7 @@ public class MainActivity extends Activity {
                     if (ok) {
                         // Track usage locally (mesh order from Lion controls the cap)
                         Settings.Global.putInt(getContentResolver(), "focus_lock_free_unlocks", used + 1);
-                        sendWebhook("/webhook/bunny-message",
+                        sendSignedBunnyWebhook("/webhook/bunny-message", "bunny-message",
                             "{\"text\":\"Used free Gold unlock\",\"type\":\"free-unlock\"}");
                         handler.post(() -> statusText.setText("Free unlock used!"));
                     } else {
@@ -1739,7 +1963,7 @@ public class MainActivity extends Activity {
                         + ",\"mode\":\"basic\",\"shame\":1,\"target\":\"phone\"}");
 
                     if (ok) {
-                        sendWebhook("/webhook/bunny-message",
+                        sendSignedBunnyWebhook("/webhook/bunny-message", "bunny-message",
                             "{\"text\":\"Self-locked for " + minutes + " minutes\",\"type\":\"self-lock\"}");
                         handler.post(() -> statusText.setText("Self-locked for " + minutes + "m"));
                     } else {
@@ -2076,6 +2300,12 @@ public class MainActivity extends Activity {
                     JSONObject m = msgs.optJSONObject(i);
                     if (m == null) continue;
                     if (!"lion".equals(m.optString("from"))) continue;
+                    // Skip notifications + auto-lock entirely for deleted
+                    // messages — Lion has retracted the message, the bunny
+                    // shouldn't be locked for "missing" a reply to a deleted
+                    // mandatory message, and we shouldn't fire a notif for
+                    // text she's no longer supposed to see.
+                    if (m.optBoolean("deleted", false)) continue;
                     JSONArray readBy = m.optJSONArray("read_by");
                     boolean readByMe = false;
                     if (readBy != null) {
@@ -2130,8 +2360,15 @@ public class MainActivity extends Activity {
                         if (m == null) continue;
                         String text = m.optString("text", "");
                         boolean fromBunny = "bunny".equals(m.optString("from"));
+                        boolean deleted = m.optBoolean("deleted", false);
+                        boolean edited = m.has("edited_at");
                         long ts = m.optLong("ts", 0);
-                        if (m.optBoolean("encrypted", false) && !fromBunny) {
+                        // Tombstone wins over decryption + mandatory-reply
+                        // formatting — Lion has retracted, the bunny sees
+                        // "[deleted]" with no original text leak.
+                        if (deleted) {
+                            text = "[deleted]";
+                        } else if (m.optBoolean("encrypted", false) && !fromBunny) {
                             if (E2EEHelper.canDecrypt(bunnyPrivKey)) {
                                 String decrypted = E2EEHelper.decrypt(
                                     m.optString("ciphertext", ""),
@@ -2146,9 +2383,12 @@ public class MainActivity extends Activity {
                             text = "[encrypted — sent by you]";
                         }
                         boolean isMandatory = m.optBoolean("mandatory_reply", false)
-                            && !m.optBoolean("replied", false);
+                            && !m.optBoolean("replied", false) && !deleted;
                         if (isMandatory && !fromBunny) {
                             text = "[REPLY REQUIRED] " + text;
+                        }
+                        if (edited && !deleted) {
+                            text = text + "  (edited)";
                         }
                         addMessageBubble(text, fromBunny, ts);
                     }
@@ -2222,20 +2462,67 @@ public class MainActivity extends Activity {
     }
 
     private void addMessageBubble(String text, boolean fromBunny, long timestamp) {
-        TextView tv = new TextView(this);
-        String timeStr = formatRelativeTime(timestamp);
-        tv.setText((fromBunny ? "You" : "Lion") + " · " + timeStr + "\n" + text);
-        tv.setTextColor(fromBunny ? 0xFFaa88cc : 0xFFcc9900);
-        tv.setTextSize(12);
-        tv.setPadding(12, 8, 12, 8);
-        tv.setBackgroundColor(fromBunny ? 0xFF120e1a : 0xFF1a1808);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+        // SMS-app-style bubble: align right for self (bunny), left for the
+        // Lion. Bubble width is wrap_content with a generous max so long
+        // messages wrap. Timestamp under each bubble in dim grey. Container
+        // is wrapped in a fixed-height ScrollView (messages_scroll) — see
+        // activity_main.xml. We auto-scroll to the bottom after adding so
+        // the most recent message is always visible.
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.setMargins(0, 0, 0, 4);
-        tv.setLayoutParams(lp);
-        messagesContainer.addView(tv);
+        rowLp.setMargins(0, 4, 0, 4);
+        row.setLayoutParams(rowLp);
+
+        // The bubble itself
+        TextView bubble = new TextView(this);
+        bubble.setText(text);
+        bubble.setTextColor(fromBunny ? 0xFFe8d8ff : 0xFFffe6a8);
+        bubble.setTextSize(14);
+        bubble.setPadding(20, 14, 20, 14);
+        // Rounded rectangle background via GradientDrawable so we don't need
+        // a separate XML drawable resource.
+        android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
+        bg.setColor(fromBunny ? 0xFF3a2a4a : 0xFF3a2e10);
+        bg.setCornerRadius(28f);
+        bubble.setBackground(bg);
+        LinearLayout.LayoutParams bubbleLp = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        bubbleLp.gravity = fromBunny ? android.view.Gravity.END : android.view.Gravity.START;
+        bubbleLp.leftMargin = fromBunny ? 80 : 0;
+        bubbleLp.rightMargin = fromBunny ? 0 : 80;
+        bubble.setLayoutParams(bubbleLp);
+        // Cap bubble width so long messages wrap instead of pushing offscreen.
+        int maxPx = (int) (getResources().getDisplayMetrics().widthPixels * 0.78);
+        bubble.setMaxWidth(maxPx);
+        row.addView(bubble);
+
+        // Timestamp under bubble, aligned to the same edge.
+        if (timestamp > 0) {
+            TextView ts = new TextView(this);
+            ts.setText(formatRelativeTime(timestamp));
+            ts.setTextColor(0xFF6a6275);
+            ts.setTextSize(10);
+            ts.setPadding(8, 2, 8, 0);
+            LinearLayout.LayoutParams tsLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            tsLp.gravity = fromBunny ? android.view.Gravity.END : android.view.Gravity.START;
+            ts.setLayoutParams(tsLp);
+            row.addView(ts);
+        }
+
+        messagesContainer.addView(row);
         while (messagesContainer.getChildCount() > 50) {
             messagesContainer.removeViewAt(0);
+        }
+
+        // Auto-scroll to bottom so the freshest message is always visible.
+        // The post() defers until layout pass completes so fullScroll has
+        // up-to-date child positions.
+        final ScrollView scroll = (ScrollView) findViewById(fid("messages_scroll"));
+        if (scroll != null) {
+            scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
         }
     }
 
@@ -2318,6 +2605,42 @@ public class MainActivity extends Activity {
 
     private int lastNotifiedBalance = -1;
 
+    private String lastConfinedRadius = "";
+
+    /** Persistent confined-to-home notification. Stays in the shade as long
+     *  as the Collar's geofence is active. Cleared by clearConfinedNotification
+     *  when Lion releases (clear-geofence). */
+    private void showConfinedNotification(String radius) {
+        if (radius == null || radius.isEmpty()) radius = "100";
+        if (radius.equals(lastConfinedRadius)) return;
+        lastConfinedRadius = radius;
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            NotificationChannel ch = new NotificationChannel(
+                "confined", "Confined to Home", NotificationManager.IMPORTANCE_LOW);
+            ch.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+            ch.setSound(null, null);
+            nm.createNotificationChannel(ch);
+            Notification n = new Notification.Builder(this, "confined")
+                .setContentTitle("Confined to home")
+                .setContentText("Geofence active — " + radius
+                    + "m radius. Auto-lock + $100 paywall on breach.")
+                .setSmallIcon(android.R.drawable.ic_dialog_map)
+                .setVisibility(Notification.VISIBILITY_PUBLIC)
+                .setOngoing(true)
+                .build();
+            nm.notify(302, n);
+        } catch (Exception e) { android.util.Log.e("BunnyTasker", "confined notif", e); }
+    }
+
+    private void clearConfinedNotification() {
+        if (lastConfinedRadius.isEmpty()) return;  // already cleared
+        lastConfinedRadius = "";
+        try {
+            ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).cancel(302);
+        } catch (Exception e) { /* best effort */ }
+    }
+
     private void showBalanceNotification(int amount) {
         // Only post/update if amount changed — prevents repeated sounds
         if (amount == lastNotifiedBalance) return;
@@ -2357,6 +2680,66 @@ public class MainActivity extends Activity {
             } catch (Exception e) { /* try next */ }
         }
         android.util.Log.e("BunnyTasker", "All homelab URLs failed for " + path);
+    }
+
+    /** Bunny-signed variant of sendWebhook for endpoints that require a
+     *  signature over "{mesh_id}|{node_id}|{event_type}|{ts}". Reads
+     *  mesh_id / node_id / bunny_privkey from Settings.Global, merges
+     *  ts + signature into the caller-supplied inner JSON, and posts to
+     *  path. If mesh/node/key are missing (pre-join state) the call is
+     *  skipped with a warning — don't spam the server with unsigned
+     *  requests that will only get 403'd.
+     *
+     *  Companion v53 (2.20): see CHANGELOG entry for /webhook/bunny-message
+     *  which moved from unauth'd to bunny-signed as a "clean break, no grace
+     *  period" update coordinated with the server. */
+    private void sendSignedBunnyWebhook(String path, String eventType, String innerJson) {
+        String meshId = gstr("focus_lock_mesh_id");
+        String nodeId = gstr("focus_lock_mesh_node_id");
+        String bunnyPrivB64 = gstr("focus_lock_bunny_privkey");
+        if (meshId.isEmpty() || nodeId.isEmpty() || bunnyPrivB64.isEmpty()) {
+            android.util.Log.w("BunnyTasker",
+                "sendSignedBunnyWebhook(" + path + ") skipped: not yet paired/joined");
+            return;
+        }
+        try {
+            long ts = System.currentTimeMillis();
+            String payload = meshId + "|" + nodeId + "|" + eventType + "|" + ts;
+            byte[] privBytes = android.util.Base64.decode(bunnyPrivB64, android.util.Base64.NO_WRAP);
+            java.security.spec.PKCS8EncodedKeySpec spec =
+                new java.security.spec.PKCS8EncodedKeySpec(privBytes);
+            java.security.PrivateKey priv =
+                java.security.KeyFactory.getInstance("RSA").generatePrivate(spec);
+            java.security.Signature sig = java.security.Signature.getInstance("SHA256withRSA");
+            sig.initSign(priv);
+            sig.update(payload.getBytes("UTF-8"));
+            String signature = android.util.Base64.encodeToString(
+                sig.sign(), android.util.Base64.NO_WRAP);
+
+            // Merge mesh_id / node_id / ts / signature into the inner JSON.
+            // innerJson is expected to be a JSON object "{...}" — strip the
+            // trailing "}", append our fields, re-close. Cheap + matches
+            // the hand-rolled JSON style used elsewhere in this file.
+            String inner = innerJson.trim();
+            if (!inner.startsWith("{") || !inner.endsWith("}")) {
+                android.util.Log.e("BunnyTasker",
+                    "sendSignedBunnyWebhook(" + path + ") bad innerJson shape");
+                return;
+            }
+            String body;
+            if (inner.equals("{}")) {
+                body = "{\"mesh_id\":\"" + meshId + "\",\"node_id\":\"" + nodeId
+                    + "\",\"ts\":" + ts + ",\"signature\":\"" + signature + "\"}";
+            } else {
+                body = inner.substring(0, inner.length() - 1)
+                    + ",\"mesh_id\":\"" + meshId + "\",\"node_id\":\"" + nodeId
+                    + "\",\"ts\":" + ts + ",\"signature\":\"" + signature + "\"}";
+            }
+            sendWebhook(path, body);
+        } catch (Exception e) {
+            android.util.Log.e("BunnyTasker",
+                "sendSignedBunnyWebhook(" + path + ") sign failed: " + e.getMessage());
+        }
     }
 
     private String fetchFromHomelab(String path) {
@@ -2430,9 +2813,116 @@ public class MainActivity extends Activity {
         });
     }
 
+    /** Resolve the configured banking app, launch it, or prompt the user
+     *  to pick one. Settings.Global lookup remains as a legacy compat
+     *  fallback for installs that were adb-provisioned before the picker
+     *  shipped — once the picker writes to SharedPreferences, that
+     *  becomes the source of truth. */
+    private void launchBankingApp(boolean forcePick) {
+        String pkg = forcePick ? "" : prefs.getString("banking_app", "");
+        if (pkg.isEmpty()) {
+            // Legacy: try Settings.Global as fallback for adb-provisioned setups
+            pkg = gstr("focus_lock_banking_app");
+        }
+        if (!pkg.isEmpty() && !forcePick) {
+            Intent launch = getPackageManager().getLaunchIntentForPackage(pkg);
+            if (launch != null) {
+                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(launch);
+                return;
+            }
+            // Stored package no longer installed — fall through to picker
+            android.util.Log.w("BunnyTasker", "banking app " + pkg + " not installed, re-prompting");
+        }
+        showBankingPicker();
+    }
+
+    /** Dialog listing installed apps that match a known bank package from
+     *  shared/banks.json (bundled at /assets/banks.json). On select, save
+     *  to SharedPreferences and launch immediately. */
+    private void showBankingPicker() {
+        executor.execute(() -> {
+            java.util.List<String[]> installed = new java.util.ArrayList<>();
+            android.content.pm.PackageManager pm = getPackageManager();
+            try {
+                java.io.InputStream is = getAssets().open("banks.json");
+                java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = is.read(buf)) > 0) baos.write(buf, 0, n);
+                is.close();
+                JSONObject root = new JSONObject(baos.toString("UTF-8"));
+                java.util.Iterator<String> regions = root.keys();
+                java.util.Set<String> seen = new java.util.HashSet<>();
+                while (regions.hasNext()) {
+                    String region = regions.next();
+                    if (region.startsWith("_")) continue;
+                    Object val = root.opt(region);
+                    if (!(val instanceof JSONArray)) continue;
+                    JSONArray arr = (JSONArray) val;
+                    for (int i = 0; i < arr.length(); i++) {
+                        JSONObject b = arr.optJSONObject(i);
+                        if (b == null) continue;
+                        String pkg = b.optString("package", "");
+                        String name = b.optString("name", pkg);
+                        if (pkg.isEmpty() || !seen.add(pkg)) continue;
+                        if (pm.getLaunchIntentForPackage(pkg) != null) {
+                            installed.add(new String[]{pkg, name});
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                android.util.Log.w("BunnyTasker", "banks.json read failed: " + e.getMessage());
+            }
+            handler.post(() -> {
+                if (installed.isEmpty()) {
+                    new android.app.AlertDialog.Builder(this)
+                        .setTitle("No banking app detected")
+                        .setMessage("None of the apps in shared/banks.json appear to be installed. "
+                            + "Install your bank's app, then tap Pay again. "
+                            + "If your bank isn't on the list, send a PR to shared/banks.json.")
+                        .setPositiveButton("OK", null)
+                        .show();
+                    return;
+                }
+                CharSequence[] labels = new CharSequence[installed.size()];
+                for (int i = 0; i < installed.size(); i++) labels[i] = installed.get(i)[1];
+                new android.app.AlertDialog.Builder(this)
+                    .setTitle("Choose your banking app")
+                    .setItems(labels, (d, which) -> {
+                        String[] choice = installed.get(which);
+                        prefs.edit().putString("banking_app", choice[0]).apply();
+                        // Best-effort mirror to Settings.Global so the Collar's
+                        // lock screen (com.focuslock) can read the same value.
+                        // Throws SecurityException without WRITE_SECURE_SETTINGS
+                        // on consumer installs — caught + logged. Lock-screen
+                        // banking on consumer installs is a known follow-up
+                        // (needs ContentProvider per Phase 2 of the no-adb pivot).
+                        try {
+                            Settings.Global.putString(getContentResolver(),
+                                "focus_lock_banking_app", choice[0]);
+                        } catch (Exception e) {
+                            android.util.Log.i("BunnyTasker",
+                                "banking_app mirror to Settings.Global denied (consumer install): "
+                                    + e.getMessage());
+                        }
+                        Intent launch = pm.getLaunchIntentForPackage(choice[0]);
+                        if (launch != null) {
+                            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            startActivity(launch);
+                        }
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show();
+            });
+        });
+    }
+
     @Override
     protected void onDestroy() {
         super.onDestroy();
         handler.removeCallbacks(poller);
+        ntfyRunning = false;
+        if (ntfyThread != null) ntfyThread.interrupt();
     }
 }

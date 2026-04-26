@@ -394,6 +394,83 @@ class CollarState:
 state = CollarState()
 
 
+# ── Plaintext signed state mirror (vault-mode only) ──
+# See focuslock-desktop.py for the design rationale; this is the Windows
+# port of the same flow, hooked into the existing background-loop pattern
+# instead of GLib timers.
+_state_mirror_last_hash = ""
+
+
+def _state_mirror_fields():
+    """Whitelist + extraction. Keep in sync with STATE_MIRROR_FIELDS in
+    focuslock-mail.py and the Java side in ControlService.stateMirrorPush."""
+    return {
+        "paywall": str(mesh_orders.get("paywall", "") or ""),
+        "paywall_original": str(mesh_orders.get("paywall_original", "") or ""),
+        "sub_tier": str(mesh_orders.get("sub_tier", "") or ""),
+        "sub_due": int(mesh_orders.get("sub_due", 0) or 0),
+        "lock_active": int(mesh_orders.get("lock_active", 0) or 0),
+        "locked_at": int(mesh_orders.get("locked_at", 0) or 0),
+        "unlock_at": int(mesh_orders.get("unlock_at", 0) or 0),
+        "free_unlocks": int(mesh_orders.get("free_unlocks", 0) or 0),
+    }
+
+
+def _state_mirror_push():
+    """Sign + POST current state to /api/mesh/{id}/state-mirror. Idempotent
+    on hash; skipped when MESH_URL/MESH_ID/vault keypair aren't set."""
+    global _state_mirror_last_hash
+    if not MESH_URL or not MESH_ID or not _vault_privkey_pem:
+        return
+    try:
+        import base64 as _b64
+        import hashlib as _hashlib
+        import urllib.error as _urlerr
+        import urllib.request as _urlreq
+
+        from cryptography.hazmat.primitives import hashes as _hh
+        from cryptography.hazmat.primitives import serialization as _ser
+        from cryptography.hazmat.primitives.asymmetric import padding as _pad
+
+        state_dict = _state_mirror_fields()
+        state_canonical = json.dumps(state_dict, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        state_hash_hex = _hashlib.sha256(state_canonical).hexdigest()
+        if state_hash_hex == _state_mirror_last_hash:
+            return
+        ts_ms = int(time.time() * 1000)
+        payload = f"{MESH_ID}|{MESH_NODE_ID}|state-mirror|{ts_ms}|{state_hash_hex}"
+        priv = _ser.load_pem_private_key(_vault_privkey_pem.encode(), password=None)
+        sig_bytes = priv.sign(payload.encode("utf-8"), _pad.PKCS1v15(), _hh.SHA256())
+        signature = _b64.b64encode(sig_bytes).decode("ascii")
+        body = json.dumps(
+            {
+                "node_id": MESH_NODE_ID,
+                "ts": ts_ms,
+                "state": state_dict,
+                "signature": signature,
+            }
+        ).encode("utf-8")
+        req = _urlreq.Request(
+            f"{MESH_URL}/api/mesh/{MESH_ID}/state-mirror",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with _urlreq.urlopen(req, timeout=10) as resp:
+                if resp.status == 200:
+                    _state_mirror_last_hash = state_hash_hex
+                else:
+                    logger.warning("state-mirror POST returned %s", resp.status)
+        except _urlerr.HTTPError as e:
+            if e.code == 403:
+                logger.debug("state-mirror: node not yet registered (HTTP 403)")
+            else:
+                logger.warning("state-mirror HTTP %s: %s", e.code, e.reason)
+    except Exception as e:
+        logger.warning("state-mirror push failed: %s", e)
+
+
 def _seed_configured_peers():
     """Seed mesh peers from config (homelab, phone addresses)."""
     if HOMELAB_URL:
@@ -812,7 +889,7 @@ def generate_lock_wallpaper():
         font_paywall = font_msg
 
     # Message — truncate for wallpaper; the overlay window shows full text.
-    msg = state.message or "No PC for now."
+    msg = state.message or "Locked out by your Lion."
     if len(msg) > 80:
         msg = msg[:77] + "..."
     bbox = draw.textbbox((0, 0), msg, font=font_msg)
@@ -1840,6 +1917,20 @@ def main():
 
         threading.Thread(target=_vault_poll_loop, daemon=True).start()
         logger.info("Vault poll started (replaces plaintext sync to server)")
+
+        # Plaintext signed state mirror — keeps the server's _orders_registry
+        # coherent for compound-interest + IMAP scanners on vault-mode meshes.
+        # 30s cadence matches the phone Collar's stateMirrorPush.
+        def _state_mirror_loop():
+            while True:
+                try:
+                    _state_mirror_push()
+                except Exception:
+                    logger.exception("State-mirror loop error")
+                time.sleep(30)
+
+        threading.Thread(target=_state_mirror_loop, daemon=True).start()
+        logger.info("State-mirror push started (30s interval, vault-mode only)")
     else:
         # Start direct sync fallback loop
         def _direct_sync_loop():

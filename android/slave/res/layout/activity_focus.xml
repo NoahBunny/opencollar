@@ -17,7 +17,7 @@
         android:id="@+id/focus_message"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="No phone for now."
+        android:text="Locked out by your Lion."
         android:textColor="#e0e0e0"
         android:textSize="28sp"
         android:fontFamily="@font/lexend"

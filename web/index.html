@@ -1832,13 +1832,17 @@ label {
   $('#btnGamble').addEventListener('click', () => {
     const current = parseFloat(status.paywall) || 0;
     showModal('Double or Nothing',
-      `Current paywall: <strong>${formatMoney(current)}</strong><br><br>Coin flip: <strong>Heads</strong> = paywall cleared, <strong>Tails</strong> = paywall doubled to ${formatMoney(current * 2)}.<br><br>Feeling lucky?`,
+      `Current paywall: <strong>${formatMoney(current)}</strong><br><br>Coin flip: <strong>Heads</strong> = halved to ${formatMoney(Math.ceil(current / 2))}, <strong>Tails</strong> = doubled to ${formatMoney(current * 2)}.<br><br>Feeling lucky?`,
       [
         { label: 'Cancel' },
         { label: 'Gamble', cls: 'btn-primary', fn: () => {
           api('POST', '/api/gamble', {})
             .then(data => {
-              const msg = data.result === 'win' ? 'Bunny wins! Paywall cleared.' : `Bunny loses! Paywall doubled.`;
+              const won = data.result === 'heads';
+              const newPw = data.new_paywall != null ? formatMoney(data.new_paywall) : '';
+              const msg = won
+                ? `Heads — paywall halved${newPw ? ' to ' + newPw : ''}.`
+                : `Tails — paywall doubled${newPw ? ' to ' + newPw : ''}.`;
               toast(msg);
               pollStatus();
             })

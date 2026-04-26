@@ -331,8 +331,21 @@
             </LinearLayout>
             <TextView android:id="@+id/schedule_label" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" android:textColor="#aa8844" android:textSize="10sp" android:visibility="gone" android:layout_marginBottom="4dp" />
 
-            <!-- ── Message Thread ── -->
-            <LinearLayout android:id="@+id/lion_message_thread" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginBottom="12dp" />
+            <!-- ── Message Thread (SMS-style scrollable bubbles) ── -->
+            <ScrollView
+                android:id="@+id/lion_message_scroll"
+                android:layout_width="match_parent"
+                android:layout_height="380dp"
+                android:fillViewport="true"
+                android:background="#08070d"
+                android:padding="6dp"
+                android:layout_marginBottom="12dp">
+                <LinearLayout
+                    android:id="@+id/lion_message_thread"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical" />
+            </ScrollView>
 
             <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />
 

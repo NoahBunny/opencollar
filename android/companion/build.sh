@@ -62,12 +62,15 @@ if [ "$RELEASE" = "1" ]; then
     KEYSTORE_PASS="$FOCUSLOCK_KEYSTORE_PASS"
     KEY_ALIAS="${FOCUSLOCK_KEY_ALIAS:-bunnytasker}"
 else
-    # Generate debug keystore if missing (reuse slave keystore if available).
-    # Both the slave keystore and the locally-generated one use alias
-    # "focuslock" so we pin KEY_ALIAS to match — previously defaulted to
-    # "bunnytasker" which broke CI signing ("entry does not contain a key").
-    if [ ! -f debug.keystore ]; then
-        if [ -f ../slave/debug.keystore ]; then
+    # Reuse slave's debug keystore if available; both use alias "focuslock"
+    # so we pin KEY_ALIAS to match — previously defaulted to "bunnytasker"
+    # which broke CI signing ("entry does not contain a key"), see 4e5d157.
+    # Re-validate after copy so a stale slave keystore (older build.sh, wrong
+    # alias) doesn't propagate the old failure mode here.
+    if ! keytool -list -keystore debug.keystore -storepass android -alias focuslock &>/dev/null; then
+        rm -f debug.keystore
+        if [ -f ../slave/debug.keystore ] && \
+            keytool -list -keystore ../slave/debug.keystore -storepass android -alias focuslock &>/dev/null; then
             cp ../slave/debug.keystore .
         else
             echo "Generating debug keystore..."
@@ -85,9 +88,24 @@ fi
 echo "Compiling resources..."
 aapt2 compile --dir res -o compiled.zip
 
+# Sync banks.json into assets so the bank-app picker can read the canonical
+# package list. Single source of truth in shared/banks.json.
+if [ -f ../../shared/banks.json ]; then
+    mkdir -p assets
+    cp ../../shared/banks.json assets/banks.json
+fi
+
 echo "Linking..."
+# -A assets bundles files at /assets/... inside the APK so WebView can load
+# them via file:///android_asset/. Used for qrcode.min.js which renders the
+# pair QR in the Direct Pair dialog, and banks.json which seeds the
+# banking-app picker.
+ASSETS_FLAG=""
+if [ -d assets ]; then
+    ASSETS_FLAG="-A assets"
+fi
 aapt2 link -o unaligned.apk -I "$ANDROID_JAR" --manifest AndroidManifest.xml \
-    --java src compiled.zip --auto-add-overlay
+    --java src $ASSETS_FLAG compiled.zip --auto-add-overlay
 
 echo "Compiling Java..."
 javac -encoding UTF-8 -source 17 -target 17 -classpath "$ANDROID_JAR" -d classes src/com/bunnytasker/*.java
