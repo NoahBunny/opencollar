@@ -12,6 +12,7 @@ from focuslock_payment import (
     _HARDCODED_FALLBACK,
     DEFAULT_SKIP_FOLDERS,
     check_payment_emails,
+    check_payment_emails_multi,
     extract_amount,
     get_body,
     load_iso_codes,
@@ -837,3 +838,448 @@ class TestWalkImapFolders:
         assert "junk" in DEFAULT_SKIP_FOLDERS
         assert "drafts" in DEFAULT_SKIP_FOLDERS
         assert "sent" in DEFAULT_SKIP_FOLDERS
+
+
+# ── check_payment_emails_multi — multi-mesh polling loop ──
+
+
+class TestCheckPaymentEmailsMultiMesh:
+    """Tests for the per-mesh IMAP scanner (audit MEDIUM #5, 2026-04-26).
+
+    The single-mesh `check_payment_emails` only ever scanned the operator's
+    mailbox and credited every payment to OPERATOR_MESH_ID. These tests
+    cover the multi-mesh replacement: each consumer mesh gets scanned with
+    its own creds, payments credit to the originating mesh, and ledger
+    isolation prevents cross-mesh dedup collisions.
+    """
+
+    def _make_mesh_orders(self, *, paywall="0", imap_host="", imap_user="", imap_pass=""):
+        store = {
+            "paywall": paywall,
+            "payment_imap_host": imap_host,
+            "payment_imap_user": imap_user,
+            "payment_imap_pass": imap_pass,
+        }
+        mo = MagicMock()
+        mo.get.side_effect = lambda k, default=None: store.get(k, default)
+        mo.set.side_effect = lambda k, v: store.__setitem__(k, v)
+        mo._store = store
+        return mo
+
+    def _make_ledger(self, duplicate=False, name="ledger"):
+        ledger = MagicMock()
+        ledger.add_entry.return_value = {"error": "duplicate"} if duplicate else {"ok": True}
+        ledger._name = name
+        return ledger
+
+    def _make_adb(self, lock_active="1"):
+        adb = MagicMock()
+        adb.get.side_effect = lambda k: lock_active if k == "focus_lock_active" else "0"
+        return adb
+
+    def _install_per_host_imap(self, monkeypatch, *, host_to_emails):
+        """Install an imaplib.IMAP4_SSL stub that returns a mesh-specific
+        email set keyed by the connecting host. Tracks which hosts were
+        connected to via `connected_hosts`."""
+        import imaplib
+
+        connected_hosts: list = []
+
+        def ctor(host):
+            connected_hosts.append(host)
+            emails_for_host = host_to_emails.get(host, [])
+            fake_mail = MagicMock()
+            fake_mail.login.return_value = None
+            fake_mail.list.return_value = ("OK", [b'(\\HasNoChildren) "/" "INBOX"'])
+            fake_mail.select.return_value = ("OK", [b""])
+            ids = b" ".join(str(i + 1).encode() for i in range(len(emails_for_host)))
+            fake_mail.search.return_value = ("OK", [ids])
+            fetch_responses = [("OK", [(b"%d (RFC822)" % (i + 1), raw)]) for i, raw in enumerate(emails_for_host)]
+
+            def fake_fetch(num, _what):
+                idx = int(num) - 1
+                return fetch_responses[idx]
+
+            fake_mail.fetch.side_effect = fake_fetch
+            fake_mail.logout.return_value = None
+            return fake_mail
+
+        monkeypatch.setattr(imaplib, "IMAP4_SSL", ctor)
+        return connected_hosts
+
+    def test_two_meshes_each_scanned_with_own_creds(self, monkeypatch):
+        """Multi-mesh loop visits both meshes per cycle and connects to each
+        mesh's own IMAP host."""
+        mesh_a = self._make_mesh_orders(paywall="50", imap_host="imap.a.example", imap_user="lion-a", imap_pass="pa")
+        mesh_b = self._make_mesh_orders(paywall="50", imap_host="imap.b.example", imap_user="lion-b", imap_pass="pb")
+        ledger_a = self._make_ledger(name="A")
+        ledger_b = self._make_ledger(name="B")
+        adb = self._make_adb()
+
+        connected = self._install_per_host_imap(
+            monkeypatch,
+            host_to_emails={
+                "imap.a.example": [_make_imap_email(msg_id="<a-1@x>")],
+                "imap.b.example": [_make_imap_email(msg_id="<b-1@x>")],
+            },
+        )
+        monkeypatch.setattr("focuslock_payment.time.sleep", _make_sleep_stop(1))
+
+        contexts = [
+            {
+                "mesh_id": "A",
+                "mesh_orders": mesh_a,
+                "payment_ledger": ledger_a,
+                "apply_fn": None,
+                "static_fallback": None,
+            },
+            {
+                "mesh_id": "B",
+                "mesh_orders": mesh_b,
+                "payment_ledger": ledger_b,
+                "apply_fn": None,
+                "static_fallback": None,
+            },
+        ]
+
+        with pytest.raises(_StopLoop):
+            check_payment_emails_multi(
+                check_interval=1,
+                mesh_contexts_fn=lambda: contexts,
+                adb=adb,
+                providers=_HARDCODED_FALLBACK,
+                iso_codes="USD|CAD",
+            )
+
+        assert sorted(connected) == ["imap.a.example", "imap.b.example"]
+        # Each mesh's ledger received its own message-id only
+        a_sources = [c.kwargs.get("source") for c in ledger_a.add_entry.call_args_list]
+        b_sources = [c.kwargs.get("source") for c in ledger_b.add_entry.call_args_list]
+        assert a_sources == ["<a-1@x>"]
+        assert b_sources == ["<b-1@x>"]
+
+    def test_mesh_without_creds_skipped(self, monkeypatch):
+        """A mesh with no IMAP creds + no static fallback is silently
+        skipped — IMAP4_SSL is never called for it."""
+        mesh_no_creds = self._make_mesh_orders(paywall="50")  # all imap_* empty
+        mesh_with = self._make_mesh_orders(paywall="50", imap_host="imap.real", imap_user="u", imap_pass="p")
+        ledger_no = self._make_ledger(name="no-creds")
+        ledger_with = self._make_ledger(name="real")
+        adb = self._make_adb()
+
+        connected = self._install_per_host_imap(monkeypatch, host_to_emails={"imap.real": []})
+        monkeypatch.setattr("focuslock_payment.time.sleep", _make_sleep_stop(1))
+
+        contexts = [
+            {
+                "mesh_id": "no-creds",
+                "mesh_orders": mesh_no_creds,
+                "payment_ledger": ledger_no,
+                "apply_fn": None,
+                "static_fallback": None,
+            },
+            {
+                "mesh_id": "real",
+                "mesh_orders": mesh_with,
+                "payment_ledger": ledger_with,
+                "apply_fn": None,
+                "static_fallback": None,
+            },
+        ]
+
+        with pytest.raises(_StopLoop):
+            check_payment_emails_multi(
+                check_interval=1,
+                mesh_contexts_fn=lambda: contexts,
+                adb=adb,
+                providers=_HARDCODED_FALLBACK,
+                iso_codes="USD|CAD",
+            )
+
+        # Only the real-creds mesh's host was connected; no-creds mesh skipped
+        assert connected == ["imap.real"]
+        ledger_no.add_entry.assert_not_called()
+
+    def test_static_fallback_used_when_mesh_creds_empty(self, monkeypatch):
+        """A mesh with empty payment_imap_* but a static_fallback (operator
+        case) uses the fallback creds. A peer mesh without fallback is
+        skipped. Together this proves the operator-only static-fallback
+        contract."""
+        mesh_op = self._make_mesh_orders(paywall="50")  # no per-mesh creds
+        mesh_consumer = self._make_mesh_orders(paywall="50")  # no per-mesh creds
+        ledger_op = self._make_ledger(name="op")
+        ledger_consumer = self._make_ledger(name="consumer")
+        adb = self._make_adb()
+
+        connected = self._install_per_host_imap(
+            monkeypatch,
+            host_to_emails={"imap.relay": [_make_imap_email(msg_id="<op-1@x>")]},
+        )
+        monkeypatch.setattr("focuslock_payment.time.sleep", _make_sleep_stop(1))
+
+        contexts = [
+            {
+                "mesh_id": "OP",
+                "mesh_orders": mesh_op,
+                "payment_ledger": ledger_op,
+                "apply_fn": None,
+                "static_fallback": ("imap.relay", "relay@x", "relay-pw"),
+            },
+            {
+                "mesh_id": "CON",
+                "mesh_orders": mesh_consumer,
+                "payment_ledger": ledger_consumer,
+                "apply_fn": None,
+                "static_fallback": None,
+            },
+        ]
+
+        with pytest.raises(_StopLoop):
+            check_payment_emails_multi(
+                check_interval=1,
+                mesh_contexts_fn=lambda: contexts,
+                adb=adb,
+                providers=_HARDCODED_FALLBACK,
+                iso_codes="USD|CAD",
+            )
+
+        # Only the operator host was connected; consumer mesh got no fallback
+        assert connected == ["imap.relay"]
+        ledger_consumer.add_entry.assert_not_called()
+        # Operator's ledger received the payment
+        assert any(c.kwargs.get("source") == "<op-1@x>" for c in ledger_op.add_entry.call_args_list)
+
+    def test_per_mesh_apply_fn_routes_payment_to_own_mesh(self, monkeypatch):
+        """Each mesh's apply_fn must be invoked for its own payments — never
+        for a peer mesh's. Closure capture must be correct (no late-binding
+        bug where every apply_fn ends up bound to the last mesh_id)."""
+        mesh_a = self._make_mesh_orders(paywall="100", imap_host="imap.a", imap_user="ua", imap_pass="pa")
+        mesh_b = self._make_mesh_orders(paywall="100", imap_host="imap.b", imap_user="ub", imap_pass="pb")
+        ledger_a = self._make_ledger()
+        ledger_b = self._make_ledger()
+        adb = self._make_adb()
+
+        self._install_per_host_imap(
+            monkeypatch,
+            host_to_emails={
+                "imap.a": [_make_imap_email(body="You received $40.00 via e-transfer. autodeposit.", msg_id="<a@x>")],
+                "imap.b": [_make_imap_email(body="You received $30.00 via e-transfer. autodeposit.", msg_id="<b@x>")],
+            },
+        )
+        monkeypatch.setattr("focuslock_payment.time.sleep", _make_sleep_stop(1))
+
+        apply_calls: list = []
+
+        def _apply(mesh_id):
+            def inner(action, params):
+                apply_calls.append((mesh_id, action, params.get("amount_cents")))
+
+            return inner
+
+        contexts = [
+            {
+                "mesh_id": "A",
+                "mesh_orders": mesh_a,
+                "payment_ledger": ledger_a,
+                "apply_fn": _apply("A"),
+                "static_fallback": None,
+            },
+            {
+                "mesh_id": "B",
+                "mesh_orders": mesh_b,
+                "payment_ledger": ledger_b,
+                "apply_fn": _apply("B"),
+                "static_fallback": None,
+            },
+        ]
+
+        with pytest.raises(_StopLoop):
+            check_payment_emails_multi(
+                check_interval=1,
+                mesh_contexts_fn=lambda: contexts,
+                adb=adb,
+                providers=_HARDCODED_FALLBACK,
+                iso_codes="USD|CAD",
+            )
+
+        # Each mesh's apply_fn was called exactly once with its own amount
+        assert ("A", "payment-received", 4000) in apply_calls
+        assert ("B", "payment-received", 3000) in apply_calls
+        # No cross-routing: A's $40 never lands on B and vice versa
+        assert ("A", "payment-received", 3000) not in apply_calls
+        assert ("B", "payment-received", 4000) not in apply_calls
+
+    def test_per_mesh_ledger_isolation(self, monkeypatch):
+        """Same Message-ID arriving on two meshes must credit BOTH (each
+        mesh has its own ledger and the dedup is mesh-local). Pre-fix all
+        payments hit a shared ledger and the second mesh would see
+        `error: duplicate`."""
+        mesh_a = self._make_mesh_orders(paywall="50", imap_host="imap.a", imap_user="ua", imap_pass="pa")
+        mesh_b = self._make_mesh_orders(paywall="50", imap_host="imap.b", imap_user="ub", imap_pass="pb")
+        ledger_a = self._make_ledger()
+        ledger_b = self._make_ledger()
+        adb = self._make_adb()
+
+        same_msgid = "<shared-msgid@x>"
+        self._install_per_host_imap(
+            monkeypatch,
+            host_to_emails={
+                "imap.a": [_make_imap_email(msg_id=same_msgid)],
+                "imap.b": [_make_imap_email(msg_id=same_msgid)],
+            },
+        )
+        monkeypatch.setattr("focuslock_payment.time.sleep", _make_sleep_stop(1))
+
+        contexts = [
+            {
+                "mesh_id": "A",
+                "mesh_orders": mesh_a,
+                "payment_ledger": ledger_a,
+                "apply_fn": None,
+                "static_fallback": None,
+            },
+            {
+                "mesh_id": "B",
+                "mesh_orders": mesh_b,
+                "payment_ledger": ledger_b,
+                "apply_fn": None,
+                "static_fallback": None,
+            },
+        ]
+
+        with pytest.raises(_StopLoop):
+            check_payment_emails_multi(
+                check_interval=1,
+                mesh_contexts_fn=lambda: contexts,
+                adb=adb,
+                providers=_HARDCODED_FALLBACK,
+                iso_codes="USD|CAD",
+            )
+
+        ledger_a.add_entry.assert_called_once()
+        ledger_b.add_entry.assert_called_once()
+
+    def test_contexts_fn_re_evaluated_each_cycle(self, monkeypatch):
+        """A mesh added to the registry between cycles must be picked up on
+        the next iteration — proves the loop calls mesh_contexts_fn each
+        cycle rather than caching the first result."""
+        mesh_a = self._make_mesh_orders(paywall="50", imap_host="imap.a", imap_user="ua", imap_pass="pa")
+        mesh_b = self._make_mesh_orders(paywall="50", imap_host="imap.b", imap_user="ub", imap_pass="pb")
+        ledger_a = self._make_ledger()
+        ledger_b = self._make_ledger()
+        adb = self._make_adb()
+
+        connected = self._install_per_host_imap(
+            monkeypatch,
+            host_to_emails={"imap.a": [], "imap.b": []},
+        )
+        monkeypatch.setattr("focuslock_payment.time.sleep", _make_sleep_stop(2))
+
+        cycle = {"n": 0}
+
+        def contexts_fn():
+            cycle["n"] += 1
+            if cycle["n"] == 1:
+                return [
+                    {
+                        "mesh_id": "A",
+                        "mesh_orders": mesh_a,
+                        "payment_ledger": ledger_a,
+                        "apply_fn": None,
+                        "static_fallback": None,
+                    },
+                ]
+            return [
+                {
+                    "mesh_id": "A",
+                    "mesh_orders": mesh_a,
+                    "payment_ledger": ledger_a,
+                    "apply_fn": None,
+                    "static_fallback": None,
+                },
+                {
+                    "mesh_id": "B",
+                    "mesh_orders": mesh_b,
+                    "payment_ledger": ledger_b,
+                    "apply_fn": None,
+                    "static_fallback": None,
+                },
+            ]
+
+        with pytest.raises(_StopLoop):
+            check_payment_emails_multi(
+                check_interval=1,
+                mesh_contexts_fn=contexts_fn,
+                adb=adb,
+                providers=_HARDCODED_FALLBACK,
+                iso_codes="USD|CAD",
+            )
+
+        # Cycle 1: only A. Cycle 2: A + B. Total connections: A, A, B.
+        assert connected.count("imap.a") == 2
+        assert connected.count("imap.b") == 1
+
+    def test_imap_exception_in_one_mesh_does_not_abort_others(self, monkeypatch):
+        """A connection failure on mesh A must not prevent mesh B's scan in
+        the same cycle. Pre-fix the legacy single-thread loop only had to
+        survive its own mesh's errors; multi-mesh requires per-mesh isolation."""
+        mesh_a = self._make_mesh_orders(paywall="50", imap_host="imap.broken", imap_user="ua", imap_pass="pa")
+        mesh_b = self._make_mesh_orders(paywall="50", imap_host="imap.ok", imap_user="ub", imap_pass="pb")
+        ledger_a = self._make_ledger()
+        ledger_b = self._make_ledger()
+        adb = self._make_adb()
+
+        import imaplib
+
+        def ctor(host):
+            if host == "imap.broken":
+                raise ConnectionError("imap unreachable")
+            fake = MagicMock()
+            fake.login.return_value = None
+            fake.list.return_value = ("OK", [b'(\\HasNoChildren) "/" "INBOX"'])
+            fake.select.return_value = ("OK", [b""])
+            fake.search.return_value = ("OK", [b"1"])
+            fake.fetch.return_value = (
+                "OK",
+                [(b"1 (RFC822)", _make_imap_email(msg_id="<b-only@x>"))],
+            )
+            fake.logout.return_value = None
+            return fake
+
+        monkeypatch.setattr(imaplib, "IMAP4_SSL", ctor)
+        monkeypatch.setattr("focuslock_payment.time.sleep", _make_sleep_stop(1))
+
+        contexts = [
+            {
+                "mesh_id": "A",
+                "mesh_orders": mesh_a,
+                "payment_ledger": ledger_a,
+                "apply_fn": None,
+                "static_fallback": None,
+            },
+            {
+                "mesh_id": "B",
+                "mesh_orders": mesh_b,
+                "payment_ledger": ledger_b,
+                "apply_fn": None,
+                "static_fallback": None,
+            },
+        ]
+
+        with pytest.raises(_StopLoop):
+            check_payment_emails_multi(
+                check_interval=1,
+                mesh_contexts_fn=contexts_fn_factory(contexts),
+                adb=adb,
+                providers=_HARDCODED_FALLBACK,
+                iso_codes="USD|CAD",
+            )
+
+        # B got scanned despite A blowing up
+        assert any(c.kwargs.get("source") == "<b-only@x>" for c in ledger_b.add_entry.call_args_list)
+
+
+def contexts_fn_factory(contexts):
+    """Helper to bind a static contexts list to a callable. Defined at module
+    level so multiple TestCheckPaymentEmailsMultiMesh tests can share it."""
+    return lambda: contexts
