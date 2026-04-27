@@ -100,15 +100,15 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 sudo mkdir -p /opt/focuslock /opt/focuslock/web
 
-# Daemon entrypoint + root-level mesh / ntfy modules
-for f in focuslock-desktop.py focuslock_mesh.py focuslock_ntfy.py; do
+# Daemon entrypoint + tray + root-level mesh / ntfy modules
+for f in focuslock-desktop.py focuslock-tray.py focuslock_mesh.py focuslock_ntfy.py; do
     if [ ! -f "$PROJECT_DIR/$f" ]; then
         echo "FATAL: $PROJECT_DIR/$f missing — repo is incomplete." >&2
         exit 1
     fi
     sudo cp "$PROJECT_DIR/$f" /opt/focuslock/
 done
-sudo chmod 755 /opt/focuslock/focuslock-desktop.py
+sudo chmod 755 /opt/focuslock/focuslock-desktop.py /opt/focuslock/focuslock-tray.py
 
 # Shared modules — focuslock-desktop.py imports focuslock_http, focuslock_sync,
 # focuslock_config; deploy the whole shared/focuslock_*.py family so future
@@ -209,10 +209,34 @@ $ENV_HOMELAB_LINE
 WantedBy=graphical-session.target
 EOF
 
+cat > ~/.config/systemd/user/focuslock-tray.service << EOF
+[Unit]
+Description=FocusLock System Tray
+After=graphical-session.target focuslock-desktop.service
+PartOf=graphical-session.target
+# Tray is non-essential — if it fails repeatedly we shouldn't bring down
+# the whole user session, so the failure mode is "indicator missing"
+# rather than "daemon-reload loop".
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -u /opt/focuslock/focuslock-tray.py
+Restart=on-failure
+RestartSec=5
+Environment=DISPLAY=:0
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=XDG_RUNTIME_DIR=/run/user/$(id -u)
+
+[Install]
+WantedBy=graphical-session.target
+EOF
+
 # Enable and start
 systemctl --user daemon-reload
 systemctl --user enable focuslock-desktop.service
 systemctl --user start focuslock-desktop.service
+systemctl --user enable focuslock-tray.service 2>/dev/null || true
+systemctl --user start focuslock-tray.service 2>/dev/null || true
 
 # XDG autostart fallback
 echo "=== Installing autostart entry ==="
