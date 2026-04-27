@@ -4,113 +4,659 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#0a0a14">
-<title>Create a Mesh &mdash; The Collar</title>
+<title>Set up your mesh &mdash; The Collar</title>
 <style>
 :root {
   --bg: #0a0a14;
-  --card: #0e0e1a;
+  --bg-card: #0e0e1a;
+  --bg-input: #111118;
   --gold: #DAA520;
   --gold-bright: #FFD700;
+  --gold-dim: #8B6914;
   --text: #e0e0e0;
-  --muted: #555;
+  --text-dim: #aaa;
+  --muted: #666;
+  --border: #2a2a3a;
+  --danger: #e44;
+  --success: #4caf50;
   --radius: 10px;
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; justify-content: center; padding: 2rem 1rem; }
-.wrap { max-width: 480px; width: 100%; }
-h1 { color: var(--gold); font-size: 1.5rem; margin-bottom: 0.5rem; }
-p.sub { color: var(--muted); font-size: 0.85rem; margin-bottom: 1.5rem; }
-.card { background: var(--card); border-radius: var(--radius); padding: 1.5rem; margin-bottom: 1rem; }
-label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.3rem; }
-textarea { width: 100%; background: #111118; border: 1px solid #222; border-radius: 6px; color: var(--text); padding: 0.6rem; font-family: monospace; font-size: 0.8rem; resize: vertical; min-height: 80px; }
-textarea:focus { outline: none; border-color: var(--gold); }
-button { width: 100%; padding: 0.8rem; background: linear-gradient(135deg, var(--gold), #8B6914); color: #000; font-weight: bold; font-size: 1rem; border: none; border-radius: 6px; cursor: pointer; margin-top: 1rem; }
-button:hover { background: linear-gradient(135deg, var(--gold-bright), var(--gold)); }
-button:disabled { opacity: 0.5; cursor: not-allowed; }
-.result { display: none; }
-.result.show { display: block; }
-.field { margin-bottom: 0.8rem; }
-.field .val { font-family: monospace; font-size: 1.1rem; color: var(--gold-bright); word-break: break-all; user-select: all; }
-.field .val.invite { font-size: 1.4rem; letter-spacing: 0.1em; text-align: center; display: block; padding: 0.5rem; background: #111118; border-radius: 6px; }
-.note { font-size: 0.75rem; color: var(--muted); margin-top: 1rem; line-height: 1.4; }
-.err { color: #e44; font-size: 0.85rem; margin-top: 0.5rem; display: none; }
+html, body { height: 100%; }
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Top bar ── */
+.topbar {
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  padding: 0.75rem 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+.topbar h1 { font-size: 1rem; color: var(--gold); font-weight: 600; }
+.topbar .step-of { font-size: 0.8rem; color: var(--text-dim); }
+
+/* ── Progress bar ── */
+.progress {
+  height: 3px;
+  background: var(--bg-card);
+  flex-shrink: 0;
+}
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--gold-dim), var(--gold-bright));
+  width: 0%;
+  transition: width 0.25s ease;
+}
+
+/* ── Main area ── */
+main {
+  flex: 1;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  overflow-y: auto;
+  padding: 2rem 1.25rem;
+}
+.step {
+  display: none;
+  width: 100%;
+  max-width: 520px;
+  align-self: flex-start;
+}
+.step.active { display: block; }
+
+.step-icon {
+  font-size: 2.5rem;
+  text-align: center;
+  margin-bottom: 1rem;
+  color: var(--gold);
+}
+.step-title {
+  font-size: 1.4rem;
+  text-align: center;
+  margin-bottom: 0.5rem;
+  color: var(--gold);
+  font-weight: 600;
+}
+.step-sub {
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  margin-bottom: 1.5rem;
+  line-height: 1.5;
+}
+
+/* ── Cards & form ── */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  margin-bottom: 1rem;
+}
+.field { margin-bottom: 0.85rem; }
+.field:last-child { margin-bottom: 0; }
+label {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  margin-bottom: 0.3rem;
+  font-weight: 500;
+}
+input[type="text"], input[type="number"], input[type="password"], textarea, select {
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 0.65rem 0.75rem;
+  font-size: 0.95rem;
+  font-family: inherit;
+}
+input:focus, textarea:focus, select:focus {
+  outline: none;
+  border-color: var(--gold);
+}
+textarea {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.78rem;
+  resize: vertical;
+  min-height: 110px;
+}
+.field-row { display: flex; gap: 0.6rem; }
+.field-row > * { flex: 1; }
+.help {
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-top: 0.3rem;
+  line-height: 1.4;
+}
+
+/* ── Choice cards (radio-style) ── */
+.choice-list { display: flex; flex-direction: column; gap: 0.6rem; }
+.choice {
+  background: var(--bg-input);
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.choice:hover { border-color: var(--gold-dim); }
+.choice.selected {
+  border-color: var(--gold);
+  background: rgba(218, 165, 32, 0.08);
+}
+.choice .ctitle { font-weight: 600; font-size: 0.95rem; }
+.choice .cdesc { font-size: 0.8rem; color: var(--text-dim); margin-top: 0.2rem; }
+
+/* ── Buttons / nav ── */
+.nav {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 1.5rem;
+  align-items: stretch;
+}
+button {
+  font-family: inherit;
+  font-size: 0.95rem;
+  padding: 0.85rem 1.2rem;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text);
+  font-weight: 500;
+  transition: opacity 0.15s, transform 0.05s;
+}
+button:hover:not(:disabled) { opacity: 0.85; }
+button:active:not(:disabled) { transform: translateY(1px); }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-primary {
+  background: linear-gradient(135deg, var(--gold), var(--gold-dim));
+  color: #000;
+  font-weight: 700;
+  border-color: var(--gold);
+  flex: 1;
+}
+.btn-primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, var(--gold-bright), var(--gold));
+  opacity: 1;
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--text-dim);
+  border-color: var(--border);
+}
+.btn-back { padding-left: 0.9rem; padding-right: 0.9rem; }
+
+/* ── Errors ── */
+.error {
+  background: rgba(228, 68, 68, 0.1);
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+  color: var(--danger);
+  padding: 0.65rem 0.85rem;
+  font-size: 0.85rem;
+  margin-top: 0.75rem;
+  display: none;
+}
+.error.show { display: block; }
+
+/* ── Result ── */
+.result-field {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.7rem 0.85rem;
+  margin-bottom: 0.7rem;
+}
+.result-field .rlabel { font-size: 0.75rem; color: var(--text-dim); margin-bottom: 0.2rem; }
+.result-field .rval {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.95rem;
+  color: var(--gold-bright);
+  word-break: break-all;
+  user-select: all;
+}
+.result-field .rval.invite {
+  font-size: 1.4rem;
+  letter-spacing: 0.08em;
+  text-align: center;
+  padding: 0.3rem 0;
+}
 .qr-wrap { text-align: center; margin: 1rem 0 0.5rem; }
 .qr-wrap canvas { border: 2px solid var(--gold); border-radius: 6px; }
+.applied-list {
+  font-size: 0.85rem;
+  color: var(--success);
+  margin-top: 0.5rem;
+}
+.applied-list li { margin-left: 1.2rem; line-height: 1.6; }
+
+/* ── Review summary ── */
+.review-line {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+.review-line:last-child { border-bottom: none; }
+.review-line .rlbl { color: var(--text-dim); }
+.review-line .rval { color: var(--text); font-weight: 500; text-align: right; max-width: 60%; word-break: break-word; }
+.review-line .rval.skipped { color: var(--muted); font-style: italic; font-weight: 400; }
+
+@media (max-width: 540px) {
+  main { padding: 1.25rem 0.85rem; }
+  .step-title { font-size: 1.2rem; }
+  .nav { flex-wrap: wrap; }
+  .btn-back { flex: 1; }
+}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <h1>Create a Mesh</h1>
-  <p class="sub">Set up a new Lion&ndash;Bunny mesh on this relay. You'll get an invite code to share with your Bunny.</p>
 
-  <div class="card" id="formCard">
-    <div class="field">
-      <label for="pubkey">Your Lion public key (RSA PEM)</label>
-      <textarea id="pubkey" placeholder="-----BEGIN PUBLIC KEY-----&#10;MIIBIjAN...&#10;-----END PUBLIC KEY-----"></textarea>
-    </div>
-    <p class="note">Paste the RSA public key from Lion's Share &rarr; Advanced &rarr; Export Key. This key signs your orders &mdash; the relay never sees your private key.</p>
-    <div class="err" id="err"></div>
-    <button id="createBtn" onclick="createMesh()">Create Mesh</button>
-  </div>
-
-  <div class="card result" id="resultCard">
-    <div class="field">
-      <label>Invite Code (tell your Bunny)</label>
-      <span class="val invite" id="rInvite"></span>
-    </div>
-    <div class="field">
-      <label>Mesh ID</label>
-      <span class="val" id="rMeshId"></span>
-    </div>
-    <div class="field">
-      <label>Auth Token (save this &mdash; shown once)</label>
-      <span class="val" id="rAuth"></span>
-    </div>
-    <div class="field">
-      <label>PIN</label>
-      <span class="val" id="rPin"></span>
-    </div>
-    <div class="qr-wrap" id="qrWrap"></div>
-    <p class="note">The invite code expires in 24 hours and can only be used once. Your Bunny enters it in Bunny Tasker &rarr; Join Mesh along with this relay's URL. Or scan the QR code above.</p>
-    <p class="note" style="margin-top:0.5rem">Learn about our security model: <a href="/trust" style="color:#DAA520">Trust &amp; Transparency</a></p>
-  </div>
+<div class="topbar">
+  <h1>Set up your mesh</h1>
+  <div class="step-of"><span id="stepNum">1</span> of <span id="stepTotal">7</span></div>
 </div>
+<div class="progress"><div class="progress-fill" id="progressFill"></div></div>
+
+<main>
+  <!-- ── Step 1: Welcome ── -->
+  <section class="step active" data-step="welcome">
+    <div class="step-icon">[]</div>
+    <div class="step-title">Welcome, Lion.</div>
+    <p class="step-sub">This wizard sets up a new mesh on this relay. Your Bunny will join with an invite code at the end.</p>
+
+    <div class="card">
+      <p style="font-size:0.9rem; line-height:1.6; margin-bottom:0.8rem">You'll configure (each step is optional except your key):</p>
+      <ul style="font-size:0.85rem; line-height:1.8; color:var(--text-dim); margin-left:1.2rem">
+        <li>Your Lion public key (required)</li>
+        <li>Payment email scanning (Interac, Wise, etc.)</li>
+        <li>Default rules: tribute, bedtime, screen time</li>
+        <li>Default subscription tier preset</li>
+      </ul>
+    </div>
+    <p class="help" style="text-align:center">Everything here can be changed later from Lion's Share. Nothing is final until the last step.</p>
+
+    <div class="nav">
+      <button class="btn-primary" onclick="next()">Get started</button>
+    </div>
+  </section>
+
+  <!-- ── Step 2: Lion key + PIN ── -->
+  <section class="step" data-step="key">
+    <div class="step-icon">[K]</div>
+    <div class="step-title">Your Lion key</div>
+    <p class="step-sub">This is the RSA public key from Lion's Share &rarr; Advanced &rarr; Export Key. Your private key never leaves your phone.</p>
+
+    <div class="card">
+      <div class="field">
+        <label for="pubkey">Lion public key (PEM)</label>
+        <textarea id="pubkey" placeholder="-----BEGIN PUBLIC KEY-----&#10;MIIBIjAN...&#10;-----END PUBLIC KEY-----"></textarea>
+        <p class="help">This key signs every order you issue. The relay verifies signatures but never sees your private key.</p>
+      </div>
+      <div class="field">
+        <label for="pin">Emergency PIN (optional)</label>
+        <input type="text" id="pin" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="4 digits, leave blank to auto-generate">
+        <p class="help">Used as a recovery code on the Collar's lock screen if Lion's Share is unreachable. If left blank, the relay will mint a random one.</p>
+      </div>
+      <div class="error" id="errKey"></div>
+    </div>
+
+    <div class="nav">
+      <button class="btn-ghost btn-back" onclick="prev()">Back</button>
+      <button class="btn-primary" onclick="validateKeyStep()">Continue</button>
+    </div>
+  </section>
+
+  <!-- ── Step 3: Payment scanning (IMAP) ── -->
+  <section class="step" data-step="imap">
+    <div class="step-icon">[$]</div>
+    <div class="step-title">Payment scanning</div>
+    <p class="step-sub">If you'd like the relay to watch an inbox for incoming payments and clear the paywall automatically when the Bunny pays.</p>
+
+    <div class="card">
+      <div class="choice-list">
+        <div class="choice selected" data-choice-imap="off" onclick="toggleImapChoice('off')">
+          <div class="ctitle">Skip for now</div>
+          <div class="cdesc">No automatic payment detection &mdash; you can set this up later from Lion's Share.</div>
+        </div>
+        <div class="choice" data-choice-imap="on" onclick="toggleImapChoice('on')">
+          <div class="ctitle">Yes, scan an email inbox</div>
+          <div class="cdesc">Provide IMAP credentials. Stored only on this relay; never shared with the Bunny or other meshes.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" id="imapFields" style="display:none">
+      <div class="field">
+        <label for="imapHost">IMAP host</label>
+        <input type="text" id="imapHost" placeholder="imap.gmail.com" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="imapUser">Email address</label>
+        <input type="text" id="imapUser" placeholder="lion@example.com" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="imapPass">App password</label>
+        <input type="password" id="imapPass" placeholder="App-specific password (NOT your main password)" autocomplete="new-password">
+        <p class="help">Use a Gmail app password, Outlook app password, or an email-only IMAP token &mdash; never your main account password.</p>
+      </div>
+    </div>
+
+    <div class="nav">
+      <button class="btn-ghost btn-back" onclick="prev()">Back</button>
+      <button class="btn-primary" onclick="next()">Continue</button>
+    </div>
+  </section>
+
+  <!-- ── Step 4: Default rules ── -->
+  <section class="step" data-step="rules">
+    <div class="step-icon">[R]</div>
+    <div class="step-title">Default rules</div>
+    <p class="step-sub">Optional starting rules. Every value can be changed later from Lion's Share.</p>
+
+    <div class="card">
+      <div class="field">
+        <label for="tribute">Daily tribute ($/day while unlocked)</label>
+        <input type="number" id="tribute" min="0" step="1" placeholder="0 = off">
+        <p class="help">A small daily charge added to the paywall while the Collar is unlocked &mdash; encourages keeping the lock on.</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="field-row">
+        <div class="field" style="margin-bottom:0">
+          <label for="bedLock">Bedtime lock (hour 0&ndash;23)</label>
+          <input type="number" id="bedLock" min="0" max="23" placeholder="e.g. 23">
+        </div>
+        <div class="field" style="margin-bottom:0">
+          <label for="bedUnlock">Wake (hour 0&ndash;23)</label>
+          <input type="number" id="bedUnlock" min="0" max="23" placeholder="e.g. 7">
+        </div>
+      </div>
+      <p class="help">Both fields required to enable. Auto-locks the Collar between these hours.</p>
+    </div>
+
+    <div class="card">
+      <div class="field" style="margin-bottom:0">
+        <label for="screenTime">Daily screen-time quota (minutes)</label>
+        <input type="number" id="screenTime" min="0" placeholder="0 = off">
+        <p class="help">Cap minutes of unlocked phone use per day. Resets at midnight.</p>
+      </div>
+    </div>
+
+    <div class="nav">
+      <button class="btn-ghost btn-back" onclick="prev()">Back</button>
+      <button class="btn-primary" onclick="next()">Continue</button>
+    </div>
+  </section>
+
+  <!-- ── Step 5: Subscription preset ── -->
+  <section class="step" data-step="sub">
+    <div class="step-icon">[S]</div>
+    <div class="step-title">Subscription preset</div>
+    <p class="step-sub">Optional default subscription. The Bunny pays a weekly fee for free unlocks. You can pick one to seed the account, or skip and let the Bunny choose later.</p>
+
+    <div class="card">
+      <div class="choice-list">
+        <div class="choice selected" data-choice-sub="" onclick="setSub('')">
+          <div class="ctitle">No subscription</div>
+          <div class="cdesc">Bunny can subscribe later from Bunny Tasker if she wants free unlocks.</div>
+        </div>
+        <div class="choice" data-choice-sub="bronze" onclick="setSub('bronze')">
+          <div class="ctitle">Bronze &mdash; $25/week</div>
+          <div class="cdesc">2 free unlocks per week, slowest compound-interest rate.</div>
+        </div>
+        <div class="choice" data-choice-sub="silver" onclick="setSub('silver')">
+          <div class="ctitle">Silver &mdash; $35/week</div>
+          <div class="cdesc">4 free unlocks per week, slower compound-interest rate.</div>
+        </div>
+        <div class="choice" data-choice-sub="gold" onclick="setSub('gold')">
+          <div class="ctitle">Gold &mdash; $50/week</div>
+          <div class="cdesc">Unlimited free unlocks, no compound interest.</div>
+        </div>
+      </div>
+      <p class="help" style="margin-top:0.75rem">Per-tier amounts shown above are the relay defaults. To customize amounts, change them after setup from Lion's Share.</p>
+    </div>
+
+    <div class="nav">
+      <button class="btn-ghost btn-back" onclick="prev()">Back</button>
+      <button class="btn-primary" onclick="next()">Continue</button>
+    </div>
+  </section>
+
+  <!-- ── Step 6: Review ── -->
+  <section class="step" data-step="review">
+    <div class="step-icon">[?]</div>
+    <div class="step-title">Review &amp; create</div>
+    <p class="step-sub">Make sure everything looks right. The mesh is created when you tap the button below.</p>
+
+    <div class="card">
+      <div id="reviewBody"></div>
+    </div>
+    <div class="error" id="errCreate"></div>
+
+    <div class="nav">
+      <button class="btn-ghost btn-back" onclick="prev()">Back</button>
+      <button class="btn-primary" id="btnCreate" onclick="submitWizard()">Create mesh</button>
+    </div>
+  </section>
+
+  <!-- ── Step 7: Result ── -->
+  <section class="step" data-step="result">
+    <div class="step-icon">[OK]</div>
+    <div class="step-title">Mesh created</div>
+    <p class="step-sub">Send the invite code to your Bunny. She'll enter it in Bunny Tasker &rarr; Join Mesh, or scan the QR code.</p>
+
+    <div class="card">
+      <div class="result-field">
+        <div class="rlabel">Invite code (give to Bunny)</div>
+        <div class="rval invite" id="rInvite"></div>
+      </div>
+      <div class="qr-wrap" id="qrWrap"></div>
+    </div>
+
+    <div class="card">
+      <div class="result-field">
+        <div class="rlabel">Mesh ID</div>
+        <div class="rval" id="rMeshId"></div>
+      </div>
+      <div class="result-field">
+        <div class="rlabel">Auth token (save now &mdash; shown once)</div>
+        <div class="rval" id="rAuth"></div>
+      </div>
+      <div class="result-field">
+        <div class="rlabel">Emergency PIN</div>
+        <div class="rval" id="rPin"></div>
+      </div>
+      <div id="appliedSummary"></div>
+    </div>
+
+    <p class="help" style="text-align:center">
+      The invite code expires in 24 hours and can be reused for additional household devices.
+      <br><br>
+      Learn about the security model: <a href="/trust" style="color:var(--gold)">Trust &amp; Transparency</a>
+    </p>
+  </section>
+</main>
 
 <script src="/qrcode.min.js"></script>
 <script>
-function renderQR(text) {
-  if (typeof qrcode !== 'function') return;
-  var qr = qrcode(0, 'M');
-  qr.addData(text);
-  qr.make();
-  var size = qr.getModuleCount();
-  var scale = Math.max(4, Math.floor(200 / size));
-  var canvas = document.createElement('canvas');
-  canvas.width = canvas.height = size * scale + scale * 2;
-  var ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#111118';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#DAA520';
-  for (var r = 0; r < size; r++)
-    for (var c = 0; c < size; c++)
-      if (qr.isDark(r, c))
-        ctx.fillRect((c + 1) * scale, (r + 1) * scale, scale, scale);
-  document.getElementById('qrWrap').appendChild(canvas);
+'use strict';
+
+const STEPS = ['welcome', 'key', 'imap', 'rules', 'sub', 'review', 'result'];
+let stepIdx = 0;
+
+const state = {
+  pubkey: '',
+  pin: '',
+  imapMode: 'off',  // 'off' | 'on'
+  imapHost: '',
+  imapUser: '',
+  imapPass: '',
+  tribute: 0,
+  bedLock: -1,
+  bedUnlock: -1,
+  screenTime: 0,
+  subTier: '',
+};
+
+function $(sel) { return document.querySelector(sel); }
+function $$(sel) { return Array.from(document.querySelectorAll(sel)); }
+
+function updateProgress() {
+  const pct = Math.round((stepIdx / (STEPS.length - 1)) * 100);
+  $('#progressFill').style.width = pct + '%';
+  $('#stepNum').textContent = stepIdx + 1;
+  $('#stepTotal').textContent = STEPS.length;
 }
 
-async function createMesh() {
-  const btn = document.getElementById('createBtn');
-  const err = document.getElementById('err');
-  const pubkey = document.getElementById('pubkey').value.trim();
-  err.style.display = 'none';
+function showStep(i) {
+  stepIdx = Math.max(0, Math.min(STEPS.length - 1, i));
+  $$('.step').forEach(s => s.classList.remove('active'));
+  $$('.step')[stepIdx].classList.add('active');
+  updateProgress();
+  window.scrollTo(0, 0);
+}
 
+function next() {
+  collectCurrentStep();
+  if (stepIdx === STEPS.indexOf('sub')) {
+    renderReview();
+  }
+  showStep(stepIdx + 1);
+}
+function prev() { showStep(stepIdx - 1); }
+
+function collectCurrentStep() {
+  const cur = STEPS[stepIdx];
+  if (cur === 'key') {
+    state.pubkey = $('#pubkey').value.trim();
+    state.pin = $('#pin').value.trim();
+  } else if (cur === 'imap') {
+    state.imapHost = $('#imapHost').value.trim();
+    state.imapUser = $('#imapUser').value.trim();
+    state.imapPass = $('#imapPass').value;
+  } else if (cur === 'rules') {
+    state.tribute = parseInt($('#tribute').value || '0', 10) || 0;
+    state.bedLock = parseInt($('#bedLock').value || '-1', 10);
+    state.bedUnlock = parseInt($('#bedUnlock').value || '-1', 10);
+    state.screenTime = parseInt($('#screenTime').value || '0', 10) || 0;
+  }
+}
+
+// ── Step 2 validator ──
+function validateKeyStep() {
+  const err = $('#errKey');
+  err.classList.remove('show');
+  const pubkey = $('#pubkey').value.trim();
   if (!pubkey) {
     err.textContent = 'Public key is required.';
-    err.style.display = 'block';
+    err.classList.add('show');
     return;
   }
+  if (!pubkey.includes('BEGIN PUBLIC KEY')) {
+    err.textContent = 'Key must be in PEM format (begins with -----BEGIN PUBLIC KEY-----).';
+    err.classList.add('show');
+    return;
+  }
+  const pin = $('#pin').value.trim();
+  if (pin && !/^\d{4}$/.test(pin)) {
+    err.textContent = 'PIN must be exactly 4 digits, or leave blank to auto-generate.';
+    err.classList.add('show');
+    return;
+  }
+  next();
+}
+
+// ── Step 3 IMAP toggle ──
+function toggleImapChoice(mode) {
+  state.imapMode = mode;
+  $$('[data-choice-imap]').forEach(el => {
+    el.classList.toggle('selected', el.dataset.choiceImap === mode);
+  });
+  $('#imapFields').style.display = (mode === 'on') ? 'block' : 'none';
+}
+
+// ── Step 5 sub choice ──
+function setSub(tier) {
+  state.subTier = tier;
+  $$('[data-choice-sub]').forEach(el => {
+    el.classList.toggle('selected', el.dataset.choiceSub === tier);
+  });
+}
+
+// ── Step 6 review ──
+function renderReview() {
+  const lines = [];
+  function add(label, value, skipped) {
+    lines.push(`<div class="review-line"><span class="rlbl">${label}</span><span class="rval${skipped ? ' skipped' : ''}">${value}</span></div>`);
+  }
+  add('Lion key', state.pubkey ? state.pubkey.slice(0, 30) + '...' : 'NOT SET', !state.pubkey);
+  add('Emergency PIN', state.pin || 'Auto-generated', !state.pin);
+  if (state.imapMode === 'on' && state.imapHost && state.imapUser && state.imapPass) {
+    add('Payment scanning', `${state.imapUser} on ${state.imapHost}`);
+  } else {
+    add('Payment scanning', 'Skipped', true);
+  }
+  add('Daily tribute', state.tribute > 0 ? '$' + state.tribute + '/day' : 'Skipped', state.tribute <= 0);
+  if (state.bedLock >= 0 && state.bedLock <= 23 && state.bedUnlock >= 0 && state.bedUnlock <= 23) {
+    add('Bedtime', state.bedLock + ':00 → ' + state.bedUnlock + ':00');
+  } else {
+    add('Bedtime', 'Skipped', true);
+  }
+  add('Screen time', state.screenTime > 0 ? state.screenTime + ' min/day' : 'Skipped', state.screenTime <= 0);
+  add('Subscription preset', state.subTier ? state.subTier.charAt(0).toUpperCase() + state.subTier.slice(1) : 'None', !state.subTier);
+  $('#reviewBody').innerHTML = lines.join('');
+}
+
+// ── Submit ──
+async function submitWizard() {
+  const btn = $('#btnCreate');
+  const err = $('#errCreate');
+  err.classList.remove('show');
+
+  if (!state.pubkey) {
+    err.textContent = 'Lion public key is missing.';
+    err.classList.add('show');
+    showStep(STEPS.indexOf('key'));
+    return;
+  }
+
+  const initial_config = {};
+  if (state.imapMode === 'on' && state.imapHost && state.imapUser && state.imapPass) {
+    initial_config.imap_host = state.imapHost;
+    initial_config.imap_user = state.imapUser;
+    initial_config.imap_pass = state.imapPass;
+  }
+  if (state.tribute > 0) initial_config.tribute_amount = state.tribute;
+  if (state.subTier) initial_config.sub_tier = state.subTier;
+  if (state.bedLock >= 0 && state.bedLock <= 23 && state.bedUnlock >= 0 && state.bedUnlock <= 23) {
+    initial_config.bedtime_lock_hour = state.bedLock;
+    initial_config.bedtime_unlock_hour = state.bedUnlock;
+  }
+  if (state.screenTime > 0) initial_config.screen_time_quota_minutes = state.screenTime;
+
+  const body = { lion_pubkey: state.pubkey };
+  if (state.pin) body.pin = state.pin;
+  if (Object.keys(initial_config).length) body.initial_config = initial_config;
 
   btn.disabled = true;
   btn.textContent = 'Creating...';
@@ -119,28 +665,58 @@ async function createMesh() {
     const resp = await fetch('/api/mesh/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lion_pubkey: pubkey })
+      body: JSON.stringify(body)
     });
     const data = await resp.json();
-    if (!resp.ok) {
-      throw new Error(data.error || `HTTP ${resp.status}`);
-    }
-    document.getElementById('rInvite').textContent = data.invite_code;
-    document.getElementById('rMeshId').textContent = data.mesh_id;
-    document.getElementById('rAuth').textContent = data.auth_token;
-    document.getElementById('rPin').textContent = data.pin;
-    document.getElementById('formCard').style.display = 'none';
-    document.getElementById('resultCard').classList.add('show');
+    if (!resp.ok) throw new Error(data.error || ('HTTP ' + resp.status));
 
-    var relay = location.protocol + '//' + location.host;
-    renderQR(JSON.stringify({relay: relay, invite: data.invite_code}));
+    $('#rInvite').textContent = data.invite_code;
+    $('#rMeshId').textContent = data.mesh_id;
+    $('#rAuth').textContent = data.auth_token;
+    $('#rPin').textContent = data.pin;
+
+    const applied = (data.applied_initial || []);
+    if (applied.length) {
+      const items = applied.map(a => '<li>' + a.replace(/-/g, ' ') + '</li>').join('');
+      $('#appliedSummary').innerHTML = '<div class="rlabel" style="margin-top:0.5rem">Initial config applied:</div><ul class="applied-list">' + items + '</ul>';
+    }
+
+    const relay = location.protocol + '//' + location.host;
+    renderQR(JSON.stringify({ relay: relay, invite: data.invite_code }));
+
+    showStep(STEPS.indexOf('result'));
   } catch (e) {
     err.textContent = e.message;
-    err.style.display = 'block';
+    err.classList.add('show');
     btn.disabled = false;
-    btn.textContent = 'Create Mesh';
+    btn.textContent = 'Create mesh';
   }
 }
+
+function renderQR(text) {
+  if (typeof qrcode !== 'function') return;
+  const wrap = $('#qrWrap');
+  wrap.innerHTML = '';
+  const qr = qrcode(0, 'M');
+  qr.addData(text);
+  qr.make();
+  const size = qr.getModuleCount();
+  const scale = Math.max(4, Math.floor(220 / size));
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size * scale + scale * 2;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#111118';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#DAA520';
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
+      if (qr.isDark(r, c)) ctx.fillRect((c + 1) * scale, (r + 1) * scale, scale, scale);
+    }
+  }
+  wrap.appendChild(canvas);
+}
+
+updateProgress();
 </script>
 </body>
 </html>
