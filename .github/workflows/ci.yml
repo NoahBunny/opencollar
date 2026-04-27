@@ -55,7 +55,7 @@ jobs:
           cache: pip
 
       - name: Install test dependencies
-        run: pip install pytest pytest-cov cryptography
+        run: pip install pytest pytest-cov pytest-timeout cryptography
 
       - name: Run tests with coverage
         run: pytest tests/ --cov --cov-report=xml --cov-report=term

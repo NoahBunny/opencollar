@@ -52,6 +52,7 @@ server = []
 dev = [
     "pytest>=7",
     "pytest-cov>=4",
+    "pytest-timeout>=2.3",
     "ruff>=0.4",
     "mypy>=1.8",
 ]
@@ -75,7 +76,11 @@ py-modules = []
 minversion = "7.0"
 testpaths = ["tests"]
 pythonpath = ["shared", "."]
+# `--strict-markers` blocks typo'd markers; `timeout=60` aborts any test that
+# hangs (network mocks, threading, etc.) so CI never silently waits — pytest-timeout
+# raises Failed("Timeout") instead of letting GitHub-Actions kill the job at 6h.
 addopts = "-ra --strict-markers"
+timeout = 60
 markers = [
     "ui: opt-in UI spike — requires UI_TESTS=1 env var + connected adb device (Waydroid).",
 ]
@@ -85,6 +90,9 @@ source = ["shared"]
 branch = true
 
 [tool.coverage.report]
+# Lock in the shared/ coverage win — any future PR that drops it below 95% fails CI.
+# (Current as of 2026-04-27: 96%. Raise this number as gaps close, never lower it.)
+fail_under = 95
 exclude_lines = [
     "pragma: no cover",
     "raise NotImplementedError",
@@ -105,9 +113,10 @@ extend-exclude = [
 ]
 
 [tool.ruff.lint]
-# Conservative starting set. Phase 1b adds S (bandit) after the
-# exception audit — enabling it now would flood with known silent-except
-# warnings we intend to fix deliberately.
+# Conservative starting set. Full `S` (bandit) is gated on the silent-except
+# audit (Phase 1b) — enabling it wholesale would flood the report. Instead,
+# individual high-signal S rules are selected explicitly below as they prove
+# safe for this codebase.
 select = [
     "E",      # pycodestyle errors
     "F",      # pyflakes
@@ -116,6 +125,11 @@ select = [
     "UP",     # pyupgrade — modernize syntax for py310+
     "B",      # flake8-bugbear — real bug patterns
     "RUF",    # ruff-specific
+    # Selected security rules from `S` (bandit) — high-signal, no current trips:
+    "S307",   # `eval()` used — never legitimate in this codebase
+    "S324",   # insecure hash (md5/sha1) used — explicit `usedforsecurity=False` required
+    "S501",   # requests/httpx with verify=False — TLS cert verification disabled
+    "S506",   # yaml.load without SafeLoader — arbitrary code execution
 ]
 ignore = [
     "E501",   # line-too-long — handled by formatter; long crypto/mesh strings are fine
@@ -128,7 +142,7 @@ ignore = [
 "build-win.py" = ["E402", "RUF005"] # late imports after sys.path setup are intentional; list concat is clearer than unpack for pip-install args
 "focuslock-desktop.py" = ["E402"]   # module-level dir setup before shared/ imports
 "focuslock-desktop-win.py" = ["E402"]
-"focuslock-mail.py" = ["E402"]
+"focuslock-mail.py" = ["E402", "S324"]  # md5 used for memory-bundle cache hash (non-security)
 "installers/*" = ["E402", "S"]      # installer scripts — deliberately loose
 "tests/*" = ["E402", "S"]           # tests — path hacks + test crypto values
 
