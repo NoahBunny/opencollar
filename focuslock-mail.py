@@ -1302,7 +1302,7 @@ def mesh_apply_order(action, params, orders):
         orders.set("payment_imap_host", params.get("imap_host", ""))
         orders.set("payment_imap_user", params.get("user", ""))
         orders.set("payment_imap_pass", params.get("pass", ""))
-        logger.info("Payment email configured: %s", params.get("user", "(empty)"))
+        logger.info("Payment email configured: %s", _sanitize_log(params.get("user", "(empty)")))
     return {"applied": action}
 
 
@@ -1561,7 +1561,7 @@ def check_desktop_heartbeats():
                             logger.warning(
                                 "DESKTOP PENALTY: mesh=%s host=%s silent %.0f days — adding $50",
                                 mid,
-                                hostname,
+                                _sanitize_log(hostname),
                                 silence_days,
                             )
                             applied = _server_apply_order(mid, "add-paywall", {"amount": 50})
@@ -2307,6 +2307,15 @@ VAULT_MAX_BLOBS = _cfg.get("vault_max_blobs", 1000)
 # API returns metadata only — never plaintext orders.
 ADMIN_TOKEN = _cfg.get("admin_token", "") or os.environ.get("FOCUSLOCK_ADMIN_TOKEN", "")
 OPERATOR_MESH_ID = _cfg.get("operator_mesh_id", "") or os.environ.get("FOCUSLOCK_OPERATOR_MESH_ID", "")
+# Audit 2026-04-27 L-3: OPERATOR_MESH_ID is later interpolated into
+# os.path.join() for the operator's per-mesh orders file. A misconfigured
+# operator who set "../../etc/passwd" would cause path-traversal writes.
+# Refuse to start with an unsafe value rather than silently coercing.
+if OPERATOR_MESH_ID and not _safe_mesh_id_static(OPERATOR_MESH_ID):
+    raise ValueError(
+        f"refusing to start: operator_mesh_id {OPERATOR_MESH_ID!r} "
+        "fails _safe_mesh_id (must be ≤64 chars, [A-Za-z0-9_-] only)"
+    )
 _init_orders_registry()  # Now that OPERATOR_MESH_ID is known, register operator's mesh
 
 # ── Disposal tokens (single-use, add-paywall only) ──
@@ -3045,7 +3054,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(400, {"error": f"amount must be 0-{DESKTOP_PENALTY_MAX}"})
                 return
             reason = data.get("reason", "Desktop penalty")
-            logger.warning("DESKTOP PENALTY: mesh=%s $%s — %s", mesh_id, amount, reason)
+            logger.warning("DESKTOP PENALTY: mesh=%s $%s — %s", mesh_id, amount, _sanitize_log(reason))
             # Route through _server_apply_order so the paywall write lands
             # on the mesh's orders doc + propagates via vault blob to any
             # vault-mode slaves. For the operator mesh this also keeps the
@@ -3346,7 +3355,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             port = data.get("port", 8432 if node_type == "phone" else 8435)
             if addrs:
                 mesh_peers.update_peer(node_id, node_type=node_type, addresses=addrs, port=port)
-            logger.info("Node joined mesh: %s (%s) mesh=%s", node_id, node_type, account["mesh_id"])
+            logger.info(
+                "Node joined mesh: %s (%s) mesh=%s",
+                _sanitize_log(node_id),
+                _sanitize_log(node_type),
+                account["mesh_id"],
+            )
             self.respond(
                 200,
                 {
@@ -3480,14 +3494,21 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 sig_bytes = _b64.b64decode(signature)
                 pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
             except Exception as e:
-                logger.warning("subscribe sig verify failed: mesh=%s node=%s err=%s", mesh_id, node_id, e)
+                logger.warning(
+                    "subscribe sig verify failed: mesh=%s node=%s err=%s", mesh_id, _sanitize_log(node_id), e
+                )
                 self.respond(403, {"error": "invalid signature"})
                 return
             result = _server_apply_order(mesh_id, "subscribe", {"tier": tier})
             if not result:
                 self.respond(500, {"error": "apply failed"})
                 return
-            logger.info("Bunny subscribe: mesh=%s node=%s tier=%s", mesh_id, node_id, tier)
+            logger.info(
+                "Bunny subscribe: mesh=%s node=%s tier=%s",
+                mesh_id,
+                _sanitize_log(node_id),
+                tier,
+            )
             self.respond(200, {"ok": True, "tier": tier, "due": result.get("due")})
 
         # ── Bunny-authed unsubscribe (P2 paywall hardening follow-up) ──
@@ -3546,7 +3567,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 sig_bytes = _b64.b64decode(signature)
                 pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
             except Exception as e:
-                logger.warning("unsubscribe sig verify failed: mesh=%s node=%s err=%s", mesh_id, node_id, e)
+                logger.warning(
+                    "unsubscribe sig verify failed: mesh=%s node=%s err=%s", mesh_id, _sanitize_log(node_id), e
+                )
                 self.respond(403, {"error": "invalid signature"})
                 return
             result = _server_apply_order(mesh_id, "unsubscribe-charge", {})
@@ -3559,7 +3582,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             logger.info(
                 "Bunny unsubscribe: mesh=%s node=%s tier=%s fee=%s paywall=%s",
                 mesh_id,
-                node_id,
+                _sanitize_log(node_id),
                 result.get("tier"),
                 result.get("fee"),
                 result.get("paywall"),
@@ -3623,7 +3646,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 sig_bytes = _b64.b64decode(signature)
                 pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
             except Exception as e:
-                logger.warning("gamble sig verify failed: mesh=%s node=%s err=%s", mesh_id, node_id, e)
+                logger.warning("gamble sig verify failed: mesh=%s node=%s err=%s", mesh_id, _sanitize_log(node_id), e)
                 self.respond(403, {"error": "invalid signature"})
                 return
             # Read current paywall from the mesh's orders doc.
@@ -3648,7 +3671,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             logger.info(
                 "Bunny gamble: mesh=%s node=%s old=%s result=%s new=%s",
                 mesh_id,
-                node_id,
+                _sanitize_log(node_id),
                 old_pw,
                 result_str,
                 new_pw,
@@ -3721,7 +3744,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 sig_bytes = _b64.b64decode(signature)
                 pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
             except Exception as e:
-                logger.warning("payments sig verify failed: mesh=%s node=%s err=%s", mesh_id, node_id, e)
+                logger.warning("payments sig verify failed: mesh=%s node=%s err=%s", mesh_id, _sanitize_log(node_id), e)
                 self.respond(403, {"error": "invalid signature"})
                 return
             # Per-mesh ledger — a Bunny on mesh X must not see a Bunny on
@@ -3817,7 +3840,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 sig_bytes = _b64.b64decode(signature)
                 pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
             except Exception as e:
-                logger.warning("escape-event sig verify failed: mesh=%s node=%s err=%s", mesh_id, node_id, e)
+                logger.warning(
+                    "escape-event sig verify failed: mesh=%s node=%s err=%s", mesh_id, _sanitize_log(node_id), e
+                )
                 self.respond(403, {"error": "invalid signature"})
                 return
             if event_type == "escape":
@@ -3825,7 +3850,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 logger.info(
                     "Escape event: mesh=%s node=%s lifetime_escapes=%s penalty=%s paywall=%s",
                     mesh_id,
-                    node_id,
+                    _sanitize_log(node_id),
                     (result or {}).get("lifetime_escapes"),
                     (result or {}).get("penalty"),
                     (result or {}).get("paywall"),
@@ -3835,10 +3860,10 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 logger.info(
                     "Geofence breach event: mesh=%s node=%s lifetime_breaches=%s paywall=%s details=%s",
                     mesh_id,
-                    node_id,
+                    _sanitize_log(node_id),
                     (result or {}).get("lifetime_geofence_breaches"),
                     (result or {}).get("paywall"),
-                    details,
+                    _sanitize_log(details),
                 )
             elif event_type == "sit_boy":
                 try:
@@ -3849,7 +3874,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 logger.info(
                     "Sit-boy event: mesh=%s node=%s amount=%s applied=%s paywall=%s",
                     mesh_id,
-                    node_id,
+                    _sanitize_log(node_id),
                     amount,
                     (result or {}).get("amount"),
                     (result or {}).get("paywall"),
@@ -3863,7 +3888,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         logger.info(
                             "App launch penalty dedup: mesh=%s node=%s dt_ms=%s",
                             mesh_id,
-                            node_id,
+                            _sanitize_log(node_id),
                             now_ms - last,
                         )
                         self.respond(200, {"ok": True, "event_type": event_type, "deduped": True})
@@ -3873,7 +3898,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 logger.info(
                     "App launch penalty: mesh=%s node=%s penalty=%s paywall=%s",
                     mesh_id,
-                    node_id,
+                    _sanitize_log(node_id),
                     (result or {}).get("penalty"),
                     (result or {}).get("paywall"),
                 )
@@ -3889,7 +3914,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 logger.info(
                     "Tamper event: mesh=%s node=%s kind=%s lifetime_tamper=%s penalty=%s paywall=%s",
                     mesh_id,
-                    node_id,
+                    _sanitize_log(node_id),
                     kind,
                     (result or {}).get("lifetime_tamper"),
                     (result or {}).get("penalty"),
@@ -4113,7 +4138,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 sig_bytes = _b64.b64decode(signature)
                 pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
             except Exception as e:
-                logger.warning("deadline-task-clear sig verify failed: mesh=%s node=%s err=%s", mesh_id, node_id, e)
+                logger.warning(
+                    "deadline-task-clear sig verify failed: mesh=%s node=%s err=%s", mesh_id, _sanitize_log(node_id), e
+                )
                 self.respond(403, {"error": "invalid signature"})
                 return
             # Refuse if no task is armed — prevents spurious calls from
@@ -4137,7 +4164,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             logger.info(
                 "Deadline task cleared: mesh=%s node=%s next_deadline=%s released_lock=%s",
                 mesh_id,
-                node_id,
+                _sanitize_log(node_id),
                 result.get("next_deadline_ms"),
                 result.get("released_lock"),
             )
@@ -4302,7 +4329,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
             except Exception as e:
                 logger.warning(
-                    "messages/%s sig verify failed: mesh=%s node=%s from=%s err=%s", op, mesh_id, node_id, from_who, e
+                    "messages/%s sig verify failed: mesh=%s node=%s from=%s err=%s",
+                    op,
+                    mesh_id,
+                    _sanitize_log(node_id),
+                    from_who,
+                    e,
                 )
                 self.respond(403, {"error": "invalid signature"})
                 return
@@ -4340,7 +4372,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 logger.info(
                     "Message appended: mesh=%s node=%s from=%s id=%s pinned=%s mandatory=%s",
                     mesh_id,
-                    node_id,
+                    _sanitize_log(node_id),
                     from_who,
                     msg.get("id"),
                     pinned,
@@ -4411,7 +4443,14 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 if "error" in result:
                     self.respond(404, result)
                     return
-                logger.info("Message %s: mesh=%s node=%s from=%s id=%s", status, mesh_id, node_id, from_who, message_id)
+                logger.info(
+                    "Message %s: mesh=%s node=%s from=%s id=%s",
+                    status,
+                    mesh_id,
+                    _sanitize_log(node_id),
+                    from_who,
+                    _sanitize_log(message_id),
+                )
                 self.respond(200, {"ok": True, "status": status, "message_id": message_id})
 
         # ── Vault endpoints (zero-knowledge mesh) ──
@@ -4522,7 +4561,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 _vault_store.remove_pending_node(mesh_id, node_id)
                 # Lion explicitly approving a previously rejected key clears the rejection
                 _vault_store.clear_rejection(mesh_id, node_pubkey)
-                logger.info("Vault register-node: mesh=%s node=%s (%s)", mesh_id, node_id, node_type)
+                logger.info(
+                    "Vault register-node: mesh=%s node=%s (%s)",
+                    mesh_id,
+                    _sanitize_log(node_id),
+                    _sanitize_log(node_type),
+                )
                 self.respond(200, {"ok": True})
 
             elif action == "reject-node-request":
@@ -4545,7 +4589,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 _vault_store.add_rejected_node(mesh_id, node_id, node_pubkey, reason)
                 if node_id:
                     _vault_store.remove_pending_node(mesh_id, node_id)
-                logger.info("Vault reject-node-request: mesh=%s node=%s reason=%r", mesh_id, node_id, reason)
+                logger.info(
+                    "Vault reject-node-request: mesh=%s node=%s reason=%r",
+                    mesh_id,
+                    _sanitize_log(node_id),
+                    reason,
+                )
                 self.respond(200, {"ok": True})
 
             elif action == "register-node-request":
@@ -4895,7 +4944,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             # falls back to OPERATOR_MESH_ID (== the legacy singleton).
             hostname = data.get("hostname", "unknown")
             mesh_id = data.get("mesh_id", "") or OPERATOR_MESH_ID or ""
-            logger.debug("Desktop heartbeat: mesh=%s host=%s", mesh_id, hostname)
+            logger.debug("Desktop heartbeat: mesh=%s host=%s", mesh_id, _sanitize_log(hostname))
             try:
                 reg = _get_desktop_registry(mesh_id) if mesh_id else desktop_registry
                 reg.heartbeat(hostname, name=data.get("name", ""))
@@ -4932,7 +4981,26 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             lan_ip = data.get("lan_ip", "")
             tailscale_ip = data.get("tailscale_ip", "")
             device_id = data.get("device_id", "unknown")
-            logger.info("Phone registered: LAN=%s TS=%s device=%s", lan_ip, tailscale_ip, device_id)
+            # Audit 2026-04-27 M-3: device_id becomes a JSON key in
+            # IP_REGISTRY_FILE — any caller-controlled string lands there.
+            # Slave APK sends `Build.MODEL.replaceAll("\\s+", "-")` or a
+            # device id, so [A-Za-z0-9._-] ≤ 64 chars is the legitimate
+            # shape. Reject anything else as defense-in-depth (until
+            # /webhook/register itself becomes node-signed — see audit M-3).
+            if (
+                not isinstance(device_id, str)
+                or not device_id
+                or len(device_id) > 64
+                or not all(c.isalnum() or c in "._-" for c in device_id)
+            ):
+                self.respond(400, {"error": "invalid device_id"})
+                return
+            logger.info(
+                "Phone registered: LAN=%s TS=%s device=%s",
+                _sanitize_log(lan_ip),
+                _sanitize_log(tailscale_ip),
+                _sanitize_log(device_id),
+            )
             try:
                 registry = {}
                 if os.path.exists(IP_REGISTRY_FILE):
@@ -5192,10 +5260,31 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 logger.warning("/standing-orders error: %s", e)
                 self.respond(500, {"error": "internal error"})
 
-        elif self.path == "/enforcement-orders":
+        elif self.path.startswith("/enforcement-orders"):
             # Full enforcement orders — includes admin token, penalty
             # amounts, tactical memories.  Fetched by Claude at session
             # start, never stored on client disk.
+            #
+            # Audit 2026-04-27 H-1: gate on admin_token. The route's own
+            # contract claims it serves the admin token; relying solely on
+            # the reverse-proxy allowlist for this is defense-in-depth
+            # absent. Accept ?admin_token=<t> or Authorization: Bearer <t>
+            # (same pattern as /admin/status and /api/pair/vault-status).
+            import urllib.parse as _up_eo
+
+            parsed_eo = _up_eo.urlparse(self.path)
+            params_eo = _up_eo.parse_qs(parsed_eo.query)
+            token_eo = params_eo.get("admin_token", [""])[0]
+            if not token_eo:
+                auth_header_eo = self.headers.get("Authorization", "")
+                if auth_header_eo.startswith("Bearer "):
+                    token_eo = auth_header_eo[7:]
+            if not ADMIN_TOKEN:
+                self.respond(503, {"error": "admin_token not configured"})
+                return
+            if not _is_valid_admin_auth(token_eo):
+                self.respond(403, {"error": "invalid admin_token"})
+                return
             try:
                 parts = []
                 claude_md = os.path.expanduser("~/.claude/CLAUDE.md")
