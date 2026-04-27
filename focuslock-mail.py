@@ -1622,6 +1622,95 @@ def _server_apply_order(mesh_id, action, params):
     return result
 
 
+def _apply_initial_mesh_config(mesh_id, cfg):
+    """Apply optional initial config from the signup wizard. Each key maps
+    to one existing server-side action; unknown or empty keys are skipped.
+    Returns a list of action names that ran successfully (for the response
+    body so the wizard can confirm what stuck).
+
+    Recognized keys:
+      imap_host + imap_user + imap_pass  → set-payment-email
+      tribute_amount (>0)                 → set-tribute
+      sub_tier ('bronze'|'silver'|'gold') → subscribe (default due now+7d)
+      bedtime_lock_hour + bedtime_unlock_hour → set-bedtime
+      screen_time_quota_minutes (>0)      → set-screen-time
+    """
+    applied: list = []
+    if not isinstance(cfg, dict):
+        return applied
+
+    # Payment email
+    imap_host = (cfg.get("imap_host") or "").strip()
+    imap_user = (cfg.get("imap_user") or "").strip()
+    imap_pass = cfg.get("imap_pass") or ""
+    if imap_host and imap_user and imap_pass:
+        try:
+            _server_apply_order(
+                mesh_id,
+                "set-payment-email",
+                {"imap_host": imap_host, "user": imap_user, "pass": imap_pass},
+            )
+            applied.append("set-payment-email")
+        except Exception:
+            logger.exception("initial_config: set-payment-email failed")
+
+    # Daily tribute
+    try:
+        tribute = int(cfg.get("tribute_amount", 0) or 0)
+    except (ValueError, TypeError):
+        tribute = 0
+    if tribute > 0:
+        try:
+            _server_apply_order(mesh_id, "set-tribute", {"amount": tribute})
+            applied.append("set-tribute")
+        except Exception:
+            logger.exception("initial_config: set-tribute failed")
+
+    # Default subscription tier
+    sub_tier = (cfg.get("sub_tier") or "").strip().lower()
+    if sub_tier in ("bronze", "silver", "gold"):
+        try:
+            _server_apply_order(mesh_id, "subscribe", {"tier": sub_tier})
+            applied.append("subscribe")
+        except Exception:
+            logger.exception("initial_config: subscribe failed")
+
+    # Bedtime
+    try:
+        b_lock = int(cfg.get("bedtime_lock_hour", -1))
+        b_unlock = int(cfg.get("bedtime_unlock_hour", -1))
+    except (ValueError, TypeError):
+        b_lock = b_unlock = -1
+    if 0 <= b_lock <= 23 and 0 <= b_unlock <= 23:
+        try:
+            _server_apply_order(
+                mesh_id,
+                "set-bedtime",
+                {"lock_hour": b_lock, "unlock_hour": b_unlock},
+            )
+            applied.append("set-bedtime")
+        except Exception:
+            logger.exception("initial_config: set-bedtime failed")
+
+    # Screen time
+    try:
+        st_quota = int(cfg.get("screen_time_quota_minutes", 0) or 0)
+    except (ValueError, TypeError):
+        st_quota = 0
+    if st_quota > 0:
+        try:
+            _server_apply_order(
+                mesh_id,
+                "set-screen-time",
+                {"quota_minutes": st_quota, "reset_hour": int(cfg.get("screen_time_reset_hour", 0) or 0)},
+            )
+            applied.append("set-screen-time")
+        except Exception:
+            logger.exception("initial_config: set-screen-time failed")
+
+    return applied
+
+
 def check_compound_interest():
     """Compound interest accrual, server-side. Scans every mesh with
     lock_active=1 and a non-gold sub_tier; computes `original x rate ** hours`
@@ -3211,7 +3300,16 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             global _lion_pubkey
             if lion_pubkey and not _lion_pubkey:
                 _lion_pubkey = lion_pubkey
-            logger.info("Mesh created: %s invite=%s", new_mesh_id, account["invite_code"])
+            # Optional initial_config from the signup wizard. Each present key
+            # maps to one existing server-side action; absent keys are no-ops.
+            # Errors on any single action are logged but never fail the whole
+            # mesh-create — partial config is recoverable from Lion's Share
+            # later, an aborted account is not.
+            applied_initial: list = []
+            init_cfg = data.get("initial_config") or {}
+            if isinstance(init_cfg, dict):
+                applied_initial = _apply_initial_mesh_config(new_mesh_id, init_cfg)
+            logger.info("Mesh created: %s invite=%s init=%s", new_mesh_id, account["invite_code"], applied_initial)
             self.respond(
                 200,
                 {
@@ -3219,6 +3317,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     "invite_code": account["invite_code"],
                     "auth_token": account["auth_token"],
                     "pin": account["pin"],
+                    "applied_initial": applied_initial,
                 },
             )
 
