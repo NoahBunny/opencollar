@@ -29,8 +29,9 @@ if [ ! -f "$SCRIPT_DIR/lion_privkey.pem" ]; then
     exit 1
 fi
 
-# Guard against prod secret reuse — staging mesh_id must not match any prod-like value
-mesh_id=$(python3 -c "import json,sys; print(json.load(open('$SCRIPT_DIR/config.json')).get('mesh_id', ''))")
+# Guard against prod secret reuse — staging mesh_id must not match any prod-like value.
+# Pass the path via env so apostrophes in $SCRIPT_DIR (e.g. "Lion's Share") don't break the inline Python.
+mesh_id=$(FL_CFG="$SCRIPT_DIR/config.json" python3 -c 'import os,json; print(json.load(open(os.environ["FL_CFG"])).get("mesh_id",""))')
 if [ -z "$mesh_id" ] || [ "$mesh_id" = "REPLACE_WITH_RANDOM_BASE64URL_12_BYTES" ]; then
     echo "ERROR: mesh_id in $SCRIPT_DIR/config.json is the template placeholder."
     echo "       Generate a fresh one (see docs/STAGING.md step 2)."
