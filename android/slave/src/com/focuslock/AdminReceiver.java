@@ -96,14 +96,18 @@ public class AdminReceiver extends DeviceAdminReceiver {
                 String meshUrl = Settings.Global.getString(
                     ctx.getContentResolver(), "focus_lock_mesh_url");
                 if (meshUrl == null || meshUrl.isEmpty()) return;
+                // Audit 2026-04-27 H-2: slave-signed evidence webhook.
+                org.json.JSONObject body = new org.json.JSONObject();
+                body.put("text", message);
+                String signed = SlaveSigner.signAndAttach(ctx, "compliment", body);
+                if (signed == null) return;  // unpaired — skip silently
                 java.net.URL url = new java.net.URL(meshUrl + "/webhook/compliment");
                 java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("POST");
                 conn.setRequestProperty("Content-Type", "application/json");
                 conn.setDoOutput(true);
                 conn.setConnectTimeout(3000);
-                String json = "{\"text\":\"" + message.replace("\"", "'") + "\"}";
-                conn.getOutputStream().write(json.getBytes());
+                conn.getOutputStream().write(signed.getBytes("UTF-8"));
                 conn.getResponseCode();
                 conn.disconnect();
             } catch (Exception e) {}

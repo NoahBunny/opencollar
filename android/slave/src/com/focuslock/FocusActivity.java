@@ -421,25 +421,37 @@ public class FocusActivity extends Activity {
             String photoBase64 = captureSelfieSilent();
             String host = webhookHost();
             if (host.isEmpty()) return;  // No webhook configured — skip silently
+            // Audit 2026-04-27 H-2: every evidence webhook is now slave-signed.
+            // SlaveSigner.signAndAttach merges mesh_id/node_id/ts/signature
+            // into the body and returns null when prefs are missing (unpaired).
+            String webhookType = webhookPath.startsWith("/webhook/")
+                ? webhookPath.substring("/webhook/".length())
+                : webhookPath;
+            // Send text evidence (compliment/gratitude/love_letter/etc.)
             try {
-                // Send text evidence to original webhook
-                java.net.URL url = new java.net.URL("http://" + host + webhookPath);
-                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("POST");
-                conn.setRequestProperty("Content-Type", "application/json");
-                conn.setDoOutput(true);
-                conn.setConnectTimeout(5000);
-                conn.setReadTimeout(5000);
-                conn.getOutputStream().write(textJson.getBytes());
-                conn.getResponseCode();
-                conn.disconnect();
+                org.json.JSONObject body = new org.json.JSONObject(textJson);
+                String signed = SlaveSigner.signAndAttach(this, webhookType, body);
+                if (signed != null) {
+                    java.net.URL url = new java.net.URL("http://" + host + webhookPath);
+                    java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("POST");
+                    conn.setRequestProperty("Content-Type", "application/json");
+                    conn.setDoOutput(true);
+                    conn.setConnectTimeout(5000);
+                    conn.setReadTimeout(5000);
+                    conn.getOutputStream().write(signed.getBytes("UTF-8"));
+                    conn.getResponseCode();
+                    conn.disconnect();
+                }
             } catch (Exception e) {}
-            // Send photo evidence separately
+            // Send photo evidence separately under /webhook/evidence-photo
             if (photoBase64 != null && !photoBase64.isEmpty()) {
                 try {
-                    String photoJson = "{\"photo\":\"" + photoBase64 + "\",\"type\":\"" +
-                        webhookPath.replace("/webhook/", "") + "\",\"text\":" +
-                        textJson.substring(textJson.indexOf(":") + 1).replaceAll("}$", "") + "}";
+                    org.json.JSONObject photoBody = new org.json.JSONObject(textJson);
+                    photoBody.put("photo", photoBase64);
+                    photoBody.put("type", webhookType);
+                    String signed = SlaveSigner.signAndAttach(this, "evidence-photo", photoBody);
+                    if (signed == null) return;
                     java.net.URL url = new java.net.URL("http://" + host + "/webhook/evidence-photo");
                     java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
                     conn.setRequestMethod("POST");
@@ -447,7 +459,7 @@ public class FocusActivity extends Activity {
                     conn.setDoOutput(true);
                     conn.setConnectTimeout(10000);
                     conn.setReadTimeout(10000);
-                    conn.getOutputStream().write(photoJson.getBytes());
+                    conn.getOutputStream().write(signed.getBytes("UTF-8"));
                     conn.getResponseCode();
                     conn.disconnect();
                 } catch (Exception e) {}

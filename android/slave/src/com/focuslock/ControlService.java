@@ -2001,12 +2001,18 @@ public class ControlService extends Service {
             String host = webhookHost();
             if (host.isEmpty()) return;
             try {
-                String json = "{\"lat\":" + lat + ",\"lon\":" + lon + ",\"distance\":" + distance + "}";
+                // Audit 2026-04-27 H-2: slave-signed evidence webhook.
+                org.json.JSONObject body = new org.json.JSONObject();
+                body.put("lat", lat);
+                body.put("lon", lon);
+                body.put("distance", distance);
+                String signed = SlaveSigner.signAndAttach(this, "geofence-breach", body);
+                if (signed == null) return;  // unpaired — skip silently
                 java.net.URL url = new java.net.URL("http://" + host + "/webhook/geofence-breach");
                 java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("POST"); conn.setRequestProperty("Content-Type", "application/json");
                 conn.setDoOutput(true); conn.setConnectTimeout(5000);
-                conn.getOutputStream().write(json.getBytes()); conn.getResponseCode(); conn.disconnect();
+                conn.getOutputStream().write(signed.getBytes("UTF-8")); conn.getResponseCode(); conn.disconnect();
             } catch (Exception e) {}
         }).start();
     }

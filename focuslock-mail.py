@@ -2797,6 +2797,78 @@ def _verify_blob_two_writer(blob, lion_pubkey, registered_nodes):
     return None, None
 
 
+def _verify_slave_signed_webhook(data, webhook_type, *, version_field="min_collar_version", min_version=74):
+    """Verify a slave-signed (or companion-signed) evidence webhook.
+
+    Audit 2026-04-27 H-2: gates the seven evidence webhooks the slave
+    APK / Bunny Tasker fires (compliment, gratitude, love_letter,
+    geofence-breach, evidence-photo, offer, subscription-charge) plus
+    the original bunny-message that the 2026-04-17 audit closed with
+    the same shape.
+
+    Canonical payload: "{mesh_id}|{node_id}|{webhook_type}|{ts_i}"
+    Signed with the bunny_privkey (focus_lock_bunny_privkey on the
+    slave; the same key the companion uses for /webhook/bunny-message).
+    Verified against the bunny_pubkey on file under (mesh_id, node_id).
+
+    Per `version_field` / `min_version`, the 403 "signature required"
+    response carries the minimum slave (or companion) version expected
+    to send a signed body — clients see the version mismatch and the
+    operator knows which APK to rebuild.
+
+    Returns:
+        ("ok", mesh_id, node_id, bunny_pubkey)  on success
+        ("error", http_code, error_dict)        otherwise
+    """
+    mesh_id = data.get("mesh_id", "")
+    node_id = data.get("node_id", "")
+    ts = data.get("ts", 0)
+    signature = data.get("signature", "")
+    if not signature:
+        return ("error", 403, {"error": "signature required", version_field: min_version})
+    if not mesh_id or not node_id:
+        return ("error", 400, {"error": "mesh_id and node_id required"})
+    if not _safe_mesh_id(mesh_id):
+        return ("error", 400, {"error": "invalid mesh_id"})
+    account = _mesh_accounts.get(mesh_id)
+    if not account:
+        return ("error", 404, {"error": "mesh not found"})
+    try:
+        ts_i = int(ts)
+    except (ValueError, TypeError):
+        return ("error", 400, {"error": "ts must be int (ms epoch)"})
+    now_ms = int(time.time() * 1000)
+    if abs(now_ms - ts_i) > 5 * 60 * 1000:
+        return ("error", 403, {"error": "ts out of window"})
+    node = account.get("nodes", {}).get(node_id)
+    if not node:
+        return ("error", 403, {"error": "node not registered in mesh"})
+    bunny_pubkey = node.get("bunny_pubkey", "")
+    if not bunny_pubkey:
+        return ("error", 403, {"error": "no bunny_pubkey on file for node"})
+    payload = f"{mesh_id}|{node_id}|{webhook_type}|{ts_i}"
+    try:
+        import base64 as _b64
+
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding
+
+        pub_der = _b64.b64decode(bunny_pubkey)
+        pub = serialization.load_der_public_key(pub_der)
+        sig_bytes = _b64.b64decode(signature)
+        pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
+    except Exception as e:
+        logger.warning(
+            "%s sig verify failed: mesh=%s node=%s err=%s",
+            webhook_type,
+            _sanitize_log(mesh_id),
+            _sanitize_log(node_id),
+            e,
+        )
+        return ("error", 403, {"error": "invalid signature"})
+    return ("ok", mesh_id, node_id, bunny_pubkey)
+
+
 def _vault_resolve_mesh(mesh_id):
     """Look up the mesh account by mesh_id. Returns (account, lion_pubkey_str) or (None, None)."""
     account = _mesh_accounts.get(mesh_id)
@@ -2828,17 +2900,33 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             return
 
         if self.path == "/webhook/compliment":
+            # Audit 2026-04-27 H-2: now slave-signed. Pre-fix any LAN
+            # peer could spoof a fake compliment email to PARTNER_EMAIL.
+            verdict = _verify_slave_signed_webhook(data, "compliment")
+            if verdict[0] == "error":
+                self.respond(verdict[1], verdict[2])
+                return
             text = data.get("text", "")
             send_evidence(text, "compliment")
             self.respond(200, {"ok": True})
 
         elif self.path == "/webhook/gratitude":
+            # Audit 2026-04-27 H-2.
+            verdict = _verify_slave_signed_webhook(data, "gratitude")
+            if verdict[0] == "error":
+                self.respond(verdict[1], verdict[2])
+                return
             entries = data.get("entries", [])
             text = "\n".join(f"{i + 1}. {e}" for i, e in enumerate(entries))
             send_evidence(text, "gratitude")
             self.respond(200, {"ok": True})
 
         elif self.path == "/webhook/love_letter":
+            # Audit 2026-04-27 H-2.
+            verdict = _verify_slave_signed_webhook(data, "love_letter")
+            if verdict[0] == "error":
+                self.respond(verdict[1], verdict[2])
+                return
             text = data.get("text", "")
             send_evidence(text, "love letter")
             self.respond(200, {"ok": True})
@@ -2855,6 +2943,14 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             self.respond(200, {"ok": True})
 
         elif self.path == "/webhook/offer":
+            # Audit 2026-04-27 H-2. No live caller in the repo as of
+            # 2026-04-27, so gating here costs nothing operationally —
+            # but we close the spoof vector preemptively in case a
+            # negotiation-offer flow is wired to it later.
+            verdict = _verify_slave_signed_webhook(data, "offer")
+            if verdict[0] == "error":
+                self.respond(verdict[1], verdict[2])
+                return
             text = data.get("offer", "")
             send_evidence(text, "negotiation offer")
             self.respond(200, {"ok": True})
@@ -2866,6 +2962,14 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             self.respond(200, {"ok": True})
 
         elif self.path == "/webhook/geofence-breach":
+            # Audit 2026-04-27 H-2. Caller-controlled lat/lon/distance
+            # are content-only; the signature only proves the request
+            # comes from the paired Collar, not what's in it (matches
+            # the bunny-message threat model).
+            verdict = _verify_slave_signed_webhook(data, "geofence-breach")
+            if verdict[0] == "error":
+                self.respond(verdict[1], verdict[2])
+                return
             lat = data.get("lat", 0)
             lon = data.get("lon", 0)
             distance = data.get("distance", 0)
@@ -2880,10 +2984,19 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             self.respond(200, {"ok": True})
 
         elif self.path == "/webhook/evidence-photo":
+            # Audit 2026-04-27 H-2. Sig binds (mesh, node, ts) only —
+            # photo bytes themselves are content-only. A tampered slave
+            # could still upload a misleading photo to its own Lion;
+            # this gate stops third-parties on the network from doing
+            # the same.
+            verdict = _verify_slave_signed_webhook(data, "evidence-photo")
+            if verdict[0] == "error":
+                self.respond(verdict[1], verdict[2])
+                return
             photo_b64 = data.get("photo", "")
             evidence_type = data.get("type", "obedience")
             text = data.get("text", "")
-            logger.info("Evidence photo received (%s)", evidence_type)
+            logger.info("Evidence photo received (%s)", _sanitize_log(evidence_type))
             if photo_b64 and PARTNER_EMAIL:
                 try:
                     photo_bytes = base64.b64decode(photo_b64)
@@ -2935,9 +3048,16 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             self.respond(200, result)
 
         elif self.path == "/webhook/subscription-charge":
+            # Audit 2026-04-27 H-2. No live caller — modern flow goes
+            # via /api/mesh/{id}/subscribe (server applies the order +
+            # paywall write). Gated preemptively.
+            verdict = _verify_slave_signed_webhook(data, "subscription-charge")
+            if verdict[0] == "error":
+                self.respond(verdict[1], verdict[2])
+                return
             tier = data.get("tier", "unknown")
             amount = data.get("amount", 0)
-            logger.info("Subscription charge: $%s (%s)", amount, tier)
+            logger.info("Subscription charge: $%s (%s)", amount, _sanitize_log(tier))
             send_evidence(
                 f"Weekly subscription charge: ${amount} ({tier.upper()})\n"
                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -2947,72 +3067,20 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             self.respond(200, {"ok": True})
 
         elif self.path == "/webhook/bunny-message":
-            # Bunny-signed. Previously unauth'd (deferred in the 2026-04-17
-            # hardening commit per CHANGELOG line 83). The webhook fires
-            # send_evidence() — a LAN attacker could previously inject a
-            # "self-lock" text and the Lion would receive false evidence
-            # email. Signature binds each request to the registered
-            # bunny_pubkey under (mesh_id, node_id).
+            # Bunny Tasker-signed (companion fires this from the join-mesh /
+            # message UI). 2026-04-17 audit closed the spoof-email window
+            # for this endpoint specifically; the seven sibling evidence
+            # webhooks that were missed are now gated with the same helper
+            # below (audit 2026-04-27 H-2).
             #
             # Canonical payload: "{mesh_id}|{node_id}|bunny-message|{ts_i}"
-            # Reuses the shape of /api/mesh/{id}/gamble + /api/mesh/{id}/escape-event.
-            mesh_id = data.get("mesh_id", "")
-            node_id = data.get("node_id", "")
-            ts = data.get("ts", 0)
-            signature = data.get("signature", "")
-            if not signature:
-                self.respond(
-                    403,
-                    {"error": "signature required", "min_companion_version": 53},
-                )
+            verdict = _verify_slave_signed_webhook(
+                data, "bunny-message", version_field="min_companion_version", min_version=53
+            )
+            if verdict[0] == "error":
+                self.respond(verdict[1], verdict[2])
                 return
-            if not mesh_id or not node_id:
-                self.respond(400, {"error": "mesh_id and node_id required"})
-                return
-            if not _safe_mesh_id(mesh_id):
-                self.respond(400, {"error": "invalid mesh_id"})
-                return
-            account = _mesh_accounts.get(mesh_id)
-            if not account:
-                self.respond(404, {"error": "mesh not found"})
-                return
-            try:
-                ts_i = int(ts)
-            except (ValueError, TypeError):
-                self.respond(400, {"error": "ts must be int (ms epoch)"})
-                return
-            now_ms = int(time.time() * 1000)
-            if abs(now_ms - ts_i) > 5 * 60 * 1000:
-                self.respond(403, {"error": "ts out of window"})
-                return
-            node = account.get("nodes", {}).get(node_id)
-            if not node:
-                self.respond(403, {"error": "node not registered in mesh"})
-                return
-            bunny_pubkey = node.get("bunny_pubkey", "")
-            if not bunny_pubkey:
-                self.respond(403, {"error": "no bunny_pubkey on file for node"})
-                return
-            payload = f"{mesh_id}|{node_id}|bunny-message|{ts_i}"
-            try:
-                import base64 as _b64
-
-                from cryptography.hazmat.primitives import hashes, serialization
-                from cryptography.hazmat.primitives.asymmetric import padding
-
-                pub_der = _b64.b64decode(bunny_pubkey)
-                pub = serialization.load_der_public_key(pub_der)
-                sig_bytes = _b64.b64decode(signature)
-                pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
-            except Exception as e:
-                logger.warning(
-                    "bunny-message sig verify failed: mesh=%s node=%s err=%s",
-                    _sanitize_log(mesh_id),
-                    _sanitize_log(node_id),
-                    e,
-                )
-                self.respond(403, {"error": "invalid signature"})
-                return
+            _, mesh_id, node_id, bunny_pubkey = verdict
             text = data.get("text", "")
             msg_type = data.get("type", "message")
             logger.info(
