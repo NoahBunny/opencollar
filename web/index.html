@@ -837,13 +837,14 @@ label {
 
   <!-- Tab Bar -->
   <div class="tab-bar">
-    <button class="tab-btn active" data-tab="control">Control</button>
-    <button class="tab-btn" data-tab="advanced">Advanced</button>
+    <button class="tab-btn active" data-tab="lock">Lock</button>
+    <button class="tab-btn" data-tab="rules">Rules</button>
+    <button class="tab-btn" data-tab="money">Money</button>
     <button class="tab-btn" data-tab="inbox">Inbox</button>
   </div>
 
-  <!-- ──────────────── TAB 1: CONTROL ──────────────── -->
-  <div id="tab-control" class="tab-content active">
+  <!-- ──────────────── TAB 1: LOCK ──────────────── -->
+  <div id="tab-lock" class="tab-content active">
 
     <!-- Status -->
     <div class="card" id="statusCard">
@@ -864,10 +865,10 @@ label {
 
     <!-- Lock Section -->
     <div class="card">
-      <div class="card-title">Lock</div>
+      <div class="card-title">Lock the Bunny</div>
       <div class="input-group">
-        <label for="lockMsg">Lock Message</label>
-        <input type="text" id="lockMsg" placeholder="Message shown on lock screen...">
+        <label for="lockMsg">Message on lock screen</label>
+        <input type="text" id="lockMsg" placeholder="What she'll see…">
       </div>
       <div class="input-row" style="margin-bottom:0.75rem">
         <div>
@@ -897,19 +898,22 @@ label {
     </div>
 
     <!-- Quick Lock -->
-    <div class="quick-locks">
-      <button class="btn" data-quick="15">15m</button>
-      <button class="btn" data-quick="30">30m</button>
-      <button class="btn" data-quick="60">1h</button>
-      <button class="btn" data-quick="120">2h</button>
+    <div class="card">
+      <div class="card-title">Quick Lock</div>
+      <div class="quick-locks" style="margin:0">
+        <button class="btn" data-quick="15">15m</button>
+        <button class="btn" data-quick="30">30m</button>
+        <button class="btn" data-quick="60">1h</button>
+        <button class="btn" data-quick="120">2h</button>
+      </div>
     </div>
 
-    <!-- Bunny Balance -->
+    <!-- Paywall (was "Bunny Balance") -->
     <div class="card">
-      <div class="card-title">Bunny Balance</div>
+      <div class="card-title">Paywall</div>
       <div class="balance-display">
         <div class="balance-amount" id="paywallAmount">$0.00</div>
-        <div class="balance-label">Paywall Owed (CAD)</div>
+        <div class="balance-label">Currently owed (CAD)</div>
       </div>
       <div class="balance-buttons">
         <button class="btn" data-add="1">+$1</button>
@@ -924,10 +928,13 @@ label {
       </div>
     </div>
 
-    <!-- Unlock Row -->
-    <div class="btn-row" style="margin-bottom:1rem">
-      <button class="btn" id="btnUnlockAll">Unlock All</button>
-      <button class="btn" id="btnReleaseDevice">Release Device</button>
+    <!-- Unlock + Release -->
+    <div class="card">
+      <div class="card-title">Unlock</div>
+      <div class="btn-row">
+        <button class="btn" id="btnUnlockAll">Unlock All</button>
+        <button class="btn" id="btnReleaseDevice">Release One Device</button>
+      </div>
     </div>
 
     <!-- Offer Section (conditional) -->
@@ -935,21 +942,31 @@ label {
       <div class="card-title">Pending Offer</div>
       <div class="offer-text" id="offerText"></div>
       <div class="input-group">
-        <input type="text" id="counterOffer" placeholder="Counter-offer (optional)...">
+        <input type="text" id="counterOffer" placeholder="Counter-offer (optional)…">
       </div>
       <div class="btn-row">
         <button class="btn btn-primary" id="btnAcceptOffer">Accept</button>
         <button class="btn btn-danger" id="btnDeclineOffer">Decline</button>
       </div>
     </div>
+
+    <!-- Danger zone -->
+    <div class="card" style="border:1px solid #5a2828;background:rgba(228,68,68,0.04)">
+      <div class="card-title" style="color:#e44">Danger Zone</div>
+      <p style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.75rem;line-height:1.5">
+        Entrap scrambles the phone PIN — there is no way out except through the controller.
+      </p>
+      <button class="btn btn-danger btn-full" id="btnEntrap">Entrap</button>
+    </div>
   </div>
 
-  <!-- ──────────────── TAB 2: ADVANCED ──────────────── -->
-  <div id="tab-advanced" class="tab-content">
+  <!-- ──────────────── TAB 2: RULES ──────────────── -->
+  <div id="tab-rules" class="tab-content">
 
     <!-- Mode Selector -->
     <div class="card">
       <div class="card-title">Lock Mode</div>
+      <p style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.5rem;line-height:1.45">Default mode for the Task + Lock action below.</p>
       <div class="input-group">
         <select id="advMode">
           <option value="">Basic Lock</option>
@@ -965,15 +982,16 @@ label {
       </div>
     </div>
 
-    <!-- Modifier Toggles -->
+    <!-- Lock Style (was "Modifiers") -->
     <div class="card">
-      <div class="card-title">Modifiers</div>
+      <div class="card-title">Lock Style</div>
+      <p style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.5rem;line-height:1.45">Toggle these on; they apply to the next lock you issue.</p>
       <div class="toggle-row">
-        <button class="toggle-btn" data-mod="shame">Taunt</button>
-        <button class="toggle-btn" data-mod="penalty">+5m/esc</button>
-        <button class="toggle-btn" data-mod="vibrate">Vibrate</button>
-        <button class="toggle-btn" data-mod="dim">Dim</button>
-        <button class="toggle-btn" data-mod="mute">Mute</button>
+        <button class="toggle-btn" data-mod="shame" title="Mocking lock-screen text">Taunt</button>
+        <button class="toggle-btn" data-mod="penalty" title="+5 minutes per escape attempt">Escape Penalty</button>
+        <button class="toggle-btn" data-mod="vibrate" title="Phone vibrates on escape">Vibrate</button>
+        <button class="toggle-btn" data-mod="dim" title="Dim the screen">Dim</button>
+        <button class="toggle-btn" data-mod="mute" title="Silence notifications">Mute</button>
       </div>
     </div>
 
@@ -1000,22 +1018,9 @@ label {
       <button class="btn btn-primary btn-full" id="btnTaskLock">Task + Lock</button>
     </div>
 
-    <!-- Good Boy (Lovense) -->
-    <div class="lovense-section" id="lovenseSection">
-      <div class="card">
-        <div class="card-title">Good Boy</div>
-        <div class="lovense-buttons">
-          <button class="btn" data-toy="pulse">Pulse</button>
-          <button class="btn btn-primary" data-toy="reward">Reward</button>
-          <button class="btn btn-danger" data-toy="punish">Punish</button>
-          <button class="btn" data-toy="stop">Stop</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Scheduling -->
+    <!-- Schedule (bedtime + screen time) -->
     <div class="card">
-      <div class="card-title">Scheduling</div>
+      <div class="card-title">Schedule</div>
       <div class="input-group" style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
         <label style="min-width:70px">Bedtime</label>
         <input type="number" id="bedtimeLockHour" min="0" max="23" placeholder="Lock hr" style="width:5rem">
@@ -1025,64 +1030,52 @@ label {
         <button class="btn" id="btnClearBedtime">Clear</button>
       </div>
       <div class="input-group" style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-top:0.5rem">
-        <label style="min-width:70px">Screen Time</label>
+        <label style="min-width:70px">Screen time</label>
         <input type="number" id="screenTimeQuota" min="0" placeholder="Minutes/day" style="width:7rem">
         <button class="btn btn-primary" id="btnSetScreenTime">Set</button>
         <button class="btn" id="btnClearScreenTime">Clear</button>
       </div>
     </div>
 
-    <!-- Power Tools -->
+    <!-- Location -->
     <div class="card">
-      <div class="card-title">Power Tools</div>
-      <div class="power-grid">
-        <button class="btn tooltip-wrap" id="btnClearPaywall" data-tooltip="Reset paywall to $0">Clear Paywall</button>
-        <button class="btn tooltip-wrap" id="btnGamble" data-tooltip="Double the paywall or clear it">Double or Nothing</button>
-        <button class="btn tooltip-wrap" id="btnPlayAudio" data-tooltip="Play audio URL on phone">Play Audio</button>
-        <button class="btn tooltip-wrap" id="btnSpeak" data-tooltip="Text-to-speech on phone">Speak</button>
-        <button class="btn tooltip-wrap" id="btnGeofence" data-tooltip="Set geofence boundary">Set Geofence</button>
-        <button class="btn tooltip-wrap" id="btnConfineHome" data-tooltip="Lock to current location + 100m">Confine Home</button>
-        <button class="btn tooltip-wrap" id="btnPinMessage" data-tooltip="Pin a persistent notification">Pin Message</button>
-        <button class="btn tooltip-wrap" id="btnSubscription" data-tooltip="Set subscription tier">Subscription</button>
-        <button class="btn tooltip-wrap" id="btnTribute" data-tooltip="Daily cost of freedom while unlocked">Daily Tribute</button>
-        <button class="btn tooltip-wrap" id="btnStreak" data-tooltip="7d = -$5, 30d = -$25 (resets on escape)">Streak Bonus</button>
-        <button class="btn btn-danger tooltip-wrap" id="btnEntrap" data-tooltip="Scramble PIN, no escape">Entrap</button>
+      <div class="card-title">Location</div>
+      <p style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.5rem;line-height:1.45">Auto-lock if the Bunny strays from a designated area.</p>
+      <div class="btn-row">
+        <button class="btn" id="btnGeofence">Set Geofence</button>
+        <button class="btn" id="btnConfineHome">Confine to Home</button>
+      </div>
+    </div>
+
+    <!-- Toy (was "Good Boy") -->
+    <div class="lovense-section" id="lovenseSection">
+      <div class="card">
+        <div class="card-title">Toy</div>
+        <p style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.5rem;line-height:1.45">Lovense controls. LAN-only.</p>
+        <div class="lovense-buttons">
+          <button class="btn" data-toy="pulse">Pulse</button>
+          <button class="btn btn-primary" data-toy="reward">Reward</button>
+          <button class="btn btn-danger" data-toy="punish">Punish</button>
+          <button class="btn" data-toy="stop">Stop</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Voice -->
+    <div class="card">
+      <div class="card-title">Voice</div>
+      <p style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.5rem;line-height:1.45">LAN-only. Plays through her phone speaker.</p>
+      <div class="btn-row">
+        <button class="btn" id="btnPlayAudio">Play Audio</button>
+        <button class="btn" id="btnSpeak">Speak</button>
       </div>
     </div>
   </div>
 
-  <!-- ──────────────── TAB 3: INBOX ──────────────── -->
-  <div id="tab-inbox" class="tab-content">
+  <!-- ──────────────── TAB 3: MONEY ──────────────── -->
+  <div id="tab-money" class="tab-content">
 
-    <!-- Lion-Only Pinned Message (auth challenges, private notes) -->
-    <div class="card" id="lionPinnedCard" style="display:none;border:1px solid var(--gold)">
-      <div class="card-title" style="color:var(--gold)">Lion-Only Pinned</div>
-      <div id="lionPinnedText" style="font-size:1.1rem;font-weight:600;color:var(--gold)"></div>
-      <button class="btn btn-full" style="margin-top:0.5rem;background:var(--bg-card)" onclick="api('POST','/mesh/order',{action:'pin-lion-message',params:{message:''}}).then(()=>{document.getElementById('lionPinnedCard').style.display='none'})">Clear</button>
-    </div>
-
-    <!-- Collared Devices -->
-    <div class="card">
-      <div class="card-title">Collared Devices</div>
-      <div id="meshDevices">
-        <div style="color:var(--text-muted);font-size:0.85rem;">Loading devices...</div>
-      </div>
-    </div>
-
-    <!-- Message -->
-    <div class="card">
-      <div class="card-title">Message</div>
-      <div class="input-group">
-        <textarea id="msgText" placeholder="Send a message to bunny..."></textarea>
-      </div>
-      <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;flex-wrap:wrap">
-        <button class="toggle-btn" id="msgPin">Pin as notification</button>
-        <button class="toggle-btn" id="msgPraise">Praise</button>
-      </div>
-      <button class="btn btn-primary btn-full" id="btnSendMsg">Send</button>
-    </div>
-
-    <!-- Subscription Status -->
+    <!-- Subscription Status (was in Inbox) -->
     <div class="card">
       <div class="card-title">Subscription Status</div>
       <div class="sub-info">
@@ -1098,6 +1091,70 @@ label {
           <div style="font-size:0.85rem;color:var(--text-muted)">Free Unlocks</div>
           <div style="font-size:1rem;font-weight:600" id="subUnlocksDisplay">0</div>
         </div>
+      </div>
+      <button class="btn btn-full" id="btnSubscription" style="margin-top:0.75rem">Change Tier…</button>
+    </div>
+
+    <!-- Daily tribute -->
+    <div class="card">
+      <div class="card-title">Daily Tribute</div>
+      <p style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.5rem;line-height:1.45">A daily charge added to the paywall while she's unlocked.</p>
+      <button class="btn btn-full" id="btnTribute">Daily Tribute</button>
+    </div>
+
+    <!-- Streak bonus -->
+    <div class="card">
+      <div class="card-title">Streak Bonus</div>
+      <p style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.5rem;line-height:1.45">7-day streak = −$5; 30-day = −$25. Resets on every escape attempt.</p>
+      <button class="btn btn-full" id="btnStreak">Streak Bonus</button>
+    </div>
+
+    <!-- Paywall actions -->
+    <div class="card">
+      <div class="card-title">Paywall Actions</div>
+      <div class="btn-row" style="flex-wrap:wrap;gap:0.5rem">
+        <button class="btn" id="btnClearPaywall">Clear Paywall</button>
+        <button class="btn" id="btnGamble">Double or Nothing</button>
+      </div>
+      <p style="font-size:0.78rem;color:var(--text-muted);margin-top:0.5rem;line-height:1.45">Double or Nothing flips a coin: heads halves the paywall, tails doubles it.</p>
+    </div>
+  </div>
+
+  <!-- ──────────────── TAB 4: INBOX ──────────────── -->
+  <div id="tab-inbox" class="tab-content">
+
+    <!-- Lion-Only Pinned Message (auth challenges, private notes) -->
+    <div class="card" id="lionPinnedCard" style="display:none;border:1px solid var(--gold)">
+      <div class="card-title" style="color:var(--gold)">Lion-Only Pinned</div>
+      <div id="lionPinnedText" style="font-size:1.1rem;font-weight:600;color:var(--gold)"></div>
+      <button class="btn btn-full" style="margin-top:0.5rem;background:var(--bg-card)" onclick="api('POST','/mesh/order',{action:'pin-lion-message',params:{message:''}}).then(()=>{document.getElementById('lionPinnedCard').style.display='none'})">Clear</button>
+    </div>
+
+    <!-- Send a message -->
+    <div class="card">
+      <div class="card-title">Send Message</div>
+      <div class="input-group">
+        <textarea id="msgText" placeholder="Send a message to bunny…"></textarea>
+      </div>
+      <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;flex-wrap:wrap">
+        <button class="toggle-btn" id="msgPin">Pin to lock screen</button>
+        <button class="toggle-btn" id="msgPraise">Praise</button>
+      </div>
+      <button class="btn btn-primary btn-full" id="btnSendMsg">Send</button>
+    </div>
+
+    <!-- Pin a notification (separate from send-message; shows as a banner) -->
+    <div class="card">
+      <div class="card-title">Pin a Notification</div>
+      <p style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.5rem;line-height:1.45">A persistent banner across the lock screen — not a message thread entry.</p>
+      <button class="btn btn-full" id="btnPinMessage">Pin Notification…</button>
+    </div>
+
+    <!-- Collared Devices -->
+    <div class="card">
+      <div class="card-title">Collared Devices</div>
+      <div id="meshDevices">
+        <div style="color:var(--text-muted);font-size:0.85rem">Loading devices…</div>
       </div>
     </div>
   </div>
@@ -2079,7 +2136,7 @@ label {
     const tag = document.activeElement?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
-    const tabMap = { '1': 'control', '2': 'advanced', '3': 'inbox' };
+    const tabMap = { '1': 'lock', '2': 'rules', '3': 'money', '4': 'inbox' };
     if (tabMap[e.key]) {
       e.preventDefault();
       const tabName = tabMap[e.key];
