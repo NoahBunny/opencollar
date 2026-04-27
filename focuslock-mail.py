@@ -3278,7 +3278,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if not _mesh_accounts.check_rate_limit(client_ip):
                 self.respond(429, {"error": "rate limit exceeded — max 3 meshes per hour"})
                 return
-            account = _mesh_accounts.create(lion_pubkey, client_ip=client_ip)
+            # Optional PIN from the signup wizard — must be exactly 4 digits.
+            # Anything else falls through to the auto-generated random PIN.
+            req_pin = (data.get("pin") or "").strip()
+            if not (req_pin.isdigit() and len(req_pin) == 4):
+                req_pin = ""
+            account = _mesh_accounts.create(lion_pubkey, pin=req_pin, client_ip=client_ip)
             # Auto-register the relay as an approved vault signer for this
             # new mesh so server-driven mutations (subscribe, compound
             # interest, payment-received, set-geofence …) propagate to the
@@ -5397,7 +5402,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             "/trust.html",
         ):
             # Serve web UI (index, signup, cost, or trust)
-            web_dir = "/opt/focuslock/web"
+            web_dir = os.environ.get("FOCUSLOCK_WEB_DIR", "/opt/focuslock/web")
             if self.path.startswith("/signup"):
                 fname = "signup.html"
             elif self.path.startswith("/cost"):
@@ -5421,7 +5426,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(404, {"error": "web UI not deployed"})
 
         elif self.path == "/qrcode.min.js":
-            web_dir = "/opt/focuslock/web"
+            web_dir = os.environ.get("FOCUSLOCK_WEB_DIR", "/opt/focuslock/web")
             js_path = os.path.join(web_dir, "qrcode.min.js")
             if os.path.exists(js_path):
                 self.send_response(200)

@@ -17,12 +17,46 @@ Exits 0 on full pass, 1 on any failure.
 """
 
 import argparse
+import base64
 import json
 import os
 import sys
 import time
 import urllib.error
 import urllib.request
+
+# canonical_json + signing for the post-audit-C1 mesh-order auth gate.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import focuslock_mesh as _mesh
+
+try:
+    from cryptography.hazmat.primitives import hashes as _hashes
+    from cryptography.hazmat.primitives import serialization as _serialization
+    from cryptography.hazmat.primitives.asymmetric import padding as _asym_padding
+except ImportError:
+    _serialization = None  # type: ignore[assignment]
+
+
+_LION_PRIVKEY = None
+
+
+def _load_lion_privkey(path):
+    global _LION_PRIVKEY
+    if _serialization is None:
+        return None
+    if _LION_PRIVKEY is None and os.path.exists(path):
+        with open(path, "rb") as f:
+            _LION_PRIVKEY = _serialization.load_pem_private_key(f.read(), password=None)
+    return _LION_PRIVKEY
+
+
+def _sign_action(action, params):
+    """Sign canonical({action, params}) — matches mesh.handle_mesh_order's gate."""
+    if _LION_PRIVKEY is None:
+        return ""
+    data = _mesh.canonical_json({"action": action, "params": params or {}})
+    sig = _LION_PRIVKEY.sign(data, _asym_padding.PKCS1v15(), _hashes.SHA256())
+    return base64.b64encode(sig).decode()
 
 
 def _post(relay, path, body, timeout=5):
@@ -52,15 +86,18 @@ def _get(relay, path, timeout=5):
 
 
 def _admin_order(relay, token, action, params=None):
-    return _post(
-        relay,
-        "/admin/order",
-        {
-            "admin_token": token,
-            "action": action,
-            "params": params or {},
-        },
-    )
+    body = {
+        "admin_token": token,
+        "action": action,
+        "params": params or {},
+    }
+    # Post-audit-C1 the mesh-order handler requires PIN-or-Lion-signature
+    # whenever the orders doc has either set. Sign with the staging Lion
+    # privkey if available so /admin/order can drive the mesh handler.
+    sig = _sign_action(action, params or {})
+    if sig:
+        body["signature"] = sig
+    return _post(relay, "/admin/order", body)
 
 
 def _status(relay, token):
@@ -298,6 +335,11 @@ def main():
     if not token or token.startswith("REPLACE_"):
         print(f"ERROR: admin_token in {args.config} is unset or template placeholder.", file=sys.stderr)
         return 2
+
+    # Load Lion privkey for the mesh-handler signature gate (post-audit-C1).
+    privkey_path = os.path.join(os.path.dirname(args.config), "lion_privkey.pem")
+    if _load_lion_privkey(privkey_path) is None:
+        print(f"WARN: {privkey_path} not loaded — order-dispatch tests may fail the auth gate.", file=sys.stderr)
 
     print(f"Staging QA Runner — driving {args.relay}")
     print(f"Mesh: {cfg.get('mesh_id', '?')}  Vault mode: {cfg.get('vault_mode', False)}")
