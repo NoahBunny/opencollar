@@ -106,12 +106,12 @@ def click_tab(page, tab):
     page.wait_for_selector(f"#tab-{tab}.tab-content.active")
 
 
-# ── Control tab ──
+# ── Lock tab ──
 
 
 @case("01_lock_all_button")
 def lock_all(page, rec):
-    click_tab(page, "control")
+    click_tab(page, "lock")
     rec.reset()
     page.locator("#btnLockAll").click()
     page.wait_for_timeout(400)
@@ -158,15 +158,26 @@ def add_paywall_custom(page, rec):
     assert float(adds[-1]["params"]["amount"]) == 7.0
 
 
-# ── Advanced tab ──
+# ── Rules tab (mode + style + task + schedule + location + toy + voice) ──
 
 
-@case("06_advanced_tab_loads")
-def advanced_tab(page, rec):
-    click_tab(page, "advanced")
-    # Power Tools card should be visible
-    page.wait_for_selector("#btnClearPaywall")
-    shot(page, "06_advanced")
+@case("06_rules_tab_loads")
+def rules_tab(page, rec):
+    click_tab(page, "rules")
+    # The Lock Mode card should be visible
+    page.wait_for_selector("#advMode")
+    shot(page, "06_rules")
+
+
+# ── Money tab (subscription + tribute + streak + paywall actions) ──
+
+
+@case("06b_money_tab_loads")
+def money_tab(page, rec):
+    click_tab(page, "money")
+    # Subscription status card should be visible
+    page.wait_for_selector("#btnSubscription")
+    shot(page, "06b_money")
 
 
 @case("07_clear_paywall_modal")
@@ -183,6 +194,7 @@ def clear_paywall(page, rec):
 
 @case("08_set_bedtime")
 def set_bedtime(page, rec):
+    click_tab(page, "rules")
     page.locator("#bedtimeLockHour").fill("23")
     page.locator("#bedtimeUnlockHour").fill("7")
     rec.reset()
@@ -223,6 +235,8 @@ def clear_screen_time(page, rec):
 
 @case("12_pin_message_modal")
 def pin_message(page, rec):
+    # Pin-message moved from Power Tools (Advanced) to its own card in Inbox
+    click_tab(page, "inbox")
     rec.reset()
     page.locator("#btnPinMessage").click()
     page.wait_for_selector("#modalOverlay.show", timeout=2000)
@@ -237,6 +251,8 @@ def pin_message(page, rec):
 
 @case("13_subscription_silver")
 def subscription(page, rec):
+    # Subscription button moved to Money tab
+    click_tab(page, "money")
     rec.reset()
     page.locator("#btnSubscription").click()
     page.wait_for_selector("#modalOverlay.show", timeout=2000)
@@ -251,6 +267,8 @@ def subscription(page, rec):
 
 @case("14_tribute_button_wires_to_one_action")
 def tribute(page, rec):
+    # Tribute moved to Money tab
+    click_tab(page, "money")
     # The tribute button toggles: if tribute_active=1 it sends clear-tribute,
     # else it opens a prompt modal then sends set-tribute. Either is correct
     # button-wiring; we just want exactly one of those actions to fire.
@@ -288,6 +306,9 @@ def lan_only_buttons_disabled(page, rec):
     """applyRelayRestrictions() disables btnPlayAudio, btnSpeak, btnConfineHome
     + every Lovense (lovenseSection) button. Verify the disabled state instead
     of attempting to click — that's the actual UX contract."""
+    # Buttons live in the Rules tab now (under Toy + Voice cards) plus the
+    # Confine-Home button under Location.
+    click_tab(page, "rules")
     for btn_id in ("btnPlayAudio", "btnSpeak", "btnConfineHome"):
         loc = page.locator(f"#{btn_id}")
         assert loc.count() == 1, f"missing button: {btn_id}"
