@@ -44,6 +44,12 @@ desktop-win = [
     "pystray>=0.19",
     "pillow>=10",
 ]
+# Linux tray indicator (focuslock-tray.py) requires PyGObject + GTK3 +
+# AyatanaAppIndicator3 (or the legacy AppIndicator3). These bind to system
+# .so libraries and aren't reliably pip-installable; installer scripts use
+# the distro package manager. Listed here for documentation only — the
+# installer (`installers/install-desktop-collar.sh`) is the source of truth.
+desktop-linux = []
 # Server install adds nothing beyond core today; reserved for future
 # server-only deps so deployments can declare intent.
 server = []
