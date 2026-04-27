@@ -246,8 +246,18 @@ class SyncthingVaultTransport(VaultTransport):
             return 0, str(e)
 
     def nodes(self, mesh_id):
+        if not _safe_id(mesh_id):
+            return []
+        # islink check must run on the raw (un-realpath'd) join — _safe_path
+        # returns os.path.realpath which has already followed any symlink, so
+        # a post-_safe_path islink test is dead. A malicious Syncthing peer
+        # could plant `mesh_id/nodes.json` as a symlink to another file inside
+        # vault_dir to exfiltrate it through the nodes() return value.
+        raw_path = os.path.join(self.vault_dir, mesh_id, "nodes.json")
+        if os.path.islink(raw_path):
+            return []
         path = _safe_path(self.vault_dir, mesh_id, "nodes.json")
-        if not os.path.exists(path) or os.path.islink(path):
+        if not os.path.exists(path):
             return []
         try:
             with open(path, "r") as f:

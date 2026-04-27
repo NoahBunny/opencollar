@@ -4739,17 +4739,20 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 matched_mesh_id = None
                 payload = {"session_id": session_id}
                 # Try the operator first (fast path for single-mesh installs).
+                # _verify_signed_payload handles both PEM and bare-DER-base64
+                # public keys; mesh.verify_signature only accepts PEM, and
+                # Lion's Share writes DER b64 (kp.getPublic().getEncoded() →
+                # base64) so calling mesh.verify_signature here always failed
+                # with a load_pem_public_key exception, which kept the
+                # "wrong key" symptom alive even after 6d47d1e shipped the
+                # per-mesh iteration.
                 operator_pub = get_lion_pubkey()
                 if not operator_pub and OPERATOR_MESH_ID:
                     op_acct = _mesh_accounts.meshes.get(OPERATOR_MESH_ID)
                     if op_acct:
                         operator_pub = op_acct.get("lion_pubkey", "")
-                if operator_pub:
-                    try:
-                        if mesh.verify_signature(payload, signature, operator_pub):
-                            matched_mesh_id = OPERATOR_MESH_ID or ""
-                    except Exception:
-                        pass
+                if operator_pub and _verify_signed_payload(payload, signature, operator_pub, quiet=True):
+                    matched_mesh_id = OPERATOR_MESH_ID or ""
                 # Fan out across consumer meshes if operator didn't match.
                 if matched_mesh_id is None:
                     for mid, acct in _mesh_accounts.meshes.items():
@@ -4758,12 +4761,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         pub = acct.get("lion_pubkey", "")
                         if not pub:
                             continue
-                        try:
-                            if mesh.verify_signature(payload, signature, pub):
-                                matched_mesh_id = mid
-                                break
-                        except Exception:
-                            continue
+                        if _verify_signed_payload(payload, signature, pub, quiet=True):
+                            matched_mesh_id = mid
+                            break
 
                 if matched_mesh_id is None:
                     logger.warning("Web session approve DENIED (no mesh matched): %s...", session_id[:8])

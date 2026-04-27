@@ -594,8 +594,8 @@
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:layout_marginBottom="4dp">
-            <Button android:id="@+id/btn_sub_bronze" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:text="Bronze\n$10/wk" android:textSize="11sp" android:backgroundTint="#1a1008" android:textColor="#cc8844" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
-            <Button android:id="@+id/btn_sub_silver" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:text="Silver\n$25/wk" android:textSize="11sp" android:backgroundTint="#141418" android:textColor="#aaaacc" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+            <Button android:id="@+id/btn_sub_bronze" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:text="Bronze\n$25/wk" android:textSize="11sp" android:backgroundTint="#1a1008" android:textColor="#cc8844" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+            <Button android:id="@+id/btn_sub_silver" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:text="Silver\n$35/wk" android:textSize="11sp" android:backgroundTint="#141418" android:textColor="#aaaacc" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
             <Button android:id="@+id/btn_sub_gold" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:text="Gold\n$50/wk" android:textSize="11sp" android:backgroundTint="#1a1a08" android:textColor="#ccaa44" android:minWidth="0dp" android:minHeight="0dp" />
         </LinearLayout>
 
