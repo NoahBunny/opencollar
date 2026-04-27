@@ -9,6 +9,19 @@ starting with v1.0.0.
 ## [Unreleased]
 
 ### Changed
+- **`focuslock-mail.py` security-helper coverage push (44% → 45%, 79 unit tests)** (`tests/test_relay_helpers.py`). First slice of the relay coverage push. The e2e suites exercise these helpers transitively but never pin them in isolation — a regression in any one of them surfaces as a confusing e2e failure rather than a sharp unit failure. Eleven helpers now have direct contracts:
+  - **`_sanitize_log`** — CR/LF/NUL escaping for log-injection defense (CodeQL `py/log-injection`); confirms the literal threat-model pattern is neutralized.
+  - **`_pubkey_fingerprint`** — 16-hex-char sha256-truncate diagnostic ID; deterministic, distinct per key, handles empty/None/non-string.
+  - **`_compute_source_sha256`** — running-source provenance hash; returns 64-char hex matching disk content, gracefully returns `None` on I/O error, cached `SOURCE_SHA256` constant matches the function.
+  - **`_read_deploy_git_commit`** — `/opt/focuslock/.git_commit` first, sibling fallback; whitespace stripped; blank file → `None`; first candidate wins (sibling never opened when ops path succeeds).
+  - **`_safe_mesh_id_static`** — alphanumeric + `-_` only, ≤64 chars; rejects path-separator / dot / null-byte / whitespace / non-string / over-length / empty / None.
+  - **`MeshOrdersRegistry`** — get returns None for unknown, get_or_create persists per-mesh JSON, rejects invalid mesh_id with ValueError, `_load_all` picks up existing files.
+  - **`_resolve_orders`** — operator-mesh registered branch, unknown-mesh / empty / None all fall back to legacy `mesh_orders` global.
+  - **`_get_ntfy_topic`** — consumer mesh always derives `focuslock-{mesh_id}`, operator mesh keeps configured topic when set, falls back to derived when not, no-mesh uses configured topic, no-config returns empty (the literal audit-followup-#7 fix matrix).
+  - **`_load_lion_pubkey_obj`** — PEM and bare-base64-DER both load, DER-with-line-wrapping handled, empty/None/garbage/invalid-b64/wrong-PEM-header → `None`.
+  - **`_verify_signed_payload`** — RSA-PKCS1v15-SHA256 over `canonical_json({everything except 'signature'})`; PEM and DER both work, tampered payload rejected, wrong pubkey rejected, empty sig/pubkey/garbage rejected, `quiet=True` actually suppresses the warning log.
+  - **`_verify_blob_two_writer`** — Lion-tried-first then iterate registered nodes; lion-signed → `("lion", "lion")`, node-signed → `("node", node_id)`, unsigned/empty-sig/unknown-signer/None-nodes → `(None, None)`, no-lion-pubkey falls through to nodes, node with empty pubkey skipped.
+  - **`_vault_resolve_mesh`** — unknown returns `(None, None)`, known returns `(account, lion_pubkey)`, account without `lion_pubkey` returns `(account, "")`.
 - **`focuslock_ntfy.py` test coverage 30% → 100%** (`tests/test_ntfy.py`). 29 new tests across 5 classes pin `ntfy_publish()` (default server `https://ntfy.sh`, custom server with trailing-slash strip, payload is `{"v": <version>}` only — zero-knowledge by construction, `Content-Type: application/json` header, POST method, exception swallowed for fire-and-forget, daemon thread for clean process exit) and `NtfySubscribeThread` (init defaults + trailing-slash strip + initial backoff=1s, `stop()` sets event, `run()` exits cleanly when stop already set, normal `_stream_messages` return resets backoff, exception doubles backoff capped at 60s, backoff cap respected from 60→60, stop_event during backoff wait breaks the loop, `_stream_messages` URL includes since cursor, since cursor advances on every message with id, empty/malformed lines skipped, `open` + `keepalive` events skipped, missing/unparseable/non-dict body handled, message without `v` field skipped, message without id leaves `_since` unchanged, stop_event mid-stream breaks the for-loop, on_wake exception logged but doesn't abort the loop). Tests `672 → 701` (+29).
 
 ### Added
