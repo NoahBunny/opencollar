@@ -110,6 +110,7 @@ MESH_URL = _cfg.get("mesh_url", "")
 HOMELAB_URL = _cfg.get("homelab_url", "")
 PHONE_ADDRESSES = _cfg.get("phone_addresses", [])
 PHONE_PORT = _cfg.get("phone_port", 8432)
+ADMIN_TOKEN = _cfg.get("admin_token", "") or os.environ.get("FOCUSLOCK_ADMIN_TOKEN", "")
 
 # Load Tailscale node name overrides (mesh node ID -> Tailscale hostname)
 _ts_map = _cfg.get("tailscale_node_map", {})
@@ -1303,6 +1304,18 @@ class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond_json(403, resp, cors=True)
                 return
         elif path == "/api/pair/create":
+            # Audit 2026-04-27 M-6: gate on admin_token. Endpoint binds
+            # 0.0.0.0:8435, so any LAN caller could otherwise harvest
+            # {mesh_pin, pubkey_pem, homelab_url, mesh_url}.
+            import hmac as _hmac
+
+            token = body.get("admin_token", "") or body.get("auth_token", "")
+            if not ADMIN_TOKEN:
+                self.respond_json(503, {"error": "admin_token not configured"}, cors=True)
+                return
+            if not token or not _hmac.compare_digest(token, ADMIN_TOKEN):
+                self.respond_json(403, {"error": "invalid admin_token"}, cors=True)
+                return
             resp = _create_pairing_code(body)
         else:
             self.respond_json(404, {"error": "not found"}, cors=True)

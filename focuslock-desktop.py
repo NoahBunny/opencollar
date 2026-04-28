@@ -1189,6 +1189,20 @@ class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self._respond(200, result)
 
         elif self.path == "/api/pair/create":
+            # Audit 2026-04-27 M-6: gate on admin_token. Endpoint binds
+            # 0.0.0.0:8435, so any LAN caller could otherwise harvest
+            # {mesh_pin, pubkey_pem, homelab_url, mesh_url} and join the
+            # mesh gossip layer. ADMIN_TOKEN is loaded at module scope
+            # from config.json or FOCUSLOCK_ADMIN_TOKEN env.
+            import hmac as _hmac
+
+            token = data.get("admin_token", "") or data.get("auth_token", "")
+            if not ADMIN_TOKEN:
+                self._respond(503, {"error": "admin_token not configured"})
+                return
+            if not token or not _hmac.compare_digest(token, ADMIN_TOKEN):
+                self._respond(403, {"error": "invalid admin_token"})
+                return
             result = _create_pairing_code(data)
             self._respond(200, result)
 

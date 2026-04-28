@@ -3042,9 +3042,18 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             self.respond(200, result)
 
         elif self.path == "/webhook/generate-task":
+            # Audit 2026-04-27 M-4: gated preemptively. No live caller in
+            # the repo today; this endpoint burns operator GPU/CPU on
+            # every hit and has no rate limit, so a future caller would
+            # be a resource-exhaustion vector. Bunny-signed envelope
+            # mirrors H-2.
+            verdict = _verify_slave_signed_webhook(data, "generate-task")
+            if verdict[0] == "error":
+                self.respond(verdict[1], verdict[2])
+                return
             category = data.get("category", "general")
             result = generate_task_with_llm(category)
-            logger.info("Generated task: %s", result)
+            logger.info("Generated task: %s", _sanitize_log(str(result)))
             self.respond(200, result)
 
         elif self.path == "/webhook/subscription-charge":
@@ -4782,6 +4791,19 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(404, {"error": f"unknown vault action: {action}"})
 
         elif self.path == "/webhook/controller-register":
+            # Audit 2026-04-27 M-2: gate on admin_token. The route writes
+            # /run/focuslock/controller.json + updates mesh_peers under
+            # node_id "lions-share", so an unauth caller could redirect
+            # the controller-resolve path to an attacker-supplied IP.
+            # Installer-only caller (no Android caller in repo); operator
+            # already has the token in scope.
+            token = data.get("admin_token", "") or data.get("auth_token", "")
+            if not ADMIN_TOKEN:
+                self.respond(503, {"error": "admin_token not configured"})
+                return
+            if not _is_valid_admin_auth(token):
+                self.respond(403, {"error": "invalid admin_token"})
+                return
             ts_ip = data.get("tailscale_ip", "")
             if ts_ip:
                 # Store controller address for release script queries
