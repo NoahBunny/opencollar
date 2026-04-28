@@ -8,6 +8,9 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+### Documentation
+- **Audit 2026-04-27 Stream A exit** — `docs/AUDIT-2026-04-27-EXIT.md` + roadmap update. Documents the five-commit closeout (`09d73be`, `44c5fe4`, `4db89e2`, `ac16335`, `1c2c0aa`): every High and Medium fixed, L-3 fixed, M-5 + L-1 + L-2 + L-4 tracked in the medium-term roadmap section. Coordinated rollout summary (slave APK 74→75 / companion 56→57 / desktop collar redeploy / out-of-repo `sync-standing-orders.sh` Bearer-token add). Recommends Stream C (QA infrastructure) next per the plan's A→C→B ordering. Roadmap top status block updated; Short-term audit item marked done; deferred Stream A findings added to Medium-term backlog.
+
 ### Security
 - **Audit 2026-04-27 round-4 — desktop-signed heartbeat (M-1) + H-1 remainder gating `/memory` + `/standing-orders` + `/settings`** (`focuslock-mail.py`, `focuslock-desktop.py`, `focuslock-desktop-win.py`, `installers/re-enslave-server.sh`, `tests/test_audit_2026_04_27_round4.py`).
   - **M-1** — `/webhook/desktop-heartbeat` verifies a vault-node signature when the body carries one. Mirrors the existing `/api/mesh/{id}/state-mirror` pattern. Canonical envelope `"{mesh_id}|{node_id}|desktop-heartbeat|{ts_ms}"`, signed with the desktop's `_vault_privkey_pem` (the same key Lion approved during register-node-request), verified against `_vault_store.get_nodes(mesh_id)`. Linux desktop collar (`focuslock-desktop.py:phone_home`) signs on the way out; Windows desktop doesn't post heartbeats so no Win-side change. Unsigned heartbeats from legacy single-tenant collars still flow (mesh_id falls through to `OPERATOR_MESH_ID`, scoped to operator's own host) — preserves backward compat.

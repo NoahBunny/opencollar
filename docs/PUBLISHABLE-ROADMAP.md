@@ -1,5 +1,30 @@
 # Publishable Roadmap
 
+## Status — 2026-04-28 (Stream A audit closeout)
+
+Stream A of the 2026-04-27 audit (`docs/AUDIT-PLAN.md` + `docs/AUDIT-FINDINGS-2026-04-27.md`) is closed. Five commits over two days landed every High and Medium fix, plus L-3 from the Low set. Full exit summary at `docs/AUDIT-2026-04-27-EXIT.md`.
+
+- ✅ **H-1 (full)** — `/enforcement-orders`, `/memory`, `/standing-orders`, `/settings` all admin-token-gated (round-1 + round-4).
+- ✅ **H-2** — seven evidence webhooks (compliment, gratitude, love_letter, offer, geofence-breach, evidence-photo, subscription-charge) slave-signed via `_verify_slave_signed_webhook`. New `SlaveSigner.java` helper.
+- ✅ **M-1** — `/webhook/desktop-heartbeat` vault-node-signed (mirrors state-mirror pattern). Linux desktop collar signs; Windows desktop doesn't post heartbeats (no Win-side change).
+- ✅ **M-2** — `/webhook/controller-register` admin-token-gated. Installer-only caller.
+- ✅ **M-3 (full)** — `/webhook/register` device_id-validated (round-1) + bunny-signed (round-3).
+- ✅ **M-4 (full)** — `/webhook/generate-task` (round-2, no caller, preempt) + `/webhook/verify-photo` (round-3, slave + companion sign on the way out) bunny-signed.
+- ✅ **M-6** — desktop collar `/api/pair/create` (port 8435, 0.0.0.0) admin-token-gated on Linux + Windows. Windows desktop also gained `ADMIN_TOKEN` module-load.
+- ✅ **M-7** — `MANAGE_EXTERNAL_STORAGE` removed from Lion's Share controller manifest (no usage in source).
+- ✅ **M-8** — 19 logger sites wrapped in `_sanitize_log()` (CodeQL hadn't flagged; manual audit walk did).
+- ✅ **L-3** — `OPERATOR_MESH_ID` validated by `_safe_mesh_id_static` at module load.
+
+**APK rollout**: slave 74 → 75 (`com.focuslock` 8.32), companion 56 → 57 (`com.bunnytasker` 2.24). Coordinated relay + desktop-collar redeploy required. The out-of-repo `sync-standing-orders.sh` on the operator's homelab needs a single-line `Authorization: Bearer ${ADMIN_TOKEN}` add before deploying the new relay (otherwise the systemd timer's 5-min sync starts logging 403s).
+
+**Findings tracked (deferred to medium-term)**: M-5 (relay-side nonce cache for bunny-signed `/api/mesh/{id}/*` — v1.1 hardening, best bundled with the next signing-surface change so the `nonce` field add is one coordinated rollout), L-1 (drop `?admin_token=` query-param auth in next major), L-2 (strip lat/lon from slave's `/api/status` sig-exempt response — design needed for `/api/location` signed-only path), L-4 (Android `network_security_config.xml` cleartext-traffic-permitted tightening — domain allowlist).
+
+**Tests**: 1014 → 1080 (+66 across rounds 2–4; the round-1 device_id validator matrix relocated to round-3 because it now sits behind the sig gate). Ruff clean. Per-stream-A acceptance gate exited per `docs/AUDIT-2026-04-27-EXIT.md`.
+
+**Next milestone**: Stream C (QA infrastructure expansion — Appium spike, IMAP end-to-end, `focuslock-mail.py` HTTP-route coverage, regression matrix automation, performance smoke test). Per the plan's recommended A → C → B ordering. Stream B (usability review) follows.
+
+---
+
 ## Status — 2026-04-27 (post-coverage push + wizard + index restructure)
 
 Productivity sprint that bridges from the multi-tenant correctness work of 2026-04-24/25/26 into the upcoming security + usability audit. Five PRs merged today (#23–#27):
@@ -69,7 +94,9 @@ Ordered roughly by priority. Smaller than pre-v1.0 phase granularity — these a
 
 ### Short-term (next 1–2 sessions)
 
-- **Full security + usability audit + QA** — *next major milestone, see `docs/AUDIT-PLAN.md` for scope.* Three streams: Stream A (security review of every auth path, multi-tenant scoping, crypto, replay, input validation, vault invariants), Stream B (usability review of every UI surface — wizard, web remote, Lion's Share, Bunny Tasker, Collar, desktop), Stream C (QA infra expansion — uiautomator2/Appium spike, IMAP end-to-end, focuslock-mail HTTP route coverage). Total estimate ~52–68 hours. Suggested ordering: A → C → B. Exit criteria + acceptance docs spelled out in the plan. Outputs land as audit-finding reports + tracked fixes in CHANGELOG.
+- ~~**Stream A — Security audit closeout**~~ — done 2026-04-28 across five commits. All Highs (H-1, H-2) + Mediums (M-1 through M-8) + L-3 fixed; M-5 + L-1 + L-2 + L-4 tracked. See `docs/AUDIT-2026-04-27-EXIT.md` for the full close-out. Coordinated rollout: slave APK 74→75, companion 56→57, desktop collar (Linux) redeploy, out-of-repo `sync-standing-orders.sh` token add.
+- **Stream C — QA infrastructure expansion** — *next milestone, see `docs/AUDIT-PLAN.md` Stream C.* uiautomator2/Appium spike (second swing after the 2026-04-23 wedge), IMAP end-to-end against a real test inbox (operator-side setup gating), `focuslock-mail.py` HTTP-route coverage push (~1100 uncovered lines: pair handlers, admin handlers, vault `/since/{v}` poll, `register-node-request`, memory bundle, `do_GET` dispatch), manual QA driver hardening (`make qa` style), regression matrix automation (`docs/QA-CHECKLIST.md` → programmatic), performance smoke test. Estimate ~16–20 hours.
+- **Stream B — Usability review** — *follow-up milestone, see `docs/AUDIT-PLAN.md` Stream B.* Heaviest stream (~24–32 hours): walk every UI surface (web remote, signup wizard, Lion's Share, Bunny Tasker, Collar 9 lock modes, desktop collars Linux + Windows, pairing routes, error message review, accessibility) with first-time-user eyes; capture friction in `docs/USABILITY-AUDIT-2026-XX.md`.
 - ~~**`focuslock-mail.py` test coverage push**~~ — done 2026-04-27 across PRs #23, #24, #25 (+155 tests across `MeshAccountStore`/`VaultStore`/session-token/blob-counters/relay-node/MessageStore-complementary). shared/ coverage 95.70% floored in CI; total tests `780 → 935`.
 - ~~**Signup wizard with optional initial config**~~ — done 2026-04-27 in PR #26. `web/signup.html` rewritten as a 7-step fullscreen wizard; `/api/mesh/create` accepts optional `initial_config` (IMAP, tribute, subscription, bedtime, screen-time) and applies via `_apply_initial_mesh_config`. Tests `935 → 960`.
 - ~~**Programmatic 4-layer QA harness**~~ — done 2026-04-27 in PR #26. Playwright walkthroughs for both `signup.html` (8 cases) and `index.html` (20 cases), `qa_runner.py` extended 12 → 49 cases covering every relay-mode action surface. Caught 3 real bugs during initial run (PIN passthrough silent loss, qa_runner audit-C1 sig regression, web_dir hardcoded path) — all fixed.
@@ -84,6 +111,11 @@ Ordered roughly by priority. Smaller than pre-v1.0 phase granularity — these a
 
 ### Medium-term
 
+- **Audit 2026-04-27 deferred items** (4 findings tracked from Stream A — full context in `docs/AUDIT-FINDINGS-2026-04-27.md` + `docs/AUDIT-2026-04-27-EXIT.md`):
+  - **M-5 — relay-side nonce cache** for bunny-signed `/api/mesh/{id}/*` (auto-accept, subscribe, gamble, escape-event, state-mirror, deadline-task/clear, messages/*) and `/webhook/bunny-message`. Slave already has `SigVerifier.NonceCache` (Java, 4096 LRU + 600s TTL); the relay needs the Python equivalent + signers must include a `nonce` field. Bundle with the next coordinated APK signing-surface change so the wire-format add is one rollout, not two. Threat is replay within the existing ±5 min ts window.
+  - **L-1 — drop `?admin_token=<t>` query-param auth path** on `/admin/status` and `/api/pair/vault-status/{mesh_id}`. URL-embedded tokens leak through reverse-proxy access logs / browser history / Referer / shoulder-surfing. Header-only path already exists. Schedule for next major version (operator scripts may still pass via query).
+  - **L-2 — `/api/status` lat/lon strip on the slave**. Currently the sig-exempt `/api/status` returns `curLat`/`curLon` from `LocationManager`, so any LAN caller can poll the Bunny's location every few seconds. Inherent to LAN-gossip design; fix is a new signed `/api/location` route + Lion-only path.
+  - **L-4 — Android `network_security_config.xml` tightening**. All three apps currently allow cleartext traffic to any host. Tighten to a `<domain-config>` allowlist for LAN ranges + the homelab IP, requiring HTTPS for the public relay URL. Documented as known weakness in `docs/THREAT-MODEL.md`.
 - **Per-tier subscription amounts configurable** — currently `{"bronze": 25, "silver": 35, "gold": 50}` is hardcoded in `focuslock-mail.py:792` (subscribe action). Wizard's subscription step + index.html's Money tab both reference these defaults; each operator's mesh probably wants its own scheme. Touches `focuslock-mail.py` (sensitive path → admin-merge from Nextcloud env). Surfaced during 2026-04-27 audit of the wizard.
 - **Replace ASCII step icons in the wizard** — `web/signup.html` uses `[]` `[K]` `[$]` `[R]` `[S]` `[?]` `[OK]` as step glyphs. They render as ASCII placeholders. Replace with real emoji or inline SVG. Pure web-only fix.
 - **UI automation for pairing / release flows** — §1a direct-pair fingerprint pin and §1b QR-pair are gated by human interaction. *Spike attempted 2026-04-23 with `uiautomator2` against Waydroid on a single-device loopback pair (Lion's Share + Bunny Tasker + Collar co-located, "LAN" = 127.0.0.1): shelved. `uiautomator2.connect()` hangs at `_setup_jar` → `toybox md5sum` and wedges Waydroid's adbd for the rest of the session, requiring `waydroid session stop` + `sudo systemctl restart waydroid-container` to recover. The harness chain (Waydroid → adbd → uiautomator2's atx-agent/JAR layer) is three brittle links, each of which failed during the spike; running this on every commit would cost more operator time than it saves. Scaffold kept at `tests/ui/` (skipped by default, registered `ui` marker) as a starting point if someone takes a second swing. Espresso is ruled out separately — it requires Gradle, and this repo deliberately avoids Gradle.* Real path forward is either (a) a dual-device Appium harness that accepts the Waydroid pain, or (b) keep this as manual-QA per `docs/QA-pairing.md` until pairing-flow regressions become a pattern.
