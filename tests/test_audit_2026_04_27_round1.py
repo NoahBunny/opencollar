@@ -17,7 +17,6 @@ The full audit report is at docs/AUDIT-FINDINGS-2026-04-27.md.
 """
 
 import importlib.util
-import json
 import sys
 import threading
 import urllib.error
@@ -59,17 +58,6 @@ def _http_get(url, headers=None):
             return r.status, r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
-
-
-def _http_post(url, body, headers=None):
-    data = json.dumps(body).encode()
-    h = {"Content-Type": "application/json", **(headers or {})}
-    req = urllib.request.Request(url, data=data, headers=h, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            return r.status, json.loads(r.read().decode())
-    except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read().decode())
 
 
 # ── H-1: /enforcement-orders auth gate ──
@@ -171,46 +159,8 @@ class TestOperatorMeshIdValidator:
 
 
 # ── M-3: /webhook/register device_id validation ──
-
-
-class TestRegisterDeviceIdValidator:
-    @pytest.mark.parametrize(
-        "bad_device_id",
-        [
-            "../../etc/passwd",
-            "../escape",
-            "name with spaces",
-            "name\nwith\nnewlines",
-            "name\x00with\x00null",
-            "name\rwith\rcr",
-            "",
-            "a" * 65,  # too long
-            None,
-            123,
-        ],
-    )
-    def test_rejects_unsafe_device_id(self, live_server, bad_device_id):
-        code, body = _http_post(
-            f"{live_server}/webhook/register",
-            {"lan_ip": "10.0.0.1", "tailscale_ip": "100.64.0.1", "device_id": bad_device_id},
-        )
-        assert code == 400, f"expected 400 for device_id={bad_device_id!r}, got {code} {body}"
-
-    @pytest.mark.parametrize(
-        "good_device_id",
-        [
-            "Pixel-7",
-            "Galaxy.S23",
-            "phone_main",
-            "abc-123",
-            "a",
-            "ABCD-1234-5678-9012",
-        ],
-    )
-    def test_accepts_safe_device_id(self, live_server, good_device_id):
-        code, body = _http_post(
-            f"{live_server}/webhook/register",
-            {"lan_ip": "10.0.0.1", "tailscale_ip": "100.64.0.1", "device_id": good_device_id},
-        )
-        assert code == 200, f"expected 200 for device_id={good_device_id!r}, got {code} {body}"
-        assert body.get("ok") is True
+# The parametrized validator matrix moved to
+# tests/test_audit_2026_04_27_round3.py::TestRegisterDeviceIdValidatorSigned
+# when round-3 added the bunny-sig gate to /webhook/register. The
+# validator is still in force as defense-in-depth on top of the sig
+# check; the matrix exercises both layers together.

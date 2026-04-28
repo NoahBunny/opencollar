@@ -1112,7 +1112,15 @@ public class FocusActivity extends Activity {
                 return;
             }
             try {
-                String json = "{\"photo\":\"" + fPhotoBase64 + "\",\"task\":\"" + escJson(task) + "\"}";
+                // Audit 2026-04-27 M-4: bunny-signed.
+                org.json.JSONObject vpBody = new org.json.JSONObject();
+                vpBody.put("photo", fPhotoBase64);
+                vpBody.put("task", task);
+                String signedVerify = SlaveSigner.signAndAttach(this, "verify-photo", vpBody);
+                if (signedVerify == null) {
+                    handler.post(() -> android.widget.Toast.makeText(this, "Photo verification not configured (unpaired)", android.widget.Toast.LENGTH_LONG).show());
+                    return;
+                }
                 java.net.URL url = new java.net.URL("http://" + verifyHost + "/webhook/verify-photo");
                 java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("POST");
@@ -1120,7 +1128,7 @@ public class FocusActivity extends Activity {
                 conn.setDoOutput(true);
                 conn.setConnectTimeout(10000);
                 conn.setReadTimeout(60000); // LLM can take a while
-                conn.getOutputStream().write(json.getBytes());
+                conn.getOutputStream().write(signedVerify.getBytes("UTF-8"));
                 java.io.BufferedReader reader = new java.io.BufferedReader(
                     new java.io.InputStreamReader(conn.getInputStream()));
                 StringBuilder sb = new StringBuilder();

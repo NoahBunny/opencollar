@@ -3034,11 +3034,22 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             self.respond(200, {"ok": True})
 
         elif self.path == "/webhook/verify-photo":
+            # Audit 2026-04-27 M-4 (full): bunny-signed. Both slave APK
+            # (FocusActivity photo task) and companion APK (deadline-task
+            # photo proof) call this. Min versions are coordinated:
+            # slave ≥ v75, companion ≥ v57. The 403 hint reports
+            # min_collar_version since the slave's path is the more
+            # security-sensitive caller; an old companion will see the
+            # same 403 + must update.
+            verdict = _verify_slave_signed_webhook(data, "verify-photo", min_version=75)
+            if verdict[0] == "error":
+                self.respond(verdict[1], verdict[2])
+                return
             photo_b64 = data.get("photo", "")
             task_text = data.get("task", "")
-            logger.info("Photo verification: %s", task_text[:50])
+            logger.info("Photo verification: %s", _sanitize_log(task_text[:50]))
             result = verify_photo_with_llm(photo_b64, task_text, on_evidence=send_evidence)
-            logger.info("Verification result: %s", result)
+            logger.info("Verification result: %s", _sanitize_log(str(result)))
             self.respond(200, result)
 
         elif self.path == "/webhook/generate-task":
@@ -5067,16 +5078,19 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             self.respond(200, {"ok": True})
 
         elif self.path == "/webhook/register":
-            # Phone reports its current IPs
+            # Phone reports its current IPs.
+            # Audit 2026-04-27 M-3 (full): bunny-signed envelope. The
+            # round-1 device_id shape validation is preserved as a
+            # defense-in-depth line (the sig gate covers spoofing; the
+            # validator covers bugs in the slave that might emit a
+            # path-shaped device_id).
+            verdict = _verify_slave_signed_webhook(data, "register", min_version=75)
+            if verdict[0] == "error":
+                self.respond(verdict[1], verdict[2])
+                return
             lan_ip = data.get("lan_ip", "")
             tailscale_ip = data.get("tailscale_ip", "")
             device_id = data.get("device_id", "unknown")
-            # Audit 2026-04-27 M-3: device_id becomes a JSON key in
-            # IP_REGISTRY_FILE — any caller-controlled string lands there.
-            # Slave APK sends `Build.MODEL.replaceAll("\\s+", "-")` or a
-            # device id, so [A-Za-z0-9._-] ≤ 64 chars is the legitimate
-            # shape. Reject anything else as defense-in-depth (until
-            # /webhook/register itself becomes node-signed — see audit M-3).
             if (
                 not isinstance(device_id, str)
                 or not device_id
