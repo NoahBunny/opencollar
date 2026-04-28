@@ -6,6 +6,7 @@ on:
     - cron: "41 5 * * 1"   # weekly, Monday 05:41 UTC
   push:
     branches: [main]
+  workflow_dispatch:        # allow manual re-trigger when GitHub GraphQL has a transient infra hiccup (audit 2026-04-27 L-6)
 
 permissions: read-all
 
