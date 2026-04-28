@@ -8,6 +8,9 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+### Tests
+- **Audit 2026-04-27 Stream C round-3 — performance smoke test** (`tests/test_perf_smoke.py`, `pyproject.toml`). Stresses the `VaultStore.append` lock-contention surface (`focuslock-mail.py:2491`) by firing 100 rapid `/admin/order add-paywall` POSTs concurrently via `concurrent.futures.ThreadPoolExecutor` (4 workers). Asserts: every order succeeds, p50 < 200 ms, p95 < 300 ms, p99 < 500 ms, wall-clock < 15 s, vault blob version advances monotonically. Plus a `TestSerialBaseline` (20 sequential orders, p50 < 100 ms) for comparison — surfaces the relay's single-threaded-HTTPServer-induced lock contention (typical: serial p50 ≈ 25 ms, concurrent p50 ≈ 100 ms, ~4× contention ratio). Marker `@pytest.mark.perf` so slow CI runners can opt out via `pytest -m 'not perf'`. Budgets are smoke-test-grade ("catch a 2-4× regression") not microbenchmark drift; pegged against audit-2026-04-27 main HEAD on a developer box. Reuses the `live_server` + `mail_module` fixture pattern from the audit round files; new `_sign_order` helper signs the canonical `{action, params}` envelope. New `perf` marker added to `pyproject.toml [tool.pytest.ini_options] markers`.
+
 ### Documentation
 - **Audit 2026-04-27 Stream A exit** — `docs/AUDIT-2026-04-27-EXIT.md` + roadmap update. Documents the five-commit closeout (`09d73be`, `44c5fe4`, `4db89e2`, `ac16335`, `1c2c0aa`): every High and Medium fixed, L-3 fixed, M-5 + L-1 + L-2 + L-4 tracked in the medium-term roadmap section. Coordinated rollout summary (slave APK 74→75 / companion 56→57 / desktop collar redeploy / out-of-repo `sync-standing-orders.sh` Bearer-token add). Recommends Stream C (QA infrastructure) next per the plan's A→C→B ordering. Roadmap top status block updated; Short-term audit item marked done; deferred Stream A findings added to Medium-term backlog.
 
