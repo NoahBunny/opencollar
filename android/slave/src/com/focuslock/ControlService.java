@@ -2001,12 +2001,18 @@ public class ControlService extends Service {
             String host = webhookHost();
             if (host.isEmpty()) return;
             try {
-                String json = "{\"lat\":" + lat + ",\"lon\":" + lon + ",\"distance\":" + distance + "}";
+                // Audit 2026-04-27 H-2: slave-signed evidence webhook.
+                org.json.JSONObject body = new org.json.JSONObject();
+                body.put("lat", lat);
+                body.put("lon", lon);
+                body.put("distance", distance);
+                String signed = SlaveSigner.signAndAttach(this, "geofence-breach", body);
+                if (signed == null) return;  // unpaired — skip silently
                 java.net.URL url = new java.net.URL("http://" + host + "/webhook/geofence-breach");
                 java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("POST"); conn.setRequestProperty("Content-Type", "application/json");
                 conn.setDoOutput(true); conn.setConnectTimeout(5000);
-                conn.getOutputStream().write(json.getBytes()); conn.getResponseCode(); conn.disconnect();
+                conn.getOutputStream().write(signed.getBytes("UTF-8")); conn.getResponseCode(); conn.disconnect();
             } catch (Exception e) {}
         }).start();
     }
@@ -2049,7 +2055,13 @@ public class ControlService extends Service {
                 } catch (Exception e) {}
 
                 String deviceId = android.os.Build.MODEL.replaceAll("\\s+", "-");
-                String json = "{\"lan_ip\":\"" + lanIp + "\",\"tailscale_ip\":\"" + tsIp + "\",\"device_id\":\"" + deviceId + "\"}";
+                // Audit 2026-04-27 M-3 (full): bunny-signed.
+                org.json.JSONObject body = new org.json.JSONObject();
+                body.put("lan_ip", lanIp);
+                body.put("tailscale_ip", tsIp);
+                body.put("device_id", deviceId);
+                String signed = SlaveSigner.signAndAttach(this, "register", body);
+                if (signed == null) return;  // unpaired — skip silently
 
                 // POST to mesh server webhook
                 java.net.URL url = new java.net.URL("http://" + host + "/webhook/register");
@@ -2059,7 +2071,7 @@ public class ControlService extends Service {
                 conn.setDoOutput(true);
                 conn.setConnectTimeout(5000);
                 conn.setReadTimeout(5000);
-                conn.getOutputStream().write(json.getBytes());
+                conn.getOutputStream().write(signed.getBytes("UTF-8"));
                 int code = conn.getResponseCode();
                 conn.disconnect();
                 Log.i(TAG, "Phone home: LAN=" + lanIp + " TS=" + tsIp + " response=" + code);
@@ -2069,7 +2081,12 @@ public class ControlService extends Service {
                     android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager) getSystemService(WIFI_SERVICE);
                     int ip = wm.getConnectionInfo().getIpAddress();
                     String lanIp = (ip & 0xff) + "." + ((ip >> 8) & 0xff) + "." + ((ip >> 16) & 0xff) + "." + ((ip >> 24) & 0xff);
-                    String json = "{\"lan_ip\":\"" + lanIp + "\",\"tailscale_ip\":\"\",\"device_id\":\"" + android.os.Build.MODEL.replaceAll("\\s+", "-") + "\"}";
+                    org.json.JSONObject body2 = new org.json.JSONObject();
+                    body2.put("lan_ip", lanIp);
+                    body2.put("tailscale_ip", "");
+                    body2.put("device_id", android.os.Build.MODEL.replaceAll("\\s+", "-"));
+                    String signed2 = SlaveSigner.signAndAttach(this, "register", body2);
+                    if (signed2 == null) return;
                     java.net.URL url = new java.net.URL("http://" + host + "/webhook/register");
                     java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
                     conn.setRequestMethod("POST");
@@ -2077,7 +2094,7 @@ public class ControlService extends Service {
                     conn.setDoOutput(true);
                     conn.setConnectTimeout(5000);
                     conn.setReadTimeout(5000);
-                    conn.getOutputStream().write(json.getBytes());
+                    conn.getOutputStream().write(signed2.getBytes("UTF-8"));
                     conn.getResponseCode();
                     conn.disconnect();
                 } catch (Exception e2) {

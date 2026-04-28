@@ -1574,8 +1574,14 @@ public class MainActivity extends Activity {
         String prompt = task + (hint.isEmpty() ? "" : " (" + hint + ")");
         handler.post(() -> setDeadlineTaskStatus("Verifying photo..."));
         try {
-            String json = "{\"photo\":\"" + b64 + "\",\"task\":\""
+            // Audit 2026-04-27 M-4: bunny-signed.
+            String innerJson = "{\"photo\":\"" + b64 + "\",\"task\":\""
                 + prompt.replace("\\", "\\\\").replace("\"", "\\\"") + "\"}";
+            String signedJson = buildBunnySignedBody("verify-photo", innerJson);
+            if (signedJson == null) {
+                handler.post(() -> setDeadlineTaskStatus("Verify failed: not paired/joined"));
+                return;
+            }
             URL url = new URL(meshUrl + "/webhook/verify-photo");
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("POST");
@@ -1583,7 +1589,7 @@ public class MainActivity extends Activity {
             conn.setDoOutput(true);
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(60000);
-            conn.getOutputStream().write(json.getBytes("UTF-8"));
+            conn.getOutputStream().write(signedJson.getBytes("UTF-8"));
             int code = conn.getResponseCode();
             BufferedReader reader = new BufferedReader(new InputStreamReader(
                 code < 400 ? conn.getInputStream() : conn.getErrorStream()));
@@ -2682,25 +2688,19 @@ public class MainActivity extends Activity {
         android.util.Log.e("BunnyTasker", "All homelab URLs failed for " + path);
     }
 
-    /** Bunny-signed variant of sendWebhook for endpoints that require a
-     *  signature over "{mesh_id}|{node_id}|{event_type}|{ts}". Reads
-     *  mesh_id / node_id / bunny_privkey from Settings.Global, merges
-     *  ts + signature into the caller-supplied inner JSON, and posts to
-     *  path. If mesh/node/key are missing (pre-join state) the call is
-     *  skipped with a warning — don't spam the server with unsigned
-     *  requests that will only get 403'd.
-     *
-     *  Companion v53 (2.20): see CHANGELOG entry for /webhook/bunny-message
-     *  which moved from unauth'd to bunny-signed as a "clean break, no grace
-     *  period" update coordinated with the server. */
-    private void sendSignedBunnyWebhook(String path, String eventType, String innerJson) {
+    /** Build a bunny-signed body string from inner JSON. Returns null when
+     *  the companion isn't paired/joined yet (no mesh_id / node_id /
+     *  privkey). Used by callers that read the HTTP response (e.g.
+     *  /webhook/verify-photo) where the fire-and-forget
+     *  sendSignedBunnyWebhook helper isn't a fit. Audit 2026-04-27 M-4. */
+    private String buildBunnySignedBody(String eventType, String innerJson) {
         String meshId = gstr("focus_lock_mesh_id");
         String nodeId = gstr("focus_lock_mesh_node_id");
         String bunnyPrivB64 = gstr("focus_lock_bunny_privkey");
         if (meshId.isEmpty() || nodeId.isEmpty() || bunnyPrivB64.isEmpty()) {
             android.util.Log.w("BunnyTasker",
-                "sendSignedBunnyWebhook(" + path + ") skipped: not yet paired/joined");
-            return;
+                "buildBunnySignedBody(" + eventType + ") skipped: not yet paired/joined");
+            return null;
         }
         try {
             long ts = System.currentTimeMillis();
@@ -2716,30 +2716,40 @@ public class MainActivity extends Activity {
             String signature = android.util.Base64.encodeToString(
                 sig.sign(), android.util.Base64.NO_WRAP);
 
-            // Merge mesh_id / node_id / ts / signature into the inner JSON.
-            // innerJson is expected to be a JSON object "{...}" — strip the
-            // trailing "}", append our fields, re-close. Cheap + matches
-            // the hand-rolled JSON style used elsewhere in this file.
             String inner = innerJson.trim();
             if (!inner.startsWith("{") || !inner.endsWith("}")) {
                 android.util.Log.e("BunnyTasker",
-                    "sendSignedBunnyWebhook(" + path + ") bad innerJson shape");
-                return;
+                    "buildBunnySignedBody(" + eventType + ") bad innerJson shape");
+                return null;
             }
-            String body;
             if (inner.equals("{}")) {
-                body = "{\"mesh_id\":\"" + meshId + "\",\"node_id\":\"" + nodeId
-                    + "\",\"ts\":" + ts + ",\"signature\":\"" + signature + "\"}";
-            } else {
-                body = inner.substring(0, inner.length() - 1)
-                    + ",\"mesh_id\":\"" + meshId + "\",\"node_id\":\"" + nodeId
+                return "{\"mesh_id\":\"" + meshId + "\",\"node_id\":\"" + nodeId
                     + "\",\"ts\":" + ts + ",\"signature\":\"" + signature + "\"}";
             }
-            sendWebhook(path, body);
+            return inner.substring(0, inner.length() - 1)
+                + ",\"mesh_id\":\"" + meshId + "\",\"node_id\":\"" + nodeId
+                + "\",\"ts\":" + ts + ",\"signature\":\"" + signature + "\"}";
         } catch (Exception e) {
             android.util.Log.e("BunnyTasker",
-                "sendSignedBunnyWebhook(" + path + ") sign failed: " + e.getMessage());
+                "buildBunnySignedBody(" + eventType + ") sign failed: " + e.getMessage());
+            return null;
         }
+    }
+
+    /** Bunny-signed variant of sendWebhook for endpoints that require a
+     *  signature over "{mesh_id}|{node_id}|{event_type}|{ts}". Reads
+     *  mesh_id / node_id / bunny_privkey from Settings.Global, merges
+     *  ts + signature into the caller-supplied inner JSON, and posts to
+     *  path. If mesh/node/key are missing (pre-join state) the call is
+     *  skipped with a warning — don't spam the server with unsigned
+     *  requests that will only get 403'd.
+     *
+     *  Companion v53 (2.20): see CHANGELOG entry for /webhook/bunny-message
+     *  which moved from unauth'd to bunny-signed as a "clean break, no grace
+     *  period" update coordinated with the server. */
+    private void sendSignedBunnyWebhook(String path, String eventType, String innerJson) {
+        String body = buildBunnySignedBody(eventType, innerJson);
+        if (body != null) sendWebhook(path, body);
     }
 
     private String fetchFromHomelab(String path) {

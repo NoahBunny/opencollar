@@ -1189,6 +1189,20 @@ class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self._respond(200, result)
 
         elif self.path == "/api/pair/create":
+            # Audit 2026-04-27 M-6: gate on admin_token. Endpoint binds
+            # 0.0.0.0:8435, so any LAN caller could otherwise harvest
+            # {mesh_pin, pubkey_pem, homelab_url, mesh_url} and join the
+            # mesh gossip layer. ADMIN_TOKEN is loaded at module scope
+            # from config.json or FOCUSLOCK_ADMIN_TOKEN env.
+            import hmac as _hmac
+
+            token = data.get("admin_token", "") or data.get("auth_token", "")
+            if not ADMIN_TOKEN:
+                self._respond(503, {"error": "admin_token not configured"})
+                return
+            if not token or not _hmac.compare_digest(token, ADMIN_TOKEN):
+                self._respond(403, {"error": "invalid admin_token"})
+                return
             result = _create_pairing_code(data)
             self._respond(200, result)
 
@@ -1313,21 +1327,40 @@ def fetch_status():
 
 
 def send_heartbeat():
-    """Report alive to homelab. If this stops, dead-man's switch triggers penalties."""
+    """Report alive to homelab. If this stops, dead-man's switch triggers penalties.
+
+    Audit 2026-04-27 M-1: signed with the vault node_privkey (the same
+    key Lion approved during register-node) so the relay can refuse
+    forged heartbeats. Mirrors the state-mirror push pattern.
+    Canonical payload: "{mesh_id}|{node_id}|desktop-heartbeat|{ts_ms}".
+    Skipped silently when the vault keypair isn't available yet.
+    """
     try:
+        import base64 as _b64
         import socket
 
+        from cryptography.hazmat.primitives import hashes as _hh
+        from cryptography.hazmat.primitives import serialization as _ser
+        from cryptography.hazmat.primitives.asymmetric import padding as _pad
+
         hostname = socket.gethostname()
-        # Include mesh_id so the relay routes the heartbeat to *this*
-        # mesh's DesktopRegistry. Without it the relay falls back to
-        # OPERATOR_MESH_ID (legacy single-tenant path).
-        data = json.dumps(
-            {
-                "hostname": hostname,
-                "type": "desktop",
-                "mesh_id": MESH_ID,
-            }
-        ).encode()
+        body = {
+            "hostname": hostname,
+            "type": "desktop",
+            "mesh_id": MESH_ID,
+        }
+        if MESH_ID and _vault_privkey_pem:
+            ts_ms = int(time.time() * 1000)
+            payload = f"{MESH_ID}|{MESH_NODE_ID}|desktop-heartbeat|{ts_ms}"
+            try:
+                priv = _ser.load_pem_private_key(_vault_privkey_pem.encode(), password=None)
+                sig_bytes = priv.sign(payload.encode("utf-8"), _pad.PKCS1v15(), _hh.SHA256())
+                body["node_id"] = MESH_NODE_ID
+                body["ts"] = ts_ms
+                body["signature"] = _b64.b64encode(sig_bytes).decode("ascii")
+            except Exception as e:
+                logger.debug("Heartbeat sign failed (will POST unsigned): %s", e)
+        data = json.dumps(body).encode()
         req = urllib.request.Request(
             f"{HOMELAB_URL}/webhook/desktop-heartbeat",
             data=data,
@@ -1340,9 +1373,23 @@ def send_heartbeat():
 
 
 def sync_standing_orders():
-    """Pull CLAUDE.md from homelab and install locally."""
+    """Pull CLAUDE.md from homelab and install locally.
+
+    Audit 2026-04-27 H-1 (remainder): /standing-orders now requires
+    admin_token. Send the locally-loaded ADMIN_TOKEN via
+    Authorization: Bearer. Without ADMIN_TOKEN configured the sync
+    is skipped silently (the collar can run without it; only the
+    standing-orders sync path needs it).
+    """
+    if not ADMIN_TOKEN:
+        logger.debug("Standing orders sync skipped: no admin_token configured")
+        return
     try:
-        req = urllib.request.Request(f"{HOMELAB_URL}/standing-orders", method="GET")
+        req = urllib.request.Request(
+            f"{HOMELAB_URL}/standing-orders",
+            method="GET",
+            headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
+        )
         resp = urllib.request.urlopen(req, timeout=10)
         content = resp.read().decode()
         if content and len(content) > 50:  # sanity check
