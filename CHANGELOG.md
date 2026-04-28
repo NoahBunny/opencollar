@@ -9,6 +9,9 @@ starting with v1.0.0.
 ## [Unreleased]
 
 ### Documentation
+- **Audit 2026-04-27 Stream C exit** — `docs/AUDIT-2026-04-27-STREAM-C-EXIT.md` + roadmap update. Documents the five-PR closeout (#33-#37): focuslock-mail.py HTTP-route coverage push (+86 tests), `make qa` unified entry, performance smoke test, regression matrix automation with `[scripted]`/`[partial]`/`[manual]` legend tags, Appium spike shelved with full setup-recipe doc. Items tracked deferred: IMAP scanner end-to-end (operator-gated test inbox), Section 11 desktop collar (platform-specific), Section 14 manual hardware (permanent manual), live ntfy push timing. Recommends Stream B (usability review) next per the plan's A→C→B ordering. Roadmap top status block updated.
+
+### Documentation
 - **Audit 2026-04-27 Stream A exit** — `docs/AUDIT-2026-04-27-EXIT.md` + roadmap update. Documents the five-commit closeout (`09d73be`, `44c5fe4`, `4db89e2`, `ac16335`, `1c2c0aa`): every High and Medium fixed, L-3 fixed, M-5 + L-1 + L-2 + L-4 tracked in the medium-term roadmap section. Coordinated rollout summary (slave APK 74→75 / companion 56→57 / desktop collar redeploy / out-of-repo `sync-standing-orders.sh` Bearer-token add). Recommends Stream C (QA infrastructure) next per the plan's A→C→B ordering. Roadmap top status block updated; Short-term audit item marked done; deferred Stream A findings added to Medium-term backlog.
 
 ### Security
