@@ -1,14 +1,32 @@
 """Shared fixtures for the UI pair spike (direct/LAN pair on Waydroid).
 
-SHELVED 2026-04-23. Kept as a scaffold, not a passing test suite.
+SHELVED 2026-04-23 (uiautomator2). Audit 2026-04-27 Stream C round-5
+(Appium spike) — also shelved 2026-04-29: see SHELVED-2026-04-29 below.
+Kept as a scaffold, not a passing test suite.
 
-Spike outcome: `uiautomator2.connect()` hangs at `_setup_jar` →
-`toybox md5sum` against Waydroid and wedges the Android-side adbd, which
-then needs a full `waydroid session stop` + `sudo systemctl restart
-waydroid-container` to recover. See `docs/PUBLISHABLE-ROADMAP.md §Medium-term`
-for the full go/no-go reasoning. If someone revisits this, the APK install
-+ consent-bypass + service-start logic below is still correct as of the
-v1.2.0 Collar; the gap is the UI driver, not the Android-side setup.
+uiautomator2 outcome (2026-04-23): `uiautomator2.connect()` hangs at
+`_setup_jar` → `toybox md5sum` against Waydroid and wedges the
+Android-side adbd, which then needs a full `waydroid session stop` +
+`sudo systemctl restart waydroid-container` to recover.
+
+SHELVED-2026-04-29 (Appium): Audit recommended Appium as the
+alternative since it uses Android accessibility APIs (no md5sum
+side-channel) and a stable WebDriver protocol. Round-5 spike was
+time-boxed to ≤60 minutes. On the dev box the spike could not run
+live: (a) Waydroid session was STOPPED and re-bringing it up (~12s
+boot) plus the wedge-recovery cost if Appium also failed exceeded the
+budget; (b) Appium server requires `npm install -g appium` (system-
+level Node + npm) plus `Appium-Python-Client` Python package, neither
+were installed; (c) the Appium Android driver requires a UiAutomator2
+shim that the prior spike's wedge already taught us is risky on
+Waydroid. Setup recipe + risk profile documented in `tests/ui/README.md`
+so a future operator with a dedicated test bench can pick it up. See
+also `docs/PUBLISHABLE-ROADMAP.md §Medium-term` for the full go/no-go
+reasoning.
+
+If someone revisits this, the APK install + consent-bypass + service-
+start logic below is still correct as of the v1.2.0 Collar; the gap is
+the UI driver, not the Android-side setup.
 
 Runs opt-in: `UI_TESTS=1 pytest tests/ui/`. Without `UI_TESTS` or without
 an adb device, every test is skipped — CI stays green.
