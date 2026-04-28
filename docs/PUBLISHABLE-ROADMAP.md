@@ -1,5 +1,25 @@
 # Publishable Roadmap
 
+## Status — 2026-04-29 (Stream C QA infrastructure closeout)
+
+Stream C of the 2026-04-27 audit (`docs/AUDIT-PLAN.md` §Stream C) is closed. Five PRs (#33–#37) plus this exit doc — full summary at `docs/AUDIT-2026-04-27-STREAM-C-EXIT.md`.
+
+- ✅ **Round 1 (#33) — focuslock-mail.py HTTP-route coverage** — +86 tests across 6 named buckets (pair/admin/vault/memory/do_GET/disposal-token). New `tests/test_audit_2026_04_27_stream_c_http_coverage.py`.
+- ✅ **Round 2 (#34) — `make qa` unified entry** — repo-root `Makefile` with `qa`, `qa-fast`, `qa-staging-up/down`, `qa-clean`, `help` targets. Idempotent teardown via shell-trap pattern; 15s readiness poll on `/version`. `docs/STAGING.md` updated.
+- ✅ **Round 3 (#35) — perf smoke test** — `tests/test_perf_smoke.py` fires 100 concurrent `/admin/order add-paywall` POSTs; asserts p50 < 200ms, p95 < 300ms, p99 < 500ms, monotonic vault version, wall < 15s. `@pytest.mark.perf` opt-in. Surfaces ~4× single-threaded-HTTPServer lock contention (serial p50 25ms vs concurrent 100ms) without failing on it.
+- ✅ **Round 4 (#36) — regression matrix automation** — every numbered section in QA-CHECKLIST.md tagged `[scripted]`/`[partial]`/`[manual]`. New `tests/test_qa_checklist_auto.py` (13 cases) provides traceability between the human matrix and the programmatic harness, with two self-tests that fail if a future section drops its legend tag.
+- ✅ **Round 5 (#37) — Appium spike shelved with documented rationale** — time-boxed 60-min spike couldn't run live (Waydroid stopped + Appium not installed + same Android-side shim risk as the 2026-04-23 wedge). New `tests/ui/README.md` documents the full setup recipe for a future operator with a dedicated test bench.
+
+**Items deferred (tracked in roadmap)**: IMAP scanner end-to-end (operator-gated, needs throwaway test inbox + fake e-Transfer email pump; regex parsing already covered by `tests/test_payment.py`), Section 11 desktop collar (platform-specific, no CI Windows runner), Section 14 manual hardware (will never be CI-green; permanent manual). Live ntfy push timing (10.1, 10.4) needs running ntfy server.
+
+**Tests**: 1080 → ~1193 (+113 net across rounds 1, 3, 4; rounds 2 and 5 are docs/harness without test surface change). Ruff clean. CI on each PR all green except `Verify signatures on sensitive paths` (Nextcloud env can't GPG-sign — admin-override merge per established bootstrap pattern).
+
+**Coverage delta**: `focuslock-mail.py` overall coverage at 43% across the audit-test subset (1324/3552 statements). 70% target the plan noted as a stretch goal isn't reached; closing the gap further would need a "coverage push II" round on webhook handlers + payment + mesh routing, but those areas are well-covered by existing dedicated test files. Marginal value low vs Stream B start.
+
+**Next milestone**: Stream B — Usability review (~24-32h, the heaviest stream). Walk every UI surface with first-time-user eyes; capture friction in `docs/USABILITY-AUDIT-2026-XX-XX.md`. Per the plan's A → C → B ordering.
+
+---
+
 ## Status — 2026-04-28 (Stream A audit closeout)
 
 Stream A of the 2026-04-27 audit (`docs/AUDIT-PLAN.md` + `docs/AUDIT-FINDINGS-2026-04-27.md`) is closed. Five commits over two days landed every High and Medium fix, plus L-3 from the Low set. Full exit summary at `docs/AUDIT-2026-04-27-EXIT.md`.
