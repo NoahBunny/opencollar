@@ -5043,8 +5043,71 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             # desktop collar on mesh B now shows up to mesh B, not mesh A.
             # mesh_id is optional for backward compat with old collars —
             # falls back to OPERATOR_MESH_ID (== the legacy singleton).
+            #
+            # Audit 2026-04-27 M-1: vault-node-signed. Desktop collar
+            # signs with its registered _vault_privkey_pem (the same key
+            # Lion approved during register-node) so the relay can refuse
+            # forged heartbeats. Mirrors the state-mirror verifier shape.
             hostname = data.get("hostname", "unknown")
             mesh_id = data.get("mesh_id", "") or OPERATOR_MESH_ID or ""
+            node_id = data.get("node_id", "")
+            signature = data.get("signature", "")
+            ts = data.get("ts", 0)
+            # Honour signed payloads when present. A heartbeat without
+            # mesh_id (legacy single-tenant collar) skips the sig check —
+            # those collars can't change registry state across meshes
+            # because mesh_id falls through to OPERATOR_MESH_ID, which is
+            # only meaningful on the operator's own host.
+            if signature and mesh_id and node_id:
+                if not _safe_mesh_id(mesh_id):
+                    self.respond(400, {"error": "invalid mesh_id"})
+                    return
+                try:
+                    ts_i = int(ts)
+                except (ValueError, TypeError):
+                    self.respond(400, {"error": "ts must be int (ms epoch)"})
+                    return
+                now_ms = int(time.time() * 1000)
+                if abs(now_ms - ts_i) > 5 * 60 * 1000:
+                    self.respond(403, {"error": "ts out of window"})
+                    return
+                # Look up the desktop's vault node entry. The desktop's
+                # node_pubkey lands here when Lion approves
+                # /vault/<mesh>/register-node-request.
+                vault_pubkey = ""
+                for vnode in _vault_store.get_nodes(mesh_id):
+                    if vnode.get("node_id") == node_id and vnode.get("node_pubkey"):
+                        vault_pubkey = vnode["node_pubkey"]
+                        break
+                if not vault_pubkey:
+                    self.respond(403, {"error": "node not registered in vault"})
+                    return
+                payload = f"{mesh_id}|{node_id}|desktop-heartbeat|{ts_i}"
+                try:
+                    import base64 as _b64_dh
+
+                    from cryptography.hazmat.primitives import hashes as _hh_dh
+                    from cryptography.hazmat.primitives import serialization as _ser_dh
+                    from cryptography.hazmat.primitives.asymmetric import padding as _pad_dh
+
+                    pub_der = _b64_dh.b64decode(vault_pubkey)
+                    pub = _ser_dh.load_der_public_key(pub_der)
+                    sig_bytes = _b64_dh.b64decode(signature)
+                    pub.verify(
+                        sig_bytes,
+                        payload.encode("utf-8"),
+                        _pad_dh.PKCS1v15(),
+                        _hh_dh.SHA256(),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "desktop-heartbeat sig verify failed: mesh=%s node=%s err=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                        e,
+                    )
+                    self.respond(403, {"error": "invalid signature"})
+                    return
             logger.debug("Desktop heartbeat: mesh=%s host=%s", mesh_id, _sanitize_log(hostname))
             try:
                 reg = _get_desktop_registry(mesh_id) if mesh_id else desktop_registry
@@ -5340,11 +5403,33 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 logger.warning("/controller error: %s", e)
                 self.respond(500, {"error": "internal error"})
 
-        elif self.path == "/standing-orders":
+        elif self.path.split("?")[0] == "/standing-orders":
             # Serve CLAUDE-stub.md for desktop collar sync.
             # The stub contains the framework only — no penalty amounts,
             # no admin token, no tactical enforcement details.
             # Full orders are served by /enforcement-orders (session-only).
+            #
+            # Audit 2026-04-27 H-1 (remainder): gated on admin_token. The
+            # stub redacts ADMIN_TOKEN before serving but still leaks
+            # operational structure (rule framework, hook configuration).
+            # Defense-in-depth: don't rely on reverse-proxy allowlists.
+            # Desktop collars + installers/re-enslave-server.sh now send
+            # the token as ?admin_token= or Authorization: Bearer.
+            import urllib.parse as _up_so
+
+            parsed_so = _up_so.urlparse(self.path)
+            params_so = _up_so.parse_qs(parsed_so.query)
+            token_so = params_so.get("admin_token", [""])[0]
+            if not token_so:
+                auth_header_so = self.headers.get("Authorization", "")
+                if auth_header_so.startswith("Bearer "):
+                    token_so = auth_header_so[7:]
+            if not ADMIN_TOKEN:
+                self.respond(503, {"error": "admin_token not configured"})
+                return
+            if not _is_valid_admin_auth(token_so):
+                self.respond(403, {"error": "invalid admin_token"})
+                return
             try:
                 stub = os.path.expanduser("~/.claude/CLAUDE-stub.md")
                 fallback = os.path.expanduser("~/.claude/CLAUDE.md")
@@ -5424,9 +5509,27 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 logger.warning("/enforcement-orders error: %s", e)
                 self.respond(500, {"error": "internal error"})
 
-        elif self.path == "/settings":
+        elif self.path.split("?")[0] == "/settings":
             # Serve settings.json (enforcement hooks) for sync.
             # SECURITY: scrub the admin_token from the served content.
+            #
+            # Audit 2026-04-27 H-1 (remainder): admin-gated (same shape
+            # as /standing-orders + /enforcement-orders).
+            import urllib.parse as _up_se
+
+            parsed_se = _up_se.urlparse(self.path)
+            params_se = _up_se.parse_qs(parsed_se.query)
+            token_se = params_se.get("admin_token", [""])[0]
+            if not token_se:
+                auth_header_se = self.headers.get("Authorization", "")
+                if auth_header_se.startswith("Bearer "):
+                    token_se = auth_header_se[7:]
+            if not ADMIN_TOKEN:
+                self.respond(503, {"error": "admin_token not configured"})
+                return
+            if not _is_valid_admin_auth(token_se):
+                self.respond(403, {"error": "invalid admin_token"})
+                return
             try:
                 settings = os.path.expanduser("~/.claude/settings.json")
                 if os.path.exists(settings):
@@ -5561,7 +5664,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(pw.encode())
 
-        elif self.path == "/memory":
+        elif self.path.split("?")[0] == "/memory":
             # Memory bundle endpoint for sync-standing-orders.sh.
             #
             # Resolution order: $MEMORY_DIR env var → ~/.claude/enforcement-memory.
@@ -5569,6 +5672,27 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             # HOME=/opt/focuslock for sandboxing, which would otherwise resolve
             # the tilde to a non-existent dir under /opt and silently 404 the
             # endpoint (forcing sync clients onto the slower rsync fallback).
+            #
+            # Audit 2026-04-27 H-1 (remainder): admin-gated. Unlike
+            # /standing-orders + /settings, /memory does NOT redact
+            # ADMIN_TOKEN from served content, so even with reverse-
+            # proxy allowlists this leaked tactical memory text +
+            # potentially embedded tokens. Auth gate is mandatory.
+            import urllib.parse as _up_me
+
+            parsed_me = _up_me.urlparse(self.path)
+            params_me = _up_me.parse_qs(parsed_me.query)
+            token_me = params_me.get("admin_token", [""])[0]
+            if not token_me:
+                auth_header_me = self.headers.get("Authorization", "")
+                if auth_header_me.startswith("Bearer "):
+                    token_me = auth_header_me[7:]
+            if not ADMIN_TOKEN:
+                self.respond(503, {"error": "admin_token not configured"})
+                return
+            if not _is_valid_admin_auth(token_me):
+                self.respond(403, {"error": "invalid admin_token"})
+                return
             mem_dir = os.environ.get("MEMORY_DIR") or os.path.expanduser("~/.claude/enforcement-memory")
             if os.path.isdir(mem_dir):
                 import hashlib

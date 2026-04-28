@@ -174,13 +174,28 @@ else
 fi
 
 # Post-deploy verification: standing-orders + vault since 0 + journal sanity
+# Audit 2026-04-27 H-1 (remainder): /standing-orders requires admin_token.
+# Operator's deploy host has FOCUSLOCK_ADMIN_TOKEN in scope; if not set,
+# fall back to /mesh/ping which is unauthenticated by design (just checks
+# the relay is reachable + responding).
 section "Verifying server health"
 MESH_URL="${FOCUSLOCK_MESH_URL:?FOCUSLOCK_MESH_URL must be set in ~/.config/focuslock/re-enslave.config}"
-http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$MESH_URL/standing-orders" || echo "000")
-if [ "$http_code" = "200" ]; then
-    log "  /standing-orders: 200 OK"
+if [ -n "${FOCUSLOCK_ADMIN_TOKEN:-}" ]; then
+    http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+        -H "Authorization: Bearer $FOCUSLOCK_ADMIN_TOKEN" \
+        "$MESH_URL/standing-orders" || echo "000")
+    if [ "$http_code" = "200" ]; then
+        log "  /standing-orders: 200 OK"
+    else
+        warn "  /standing-orders: HTTP $http_code"
+    fi
 else
-    warn "  /standing-orders: HTTP $http_code"
+    http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$MESH_URL/mesh/ping" || echo "000")
+    if [ "$http_code" = "200" ]; then
+        log "  /mesh/ping: 200 OK (FOCUSLOCK_ADMIN_TOKEN not set, skipping authed health check)"
+    else
+        warn "  /mesh/ping: HTTP $http_code"
+    fi
 fi
 
 # Check journal for errors in the last 2 minutes
