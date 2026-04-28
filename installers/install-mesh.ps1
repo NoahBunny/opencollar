@@ -7,12 +7,17 @@
 # "where do I enter the homelab info" question entirely.
 #
 # Usage (from a regular PowerShell, no Admin needed for the config write):
-#   .\install-mesh.ps1 -MeshId <your-mesh-id> -MeshUrl https://your.relay.example
+#   powershell -ExecutionPolicy Bypass -File .\install-mesh.ps1 -MeshId <id> -MeshUrl https://your.relay.example
+#
+# (Default Windows execution policy is Restricted, which blocks .\install-mesh.ps1
+#  outright. The Bypass invocation above runs this single file without changing
+#  the system-wide policy.)
+#
 #   $env:FOCUSLOCK_MESH_ID = "<your-mesh-id>"
 #   $env:FOCUSLOCK_MESH_URL = "https://your.relay.example"
-#   .\install-mesh.ps1
-#   .\install-mesh.ps1 -MeshId <id> -MeshUrl <url> -ResetKeys     # force fresh vault keypair
-#   .\install-mesh.ps1 -MeshId <id> -MeshUrl <url> -ExePath C:\path\to\FocusLock.exe
+#   powershell -ExecutionPolicy Bypass -File .\install-mesh.ps1
+#   powershell -ExecutionPolicy Bypass -File .\install-mesh.ps1 -MeshId <id> -MeshUrl <url> -ResetKeys     # force fresh vault keypair
+#   powershell -ExecutionPolicy Bypass -File .\install-mesh.ps1 -MeshId <id> -MeshUrl <url> -ExePath C:\path\to\FocusLock.exe
 #
 # Parameters:
 #   -MeshId      mesh identifier (base64url) issued by your relay; required
@@ -61,15 +66,20 @@ if (-not (Test-Path $ConfigDir)) {
 }
 
 # Reset vault keypair only if explicitly asked. Default preserves the key so
-# Lion's prior approval keeps working — a fresh key forces a new pending
+# Lion's prior approval keeps working -- a fresh key forces a new pending
 # request that needs Lion to approve again.
 if ($ResetKeys) {
-    Remove-Item -Force -ErrorAction SilentlyContinue `
-        (Join-Path $ConfigDir "node_privkey.pem"), `
-        (Join-Path $ConfigDir "node_pubkey.pem"), `
-        (Join-Path $ConfigDir "relay_privkey.pem"), `
+    # Build the path list as an explicit array -- PowerShell 5.1's parser chokes
+    # on backtick-continued lines with parenthesized expressions bound
+    # positionally to -Path, and reports it as an unclosed brace on the if.
+    $keyFiles = @(
+        (Join-Path $ConfigDir "node_privkey.pem"),
+        (Join-Path $ConfigDir "node_pubkey.pem"),
+        (Join-Path $ConfigDir "relay_privkey.pem"),
         (Join-Path $ConfigDir "relay_pubkey.pem")
-    Write-Host "Vault keypair reset — daemon will generate fresh keys + post a new register-node-request."
+    )
+    Remove-Item -Path $keyFiles -Force -ErrorAction SilentlyContinue
+    Write-Host "Vault keypair reset -- daemon will generate fresh keys + post a new register-node-request."
 }
 
 # Build the config object explicitly so JSON output is consistent regardless
@@ -87,10 +97,13 @@ if (-not $NoNtfy) {
 }
 
 $json = $config | ConvertTo-Json -Depth 4
-Set-Content -Path $ConfigFile -Value $json -Encoding UTF8
+# Write UTF-8 without a BOM. PS 5.1's `Set-Content -Encoding UTF8` emits a BOM,
+# which Python's json.load() rejects with "Expecting value: line 1 column 1".
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($ConfigFile, $json, $utf8NoBom)
 Write-Host "Wrote $ConfigFile (mesh=$MeshId via $MeshUrl)"
 
-# Hand off to FocusLock.exe — it self-installs to C:\focuslock, registers the
+# Hand off to FocusLock.exe -- it self-installs to C:\focuslock, registers the
 # Task Scheduler entries, and starts the daemon. The exe will prompt for UAC
 # elevation when it needs it.
 if (-not (Test-Path $ExePath)) {
