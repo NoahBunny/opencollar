@@ -6,9 +6,19 @@ Mark each row ✅ (pass) or ❌ (fail). A run with any ❌ blocks release taggin
 
 **Scope** — Phase 3 of `docs/PUBLISHABLE-ROADMAP.md`. The scriptable subset (everything that doesn't need real radios) runs in CI; the rest is an on-device manual pass before each release.
 
+## Section legend (audit 2026-04-27 Stream C round 4)
+
+Each section header carries one of three tags so future operators know what runs in CI vs needs hardware:
+
+- **`[scripted]`** — fully covered by `pytest tests/` and/or `staging/qa_*.py` driven from `make qa`. No manual steps required.
+- **`[partial]`** — some rows scripted, others need on-device or operator setup. Each row is annotated inline.
+- **`[manual]`** — entirely on-device or hardware-gated. CI cannot cover.
+
+The programmatic harness lives at `tests/test_qa_checklist_auto.py` (this round) plus the pre-existing `staging/qa_runner.py` (49 admin-order cases) + `staging/qa_wizard_browser.py` (8 cases) + `staging/qa_index_browser.py` (20 cases). Run all four layers via `make qa`.
+
 ---
 
-## 0. Pre-flight
+## 0. Pre-flight `[partial]`
 
 | # | Check | Environment |
 |---|-------|-------------|
@@ -22,7 +32,9 @@ Mark each row ✅ (pass) or ❌ (fail). A run with any ❌ blocks release taggin
 
 ---
 
-## 1. First-run consent + pairing
+## 1. First-run consent + pairing `[manual]`
+
+> All on-device UI flows. Appium spike (Round 5) may eventually cover 1.4 + 1.6.
 
 | # | Check | Actor |
 |---|-------|-------|
@@ -33,7 +45,9 @@ Mark each row ✅ (pass) or ❌ (fail). A run with any ❌ blocks release taggin
 | 1.5 | Mesh orders sync from Lion to Bunny within 10s of pairing | staging relay |
 | 1.6 | Direct pair (LAN, no relay) — skip relay, QR displays direct URL | Waydroid |
 
-## 2. Lock / Unlock — core
+## 2. Lock / Unlock — core `[partial]`
+
+> 2.1-2.4 covered by `staging/qa_runner.py` (admin-order driver) + `tests/test_qa_checklist_auto.py`. 2.5-2.7 need on-device.
 
 | # | Check |
 |---|-------|
@@ -45,7 +59,9 @@ Mark each row ✅ (pass) or ❌ (fail). A run with any ❌ blocks release taggin
 | 2.6 | Lock survives phone reboot (Collar boot-complete receiver) |
 | 2.7 | "Release Forever" from Lion's Share tears down + auto-uninstalls |
 
-## 3. Paywall + compound interest
+## 3. Paywall + compound interest `[partial]`
+
+> 3.1, 3.6 covered by qa_runner. 3.2 (compound interest) covered in `tests/test_paywall_hardening.py` with stubbed time. 3.3-3.5, 3.7-3.8 need on-device verification.
 
 | # | Check |
 |---|-------|
@@ -58,7 +74,9 @@ Mark each row ✅ (pass) or ❌ (fail). A run with any ❌ blocks release taggin
 | 3.7 | Paywall >$0 + Collar lock — phone unresponsive except paywall view |
 | 3.8 | Escape penalty $5/$10/$15+ stacking on repeat attempts |
 
-## 4. Payment detection (per-region)
+## 4. Payment detection (per-region) `[partial]`
+
+> Regex parsing for all 16 regions covered by `tests/test_payment.py` against fixtures in `tests/fixtures/bank_emails/`. End-to-end IMAP scan (real test inbox → relay → paywall clear) deferred — operator-side gating (need a throwaway IMAP account with fake Interac e-Transfer email pump). Tracked in roadmap as a Stream C deferred item.
 
 Mock bank emails for each supported region — fixtures in `tests/fixtures/bank_emails/`.
 
@@ -85,7 +103,9 @@ Mock bank emails for each supported region — fixtures in `tests/fixtures/bank_
 | 4.19 | Below `min_payment` | $0.001 micro-transaction | Rejected silently |
 | 4.20 | Chat false-positive | "wanna grab lunch $20" | Does NOT trigger any provider |
 
-## 5. Lock modes (all 9)
+## 5. Lock modes (all 9) `[partial]`
+
+> qa_runner.py drives every mode via `lock` action with mode param (orders doc level). 5.8 (Photo Task) needs real camera + Ollama; mocked verifier covered in `tests/test_llm.py`.
 
 | # | Mode | Check |
 |---|------|-------|
@@ -99,7 +119,9 @@ Mock bank emails for each supported region — fixtures in `tests/fixtures/bank_
 | 5.8 | Photo Task | Photo uploaded → Ollama `minicpm-v` evaluates matches hint |
 | 5.9 | Random | Picks one of the above each unlock |
 
-## 6. Subscriptions (gold / silver / bronze)
+## 6. Subscriptions (gold / silver / bronze) `[partial]`
+
+> qa_runner.py covers subscribe/unsubscribe action dispatch. 6.2-6.6 need time-stub or on-device verification.
 
 | # | Check |
 |---|-------|
@@ -110,7 +132,9 @@ Mock bank emails for each supported region — fixtures in `tests/fixtures/bank_
 | 6.5 | 48h reminder → 6h reminder cascade |
 | 6.6 | Subscription reduces paywall compound rate correctly |
 
-## 7. Geofence + curfew + bedtime
+## 7. Geofence + curfew + bedtime `[partial]`
+
+> 7.1-7.5 covered via qa_runner.py orders + `tests/test_qa_checklist_auto.py` shape assertions. 7.6 (homelab unreachable safety) needs network-disconnect harness.
 
 | # | Check |
 |---|-------|
@@ -121,7 +145,9 @@ Mock bank emails for each supported region — fixtures in `tests/fixtures/bank_
 | 7.5 | Bedtime enforcement: `bedtime_lock_hour=23` → phone locks, auto-unlocks at `bedtime_unlock_hour` |
 | 7.6 | Homelab unreachable → geofence does NOT auto-lock (offline safety) |
 
-## 8. Vault / mesh crypto
+## 8. Vault / mesh crypto `[partial]`
+
+> 8.1-8.8 covered by `tests/test_vault.py` (encrypt/decrypt round-trips, tamper, key rotation). 8.9 (relay never sees plaintext) needs tcpdump observation against the staging relay.
 
 | # | Check |
 |---|-------|
@@ -135,7 +161,9 @@ Mock bank emails for each supported region — fixtures in `tests/fixtures/bank_
 | 8.8 | Key rotation — old blobs unreadable by new key (expected) |
 | 8.9 | Relay never sees plaintext — tcpdump confirms |
 
-## 9. Mesh gossip + convergence
+## 9. Mesh gossip + convergence `[scripted]`
+
+> Fully covered by `tests/test_sync.py`, `tests/test_mesh.py`, `tests/test_message_store.py`.
 
 | # | Check |
 |---|-------|
@@ -147,7 +175,9 @@ Mock bank emails for each supported region — fixtures in `tests/fixtures/bank_
 | 9.6 | Unsigned orders rejected when `lion_pubkey` configured |
 | 9.7 | Replayed stale orders (lower version) rejected |
 
-## 10. ntfy push
+## 10. ntfy push `[partial]`
+
+> Mechanics covered by `tests/test_ntfy.py` (publish, subscribe, backoff, zero-knowledge payload shape). 10.1 (real <1s latency) + 10.4 (self-hosted ntfy) need a running ntfy server — operator-side setup.
 
 | # | Check |
 |---|-------|
@@ -156,7 +186,9 @@ Mock bank emails for each supported region — fixtures in `tests/fixtures/bank_
 | 10.3 | ntfy unavailable — gossip still converges (best-effort fallback) |
 | 10.4 | Self-hosted ntfy server works (not just ntfy.sh) |
 
-## 11. Desktop collar (Linux + Windows)
+## 11. Desktop collar (Linux + Windows) `[manual]`
+
+> Platform-specific (loginctl on Linux, LockWorkStation on Windows). No CI coverage; current CI tests only Linux paths. Tracked in roadmap as a Stream C deferred item.
 
 | # | Check | OS |
 |---|-------|----|
@@ -168,7 +200,9 @@ Mock bank emails for each supported region — fixtures in `tests/fixtures/bank_
 | 11.6 | 7d without heartbeat — Lion notified via pinned message | server |
 | 11.7 | 14d without heartbeat — $50 penalty applied | server |
 
-## 12. Escape + factory reset + consent revocation
+## 12. Escape + factory reset + consent revocation `[manual]`
+
+> All require on-device taps and persistence across reboots. Tracked in roadmap as a Stream C deferred item.
 
 | # | Check |
 |---|-------|
@@ -181,7 +215,9 @@ Mock bank emails for each supported region — fixtures in `tests/fixtures/bank_
 | 12.7 | Release Forever (Lion only): full teardown + auto-uninstall |
 | 12.8 | Lion offline — Release Forever UNAVAILABLE (safety) |
 
-## 13. Admin API + web UI
+## 13. Admin API + web UI `[scripted]`
+
+> Fully covered by `staging/qa_index_browser.py` (20 web-remote cases) + `staging/qa_wizard_browser.py` (8 signup-wizard cases) + `tests/test_audit_2026_04_27_stream_c_http_coverage.py` (admin-handler shape).
 
 | # | Check |
 |---|-------|
@@ -191,7 +227,7 @@ Mock bank emails for each supported region — fixtures in `tests/fixtures/bank_
 | 13.4 | Paywall PreToolUse hook (if enabled) blocks when paywall > 0 |
 | 13.5 | Signup flow: new mesh creation via `/web/signup` |
 
-## 14. Stuff Waydroid can't cover — on-device manual
+## 14. Stuff Waydroid can't cover — on-device manual `[manual]`
 
 See `docs/MANUAL-QA.md` for the on-phone checklist. These require real hardware:
 
