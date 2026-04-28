@@ -97,16 +97,35 @@ Open `docs/QA-CHECKLIST.md` in one pane, staging relay logs in another. Walk thr
 
 For the scriptable subset, `pytest tests/` with the Waydroid mesh as the backend will automate most of sections 8 (vault) and 9 (mesh convergence). Sections involving physical radios (SMS, Lovense, camera) need real hardware — see `docs/MANUAL-QA.md`.
 
+### Unified `make qa` entry (audit 2026-04-27 Stream C)
+
+The repo root `Makefile` exposes one-command targets that bring the staging relay up, drive the four QA layers, and tear down — replacing the prior "manual relay restart between runs" friction:
+
+```bash
+make qa              # full sweep: clean → up → pytest + qa_runner +
+                     #             qa_wizard_browser + qa_index_browser → down
+make qa-fast         # ruff + pytest only (no staging relay, ~90s)
+make qa-pytest       # pytest tests/
+make qa-runner       # staging/qa_runner.py against running relay
+make qa-browser      # staging/qa_{wizard,index}_browser.py
+make qa-staging-up   # start the staging relay in background
+make qa-staging-down # stop the staging relay
+make qa-clean        # wipe /tmp/focuslock-staging/
+make help            # list targets
+```
+
+`make qa` is idempotent: it cleans state, brings up the relay, polls `/version` for readiness (15s timeout), runs the four QA layers in sequence, and tears down even on failure. `staging/config.json` + `staging/lion_*.pem` are required (one-time setup, see steps 2–4 above).
+
+**Environment overrides:** `PYTHON` (default `.venv/bin/python`), `STAGING_PORT` (default 8435), `STAGING_STATE_DIR` (default `/tmp/focuslock-staging`), `STAGING_PIDFILE`, `STAGING_LOGFILE`.
+
 ---
 
 ## Tearing down
 
 ```bash
-# Stop the relay (Ctrl-C in Terminal 1)
-# Clear state
-rm -rf /tmp/focuslock-staging/
-# Stop Waydroid sessions
-waydroid session stop
+make qa-staging-down  # stop the relay
+make qa-clean         # wipe /tmp/focuslock-staging/
+waydroid session stop # if Waydroid was running
 ```
 
 `staging/config.json` and `staging/lion_*.pem` persist between sessions — delete manually if you want a clean slate.

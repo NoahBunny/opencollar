@@ -8,6 +8,9 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+### Added
+- **Audit 2026-04-27 Stream C round-2 — `make qa` unified entry + state cleanup** (`Makefile`, `docs/STAGING.md`). Replaces the prior "manual relay restart between runs" friction with one-command targets: `make qa` (full sweep: clean → up → pytest + qa_runner + qa_wizard_browser + qa_index_browser → down with idempotent teardown even on failure), `make qa-fast` (ruff + pytest only, ~90s, no relay), `make qa-pytest`, `make qa-runner`, `make qa-browser`, `make qa-staging-up` (background launch + 15s readiness poll on `/version`), `make qa-staging-down`, `make qa-clean` (wipes `/tmp/focuslock-staging/`), `make help`. Environment overrides: `PYTHON`, `STAGING_PORT`, `STAGING_STATE_DIR`, `STAGING_PIDFILE`, `STAGING_LOGFILE`. `docs/STAGING.md` updated with the new entry-point section.
+
 ### Documentation
 - **Audit 2026-04-27 Stream A exit** — `docs/AUDIT-2026-04-27-EXIT.md` + roadmap update. Documents the five-commit closeout (`09d73be`, `44c5fe4`, `4db89e2`, `ac16335`, `1c2c0aa`): every High and Medium fixed, L-3 fixed, M-5 + L-1 + L-2 + L-4 tracked in the medium-term roadmap section. Coordinated rollout summary (slave APK 74→75 / companion 56→57 / desktop collar redeploy / out-of-repo `sync-standing-orders.sh` Bearer-token add). Recommends Stream C (QA infrastructure) next per the plan's A→C→B ordering. Roadmap top status block updated; Short-term audit item marked done; deferred Stream A findings added to Medium-term backlog.
 
