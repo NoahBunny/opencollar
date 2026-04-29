@@ -307,6 +307,28 @@ class OrdersDocument:
         with self.lock:
             self.orders[key] = value
 
+    def add(self, key: str, delta, default=0) -> int:
+        # Atomic read-modify-write. The previous pattern at the call site
+        # (orders.get(...) then orders.set(..., current + delta)) hit a race
+        # under concurrent admin orders — surfaced by the perf smoke at
+        # tests/test_perf_smoke.py::test_admin_order_concurrent. Coerce
+        # both current and delta to int with the same forgiving fallback
+        # the apply_fn used inline (corrupt-string state → treat as 0).
+        # Stores the result as str to match the existing on-disk schema
+        # for paywall and other counter-shaped orders.
+        with self.lock:
+            try:
+                current = int(self.orders.get(key, default))
+            except (TypeError, ValueError):
+                current = int(default) if isinstance(default, (int, float)) else 0
+            try:
+                d = int(delta)
+            except (TypeError, ValueError):
+                d = 0
+            new_value = current + d
+            self.orders[key] = str(new_value)
+            return new_value
+
 
 # ── Peer Registry ──
 

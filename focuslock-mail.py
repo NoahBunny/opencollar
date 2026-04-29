@@ -679,16 +679,15 @@ def mesh_apply_order(action, params, orders):
     elif action == "clear-screen-time":
         orders.set("screen_time_quota_minutes", 0)
     elif action == "add-paywall":
-        current = orders.get("paywall", "0")
-        try:
-            current = int(current)
-        except Exception:
-            current = 0
-        try:
-            delta = int(params.get("amount", 0))
-        except (TypeError, ValueError):
-            delta = 0
-        orders.set("paywall", str(max(0, current + delta)))
+        # Atomic add via OrdersDocument.add — pre-2026-04-28 this was an
+        # inline read-modify-write between two locked OrdersDocument calls
+        # which raced under concurrent /admin/order callers (caught by
+        # tests/test_perf_smoke.py::test_admin_order_concurrent — 20x5
+        # threads dropped ~half the increments). Negative-delta-going-
+        # below-zero is still clamped to 0 by re-setting if needed.
+        new_value = orders.add("paywall", params.get("amount", 0), default=0)
+        if new_value < 0:
+            orders.set("paywall", "0")
     elif action == "clear-paywall":
         orders.set("paywall", "0")
     elif action == "send-message":

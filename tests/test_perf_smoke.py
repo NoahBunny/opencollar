@@ -63,18 +63,29 @@ def live_server(mail_module):
         server.server_close()
 
 
-def _post(url, body, timeout=10):
+def _post(url, body, timeout=10, retries=3):
+    # ThreadingHTTPServer occasionally resets connections under
+    # 100-simultaneous-TCP-connect load. The flake is at the kernel
+    # accept-queue layer, not the application — retry once or twice
+    # with a tiny backoff so the perf test measures application
+    # behavior, not OS plumbing.
     req = urllib.request.Request(
         url,
         data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, json.loads(r.read().decode())
-    except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read().decode())
+    last_err: Exception = RuntimeError("retries exhausted before any attempt — should be unreachable")
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.status, json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read().decode())
+        except (ConnectionResetError, OSError) as e:
+            last_err = e
+            time.sleep(0.01 * (attempt + 1))
+    raise last_err
 
 
 @pytest.fixture
@@ -141,22 +152,17 @@ def test_admin_order_throughput(live_server, admin_setup):
 
 
 def test_admin_order_concurrent(live_server, admin_setup):
-    """20 threads x 5 add-paywall $1 each -> all return 200, no 5xx, no
-    crashes under contention.
+    """20 threads x 5 add-paywall $1 each -> all return 200, no 5xx,
+    final paywall == exactly $100.
 
-    NOTE: this test does NOT assert exact paywall == $100. The
-    `add-paywall` apply_fn does a non-atomic read-modify-write on
-    `orders.paywall` (focuslock-mail.py:681 — `current = orders.get(...)`
-    then `orders.set(..., current + delta)`), so concurrent admin orders
-    will lose increments. In practice the operator's web remote and
-    automated /admin/order callers don't fire concurrently against the
-    same paywall, so the race hasn't bitten production. Tightening this
-    to atomic add-paywall is tracked separately (touches enforcement-
-    sensitive code → admin review per CONTRIBUTING.md).
-
-    The assertion here is the soft gate the audit plan called for: the
-    server doesn't crash, all requests get a real response, and the
-    paywall ends within sane bounds.
+    Strict-equality regression for the atomic add-paywall fix landed in
+    fix/atomic-add-paywall (2026-04-28). Pre-fix, mesh_apply_order's
+    add-paywall handler did a non-atomic read-modify-write between two
+    locked OrdersDocument calls, dropping ~half the increments under
+    20-thread contention. Post-fix, focuslock_mesh.OrdersDocument.add()
+    holds self.lock across the whole RMW, so this test pins the new
+    invariant. Any regression that re-introduces non-atomic increment
+    semantics will fail this test loudly.
     """
     workers = 20
     per_worker = 5
@@ -189,10 +195,10 @@ def test_admin_order_concurrent(live_server, admin_setup):
     from focuslock_mail_perf import _orders_registry  # type: ignore[attr-defined]
 
     final_pw = int(_orders_registry.get(admin_setup["mesh_id"]).get("paywall", "0"))
-    assert final_pw > 0, "paywall stayed at 0 — every increment was dropped"
-    assert final_pw <= expected_total, (
-        f"paywall=${final_pw} exceeds $expected={expected_total} — "
-        "double-counting suggests a worse bug than the known R-M-W race"
+    assert final_pw == expected_total, (
+        f"expected paywall=${expected_total}, got ${final_pw} "
+        f"(diff = ${expected_total - final_pw}; lock-drop suspected — "
+        "OrdersDocument.add must hold self.lock across the read-modify-write)"
     )
 
 
