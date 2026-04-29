@@ -279,7 +279,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 <main>
   <!-- ── Step 1: Welcome ── -->
   <section class="step active" data-step="welcome">
-    <div class="step-icon">[]</div>
+    <div class="step-icon" aria-hidden="true">👋</div>
     <div class="step-title">Welcome, Lion.</div>
     <p class="step-sub">This wizard sets up a new mesh on this relay. Your Bunny will join with an invite code at the end.</p>
 
@@ -301,7 +301,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 
   <!-- ── Step 2: Lion key + PIN ── -->
   <section class="step" data-step="key">
-    <div class="step-icon">[K]</div>
+    <div class="step-icon" aria-hidden="true">🔑</div>
     <div class="step-title">Your Lion key</div>
     <p class="step-sub">This is the RSA public key from Lion's Share &rarr; Advanced &rarr; Export Key. Your private key never leaves your phone.</p>
 
@@ -327,7 +327,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 
   <!-- ── Step 3: Payment scanning (IMAP) ── -->
   <section class="step" data-step="imap">
-    <div class="step-icon">[$]</div>
+    <div class="step-icon" aria-hidden="true">💌</div>
     <div class="step-title">Payment scanning</div>
     <p class="step-sub">If you'd like the relay to watch an inbox for incoming payments and clear the paywall automatically when the Bunny pays.</p>
 
@@ -368,7 +368,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 
   <!-- ── Step 4: Default rules ── -->
   <section class="step" data-step="rules">
-    <div class="step-icon">[R]</div>
+    <div class="step-icon" aria-hidden="true">📋</div>
     <div class="step-title">Default rules</div>
     <p class="step-sub">Optional starting rules. Every value can be changed later from Lion's Share.</p>
 
@@ -410,7 +410,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 
   <!-- ── Step 5: Subscription preset ── -->
   <section class="step" data-step="sub">
-    <div class="step-icon">[S]</div>
+    <div class="step-icon" aria-hidden="true">⭐</div>
     <div class="step-title">Subscription preset</div>
     <p class="step-sub">Optional default subscription. The Bunny pays a weekly fee for free unlocks. You can pick one to seed the account, or skip and let the Bunny choose later.</p>
 
@@ -433,7 +433,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
           <div class="cdesc">Unlimited free unlocks, no compound interest.</div>
         </div>
       </div>
-      <p class="help" style="margin-top:0.75rem">Per-tier amounts shown above are the relay defaults. To customize amounts, change them after setup from Lion's Share.</p>
+      <p class="help" style="margin-top:0.75rem">Per-tier amounts above are the relay's built-in defaults. You can switch tiers anytime from Lion's Share &rarr; Money. Custom per-mesh amounts are on the roadmap for a future release.</p>
     </div>
 
     <div class="nav">
@@ -444,7 +444,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 
   <!-- ── Step 6: Review ── -->
   <section class="step" data-step="review">
-    <div class="step-icon">[?]</div>
+    <div class="step-icon" aria-hidden="true">👀</div>
     <div class="step-title">Review &amp; create</div>
     <p class="step-sub">Make sure everything looks right. The mesh is created when you tap the button below.</p>
 
@@ -461,7 +461,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 
   <!-- ── Step 7: Result ── -->
   <section class="step" data-step="result">
-    <div class="step-icon">[OK]</div>
+    <div class="step-icon" aria-hidden="true">✨</div>
     <div class="step-title">Mesh created</div>
     <p class="step-sub">Send the invite code to your Bunny. She'll enter it in Bunny Tasker &rarr; Join Mesh, or scan the QR code.</p>
 
