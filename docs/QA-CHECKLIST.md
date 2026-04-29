@@ -6,6 +6,33 @@ Mark each row ✅ (pass) or ❌ (fail). A run with any ❌ blocks release taggin
 
 **Scope** — Phase 3 of `docs/PUBLISHABLE-ROADMAP.md`. The scriptable subset (everything that doesn't need real radios) runs in CI; the rest is an on-device manual pass before each release.
 
+## Programmatic coverage
+
+`make qa-matrix` (or `python3 staging/qa_matrix.py`) walks this checklist
+and runs the programmable subset of every section. Output: pass/fail/skip
+table + `staging/qa-matrix-result.json` for downstream parsing.
+
+| Section | Status | Coverage |
+|---|---|---|
+| 0. Pre-flight | programmable | `pytest --collect-only` + `ruff check .` |
+| 1. First-run consent + pairing | manual | Waydroid UI flow — `docs/QA-pairing.md` |
+| 2. Lock / Unlock — core | programmable | `tests/test_e2e_admin_routes.py`, `tests/test_paywall_hardening.py` |
+| 3. Paywall + compound interest | programmable | `tests/test_payment.py`, `tests/test_paywall_hardening.py` |
+| 4. Payment detection (per-region) | programmable | `tests/test_payment.py` |
+| 5. Lock modes (all 9) | programmable | `tests/test_e2e_admin_routes.py` |
+| 6. Subscriptions | programmable | `tests/test_initial_mesh_config.py`, `tests/test_e2e_unsubscribe_deadline.py` |
+| 7. Geofence + curfew + bedtime | programmable + manual | `pytest -k "geofence or curfew or bedtime"`; row 7.6 needs hardware |
+| 8. Vault / mesh crypto | programmable | `tests/test_vault.py`, `tests/test_account_vault_stores.py` |
+| 9. Mesh gossip + convergence | programmable | `tests/test_mesh.py`, `tests/test_sync.py` |
+| 10. ntfy push | programmable | `tests/test_ntfy.py` |
+| 11. Desktop collar | manual | OS-level — `docs/MANUAL-QA.md` |
+| 12. Escape + factory reset | manual | Device-admin — `docs/MANUAL-QA.md` |
+| 13. Admin API + web UI | programmable | `tests/test_e2e_admin_routes.py`, `tests/test_e2e_web_session.py`, `tests/test_e2e_disposal_token.py`, `tests/test_e2e_public_routes.py` |
+| 14. On-device only | manual | Real radios — `docs/MANUAL-QA.md §14` |
+
+Performance smoke (lock contention, vault GC under load) lives in
+`tests/test_perf_smoke.py` — opt-in via `make qa-perf` or `PERF_TESTS=1 pytest`.
+
 ---
 
 ## 0. Pre-flight

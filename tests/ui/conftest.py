@@ -1,11 +1,12 @@
 """Shared fixtures for the UI pair spike (direct/LAN pair on Waydroid).
 
 SHELVED 2026-04-23. Kept as a scaffold, not a passing test suite.
+Formal close-out + revisit conditions: see docs/UI-AUTOMATION-DECISION.md.
 
 Spike outcome: `uiautomator2.connect()` hangs at `_setup_jar` →
 `toybox md5sum` against Waydroid and wedges the Android-side adbd, which
 then needs a full `waydroid session stop` + `sudo systemctl restart
-waydroid-container` to recover. See `docs/PUBLISHABLE-ROADMAP.md §Medium-term`
+waydroid-container` to recover. See `docs/UI-AUTOMATION-DECISION.md`
 for the full go/no-go reasoning. If someone revisits this, the APK install
 + consent-bypass + service-start logic below is still correct as of the
 v1.2.0 Collar; the gap is the UI driver, not the Android-side setup.

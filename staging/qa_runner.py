@@ -738,6 +738,11 @@ def main():
         default=os.path.join(os.path.dirname(__file__), "config.json"),
         help="Path to staging/config.json (for admin_token)",
     )
+    ap.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Print only the final summary + failures (suppress per-test PASS lines).",
+    )
     args = ap.parse_args()
 
     # Load admin_token from config — never accept it as a CLI arg (avoids ps leakage)
@@ -785,14 +790,18 @@ def main():
     total = 0
     failed = 0
     for label, fn in sections:
-        print(f"## {label}")
+        if not args.quiet:
+            print(f"## {label}")
         results = fn(args.relay, token)
         for r in results:
-            print(r)
             total += 1
             if not r.ok:
                 failed += 1
-        print()
+                print(r)
+            elif not args.quiet:
+                print(r)
+        if not args.quiet:
+            print()
 
     print(f"Summary: {total - failed}/{total} passed")
     return 0 if failed == 0 else 1

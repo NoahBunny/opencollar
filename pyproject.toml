@@ -89,6 +89,7 @@ addopts = "-ra --strict-markers"
 timeout = 60
 markers = [
     "ui: opt-in UI spike — requires UI_TESTS=1 env var + connected adb device (Waydroid).",
+    "slow: opt-in performance smoke tests — set PERF_TESTS=1 to run, or invoke via `make qa-perf`.",
 ]
 
 [tool.coverage.run]
