@@ -68,3 +68,8 @@ memory/
 # Personal UX feedback artifact — blank template with an unanswered
 # "your_answer" column, not meant for public tracking.
 /lions-share-ux-questionnaire.csv
+
+# Staging QA harness runtime state
+staging/.relay.pid
+staging/.relay.log
+staging/qa-matrix-result.json

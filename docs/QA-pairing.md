@@ -9,6 +9,11 @@ touching pairing code.
 Complement to `docs/QA-v1.2.0-mesh.md §1` (release-specific snapshot) and
 `docs/MANUAL-QA.md` (single-device fundamentals).
 
+> **Why this is manual.** Programmatic UI automation for pairing was
+> spiked in 2026-04 and shelved — see `docs/UI-AUTOMATION-DECISION.md`
+> for the full rationale and the conditions under which we'd revisit.
+> Until then, this checklist is the gate.
+
 ---
 
 ## Pre-flight
