@@ -75,7 +75,7 @@ def _post(url, body, timeout=10, retries=3):
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    last_err = None
+    last_err: Exception = RuntimeError("retries exhausted before any attempt — should be unreachable")
     for attempt in range(retries):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
