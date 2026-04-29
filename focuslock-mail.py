@@ -3470,7 +3470,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         elif self.path.startswith("/api/mesh/") and self.path.endswith("/auto-accept"):
             parts = self.path.strip("/").split("/")
             if len(parts) != 4 or parts[3] != "auto-accept":
-                self.respond(400, {"error": "bad path"})
+                self.respond(400, {"error": "bad path — expected /api/mesh/{mesh_id}/auto-accept"})
                 return
             mesh_id = parts[2]
             if not _safe_mesh_id(mesh_id):
@@ -3532,7 +3532,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         elif self.path.startswith("/api/mesh/") and self.path.endswith("/subscribe"):
             parts = self.path.strip("/").split("/")
             if len(parts) != 4 or parts[3] != "subscribe":
-                self.respond(400, {"error": "bad path"})
+                self.respond(400, {"error": "bad path — expected /api/mesh/{mesh_id}/subscribe"})
                 return
             mesh_id = parts[2]
             if not _safe_mesh_id(mesh_id):
@@ -3609,7 +3609,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         elif self.path.startswith("/api/mesh/") and self.path.endswith("/unsubscribe"):
             parts = self.path.strip("/").split("/")
             if len(parts) != 4 or parts[3] != "unsubscribe":
-                self.respond(400, {"error": "bad path"})
+                self.respond(400, {"error": "bad path — expected /api/mesh/{mesh_id}/unsubscribe"})
                 return
             mesh_id = parts[2]
             if not _safe_mesh_id(mesh_id):
@@ -3688,7 +3688,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         elif self.path.startswith("/api/mesh/") and self.path.endswith("/gamble"):
             parts = self.path.strip("/").split("/")
             if len(parts) != 4 or parts[3] != "gamble":
-                self.respond(400, {"error": "bad path"})
+                self.respond(400, {"error": "bad path — expected /api/mesh/{mesh_id}/gamble"})
                 return
             mesh_id = parts[2]
             if not _safe_mesh_id(mesh_id):
@@ -3783,7 +3783,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         elif self.path.startswith("/api/mesh/") and self.path.endswith("/payments"):
             parts = self.path.strip("/").split("/")
             if len(parts) != 4 or parts[3] != "payments":
-                self.respond(400, {"error": "bad path"})
+                self.respond(400, {"error": "bad path — expected /api/mesh/{mesh_id}/payments"})
                 return
             mesh_id = parts[2]
             if not _safe_mesh_id(mesh_id):
@@ -3870,7 +3870,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         elif self.path.startswith("/api/mesh/") and self.path.endswith("/escape-event"):
             parts = self.path.strip("/").split("/")
             if len(parts) != 4 or parts[3] != "escape-event":
-                self.respond(400, {"error": "bad path"})
+                self.respond(400, {"error": "bad path — expected /api/mesh/{mesh_id}/escape-event"})
                 return
             mesh_id = parts[2]
             if not _safe_mesh_id(mesh_id):
@@ -4033,7 +4033,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         elif self.path.startswith("/api/mesh/") and self.path.endswith("/state-mirror"):
             parts = self.path.strip("/").split("/")
             if len(parts) != 4 or parts[3] != "state-mirror":
-                self.respond(400, {"error": "bad path"})
+                self.respond(400, {"error": "bad path — expected /api/mesh/{mesh_id}/state-mirror"})
                 return
             mesh_id = parts[2]
             if not _safe_mesh_id(mesh_id):
@@ -4181,7 +4181,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         elif self.path.startswith("/api/mesh/") and self.path.endswith("/deadline-task/clear"):
             parts = self.path.strip("/").split("/")
             if len(parts) != 5 or parts[3] != "deadline-task" or parts[4] != "clear":
-                self.respond(400, {"error": "bad path"})
+                self.respond(400, {"error": "bad path — expected /api/mesh/{mesh_id}/deadline-task/clear"})
                 return
             mesh_id = parts[2]
             if not _safe_mesh_id(mesh_id):
@@ -4287,7 +4287,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             parts = self.path.strip("/").split("/")
             # ["api", "mesh", "{mesh_id}", "messages", "send" | "fetch" | "mark" | "edit" | "delete"]
             if len(parts) != 5 or parts[3] != "messages":
-                self.respond(400, {"error": "bad path"})
+                self.respond(
+                    400, {"error": "bad path — expected /api/mesh/{mesh_id}/messages/{send|fetch|mark|edit|delete}"}
+                )
                 return
             mesh_id = parts[2]
             op = parts[4]
@@ -4549,7 +4551,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             parts = self.path.strip("/").split("/")
             # Expected: ["vault", "{mesh_id}", "{action}"]
             if len(parts) < 3:
-                self.respond(400, {"error": "bad vault path"})
+                self.respond(
+                    400,
+                    {
+                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|since/{v}|nodes|nodes-pending}"
+                    },
+                )
                 return
             mesh_id = parts[1]
             action = parts[2]
@@ -5338,7 +5345,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             #   /vault/{mesh_id}/nodes
             #   /vault/{mesh_id}/nodes-pending
             if len(parts) < 3:
-                self.respond(400, {"error": "bad vault path"})
+                self.respond(
+                    400,
+                    {
+                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|since/{v}|nodes|nodes-pending}"
+                    },
+                )
                 return
             mesh_id = parts[1]
             action = parts[2]

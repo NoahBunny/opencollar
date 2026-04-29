@@ -1,5 +1,24 @@
 # Publishable Roadmap
 
+## Status — 2026-04-28 (Stream B first pass)
+
+Stream B kicked off this evening on top of the day's Stream A + Stream
+C closeouts. Full findings + structured backlog at
+`docs/USABILITY-AUDIT-2026-04-28.md`.
+
+**Shipped this pass:**
+- Wizard ASCII step icons (`[]`/`[K]`/`[$]`/`[R]`/`[S]`/`[?]`/`[OK]`) → emoji glyphs (`👋`/`🔑`/`💌`/`📋`/`⭐`/`👀`/`✨`) with `aria-hidden="true"`.
+- Wizard subscription-amount copy sharpened (no longer misleadingly implies per-tier amounts are configurable from Lion's Share today).
+- 11 server-side error messages improved: 9 "bad path" responses on `/api/mesh/{id}/<route>` + 2 "bad vault path" on `/vault/{mesh_id}/<action>` now report the expected route shape.
+
+**Deferred (⏸, session-friendly):** web-remote first-time-user walk, color-contrast / keyboard-nav accessibility.
+
+**Operator-walk (📱):** Lion's Share + Bunny Tasker + Collar 9 lock modes + desktop collars + pairing routes — need real-device walks against the Pixel rig + Waydroid + Linux/Windows VMs. Each surface captured as a row in the findings doc with explicit next-step.
+
+Stream B's exit criterion ("friction list resolved or tracked, with each entry decided") is **partially satisfied — the *tracked* half is complete**; the remaining ⏸ rows close in a follow-up session, the 📱 rows close when the operator has device time.
+
+---
+
 ## Status — 2026-04-28 (Stream C audit closeout)
 
 Stream C of the 2026-04-27 audit (QA infrastructure expansion) closed
@@ -115,7 +134,7 @@ Ordered roughly by priority. Smaller than pre-v1.0 phase granularity — these a
 
 - ~~**Stream A — Security audit closeout**~~ — done 2026-04-28 across five commits. All Highs (H-1, H-2) + Mediums (M-1 through M-8) + L-3 fixed; M-5 + L-1 + L-2 + L-4 tracked. See `docs/AUDIT-2026-04-27-EXIT.md` for the full close-out. Coordinated rollout: slave APK 74→75, companion 56→57, desktop collar (Linux) redeploy, out-of-repo `sync-standing-orders.sh` token add.
 - ~~**Stream C — QA infrastructure expansion**~~ — done 2026-04-28. Items 1, 3, 4, 5, 6 shipped; item 2 (IMAP scanner end-to-end) deferred per `docs/AUDIT-PLAN.md § Out of scope` (operator action). Full close-out at `docs/AUDIT-2026-04-28-EXIT-C.md`. Tests `1080 → 1116`, plus 3 opt-in perf smoke. No APK or homelab rollout — server-side test + tooling only.
-- **Stream B — Usability review** — *next milestone, see `docs/AUDIT-PLAN.md` Stream B.* Heaviest stream (~24–32 hours): walk every UI surface (web remote, signup wizard, Lion's Share, Bunny Tasker, Collar 9 lock modes, desktop collars Linux + Windows, pairing routes, error message review, accessibility) with first-time-user eyes; capture friction in `docs/USABILITY-AUDIT-2026-XX.md`.
+- **Stream B — Usability review** — *first pass shipped 2026-04-28; remaining surfaces tracked.* See `docs/USABILITY-AUDIT-2026-04-28.md` for the full findings table. **Shipped this pass** (5 fixes): wizard ASCII glyphs → emoji with `aria-hidden`, sub-amount help text sharpened, 11 "bad path"/"bad vault path" errors now report expected route shape. **Deferred** (⏸ — session-friendly, ~30–60 min each): web-remote first-time-user walk, accessibility / color-contrast / keyboard-nav. **Operator-walk (📱)**: Lion's Share + Bunny Tasker + Collar 9 lock modes + desktop collars + pairing routes — these need real-device walks against the Pixel rig + Waydroid + Linux/Windows VMs.
 - ~~**`focuslock-mail.py` test coverage push**~~ — done 2026-04-27 across PRs #23, #24, #25 (+155 tests across `MeshAccountStore`/`VaultStore`/session-token/blob-counters/relay-node/MessageStore-complementary). shared/ coverage 95.70% floored in CI; total tests `780 → 935`.
 - ~~**Signup wizard with optional initial config**~~ — done 2026-04-27 in PR #26. `web/signup.html` rewritten as a 7-step fullscreen wizard; `/api/mesh/create` accepts optional `initial_config` (IMAP, tribute, subscription, bedtime, screen-time) and applies via `_apply_initial_mesh_config`. Tests `935 → 960`.
 - ~~**Programmatic 4-layer QA harness**~~ — done 2026-04-27 in PR #26. Playwright walkthroughs for both `signup.html` (8 cases) and `index.html` (20 cases), `qa_runner.py` extended 12 → 49 cases covering every relay-mode action surface. Caught 3 real bugs during initial run (PIN passthrough silent loss, qa_runner audit-C1 sig regression, web_dir hardcoded path) — all fixed.
@@ -137,7 +156,7 @@ Ordered roughly by priority. Smaller than pre-v1.0 phase granularity — these a
   - **L-4 — Android `network_security_config.xml` tightening**. All three apps currently allow cleartext traffic to any host. Tighten to a `<domain-config>` allowlist for LAN ranges + the homelab IP, requiring HTTPS for the public relay URL. Documented as known weakness in `docs/THREAT-MODEL.md`.
 - ~~**Atomic `add-paywall`**~~ — fixed 2026-04-28. New `OrdersDocument.add(key, delta, default=0)` helper at `focuslock_mesh.py:310` holds `self.lock` across the read-modify-write; `mesh_apply_order::add-paywall` switched to use it. Perf concurrent test tightened from soft-gate to strict equality (`final_pw == expected_total`); +7 unit tests for the helper. See `[Unreleased]` § Fixed in `CHANGELOG.md`.
 - **Per-tier subscription amounts configurable** — currently `{"bronze": 25, "silver": 35, "gold": 50}` is hardcoded in `focuslock-mail.py:792` (subscribe action). Wizard's subscription step + index.html's Money tab both reference these defaults; each operator's mesh probably wants its own scheme. Touches `focuslock-mail.py` (sensitive path → admin-merge from Nextcloud env). Surfaced during 2026-04-27 audit of the wizard.
-- **Replace ASCII step icons in the wizard** — `web/signup.html` uses `[]` `[K]` `[$]` `[R]` `[S]` `[?]` `[OK]` as step glyphs. They render as ASCII placeholders. Replace with real emoji or inline SVG. Pure web-only fix.
+- ~~**Replace ASCII step icons in the wizard**~~ — done 2026-04-28 in Stream B first pass. Replaced with `aria-hidden` emoji glyphs (👋 🔑 💌 📋 ⭐ 👀 ✨).
 - **UI automation for pairing / release flows** — §1a direct-pair fingerprint pin and §1b QR-pair are gated by human interaction. *Spike attempted 2026-04-23 with `uiautomator2` against Waydroid on a single-device loopback pair (Lion's Share + Bunny Tasker + Collar co-located, "LAN" = 127.0.0.1): shelved. `uiautomator2.connect()` hangs at `_setup_jar` → `toybox md5sum` and wedges Waydroid's adbd for the rest of the session, requiring `waydroid session stop` + `sudo systemctl restart waydroid-container` to recover. The harness chain (Waydroid → adbd → uiautomator2's atx-agent/JAR layer) is three brittle links, each of which failed during the spike; running this on every commit would cost more operator time than it saves. Scaffold kept at `tests/ui/` (skipped by default, registered `ui` marker) as a starting point if someone takes a second swing. Espresso is ruled out separately — it requires Gradle, and this repo deliberately avoids Gradle.* Real path forward is either (a) a dual-device Appium harness that accepts the Waydroid pain, or (b) keep this as manual-QA per `docs/QA-pairing.md` until pairing-flow regressions become a pattern.
 - ~~**README download badges**~~ — done (partial). CI / CodeQL / Scorecard / latest-release / license badges are live at the top of `docs/README.md`; a "Download" section documents the `github.com/.../releases/latest/download/<filename>` URL pattern and points at the Releases page (filenames include the tag, so a truly stable-filename link would need a `release.yml` change to additionally upload unversioned aliases — deferred).
 - ~~**Stable-filename release aliases**~~ — done 2026-04-24 in PR #16 (`b1bfdc6`). `.github/workflows/release.yml` now copies each versioned artifact to a `-latest` alias (`focuslock-latest.apk`, `bunnytasker-latest.apk`, `focusctl-latest.apk`, `FocusLock-latest.exe`, `FocusLock-Watchdog-latest.exe`) during the Flatten step, so Sigstore attestation + SHA256SUMS cover them by content hash and the Release upload globs sweep them up for free. README can now link `releases/latest/download/focuslock-latest.apk` without discovering the current tag first. Validation deferred to the next `v*` tag — the workflow YAML diff is small enough to read confidently, and the pattern matches how the versioned names already work.
