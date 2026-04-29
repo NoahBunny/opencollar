@@ -87,6 +87,78 @@ class TestOrdersDocument:
         assert doc.get("paywall") == "50"
         assert doc.get("nonexistent", "fallback") == "fallback"
 
+    def test_add_atomic_increment(self):
+        doc = OrdersDocument()
+        doc.set("paywall", "10")
+        new_value = doc.add("paywall", 5)
+        assert new_value == 15
+        assert doc.get("paywall") == "15"
+
+    def test_add_handles_corrupt_string_state(self):
+        # If somehow the on-disk value isn't an int-as-str, fall back to
+        # default rather than crashing — matches the pre-helper apply_fn
+        # behavior.
+        doc = OrdersDocument()
+        doc.set("paywall", "not-a-number")
+        new_value = doc.add("paywall", 5, default=0)
+        assert new_value == 5
+        assert doc.get("paywall") == "5"
+
+    def test_add_handles_non_int_delta(self):
+        doc = OrdersDocument()
+        doc.set("paywall", "10")
+        # Garbage delta → treated as 0; current value preserved.
+        assert doc.add("paywall", "garbage") == 10
+        assert doc.get("paywall") == "10"
+
+    def test_add_negative_delta(self):
+        doc = OrdersDocument()
+        doc.set("paywall", "10")
+        # Negative delta is allowed at the helper level — clamping to >=0 is
+        # the apply_fn's responsibility.
+        assert doc.add("paywall", -3) == 7
+        assert doc.get("paywall") == "7"
+        # Going below zero is also allowed at the helper; caller clamps.
+        assert doc.add("paywall", -100) == -93
+
+    def test_add_uses_default_on_missing_key(self):
+        doc = OrdersDocument()
+        # OrdersDocument seeds ORDER_KEYS at construction, so "paywall" is
+        # always present. Use a never-seeded key to exercise the default
+        # branch.
+        new_value = doc.add("never_seeded_counter", 7, default=100)
+        assert new_value == 107
+        assert doc.get("never_seeded_counter") == "107"
+
+    def test_add_atomic_under_concurrent_threads(self):
+        # Regression for the race surfaced by
+        # tests/test_perf_smoke.py::test_admin_order_concurrent. Pre-fix,
+        # mesh_apply_order::add-paywall did get→compute→set with the lock
+        # released between get and set, dropping ~half the increments
+        # under 20-thread contention. Post-fix, OrdersDocument.add holds
+        # self.lock across the whole RMW so this loses zero.
+        import threading
+
+        doc = OrdersDocument()
+        doc.set("counter", "0")
+
+        threads_n = 50
+        per_thread = 100
+
+        def worker():
+            for _ in range(per_thread):
+                doc.add("counter", 1)
+
+        threads = [threading.Thread(target=worker) for _ in range(threads_n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert int(doc.get("counter")) == threads_n * per_thread, (
+            "OrdersDocument.add lost increments under contention — self.lock must be held across the read-modify-write"
+        )
+
     def test_bump_version_unsigned(self):
         doc = OrdersDocument()
         doc.bump_version()
