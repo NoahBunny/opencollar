@@ -149,8 +149,15 @@ done
 for src in "$PROJECT_DIR/lion_pubkey.pem" /opt/focuslock/lion_pubkey.pem; do
     [ -f "$src" ] || continue
     [ -f ~/.config/focuslock/lion_pubkey.pem ] || cp "$src" ~/.config/focuslock/lion_pubkey.pem
-    sudo install -D -m 0644 "$src" /opt/focuslock/lion_pubkey.pem || true
-    echo "  lion_pubkey.pem installed (user + system)"
+    # Skip self-install when the only available source IS the system copy —
+    # avoids a misleading "installed" log line on top of GNU install's
+    # "are the same file" error.
+    if [ "$src" != "/opt/focuslock/lion_pubkey.pem" ]; then
+        sudo install -D -m 0644 "$src" /opt/focuslock/lion_pubkey.pem || true
+        echo "  lion_pubkey.pem installed (user + system)"
+    else
+        echo "  lion_pubkey.pem found in /opt (user copy refreshed)"
+    fi
     break
 done
 
@@ -362,8 +369,8 @@ if [ -n "$HOMELAB" ]; then
     echo "  Heartbeat: every 30s to homelab"
     echo "  Standing orders: synced from homelab every 5 min"
 elif [ -f ~/.config/focuslock/config.json ] && grep -q '"mesh_url"' ~/.config/focuslock/config.json; then
-    MESH_URL_NOW=$(grep -oE '"mesh_url"[^,}]*' ~/.config/focuslock/config.json | head -1 | sed 's/.*"mesh_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-    echo "  Mesh: paired to $MESH_URL_NOW (see ~/.config/focuslock/config.json)"
+    MESH_URL_NOW=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("mesh_url",""))' ~/.config/focuslock/config.json 2>/dev/null)
+    echo "  Mesh: paired to ${MESH_URL_NOW:-<unparseable>} (see ~/.config/focuslock/config.json)"
 else
     echo "  Mesh: not configured. Run installers/install-mesh.sh --mesh-id ID --mesh-url URL"
     echo "        or hand-edit ~/.config/focuslock/config.json, then:"
