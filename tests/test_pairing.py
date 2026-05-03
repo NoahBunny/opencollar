@@ -707,7 +707,7 @@ class TestAdminOrderMeshRouting:
 
 
 class TestPerMeshPaymentLedger:
-    """Multi-tenant server (focus.wildhome.ca hosting many Lion meshes)
+    """Multi-tenant server (focus.example.com hosting many Lion meshes)
     must isolate payment history per mesh. Pre-2026-04-24 the ledger was
     a singleton — a Bunny on mesh X would fetch the Bunny-on-mesh-Y's
     history and see entries from the old operator mesh even after a

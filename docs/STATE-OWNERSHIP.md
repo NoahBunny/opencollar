@@ -21,7 +21,7 @@ Columns:
 
 - **Vault quota**: 100 MB per mesh, 5 000 blobs/day. Tiny fields (timestamps, counters, tier enums) are fine. Message bodies, photos, logs — NOT candidates. See `VAULT-DESIGN.md`.
 - **Offline tolerance**: phone may be offline for days (`feedback_offline_no_lock.md`). Enforcement state that *acts autonomously* (geofence breach, countdown lock, bedtime) MUST work offline → it can be mesh-replicated but can't be server-only. Server-only works for state the bunny *requests* (subscribe, pay) where the write can wait.
-- **Direct-IP fallback**: Lion's Share and admin tools should prefer `https://focus.wildhome.ca` (canonical), then fall back to the phone's own `:8432` HTTP server for reads when the relay is down. The `feedback_https_first.md` rule still holds — we only drop to direct-IP when focus.wildhome.ca is unreachable.
+- **Direct-IP fallback**: Lion's Share and admin tools should prefer `https://focus.example.com` (canonical), then fall back to the phone's own `:8432` HTTP server for reads when the relay is down. The `feedback_https_first.md` rule still holds — we only drop to direct-IP when focus.example.com is unreachable.
 - **Signed orders**: any mesh-authoritative field must be written by a signer the readers trust (Lion, relay, or an approved vault node). The subscription migration uses the relay key; bunny-initiated writes sign with the bunny's registered `bunny_pubkey`.
 
 ---

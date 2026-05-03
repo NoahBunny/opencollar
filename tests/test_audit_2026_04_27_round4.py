@@ -102,7 +102,7 @@ def seeded_vault_node(mail_module):
     """Seed a mesh + a vault-registered desktop node so the relay's
     desktop-heartbeat sig verifier finds a matching node_pubkey."""
     mesh_id = "round4-mesh-" + str(int(time.time() * 1000))
-    node_id = "desktop-livv-host"
+    node_id = "desktop-test-host"
     priv, pub_b64 = _vault_node_keypair()
     mail_module._mesh_accounts.meshes[mesh_id] = {
         "mesh_id": mesh_id,
