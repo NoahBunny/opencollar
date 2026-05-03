@@ -33,6 +33,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -69,12 +70,14 @@ except (ValueError, ImportError) as exc:
 
 CONFIG_DIR = Path.home() / ".config" / "focuslock"
 CONFIG_PATH = CONFIG_DIR / "config.json"
+ORDERS_FILE = CONFIG_DIR / "orders.json"
 ICONS_DIR = CONFIG_DIR / "icons"
 ICON_LOCKED = ICONS_DIR / "crown-gold.png"
 ICON_UNLOCKED = ICONS_DIR / "crown-gray.png"
 
 POLL_INTERVAL_S = 5
 HTTP_TIMEOUT_S = 4
+STALE_AFTER_MS = 60_000  # orders.json older than this → daemon likely dead
 
 
 def load_config():
@@ -121,12 +124,29 @@ class StatusPoller:
                 break
 
     def _fetch_once(self):
+        # Slave/desktop-collar path: read orders.json that focuslock-desktop.py
+        # writes locally on every mesh poll. No network call needed — the
+        # daemon already did the work and persisted authoritative state.
+        # The previous /admin/status path required an admin_token that
+        # slaves never have, so the tray was permanently "Offline (config-missing)".
+        if ORDERS_FILE.exists():
+            try:
+                doc = json.loads(ORDERS_FILE.read_text())
+            except Exception as e:
+                return {"error": f"parse-{type(e).__name__}"}
+            # Stale guard: if daemon died, orders.json freezes. Show "stale"
+            # rather than a phantom-fresh state.
+            updated_ms = doc.get("updated_at") or 0
+            if updated_ms and (time.time() * 1000 - updated_ms) > STALE_AFTER_MS:
+                return {"error": "stale"}
+            return doc
+        # Fallback for operator PCs that run the tray against a relay.
         cfg = load_config()
         mesh_url = (cfg.get("mesh_url") or "").rstrip("/")
         token = cfg.get("admin_token") or os.environ.get("FOCUSLOCK_ADMIN_TOKEN", "")
-        mesh_id = cfg.get("mesh_id", "")
         if not mesh_url or not token:
-            return {"error": "config-missing"}
+            return {"error": "no-orders-file"}
+        mesh_id = cfg.get("mesh_id", "")
         params = {"admin_token": token}
         if mesh_id:
             params["mesh_id"] = mesh_id
@@ -149,13 +169,17 @@ class FocusLockTray:
     APP_ID = "focuslock-tray"
 
     def __init__(self):
-        # Pick the gray icon as the boot state — first poll updates it.
-        initial_icon = str(ICON_UNLOCKED if ICON_UNLOCKED.exists() else ICON_LOCKED)
+        # AppIndicator/SNI icons must be theme NAMES, not absolute paths —
+        # plasmashell (KDE) and Ayatana hosts treat the second arg of
+        # Indicator.new() as a freedesktop icon name and look it up via
+        # IconThemePath. Passing a path renders blank on KDE. Set theme
+        # path to our icons dir, then reference by basename without ext.
         self.indicator = AppIndicator.Indicator.new(
             self.APP_ID,
-            initial_icon,
+            "crown-gray",
             AppIndicator.IndicatorCategory.APPLICATION_STATUS,
         )
+        self.indicator.set_icon_theme_path(str(ICONS_DIR))
         self.indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
         self.indicator.set_title("The Collar")
         self.menu = Gtk.Menu()
@@ -186,7 +210,7 @@ class FocusLockTray:
     def _on_state(self, state):
         """Called on the GTK thread by GLib.idle_add."""
         if state is None or "error" in (state or {}):
-            self.indicator.set_icon_full(str(ICON_UNLOCKED), "no signal")
+            self.indicator.set_icon_full("crown-gray", "no signal")
             err = (state or {}).get("error", "no-data")
             self.menu_status.set_label(f"Offline ({err})")
             return False  # don't reschedule (we're polling on a thread)
@@ -200,8 +224,8 @@ class FocusLockTray:
             paywall_f = 0.0
         tier = orders.get("sub_tier") or ""
 
-        icon = ICON_LOCKED if locked else ICON_UNLOCKED
-        self.indicator.set_icon_full(str(icon), "locked" if locked else "unlocked")
+        icon_name = "crown-gold" if locked else "crown-gray"
+        self.indicator.set_icon_full(icon_name, "locked" if locked else "unlocked")
 
         if locked:
             label = f"Locked  ·  ${paywall_f:.2f}"

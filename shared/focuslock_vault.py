@@ -96,7 +96,11 @@ def verify_signature(blob, lion_pubkey_str):
         pk.verify(sig, data, asym_padding.PKCS1v15(), hashes.SHA256())
         return True
     except Exception as e:
-        logger.warning("Vault signature verify failed: %s", e)
+        # Debug, not warning: callers walk multiple candidate keys
+        # (Lion + every approved node pubkey) and most trial verifies
+        # are expected to fail. The caller emits a single warning per
+        # blob after the whole walk fails.
+        logger.debug("Vault signature verify failed: %s", e)
         return False
 
 
