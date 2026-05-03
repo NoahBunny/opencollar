@@ -1,24 +1,32 @@
 # Installers
 
-Scripts that put the desktop collar (Linux + Windows) on a target machine and
-wire it into a mesh.
+Scripts that put the desktop collar on a target machine and wire it into a
+mesh, plus operator-side scripts that bring up a homelab and redeploy code
+to existing devices.
 
-## Pre-configured mesh installers — `install-mesh.sh` / `install-mesh.ps1`
+## Who runs what
 
-One-shot installers for joining an existing mesh. Useful when you already
-have a relay running (your own self-host or a third-party relay) and want to
-hand a clean machine over to a Bunny without walking through the post-consent
-"where do I enter the homelab info" prompt.
+| Audience | Goal | Script |
+|---|---|---|
+| **Bunny / consumer** | Pair a fresh Linux PC to an existing mesh | [`install-mesh.sh`](#consumer-quick-start) |
+| **Bunny / consumer** | Pair a fresh Windows PC to an existing mesh | [`install-mesh.ps1`](#consumer-quick-start) |
+| **Bunny / consumer** | Tear down the collar | [`uninstall-desktop-collar.sh`](#uninstall) / [`.ps1`](#uninstall) |
+| **Operator / Lion** | Stand up the homelab (mail relay + ADB bridge) | [`homelab-setup.sh`](#operator-homelab) |
+| **Operator / Lion** | Push code updates to all collared machines | [`re-enslave-all.sh`](#operator-re-enslave) |
+| **Operator / Lion** | Push code to one tier only (desktops / phones / server) | [`re-enslave-{desktops,phones,server}.sh`](#operator-re-enslave) |
+| **Operator / Lion** | Auto-redeploy on git push | [`re-enslave-watcher.{py,service,timer}`](#operator-re-enslave) |
+| **Operator / Lion** | Sync Claude Code standing orders | [`install-standing-orders.sh`](#operator-homelab) |
 
-The installer writes `config.json` under `~/.config/focuslock/` (Linux) or
-`%APPDATA%\focuslock\` (Windows), preserves any existing vault keypair so a
-prior Lion approval keeps working, and then runs the platform-specific
-collar installer.
+## Consumer quick start
+
+`install-mesh.sh` (Linux) and `install-mesh.ps1` (Windows) are the two scripts
+a consumer ever needs. Both pre-configure `config.json`, preserve any existing
+vault keypair so prior Lion approval sticks, then hand off to the
+platform-specific collar installer.
 
 ### Required parameters
 
 Both scripts require `mesh_id` and `mesh_url` — there is no default mesh.
-Pass them as flags or via environment variables:
 
 | Parameter | Linux flag | Windows param | Env var | Notes |
 |---|---|---|---|---|
@@ -71,19 +79,62 @@ Both scripts are safe to re-run:
   point — switching the device's mesh requires writing a new config).
 - Vault keypair is preserved by default. Use `--reset-keys` / `-ResetKeys`
   only if you explicitly want a fresh `register-node-request` cycle.
-- The platform installer below runs whether or not the collar was installed
+- The platform installer runs whether or not the collar was installed
   before; it updates files in place.
 
-## Other installers
+## Linux platform installer
 
-- `install-desktop-collar.sh` — Linux first-time install + update (called by
-  `install-mesh.sh`). Walks consent + writes the systemd user units +
-  drops the Python deps.
-- `homelab-setup.sh` — operator-side homelab bring-up (mail relay + ADB
-  bridge). Not for consumer Bunny installs.
-- `re-enslave-*.sh` — operator-side update scripts that re-deploy the
-  collar(s) after a code push. See `re-enslave.config.example` for the
-  variables they expect.
-- `release.sh` — release-cutting helper (operator-only).
-- `uninstall-desktop-collar.{sh,ps1}` — Lion-side teardown. Removes config,
-  binaries, scheduled tasks, and (on Windows) the Task Scheduler entries.
+`install-desktop-collar.sh` is what `install-mesh.sh` hands off to. You can
+also run it directly if you want to walk the prompts manually instead of
+pre-configuring with `install-mesh.sh`. Drops the systemd user units, the
+Python dependencies (PyGObject, GTK, AppIndicator), the sudoers rule for
+deployment, and starts the daemon + tray.
+
+## Uninstall
+
+| Platform | Script |
+|---|---|
+| Linux | `uninstall-desktop-collar.sh` — removes `/opt/focuslock/`, the systemd user units, the autostart entries, the sudoers rule, and `~/.config/focuslock/` (with confirmation). |
+| Windows | `uninstall-desktop-collar.ps1` — removes the install dir, scheduled tasks, registry entries, and (with confirmation) the user config. |
+
+## Operator: homelab
+
+Server-side bring-up scripts for the operator's machine. **Not for consumer
+Bunny installs.**
+
+- `homelab-setup.sh` — installs `focuslock-mail.py` (vault relay + IMAP
+  payment scanner + LLM eval), the ADB bridge, and the systemd units that
+  keep them running.
+- `install-standing-orders.sh` — pulls the Claude Code config from the
+  operator's homelab and installs the systemd timer that keeps it in sync.
+  Called automatically by `install-desktop-collar.sh` when a homelab URL is
+  configured; can also be run standalone.
+
+## Operator: re-enslave
+
+`re-enslave-*.sh` push fresh code to already-collared machines. Use after a
+code push that the operator wants live without waiting for the next install
+cycle.
+
+- `re-enslave-all.sh` — orchestrator: server, then desktops, then phones.
+- `re-enslave-server.sh` — homelab `focuslock-mail.py` + shared modules.
+- `re-enslave-desktops.sh` — `/opt/focuslock/` on Linux desktop collars.
+  Two-phase: user-side first (icons, autostart, lion_pubkey) so it always
+  makes some progress; system-side requires sudo and soft-fails when
+  unavailable.
+- `re-enslave-phones.sh` — APKs to phones via ADB.
+- `re-enslave-lib.sh` — shared helpers, sourced by the others.
+- `re-enslave-watcher.py` + `.service` + `.timer` — systemd timer that
+  watches the canonical git repo and auto-runs the appropriate
+  `re-enslave-*.sh` when a relevant path changes.
+- `re-enslave.config.example` — copy to `~/.config/focuslock/re-enslave.config`,
+  fill in the operator's host/device list.
+
+## What's NOT here
+
+- `release.sh` (build + ship APKs) and `qa-vault-mode.sh` (verify
+  `vault_only` mode on phones) live in [`../scripts/`](../scripts/) — they're
+  operator tools, not installers.
+- The Android sideload flow lives in `re-enslave-phones.sh`; there's no
+  consumer-facing phone installer in this directory because the phone
+  apps install via APK sideload + first-run consent, not a script.
