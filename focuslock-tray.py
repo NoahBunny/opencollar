@@ -71,12 +71,19 @@ except (ValueError, ImportError) as exc:
 CONFIG_DIR = Path.home() / ".config" / "focuslock"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 ORDERS_FILE = CONFIG_DIR / "orders.json"
+HEARTBEAT_FILE = CONFIG_DIR / "last_sync_ms"
 ICONS_DIR = CONFIG_DIR / "icons"
-ICON_LOCKED = ICONS_DIR / "crown-gold.png"
-ICON_UNLOCKED = ICONS_DIR / "crown-gray.png"
+# Crown asset paths used for the startup existence sanity check; runtime
+# icon swapping uses bare names + IconThemePath (KDE/SNI requirement).
+ICON_CONNECTED = ICONS_DIR / "crown-gold.png"
+ICON_DISCONNECTED = ICONS_DIR / "crown-gray.png"
 
 POLL_INTERVAL_S = 5
 HTTP_TIMEOUT_S = 4
+# Crown is GOLD when we've heartbeated within this window, GRAY otherwise.
+# Matches Bunny Tasker's `mesh_last_sync_ms` 90s threshold so all clients
+# converge on the same "is the mesh alive" signal.
+CONNECTED_THRESHOLD_MS = 90_000
 STALE_AFTER_MS = 60_000  # orders.json older than this → daemon likely dead
 
 
@@ -88,6 +95,27 @@ def load_config():
     except Exception as e:
         logger.warning("config load failed: %s", e)
         return {}
+
+
+def _is_mesh_connected():
+    """True if focuslock-desktop.py heartbeated a successful mesh poll
+    within CONNECTED_THRESHOLD_MS. Drives the gold/gray crown."""
+    try:
+        if HEARTBEAT_FILE.exists():
+            mtime_ms = HEARTBEAT_FILE.stat().st_mtime * 1000
+            return (time.time() * 1000 - mtime_ms) < CONNECTED_THRESHOLD_MS
+    except Exception:
+        return False
+    # Transitional fallback: pre-heartbeat daemon. Use orders.json
+    # `updated_at`, accepting that quiet meshes register false-disconnected.
+    try:
+        if ORDERS_FILE.exists():
+            doc = json.loads(ORDERS_FILE.read_text())
+            updated_ms = doc.get("updated_at") or 0
+            return updated_ms and (time.time() * 1000 - updated_ms) < CONNECTED_THRESHOLD_MS
+    except Exception:
+        pass
+    return False
 
 
 # ── Status polling ───────────────────────────────────────────
@@ -208,11 +236,20 @@ class FocusLockTray:
         self.poller.start()
 
     def _on_state(self, state):
-        """Called on the GTK thread by GLib.idle_add."""
+        """Called on the GTK thread by GLib.idle_add.
+
+        Icon = mesh connectivity (gold=connected, gray=disconnected).
+        Label = lock state + paywall + tier. Per project convention this
+        matches Windows tray + Bunny Tasker.
+        """
+        connected = _is_mesh_connected()
+        icon_name = "crown-gold" if connected else "crown-gray"
+        self.indicator.set_icon_full(icon_name, "connected" if connected else "disconnected")
+
         if state is None or "error" in (state or {}):
-            self.indicator.set_icon_full("crown-gray", "no signal")
             err = (state or {}).get("error", "no-data")
-            self.menu_status.set_label(f"Offline ({err})")
+            label = "Disconnected" if not connected else f"Connected · reading state ({err})"
+            self.menu_status.set_label(label)
             return False  # don't reschedule (we're polling on a thread)
 
         orders = state.get("orders") or {}
@@ -224,13 +261,10 @@ class FocusLockTray:
             paywall_f = 0.0
         tier = orders.get("sub_tier") or ""
 
-        icon_name = "crown-gold" if locked else "crown-gray"
-        self.indicator.set_icon_full(icon_name, "locked" if locked else "unlocked")
-
-        if locked:
-            label = f"Locked  ·  ${paywall_f:.2f}"
-        else:
-            label = f"Unlocked  ·  ${paywall_f:.2f}"
+        prefix = "Locked" if locked else "Unlocked"
+        if not connected:
+            prefix = f"{prefix} · disconnected"
+        label = f"{prefix}  ·  ${paywall_f:.2f}"
         if tier:
             label += f"  ·  {tier.title()}"
         self.menu_status.set_label(label)
@@ -269,11 +303,11 @@ def main():
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    if not ICON_UNLOCKED.exists() and not ICON_LOCKED.exists():
+    if not ICON_CONNECTED.exists() and not ICON_DISCONNECTED.exists():
         logger.warning(
             "Neither %s nor %s found — install crown icons or run installers/install-desktop-collar.sh",
-            ICON_UNLOCKED,
-            ICON_LOCKED,
+            ICON_CONNECTED,
+            ICON_DISCONNECTED,
         )
     FocusLockTray()
     try:

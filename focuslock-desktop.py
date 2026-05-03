@@ -119,6 +119,11 @@ MESH_ID = _cfg.get("mesh_id", "")
 MESH_CONFIG_DIR = os.path.expanduser("~/.config/focuslock")
 MESH_ORDERS_FILE = os.path.join(MESH_CONFIG_DIR, "orders.json")
 MESH_PEERS_FILE = os.path.join(MESH_CONFIG_DIR, "peers.json")
+# Heartbeat file: bumped on every successful relay reach (even when no
+# new blobs arrive), so the tray can show gold-when-connected
+# regardless of mesh activity. Mirrors the Bunny Tasker pattern using
+# `focus_lock_mesh_last_sync_ms` with a ~90s freshness threshold.
+MESH_HEARTBEAT_FILE = os.path.join(MESH_CONFIG_DIR, "last_sync_ms")
 MESH_NODE_ID = _socket.gethostname()
 MESH_NODE_TYPE = "desktop"
 
@@ -180,6 +185,19 @@ def _save_vault_last_version(v):
     try:
         with open(_VAULT_VERSION_FILE, "w") as f:
             f.write(str(v))
+    except Exception:
+        pass
+
+
+def _write_mesh_heartbeat():
+    """Bump MESH_HEARTBEAT_FILE on every successful relay reach. Atomic
+    via tmp+rename so the tray never reads a torn value. Tray reads
+    mtime, content is the ms-epoch as a debug aid."""
+    try:
+        tmp = MESH_HEARTBEAT_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(str(int(time.time() * 1000)))
+        os.replace(tmp, MESH_HEARTBEAT_FILE)
     except Exception:
         pass
 
@@ -327,6 +345,9 @@ def _vault_poll():
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read())
             blobs = data.get("blobs", [])
+        # Reached the relay successfully — bump heartbeat so the tray's
+        # crown stays gold even when the mesh is quiet.
+        _write_mesh_heartbeat()
         if not blobs:
             return
         lion_pub = get_lion_pubkey()
