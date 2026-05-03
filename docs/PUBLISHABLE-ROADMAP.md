@@ -109,7 +109,7 @@ Publication path from an operator-only tree to a public repo is **done**. v1.0.0
 
 **PR #16 (`5605572`, merged 2026-04-24)** landed three initiatives bundled: pairing recovery-flow strengthening, honest hosted-relay framing, and contribution-policy tightening.
 
-**Post-PR-#16 hands-on device QA session (2026-04-24 late)** — surfaced a **class of multi-tenant correctness bugs** when running consumer meshes against the operator-shared `focus.wildhome.ca` relay. Every server-side singleton that wasn't keyed by `mesh_id` turned out to be an operator-only affordance. A focused audit found 7 findings (1 BLOCKER, 3 HIGH, 2 MEDIUM, 1 LOW). Six are fixed in this session; one remains:
+**Post-PR-#16 hands-on device QA session (2026-04-24 late)** — surfaced a **class of multi-tenant correctness bugs** when running consumer meshes against the operator-shared `focus.example.com` relay. Every server-side singleton that wasn't keyed by `mesh_id` turned out to be an operator-only affordance. A focused audit found 7 findings (1 BLOCKER, 3 HIGH, 2 MEDIUM, 1 LOW). Six are fixed in this session; one remains:
 
 - ✅ **`/admin/order` mesh routing** (BLOCKER #1) — now resolves `_orders_registry.get(req_mesh_id)` instead of always mutating operator globals.
 - ✅ **Desktop heartbeat + penalty per-mesh** (HIGH #2+#3) — `_get_desktop_registry(mesh_id)` factory; `/webhook/desktop-penalty` routes via `_server_apply_order` instead of operator ADB.

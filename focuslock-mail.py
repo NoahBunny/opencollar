@@ -1376,7 +1376,7 @@ def _iter_desktop_registries():
 
 
 # ── Per-mesh payment ledger ──
-# Legacy singleton (focus.wildhome.ca's operator mesh and nothing else) is
+# Legacy singleton (focus.example.com's operator mesh and nothing else) is
 # kept at _LEDGER_PATH for backward compat on read; new per-mesh ledgers
 # land in _LEDGERS_DIR/{mesh_id}.json. Multi-tenant servers (one relay
 # hosting many Lion/Bunny meshes) need strict isolation — a fresh mesh
