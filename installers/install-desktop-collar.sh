@@ -126,23 +126,33 @@ sudo cp "$PROJECT_DIR/icons/collar-icon.png" /opt/focuslock/ 2>/dev/null || \
     sudo cp "$PROJECT_DIR/collar-icon.png" /opt/focuslock/ 2>/dev/null || true
 sudo cp "$PROJECT_DIR/icons/collar-icon-gold.png" /opt/focuslock/ 2>/dev/null || true
 
-# Crown tray icons (per-user)
+# Crown tray icons (per-user) — required by focuslock-tray.py to render the
+# AppIndicator. Missing icons → silent no-icon tray, which is how most
+# "tray crown not showing" reports trace back to the install step.
 mkdir -p ~/.config/focuslock/icons
+icon_copied=0
 for icon in crown-gold.png crown-gray.png; do
-    cp "$PROJECT_DIR/icons/$icon" ~/.config/focuslock/icons/ 2>/dev/null || true
+    src="$PROJECT_DIR/icons/$icon"
+    if [ ! -f "$src" ]; then
+        echo "  WARN: $src missing in source — tray crown won't render until copied here"
+        continue
+    fi
+    cp "$src" ~/.config/focuslock/icons/ && icon_copied=$((icon_copied + 1))
 done
+[ "$icon_copied" = 0 ] && echo "  WARN: no crown icons copied — tray will be invisible"
 
-# Install Lion's Share public key (needed for signature verification)
-if [ ! -f ~/.config/focuslock/lion_pubkey.pem ]; then
-    for src in "$PROJECT_DIR/lion_pubkey.pem" /opt/focuslock/lion_pubkey.pem; do
-        if [ -f "$src" ]; then
-            cp "$src" ~/.config/focuslock/lion_pubkey.pem
-            sudo cp "$src" /opt/focuslock/lion_pubkey.pem 2>/dev/null || true
-            echo "  lion_pubkey.pem installed"
-            break
-        fi
-    done
-fi
+# Install Lion's Share public key (needed for signature verification).
+# Prefer `sudo install` over `sudo cp` for the system copy — the sudoers
+# rule below explicitly whitelists `install -D -m 0644 .../lion_pubkey.pem`,
+# so plain cp gets denied and silently swallowed by `|| true`. Using
+# install also fixes the perm bits in one shot.
+for src in "$PROJECT_DIR/lion_pubkey.pem" /opt/focuslock/lion_pubkey.pem; do
+    [ -f "$src" ] || continue
+    [ -f ~/.config/focuslock/lion_pubkey.pem ] || cp "$src" ~/.config/focuslock/lion_pubkey.pem
+    sudo install -D -m 0644 "$src" /opt/focuslock/lion_pubkey.pem || true
+    echo "  lion_pubkey.pem installed (user + system)"
+    break
+done
 
 # Install web UI (enables desktop as mesh server)
 if [ -f "$PROJECT_DIR/web/index.html" ]; then
@@ -171,16 +181,53 @@ if [ -z "$HOMELAB" ] && command -v tailscale &>/dev/null && [ -n "$HOMELAB_HOSTN
 fi
 if [ -z "$HOMELAB" ]; then
     if [ -f ~/.config/focuslock/config.json ] && grep -q '"mesh_url"' ~/.config/focuslock/config.json; then
-        echo "No homelab configured — using ~/.config/focuslock/config.json (consumer mesh-relay install)."
+        echo "Existing ~/.config/focuslock/config.json found — reusing its mesh_url/mesh_id."
     elif [ "$NON_INTERACTIVE" = 1 ]; then
         echo "No homelab and no ~/.config/focuslock/config.json — daemon will start but won't pair." >&2
-        echo "Set FOCUSLOCK_HOMELAB or write a config.json with mesh_url/mesh_id before pairing." >&2
+        echo "Set FOCUSLOCK_HOMELAB, or use install-mesh.sh --mesh-id ID --mesh-url URL." >&2
     else
         echo ""
         echo "No homelab detected. Two paths:"
-        echo "  [1] consumer / mesh-relay install (recommended) — pair via Bunny Tasker QR later"
+        echo "  [1] consumer / mesh-relay install (recommended)"
         echo "  [2] homelab install — ADB bridge, standing-orders sync, etc."
         read -p "Homelab URL (blank for [1]): " HOMELAB
+
+        # Path [1]: prompt for mesh_url + mesh_id and write config.json now,
+        # so the daemon comes up paired in one shot. Mirrors the format
+        # install-mesh.sh writes — keep them in sync if either changes.
+        if [ -z "$HOMELAB" ]; then
+            echo ""
+            echo "=== Mesh configuration ==="
+            echo "Pair this collar to a mesh relay. Both fields are required."
+            read -p "  Mesh relay URL (e.g. https://focus.example.com): " MESH_URL
+            read -p "  Mesh ID (base64url issued by the relay): " MESH_ID
+            if [ -n "$MESH_URL" ] && [ -n "$MESH_ID" ]; then
+                read -p "  Subscribe to ntfy push for instant orders? [Y/n]: " NTFY_ANS
+                NTFY_BLOCK=""
+                case "$NTFY_ANS" in
+                    n|N|no|NO) ;;
+                    *) NTFY_BLOCK='
+  "ntfy_enabled": true,
+  "ntfy_server": "https://ntfy.sh",' ;;
+                esac
+                CONFIG_DIR="$HOME/.config/focuslock"
+                mkdir -p "$CONFIG_DIR"
+                cat > "$CONFIG_DIR/config.json" <<EOF
+{
+  "mesh_url": "$MESH_URL",
+  "mesh_id": "$MESH_ID",
+  "vault_mode": true,$NTFY_BLOCK
+  "mesh_port": 8435,
+  "poll_interval": 5
+}
+EOF
+                chmod 600 "$CONFIG_DIR/config.json"
+                echo "  Wrote $CONFIG_DIR/config.json (mesh=$MESH_ID via $MESH_URL)"
+            else
+                echo "  WARN: mesh fields blank — daemon will start but won't pair." >&2
+                echo "  Run install-mesh.sh --mesh-id ID --mesh-url URL to configure later." >&2
+            fi
+        fi
     fi
 fi
 
@@ -314,8 +361,12 @@ echo "  Wallpaper: custom cairo-generated lock screen"
 if [ -n "$HOMELAB" ]; then
     echo "  Heartbeat: every 30s to homelab"
     echo "  Standing orders: synced from homelab every 5 min"
+elif [ -f ~/.config/focuslock/config.json ] && grep -q '"mesh_url"' ~/.config/focuslock/config.json; then
+    MESH_URL_NOW=$(grep -oE '"mesh_url"[^,}]*' ~/.config/focuslock/config.json | head -1 | sed 's/.*"mesh_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    echo "  Mesh: paired to $MESH_URL_NOW (see ~/.config/focuslock/config.json)"
 else
-    echo "  Mesh: configure ~/.config/focuslock/config.json (mesh_url + mesh_id + vault_mode)"
-    echo "        then restart: systemctl --user restart focuslock-desktop"
+    echo "  Mesh: not configured. Run installers/install-mesh.sh --mesh-id ID --mesh-url URL"
+    echo "        or hand-edit ~/.config/focuslock/config.json, then:"
+    echo "        systemctl --user restart focuslock-desktop"
 fi
 echo ""
