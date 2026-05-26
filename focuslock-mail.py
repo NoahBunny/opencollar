@@ -789,7 +789,18 @@ def mesh_apply_order(action, params, orders):
         orders.set("sub_tier", tier)
         orders.set("sub_due", due)
         amounts = {"bronze": 25, "silver": 35, "gold": 50}
-        return {"applied": action, "tier": tier, "due": due, "amount": amounts[tier]}
+        amount = amounts[tier]
+        # No-grace-period subscribe: bump paywall by the tier amount the moment
+        # the user subscribes. Previously the first charge waited until sub_due
+        # (7 days), which felt like a 1-week free trial. The weekly cadence is
+        # preserved — subscribe-charge still fires at sub_due to charge week 2.
+        try:
+            cur_pw = int(orders.get("paywall", "0") or "0")
+        except (ValueError, TypeError):
+            cur_pw = 0
+        new_pw = cur_pw + amount
+        orders.set("paywall", str(new_pw))
+        return {"applied": action, "tier": tier, "due": due, "amount": amount, "paywall": new_pw}
     elif action == "set-sub-due":
         import time as t_sd
 
@@ -1413,6 +1424,133 @@ def _get_payment_ledger(mesh_id: str) -> "mesh.PaymentLedger":
 payment_ledger = mesh.PaymentLedger(persist_path=_LEDGER_PATH)
 
 
+# ── Per-mesh payment identity (server-only) ──
+# Holds Lion's payee_email + IMAP creds AND Bunny's payer_allow list. Kept
+# off the vault on purpose — the vault is symmetric E2E across roles, so
+# anything written there is readable by the OTHER side's apps. Each half
+# is written by its respective signed endpoint (set-payee-identity,
+# set-payer-identity) and never echoed back to the wrong app.
+_IDENTITIES_DIR = os.path.join(os.path.dirname(MESH_ORDERS_FILE), "payment_identities")
+_payment_identities: dict = {}
+_payment_identities_lock = threading.Lock()
+
+
+def _get_payment_identity(mesh_id: str) -> "mesh.PaymentIdentity":
+    with _payment_identities_lock:
+        ident = _payment_identities.get(mesh_id)
+        if ident is None:
+            os.makedirs(_IDENTITIES_DIR, exist_ok=True)
+            path = os.path.join(_IDENTITIES_DIR, f"{mesh_id}.json")
+            ident = mesh.PaymentIdentity(persist_path=path)
+            _payment_identities[mesh_id] = ident
+        return ident
+
+
+def _migrate_vault_payment_imap():
+    """Move legacy `payment_imap_*` vault fields into the server-only
+    PaymentIdentity file. Pre-fix, Lion's IMAP creds (host/user/pass) lived
+    in the shared mesh-orders vault — which both apps decrypt — so Bunny's
+    Collar/Tasker could read Lion's email simply by inspecting the vault
+    blob. The post-fix path stores creds in payment_identities/{mid}.json,
+    which lives only on the server.
+
+    Idempotent: a mesh with payee_email already populated is skipped, so
+    this is safe to call on every startup. Migration runs after
+    init_mesh_from_adb() so OPERATOR_MESH_ID has been provisioned.
+    """
+    migrated = 0
+    for mid in list(_orders_registry.docs.keys()):
+        orders = _orders_registry.get(mid)
+        if orders is None:
+            continue
+        ident = _get_payment_identity(mid)
+        if ident.payee_email:
+            continue
+        vh = (orders.get("payment_imap_host", "") or "").strip()
+        vu = (orders.get("payment_imap_user", "") or "").strip()
+        vp = orders.get("payment_imap_pass", "") or ""
+        if not (vh and vu and vp):
+            continue
+        ident.set_payee(vu, vh, vp)
+        try:
+            _server_apply_order(
+                mid,
+                "set-payment-email",
+                {"imap_host": "", "user": "", "pass": ""},
+            )
+        except Exception as e:
+            logger.warning(
+                "migration: clearing vault payment_imap_* failed for mesh=%s err=%s",
+                _sanitize_log(mid),
+                e,
+            )
+        migrated += 1
+        logger.warning(
+            "migrated payment_imap_* off vault for mesh=%s (email no longer readable by other-side apps)",
+            _sanitize_log(mid),
+        )
+    if migrated:
+        logger.warning("payment_imap migration: %d mesh(es) updated", migrated)
+
+
+def _apply_payment_reversal(mesh_id: str, source: str) -> dict:
+    """Reverse a previously-credited payment for one mesh.
+
+    Factored out of the /admin/reverse-payment handler so unit tests can
+    exercise the logic without spinning up an HTTPServer. Returns a dict;
+    callers strip `_status` (the desired HTTP status) before responding.
+
+    Behaviour:
+      - 404 if no ledger entry matches `source`
+      - 409 if a reversal for that source already exists (idempotent)
+      - 200 with {ok, reversed_amount, new_total_paid_cents} on success
+    """
+    ledger = _get_payment_ledger(mesh_id)
+    orig = ledger.find_by_source(source)
+    if orig is None:
+        return {"_status": 404, "error": "no ledger entry with that source"}
+    if ledger.find_by_source("rev:" + source) is not None:
+        return {"_status": 409, "error": "already reversed"}
+    orig_amount = float(orig.get("amount", 0) or 0)
+    add_result = ledger.add_entry(
+        entry_type="reversal",
+        amount=-orig_amount,
+        source="rev:" + source,
+        description="reversal of " + str(orig.get("description", "")),
+    )
+    if add_result.get("error"):
+        return {"_status": 500, "error": "ledger append failed: " + str(add_result["error"])}
+
+    new_cents = 0
+    orders = _orders_registry.get(mesh_id)
+    if orders is not None:
+        try:
+            cur_cents = int(orders.get("total_paid_cents", 0) or 0)
+        except (ValueError, TypeError):
+            cur_cents = 0
+        new_cents = max(0, cur_cents - round(orig_amount * 100))
+        orders.set("total_paid_cents", new_cents)
+        if hasattr(orders, "bump_version"):
+            try:
+                orders.bump_version()
+            except Exception:
+                pass
+
+    logger.warning(
+        "payment reversed: mesh=%s source=%s amount=$%.2f new_total_paid=$%.2f",
+        _sanitize_log(mesh_id),
+        _sanitize_log(source),
+        orig_amount,
+        new_cents / 100.0,
+    )
+    return {
+        "_status": 200,
+        "ok": True,
+        "reversed_amount": orig_amount,
+        "new_total_paid_cents": new_cents,
+    }
+
+
 # ── Per-mesh IMAP scanner contexts (audit MEDIUM #5, 2026-04-26) ──
 # Pre-fix: a single IMAP scanner thread polled the operator's mailbox and
 # credited every payment to OPERATOR_MESH_ID. Lion-issued `set-payment-email`
@@ -1437,6 +1575,7 @@ def _iter_imap_scan_contexts():
                 "mesh_id": OPERATOR_MESH_ID,
                 "mesh_orders": op_orders,
                 "payment_ledger": _get_payment_ledger(OPERATOR_MESH_ID),
+                "payment_identity": _get_payment_identity(OPERATOR_MESH_ID),
                 "apply_fn": (lambda action, params, _mid=OPERATOR_MESH_ID: _server_apply_order(_mid, action, params)),
                 "static_fallback": (IMAP_HOST, MAIL_USER, MAIL_PASS),
             }
@@ -1451,6 +1590,7 @@ def _iter_imap_scan_contexts():
             "mesh_id": mid,
             "mesh_orders": orders,
             "payment_ledger": _get_payment_ledger(mid),
+            "payment_identity": _get_payment_identity(mid),
             "apply_fn": (lambda action, params, _mid=mid: _server_apply_order(_mid, action, params)),
             "static_fallback": None,
         }
@@ -2206,6 +2346,13 @@ class MeshAccountStore:
                 "created_at": int(time.time()),
                 "nodes": {},
                 "vault_only": False,
+                # Default ON: slaves are dumb zombies w.r.t. WRITE (Lion-signed
+                # orders are unfakeable), so manual approval is unnecessary
+                # friction for normal multi-device onboarding. The READ-leak
+                # tradeoff (anyone who learns mesh_id can register and decrypt
+                # future Lion blobs) is accepted as the consumer-mesh default.
+                # Lion can still toggle off via /auto-accept for stricter meshes.
+                "auto_accept_nodes": True,
                 "max_blobs_per_day": self.DEFAULT_MAX_BLOBS_PER_DAY,
                 "max_total_bytes_mb": self.DEFAULT_MAX_TOTAL_BYTES_MB,
             }
@@ -3199,6 +3346,36 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 },
             )
 
+        elif self.path == "/admin/reverse-payment":
+            # Reverse a credited payment that should not have counted as a
+            # Bunny→Lion payment (e.g. WorldRemit remittance, refund, random
+            # deposit notice that slipped past the scanner before the
+            # payer-allow filter was in place). Adds a `reversal` ledger
+            # entry with negative amount and decrements `total_paid_cents`.
+            # Idempotent: a second call with the same source returns 409.
+            # Does NOT unwind the paywall — by the time the operator reverses,
+            # subscription accrual + other payments have moved the paywall and
+            # we'd corrupt history trying to back it out. Lifetime PAID is
+            # the only safely-correctable field.
+            if not ADMIN_TOKEN:
+                self.respond(503, {"error": "admin_token not configured"})
+                return
+            token = data.get("admin_token", "")
+            if not _is_valid_admin_auth(token):
+                self.respond(403, {"error": "invalid admin_token"})
+                return
+            mesh_id = str(data.get("mesh_id", "") or "")
+            source = str(data.get("source", "") or "")
+            if not mesh_id or not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "valid mesh_id required"})
+                return
+            if not source:
+                self.respond(400, {"error": "source (ledger entry Message-ID) required"})
+                return
+            result = _apply_payment_reversal(mesh_id, source)
+            status = result.pop("_status", 200)
+            self.respond(status, result)
+
         elif self.path == "/admin/order":
             if not ADMIN_TOKEN:
                 self.respond(503, {"error": "admin_token not configured"})
@@ -4170,6 +4347,191 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 )
             self.respond(200, {"ok": True, "applied": applied, "signer": verified_with})
 
+        # ── Lion-authed payee identity (Lion's email + IMAP creds) ──
+        # Path: /api/mesh/{mesh_id}/set-payee-identity
+        # Body: {node_id, ts, email, imap_host?, imap_pass?, signature}
+        # signature = SHA256withRSA over
+        #     "mesh_id|node_id|set-payee-identity|ts|sha256(email|imap_host|imap_pass)"
+        # Only the controller node may set this. Stored server-only at
+        # payment_identities/{mid}.json — never echoed back to the wrong
+        # app, never written to the vault. Together with set-payer-identity
+        # below this lets the IMAP scanner reject inbound payments that
+        # don't actually come from the Bunny without either app being able
+        # to read the other side's email.
+        elif self.path.startswith("/api/mesh/") and self.path.endswith("/set-payee-identity"):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 4 or parts[3] != "set-payee-identity":
+                self.respond(400, {"error": "bad path"})
+                return
+            mesh_id = parts[2]
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            account = _mesh_accounts.get(mesh_id)
+            if not account:
+                self.respond(404, {"error": "mesh not found"})
+                return
+            node_id = data.get("node_id", "")
+            signature = data.get("signature", "")
+            email = str(data.get("email", "") or "").strip()
+            imap_host = str(data.get("imap_host", "") or "").strip()
+            imap_pass = str(data.get("imap_pass", "") or "")
+            if not node_id or not signature or not email:
+                self.respond(400, {"error": "node_id, signature, email required"})
+                return
+            try:
+                ts_i = int(data.get("ts", 0) or 0)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            now_ms = int(time.time() * 1000)
+            if abs(now_ms - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+            vault_node = None
+            for vnode in _vault_store.get_nodes(mesh_id):
+                if vnode.get("node_id") == node_id and vnode.get("node_pubkey"):
+                    vault_node = vnode
+                    break
+            if not vault_node:
+                self.respond(403, {"error": "node not registered in vault"})
+                return
+            # Only the controller (Lion's Share) may set the payee half.
+            ntype = (vault_node.get("node_type") or vault_node.get("type") or "").lower()
+            if ntype != "controller":
+                self.respond(403, {"error": "controller node required for payee identity"})
+                return
+            import base64 as _b64_pe
+            import hashlib as _h_pe
+
+            from cryptography.hazmat.primitives import hashes as _hh_pe
+            from cryptography.hazmat.primitives import serialization as _ser_pe
+            from cryptography.hazmat.primitives.asymmetric import padding as _pad_pe
+
+            body_hash = _h_pe.sha256(f"{email}|{imap_host}|{imap_pass}".encode()).hexdigest()
+            payload = f"{mesh_id}|{node_id}|set-payee-identity|{ts_i}|{body_hash}"
+            try:
+                pub_der = _b64_pe.b64decode(vault_node["node_pubkey"])
+                pub = _ser_pe.load_der_public_key(pub_der)
+                sig_bytes = _b64_pe.b64decode(signature)
+                pub.verify(sig_bytes, payload.encode("utf-8"), _pad_pe.PKCS1v15(), _hh_pe.SHA256())
+            except Exception as e:
+                logger.warning(
+                    "set-payee-identity sig verify failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    e,
+                )
+                self.respond(403, {"error": "invalid signature"})
+                return
+            ident = _get_payment_identity(mesh_id)
+            summary = ident.set_payee(email, imap_host, imap_pass)
+            logger.info(
+                "set-payee-identity: mesh=%s node=%s payee=✓ imap=%s",
+                _sanitize_log(mesh_id),
+                _sanitize_log(node_id),
+                "✓" if summary["imap_configured"] else "—",
+            )
+            # Response intentionally omits the email back — defense in depth
+            # against a future bug that might log/echo it.
+            self.respond(200, {"ok": True, **summary})
+
+        # ── Bunny-authed payer identity (Bunny's email/name allowlist) ──
+        # Path: /api/mesh/{mesh_id}/set-payer-identity
+        # Body: {node_id, ts, allow:[...], signature}
+        # signature = SHA256withRSA over
+        #     "mesh_id|node_id|set-payer-identity|ts|sha256(allow_canonical)"
+        # Only a phone (slave/companion) node may set this. Server stores
+        # in the same payment_identities file but in a separate slot; Lion
+        # cannot read it back. Empty list = legacy mode (every matched
+        # payment email is credited) — the scanner WARNs once per cycle.
+        elif self.path.startswith("/api/mesh/") and self.path.endswith("/set-payer-identity"):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 4 or parts[3] != "set-payer-identity":
+                self.respond(400, {"error": "bad path"})
+                return
+            mesh_id = parts[2]
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            account = _mesh_accounts.get(mesh_id)
+            if not account:
+                self.respond(404, {"error": "mesh not found"})
+                return
+            node_id = data.get("node_id", "")
+            signature = data.get("signature", "")
+            allow = data.get("allow", [])
+            if not isinstance(allow, list):
+                self.respond(400, {"error": "allow must be a JSON array of strings"})
+                return
+            cleaned_allow = [str(s).strip() for s in allow if str(s).strip()]
+            if len(cleaned_allow) > 16:
+                self.respond(400, {"error": "allow capped at 16 entries"})
+                return
+            for s in cleaned_allow:
+                if len(s) > 200:
+                    self.respond(400, {"error": "allow entries capped at 200 chars"})
+                    return
+            if not node_id or not signature:
+                self.respond(400, {"error": "node_id and signature required"})
+                return
+            try:
+                ts_i = int(data.get("ts", 0) or 0)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            now_ms = int(time.time() * 1000)
+            if abs(now_ms - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+            vault_node = None
+            for vnode in _vault_store.get_nodes(mesh_id):
+                if vnode.get("node_id") == node_id and vnode.get("node_pubkey"):
+                    vault_node = vnode
+                    break
+            if not vault_node:
+                self.respond(403, {"error": "node not registered in vault"})
+                return
+            ntype = (vault_node.get("node_type") or vault_node.get("type") or "").lower()
+            if ntype not in ("phone", "slave", "companion"):
+                self.respond(403, {"error": "phone node required for payer identity"})
+                return
+            import base64 as _b64_pr
+            import hashlib as _h_pr
+
+            from cryptography.hazmat.primitives import hashes as _hh_pr
+            from cryptography.hazmat.primitives import serialization as _ser_pr
+            from cryptography.hazmat.primitives.asymmetric import padding as _pad_pr
+
+            allow_canonical = "\n".join(cleaned_allow)
+            body_hash = _h_pr.sha256(allow_canonical.encode("utf-8")).hexdigest()
+            payload = f"{mesh_id}|{node_id}|set-payer-identity|{ts_i}|{body_hash}"
+            try:
+                pub_der = _b64_pr.b64decode(vault_node["node_pubkey"])
+                pub = _ser_pr.load_der_public_key(pub_der)
+                sig_bytes = _b64_pr.b64decode(signature)
+                pub.verify(sig_bytes, payload.encode("utf-8"), _pad_pr.PKCS1v15(), _hh_pr.SHA256())
+            except Exception as e:
+                logger.warning(
+                    "set-payer-identity sig verify failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    e,
+                )
+                self.respond(403, {"error": "invalid signature"})
+                return
+            ident = _get_payment_identity(mesh_id)
+            summary = ident.set_payer_allow(cleaned_allow)
+            logger.info(
+                "set-payer-identity: mesh=%s node=%s count=%d",
+                _sanitize_log(mesh_id),
+                _sanitize_log(node_id),
+                summary["count"],
+            )
+            # Response includes count only — never the actual strings, so a
+            # future Lion-side bug that fetches this can't extract them.
+            self.respond(200, {"ok": True, **summary})
+
         # ── Bunny-authed deadline-task completion ──
         # Path: /api/mesh/{mesh_id}/deadline-task/clear
         # Body: {node_id, ts, signature}
@@ -4445,6 +4807,14 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     entry["pinned"] = True
                 if mandatory:
                     entry["mandatory_reply"] = True
+                # Idempotency key (optional). Clients send a stable random id so a
+                # retried send dedups to one stored message (MessageStore.add).
+                # Not part of the signed payload: stripping it only disables
+                # dedup (falls back to append), and ids are unguessable, so a
+                # relay cannot weaponise it to suppress a distinct message.
+                cmid = data.get("client_msg_id", "")
+                if isinstance(cmid, str) and 0 < len(cmid) <= 128:
+                    entry["client_msg_id"] = cmid
                 # E2EE passthrough (server stores opaquely; signature binds `text`)
                 if data.get("encrypted"):
                     entry["encrypted"] = True
@@ -5841,6 +6211,10 @@ if __name__ == "__main__":
     # Initialize mesh — bootstrap from ADB if no persisted state
     seed_mesh_peers()
     init_mesh_from_adb()
+    # One-shot vault→file migration for IMAP creds. Idempotent: skips meshes
+    # whose PaymentIdentity is already populated. Logs WARN only when it
+    # actually moves something, so steady-state startups stay quiet.
+    _migrate_vault_payment_imap()
     logger.info("Mesh: node=%s v%s peers=%s", MESH_NODE_ID, mesh_orders.version, len(mesh_peers.peers))
 
     # Start mesh gossip thread (10s interval)

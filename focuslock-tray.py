@@ -29,6 +29,7 @@ Or directly: python3 /opt/focuslock/focuslock-tray.py
 
 import json
 import logging
+import math
 import os
 import subprocess
 import sys
@@ -64,6 +65,19 @@ except (ValueError, ImportError) as exc:
         "  Arch:          sudo pacman -S libayatana-appindicator gtk3 python-gobject\n"
     )
     sys.exit(1)
+
+# Cairo + Pango for the paywall badge composited onto the crown. Optional —
+# missing libs just disable the badge, the bare crown still renders.
+try:
+    import cairo  # pycairo
+
+    gi.require_version("Pango", "1.0")
+    gi.require_version("PangoCairo", "1.0")
+    from gi.repository import Pango, PangoCairo
+
+    _BADGE_AVAILABLE = True
+except (ValueError, ImportError):
+    _BADGE_AVAILABLE = False
 
 
 # ── Config ───────────────────────────────────────────────────
@@ -116,6 +130,79 @@ def _is_mesh_connected():
     except Exception:
         pass
     return False
+
+
+# ── Paywall badge rendering ──────────────────────────────────
+
+
+def _format_badge_text(amount):
+    """Compact dollar-amount string fit for a tray badge (≤4 chars).
+    Returns None when no badge should render (zero or negative)."""
+    try:
+        a = max(0, round(float(amount)))
+    except (TypeError, ValueError):
+        return None
+    if a == 0:
+        return None
+    if a < 1000:
+        return f"${a}"  # $1..$999
+    if a < 100_000:
+        return f"${a // 1000}k"  # $1k..$99k
+    return "$$$"
+
+
+def _rounded_rect(ctx, x, y, w, h, r):
+    ctx.new_sub_path()
+    ctx.arc(x + w - r, y + r, r, -math.pi / 2, 0)
+    ctx.arc(x + w - r, y + h - r, r, 0, math.pi / 2)
+    ctx.arc(x + r, y + h - r, r, math.pi / 2, math.pi)
+    ctx.arc(x + r, y + r, r, math.pi, 3 * math.pi / 2)
+    ctx.close_path()
+
+
+def _render_badged_crown(base_png, out_png, text):
+    """Composite `text` as a red badge in the bottom-right of `base_png`,
+    write the result to `out_png`. Caller decides when to invoke."""
+    base = cairo.ImageSurface.create_from_png(str(base_png))
+    w, h = base.get_width(), base.get_height()
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
+    ctx = cairo.Context(surface)
+    ctx.set_source_surface(base, 0, 0)
+    ctx.paint()
+
+    # Badge geometry. The base PNG is wide (16:9-ish) but SNI hosts often
+    # square it via fit-or-crop, so we anchor at bottom-right of the canvas
+    # and size the badge generously so it stays legible after downscale.
+    bw = int(w * 0.42)
+    bh = int(h * 0.42)
+    bx = w - bw - int(w * 0.02)
+    by = h - bh - int(h * 0.02)
+    radius = int(min(bw, bh) * 0.28)
+
+    ctx.set_source_rgba(0, 0, 0, 0.55)
+    _rounded_rect(ctx, bx - 6, by - 6, bw + 12, bh + 12, radius + 4)
+    ctx.fill()
+
+    ctx.set_source_rgba(0.86, 0.14, 0.14, 1.0)
+    _rounded_rect(ctx, bx, by, bw, bh, radius)
+    ctx.fill()
+
+    layout = PangoCairo.create_layout(ctx)
+    font_px = max(12, int(bh * 0.72))
+    desc = Pango.FontDescription(f"Sans Bold {font_px}px")
+    layout.set_font_description(desc)
+    layout.set_text(text, -1)
+    tw, th = layout.get_pixel_size()
+    while tw > bw - int(bw * 0.12) and font_px > 8:
+        font_px -= 2
+        desc = Pango.FontDescription(f"Sans Bold {font_px}px")
+        layout.set_font_description(desc)
+        tw, th = layout.get_pixel_size()
+
+    ctx.set_source_rgb(1, 1, 1)
+    ctx.move_to(bx + (bw - tw) / 2, by + (bh - th) / 2)
+    PangoCairo.show_layout(ctx, layout)
+    surface.write_to_png(str(out_png))
 
 
 # ── Status polling ───────────────────────────────────────────
@@ -232,22 +319,71 @@ class FocusLockTray:
         self.menu.show_all()
         self.indicator.set_menu(self.menu)
 
+        # Badge rotation state. SNI hosts cache icons by name, so each new
+        # amount needs a fresh filename. Counter increments on every change;
+        # we keep at most the previous file alive (deleted on next render).
+        self._badge_counter = 0
+        self._badge_key = None  # (base_name, badge_text) currently shown
+        self._badge_path = None  # Path to delete on next rotation
+        # Best-effort sweep of leftover badge files from prior runs.
+        try:
+            for stale in ICONS_DIR.glob("crown-g*-b*.png"):
+                stale.unlink()
+        except Exception:
+            pass
+
         self.poller = StatusPoller(self._on_state)
         self.poller.start()
+
+    def _select_icon(self, connected, amount):
+        """Return icon-name to pass to set_icon_full. Renders a badged
+        variant if (badge libs available) and (amount > 0); otherwise
+        falls back to the bare crown. Caller still owns the gold/gray
+        selection — we just composite on top."""
+        base = "crown-gold" if connected else "crown-gray"
+        if not _BADGE_AVAILABLE:
+            return base
+        text = _format_badge_text(amount)
+        if text is None:
+            return base
+        key = (base, text)
+        if key == self._badge_key and self._badge_path and self._badge_path.exists():
+            return self._badge_path.stem
+        # New amount or new connectivity → render fresh.
+        self._badge_counter += 1
+        out_name = f"{base}-b{self._badge_counter}"
+        out_path = ICONS_DIR / f"{out_name}.png"
+        base_path = ICONS_DIR / f"{base}.png"
+        if not base_path.exists():
+            return base
+        try:
+            _render_badged_crown(base_path, out_path, text)
+        except Exception:
+            logger.exception("badge render failed; falling back to bare crown")
+            return base
+        # Delete previous badge file (only one outstanding at a time).
+        if self._badge_path and self._badge_path != out_path:
+            try:
+                self._badge_path.unlink()
+            except Exception:
+                pass
+        self._badge_key = key
+        self._badge_path = out_path
+        return out_name
 
     def _on_state(self, state):
         """Called on the GTK thread by GLib.idle_add.
 
-        Icon = mesh connectivity (gold=connected, gray=disconnected).
-        Label = lock state + paywall + tier. Per project convention this
-        matches Windows tray + Bunny Tasker.
+        Icon = crown (gold=connected, gray=disconnected) with a red paywall
+        badge composited over it when an amount is owed. Label/menu carry
+        full lock state + tier — matches Windows tray + Bunny Tasker.
         """
         connected = _is_mesh_connected()
-        icon_name = "crown-gold" if connected else "crown-gray"
-        self.indicator.set_icon_full(icon_name, "connected" if connected else "disconnected")
 
         if state is None or "error" in (state or {}):
             err = (state or {}).get("error", "no-data")
+            icon_name = self._select_icon(connected, 0)
+            self.indicator.set_icon_full(icon_name, "connected" if connected else "disconnected")
             label = "Disconnected" if not connected else f"Connected · reading state ({err})"
             self.menu_status.set_label(label)
             return False  # don't reschedule (we're polling on a thread)
@@ -260,6 +396,9 @@ class FocusLockTray:
         except (TypeError, ValueError):
             paywall_f = 0.0
         tier = orders.get("sub_tier") or ""
+
+        icon_name = self._select_icon(connected, paywall_f)
+        self.indicator.set_icon_full(icon_name, "connected" if connected else "disconnected")
 
         prefix = "Locked" if locked else "Unlocked"
         if not connected:
@@ -294,6 +433,11 @@ class FocusLockTray:
 
     def _on_quit(self, _item):
         self.poller.stop()
+        if self._badge_path:
+            try:
+                self._badge_path.unlink()
+            except Exception:
+                pass
         Gtk.main_quit()
 
 
