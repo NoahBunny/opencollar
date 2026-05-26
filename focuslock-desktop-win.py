@@ -198,6 +198,33 @@ _vault_privkey_pem = ""
 _vault_pubkey_der = b""
 
 
+def _restrict_to_owner_windows(path):
+    """Lock a secret file down to the current user via icacls.
+
+    On Windows os.chmod cannot express POSIX-style 0600 (it only toggles the
+    read-only bit), so the private key inherited %APPDATA%'s ACLs. icacls
+    removes inheritance and grants Full control to just this user. Best-effort
+    and fully guarded: if icacls is unavailable or the username can't be
+    resolved we log and leave the file as-is rather than risk locking the
+    owner out — %APPDATA% is already per-user, so this is defense in depth."""
+    user = os.environ.get("USERNAME", "")
+    if not user:
+        logger.warning("Could not resolve USERNAME — leaving %s ACLs as inherited", path)
+        return
+    try:
+        # grant + inheritance-removal in one atomic call so the DACL is never
+        # left empty: the end state is exactly "<user>: Full control".
+        subprocess.run(
+            ["icacls", path, "/inheritance:r", "/grant:r", f"{user}:F"],
+            check=True,
+            capture_output=True,
+            timeout=10,
+        )
+    except Exception as e:
+        # Best-effort hardening — never fatal (icacls missing, odd username, etc.)
+        logger.warning("icacls hardening of %s failed (%s) — file uses inherited ACLs", path, e)
+
+
 def _vault_init_keypair():
     """Load or generate RSA keypair for vault mode."""
     global _vault_privkey_pem, _vault_pubkey_der
@@ -216,6 +243,7 @@ def _vault_init_keypair():
         priv, pub, der = vault_keygen()
         with open(VAULT_PRIVKEY_FILE, "w") as f:
             f.write(priv)
+        _restrict_to_owner_windows(VAULT_PRIVKEY_FILE)
         with open(VAULT_PUBKEY_FILE, "w") as f:
             f.write(pub)
         _vault_privkey_pem = priv
