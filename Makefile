@@ -19,7 +19,7 @@ RELAY_URL ?= http://127.0.0.1:$(RELAY_PORT)
 RELAY_PIDFILE := $(STAGING_DIR)/.relay.pid
 STATE_DIR ?= /tmp/focuslock-staging
 
-.PHONY: help qa qa-staging-up qa-staging-down qa-clean qa-pytest qa-runner qa-wizard qa-index qa-perf qa-matrix lint
+.PHONY: help qa qa-staging-up qa-staging-down qa-clean qa-pytest qa-cov-mesh qa-cov-server qa-android qa-runner qa-wizard qa-index qa-perf qa-matrix lint
 
 help:
 	@echo 'Targets:'
@@ -28,6 +28,9 @@ help:
 	@echo '  qa-staging-down Kill staging relay + state-clean $(STATE_DIR).'
 	@echo '  qa-clean        State-clean only ($(STATE_DIR)); does not kill relay.'
 	@echo '  qa-pytest       pytest tests/ (does NOT need staging relay).'
+	@echo '  qa-cov-mesh     Gated coverage floor on focuslock_mesh.py (.coveragerc.mesh).'
+	@echo '  qa-cov-server   Report-only coverage of focuslock_mesh.py + focuslock-mail.py.'
+	@echo '  qa-android      JVM unit tests + Java<->Python conformance (needs JDK; no device).'
 	@echo '  qa-runner       Drive /admin/order against staging relay (49 cases).'
 	@echo '  qa-wizard       Playwright walkthrough of web/signup.html (8 cases).'
 	@echo '  qa-index        Playwright walkthrough of web/index.html (19 cases).'
@@ -89,6 +92,24 @@ qa-clean:
 
 qa-pytest:
 	$(PY) -m pytest tests/ -q
+
+# Gated coverage floor on the shared mesh module (separate from the shared/ @95
+# gate). Fails if focuslock_mesh.py drops below the floor in .coveragerc.mesh.
+qa-cov-mesh:
+	$(PY) -m pytest tests/ -q --cov --cov-config=.coveragerc.mesh --cov-report=term-missing
+
+# Report-only coverage of the top-level server modules (visibility, not a gate).
+qa-cov-server:
+	$(PY) -m pytest tests/ -q --cov --cov-config=.coveragerc.server --cov-report=term-missing
+
+# JVM-level Android tests: JUnit unit tests + Java<->Python conformance.
+# No device/emulator/Gradle — compiles the crypto classes against test-support
+# shims for android.util.*. Needs a JDK (javac); jars are fetched + cached.
+qa-android:
+	bash android/build-conformance.sh
+	ANDROID_CONFORMANCE_CLI="$$(cat build-conformance/cli-cmd.txt)" \
+	ANDROID_CONFORMANCE_CLI_SLAVE="$$(cat build-conformance/cli-cmd-slave.txt)" \
+	$(PY) -m pytest tests/test_android_conformance.py -q
 
 qa-runner:
 	$(PY) $(STAGING_DIR)/qa_runner.py --relay $(RELAY_URL) --config $(STAGING_DIR)/config.json
