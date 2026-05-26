@@ -100,6 +100,20 @@ except ImportError:
 
 _cfg = load_config()
 
+# config.json may hold admin_token + mesh secrets. We don't silently rewrite a
+# file the user created, but warn loudly if it's group/other-readable so they
+# can `chmod 600` it. (The config dir is tightened to 0700 in _vault_init_keypair.)
+_CFG_PATH = os.path.expanduser("~/.config/focuslock/config.json")
+try:
+    if os.path.exists(_CFG_PATH) and (os.stat(_CFG_PATH).st_mode & 0o077):
+        logger.warning(
+            "%s is group/other-readable — it may hold admin_token/secrets. Run: chmod 600 %s",
+            _CFG_PATH,
+            _CFG_PATH,
+        )
+except OSError:
+    pass
+
 MESH_URL = _cfg.get("mesh_url", "") or os.environ.get("FOCUSLOCK_MESH_URL", "")
 HOMELAB_URL = _cfg.get("homelab_url", "") or os.environ.get("FOCUSLOCK_HOMELAB", "")
 ADMIN_TOKEN = _cfg.get("admin_token", "") or os.environ.get("FOCUSLOCK_ADMIN_TOKEN", "")
@@ -214,6 +228,15 @@ _vault_pubkey_der = b""
 def _vault_init_keypair():
     """Load or generate RSA keypair for vault mode."""
     global _vault_privkey_pem, _vault_pubkey_der
+    # Owner-only config dir. The private key file itself is chmod 0600 below,
+    # but orders.json / peers.json / config.json (which holds admin_token) live
+    # here too. Done every start (idempotent) so it also tightens dirs created
+    # by older versions that didn't set the mode.
+    os.makedirs(MESH_CONFIG_DIR, exist_ok=True)
+    try:
+        os.chmod(MESH_CONFIG_DIR, 0o700)
+    except OSError as e:
+        logger.warning("Could not chmod %s to 0700: %s", MESH_CONFIG_DIR, e)
     if os.path.exists(VAULT_PRIVKEY_FILE) and os.path.exists(VAULT_PUBKEY_FILE):
         with open(VAULT_PRIVKEY_FILE) as f:
             _vault_privkey_pem = f.read()
@@ -228,7 +251,6 @@ def _vault_init_keypair():
         logger.info("Loaded vault keypair (slot=%s)", vault_slot_id(_vault_pubkey_der))
     else:
         priv, pub, der = vault_keygen()
-        os.makedirs(MESH_CONFIG_DIR, exist_ok=True)
         with open(VAULT_PRIVKEY_FILE, "w") as f:
             f.write(priv)
         os.chmod(VAULT_PRIVKEY_FILE, 0o600)
@@ -1533,6 +1555,9 @@ class CollarApp(Gtk.Application):
         self.webview = None
         self.lock_process = None
         self.lock_active = False
+        # (message, pinned, paywall) last rendered onto the lock wallpaper; lets
+        # update_lock detect mid-lock content changes and regenerate the PNG.
+        self._prev_display = None
         self.consented = has_consent()
         self.allow_close = False
         self.original_wallpaper = _load_saved_wallpaper()  # persisted to disk
@@ -1885,6 +1910,45 @@ class CollarApp(Gtk.Application):
         send_heartbeat()
         return True
 
+    def _apply_kde_lock_wallpaper(self, img_path):
+        """Point kscreenlockerrc at img_path (Image + PreviewImage in the
+        org.kde.image Greeter section). Idempotent — safe to call mid-lock to
+        refresh the greeter wallpaper after regenerating the PNG in place."""
+        cfg_path = os.path.expanduser("~/.config/kscreenlockerrc")
+        try:
+            lines = []
+            if os.path.exists(cfg_path):
+                with open(cfg_path, "r") as f:
+                    lines = f.readlines()
+            in_section = False
+            updated = False
+            new_lines = []
+            for line in lines:
+                if line.strip() == "[Greeter][Wallpaper][org.kde.image][General]":
+                    in_section = True
+                    new_lines.append(line)
+                    continue
+                if in_section and line.strip().startswith("["):
+                    in_section = False
+                if in_section and line.strip().startswith("Image="):
+                    new_lines.append(f"Image={img_path}\n")
+                    updated = True
+                    continue
+                if in_section and line.strip().startswith("PreviewImage="):
+                    new_lines.append(f"PreviewImage={img_path}\n")
+                    continue
+                new_lines.append(line)
+            if not updated:
+                # Section exists but no Image key, or section doesn't exist — append it.
+                new_lines.append("\n[Greeter][Wallpaper][org.kde.image][General]\n")
+                new_lines.append(f"Image={img_path}\n")
+                new_lines.append(f"PreviewImage={img_path}\n")
+            with open(cfg_path, "w") as f:
+                f.writelines(new_lines)
+            logger.info("Lock wallpaper set: %s", img_path)
+        except Exception as e:
+            logger.warning("Wallpaper config error: %s", e)
+
     def show_lock(self):
         if self.lock_active:
             return
@@ -1896,6 +1960,9 @@ class CollarApp(Gtk.Application):
 
             # Generate custom lock screen image
             self.generate_lock_wallpaper()
+            # Track what we just rendered so update_lock() can detect mid-lock
+            # content changes (new message / pin / paywall) and refresh.
+            self._prev_display = (state.message, state.pinned, state.paywall)
             # Set as KDE lock screen wallpaper — write directly to kscreenlockerrc
             # KDE uses nested bracket format: [Greeter][Wallpaper][org.kde.image][General]
             img_path = os.path.expanduser("~/.local/share/focuslock/lock-wallpaper.png")
@@ -1926,37 +1993,11 @@ class CollarApp(Gtk.Application):
                     if self.original_wallpaper:
                         _save_original_wallpaper(self.original_wallpaper)
                         logger.info("Using KDE default wallpaper as restore target: %s", self.original_wallpaper)
-
-                # Find and update the Image= line in the right section
-                in_section = False
-                updated = False
-                new_lines = []
-                for line in lines:
-                    if line.strip() == "[Greeter][Wallpaper][org.kde.image][General]":
-                        in_section = True
-                        new_lines.append(line)
-                        continue
-                    if in_section and line.strip().startswith("["):
-                        in_section = False
-                    if in_section and line.strip().startswith("Image="):
-                        new_lines.append(f"Image={img_path}\n")
-                        updated = True
-                        continue
-                    if in_section and line.strip().startswith("PreviewImage="):
-                        new_lines.append(f"PreviewImage={img_path}\n")
-                        continue
-                    new_lines.append(line)
-                if not updated:
-                    # Section exists but no Image key, or section doesn't exist
-                    # Append it
-                    new_lines.append("\n[Greeter][Wallpaper][org.kde.image][General]\n")
-                    new_lines.append(f"Image={img_path}\n")
-                    new_lines.append(f"PreviewImage={img_path}\n")
-                with open(cfg_path, "w") as f:
-                    f.writelines(new_lines)
-                logger.info("Lock wallpaper set: %s", img_path)
             except Exception as e:
-                logger.warning("Wallpaper config error: %s", e)
+                logger.warning("Wallpaper original-save error: %s", e)
+            # Point kscreenlockerrc at our lock PNG (extracted so update_lock can
+            # re-point after a mid-lock regeneration).
+            self._apply_kde_lock_wallpaper(img_path)
             # Lock the session
             subprocess.run(["loginctl", "lock-session"], capture_output=True, timeout=5)
             logger.info("Session locked via loginctl")
@@ -2287,6 +2328,23 @@ for (var i = 0; i < c.length; i++) {
         if state.taunt_counter >= 6 and TAUNTS:  # Rotate taunt every 30s
             state.current_taunt = random.choice(TAUNTS)
             state.taunt_counter = 0
+
+        # Mid-lock content refresh: when the Lion changes the message, pins a
+        # message, or updates the paywall WHILE already locked, regenerate the
+        # KDE lock wallpaper in place and re-point kscreenlockerrc. The cairo
+        # wallpaper is the live lock surface, but the KDE greeter loads the PNG
+        # at lock time — so the new text shows on the next greeter paint (e.g.
+        # the 1s enforce re-lock after any unlock attempt, or the next lock).
+        # Mirrors the Windows collar's _prev_display guard (set_lock_wallpaper).
+        cur = (state.message, state.pinned, state.paywall)
+        if self.lock_active and self._prev_display != cur:
+            self._prev_display = cur
+            try:
+                self.generate_lock_wallpaper()
+                self._apply_kde_lock_wallpaper(
+                    os.path.expanduser("~/.local/share/focuslock/lock-wallpaper.png"))
+            except Exception as e:
+                logger.warning("mid-lock wallpaper refresh failed: %s", e)
 
         for _win in self.windows:
             try:
