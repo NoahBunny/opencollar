@@ -1,0 +1,26 @@
+# Gated coverage floor for the shared mesh protocol module.
+#
+# The primary gate (pyproject [tool.coverage] — shared/ @ 95%) deliberately
+# scopes to shared/. This separate config adds a REAL floor on focuslock_mesh.py
+# — where the order/message-delivery + gossip-auth logic lives — without
+# dragging the shared/ number down by folding a big module into one gate.
+#
+# Floor is conservative: focuslock_mesh.py measured ~84% from a topical test
+# subset on the dev box; the full CI suite covers more, so 80 is a safe floor.
+# Ratchet upward as coverage improves; never lower it.
+#
+# Run: pytest tests/ --cov --cov-config=.coveragerc.mesh   (see `make qa-cov-mesh`)
+
+[run]
+branch = true
+relative_files = true
+include =
+    focuslock_mesh.py
+
+[report]
+show_missing = true
+fail_under = 80
+exclude_lines =
+    pragma: no cover
+    raise NotImplementedError
+    if __name__ == .__main__.:

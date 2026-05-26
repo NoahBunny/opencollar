@@ -1,0 +1,23 @@
+# Report-only coverage for the top-level server modules.
+#
+# focuslock-mail.py is the 5k-line relay/HTTP handler; focuslock_mesh.py is the
+# shared mesh protocol (also gated at a floor — see .coveragerc.mesh). This
+# config MEASURES both so server-side coverage is visible and trends upward,
+# but does NOT gate yet: focuslock-mail.py can only be measured representatively
+# by the FULL suite, which doesn't run on the dev box (py3.14 EBADF isolation
+# bug — see the dev-env note). Once CI prints a stable baseline, set fail_under
+# to a floor just below it and start ratcheting.
+#
+# Run: pytest tests/ --cov --cov-config=.coveragerc.server   (see `make qa-cov-server`)
+
+[run]
+branch = true
+relative_files = true
+include =
+    focuslock_mesh.py
+    focuslock-mail.py
+
+[report]
+show_missing = false
+# TODO(coverage-ratchet): raise to the CI-observed baseline once established.
+fail_under = 0
