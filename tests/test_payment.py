@@ -1283,3 +1283,367 @@ def contexts_fn_factory(contexts):
     """Helper to bind a static contexts list to a callable. Defined at module
     level so multiple TestCheckPaymentEmailsMultiMesh tests can share it."""
     return lambda: contexts
+
+
+# ── PaymentIdentity + scanner payer-allow filter (tasks #1-#3) ──
+
+
+class TestPaymentIdentity:
+    """Round-trip + matching behaviour for the server-only identity file."""
+
+    def test_load_save_round_trip(self, tmp_path):
+        import focuslock_mesh as fm
+
+        path = str(tmp_path / "ident.json")
+        ident = fm.PaymentIdentity(persist_path=path)
+        ident.set_payee("lion@example.com", "imap.example.com", "app-pass")
+        ident.set_payer_allow(["bunny@x.com", "Their Name"])
+
+        reloaded = fm.PaymentIdentity(persist_path=path)
+        assert reloaded.payee_email == "lion@example.com"
+        assert reloaded.imap_host == "imap.example.com"
+        assert reloaded.imap_pass == "app-pass"
+        assert reloaded.payer_allow == ["bunny@x.com", "Their Name"]
+
+    def test_matches_payer_case_insensitive(self, tmp_path):
+        import focuslock_mesh as fm
+
+        ident = fm.PaymentIdentity(persist_path=str(tmp_path / "i.json"))
+        ident.set_payer_allow(["bunny@x.com", "Their Name"])
+
+        # Sender match (case-insensitive)
+        assert ident.matches_payer("BUNNY@X.COM", "")
+        # Body match
+        assert ident.matches_payer("notify@interac.ca", "From their name via INTERAC")
+        # Neither
+        assert not ident.matches_payer("random@other.io", "boring deposit notice")
+
+    def test_empty_allow_matches_anything(self, tmp_path):
+        import focuslock_mesh as fm
+
+        ident = fm.PaymentIdentity(persist_path=str(tmp_path / "i.json"))
+        # Empty payer_allow: matches_payer returns True (preserved contract),
+        # but payer_configured() is False so the SCANNER now fails closed
+        # (credits nothing) — see TestScannerPayerFilter.test_empty_allow_fails_closed.
+        assert ident.matches_payer("anyone@anywhere", "anything")
+        assert not ident.payer_configured()
+
+    def test_resolve_imap_returns_payee_as_login(self, tmp_path):
+        import focuslock_mesh as fm
+
+        ident = fm.PaymentIdentity(persist_path=str(tmp_path / "i.json"))
+        ident.set_payee("lion@example.com", "imap.example.com", "p")
+        host, user, pwd = ident.resolve_imap()
+        assert (host, user, pwd) == ("imap.example.com", "lion@example.com", "p")
+
+    def test_payer_allow_caps_at_save(self, tmp_path):
+        """set_payer_allow trims empties + dedupes; the 16-entry cap is enforced
+        at the HTTP endpoint, but the class-level normalisation still applies."""
+        import focuslock_mesh as fm
+
+        ident = fm.PaymentIdentity(persist_path=str(tmp_path / "i.json"))
+        ident.set_payer_allow(["  a  ", "", "a", "b", None])
+        assert ident.payer_allow == ["a", "b"]
+
+    def test_generic_needles_are_ignored(self, tmp_path):
+        """Channel/provider/free-domain/short tokens identify nobody, so they
+        must not match — a configured-but-all-generic allowlist matches
+        nothing (the configured-but-loose form of the unrelated-credit bug)."""
+        import focuslock_mesh as fm
+
+        ident = fm.PaymentIdentity(persist_path=str(tmp_path / "i.json"))
+        ident.set_payer_allow(["interac.ca", "gmail.com", "ab"])
+        assert ident.payer_configured() is True
+        assert ident.has_effective_payer() is False
+        assert ident.matched_payer_needle("someone@gmail.com", "via INTERAC e-transfer") is None
+        assert ident.matches_payer("someone@gmail.com", "via INTERAC e-transfer") is False
+
+    def test_word_boundary_prevents_partial_match(self, tmp_path):
+        import focuslock_mesh as fm
+
+        ident = fm.PaymentIdentity(persist_path=str(tmp_path / "i.json"))
+        ident.set_payer_allow(["joe"])
+        assert ident.matches_payer("notify@bank.ca", "joe smith sent you money")
+        assert not ident.matches_payer("notify@bank.ca", "joey paid you")  # no partial match
+        assert ident.matched_payer_needle("notify@bank.ca", "from joe smith") == "joe"
+
+    def test_email_needle_matches_in_body(self, tmp_path):
+        import focuslock_mesh as fm
+
+        ident = fm.PaymentIdentity(persist_path=str(tmp_path / "i.json"))
+        ident.set_payer_allow(["bunny@x.com"])
+        assert ident.matches_payer("notify@interac.ca", "transfer from bunny@x.com received")
+        assert not ident.matches_payer("notify@interac.ca", "transfer from someone@else.com")
+
+    def test_set_payer_allow_reports_generic_entries(self, tmp_path):
+        import focuslock_mesh as fm
+
+        ident = fm.PaymentIdentity(persist_path=str(tmp_path / "i.json"))
+        summary = ident.set_payer_allow(["interac.ca", "Real Person"])
+        assert summary["count"] == 2
+        assert summary["effective_count"] == 1
+        assert summary["generic_rejected"] == 1
+
+
+class TestScannerPayerFilter:
+    """The scanner must skip emails that don't match the bunny's identity
+    allowlist, even when provider scoring would otherwise credit them."""
+
+    def _ctx(self, *, identity, paywall="100", apply_fn):
+        """Build a single mesh scan context with the given identity."""
+        mesh = MagicMock()
+        store = {"paywall": paywall, "total_paid_cents": 0}
+        mesh.get.side_effect = lambda k, default=None: store.get(k, default)
+        mesh.set.side_effect = lambda k, v: store.__setitem__(k, v)
+        mesh._store = store
+
+        ledger = MagicMock()
+        ledger.add_entry.return_value = {"ok": True}
+
+        return {
+            "mesh_id": "test",
+            "mesh_orders": mesh,
+            "payment_ledger": ledger,
+            "payment_identity": identity,
+            "apply_fn": apply_fn,
+            "static_fallback": ("imap.test", "u@test", "p"),
+        }
+
+    def _identity_with_allow(self, tmp_path, allow):
+        import focuslock_mesh as fm
+
+        ident = fm.PaymentIdentity(persist_path=str(tmp_path / "i.json"))
+        ident.set_payee("u@test", "imap.test", "p")
+        if allow:
+            ident.set_payer_allow(allow)
+        return ident
+
+    def test_credits_when_payer_matches(self, monkeypatch, tmp_path):
+        ident = self._identity_with_allow(tmp_path, ["bunny@x.com"])
+        apply_fn = MagicMock()
+        ctx = self._ctx(identity=ident, apply_fn=apply_fn)
+        _install_fake_imap(
+            monkeypatch,
+            [_make_imap_email(sender="bunny@x.com", body="$50.00 e-transfer autodeposit")],
+        )
+        monkeypatch.setattr("focuslock_payment.time.sleep", _make_sleep_stop(1))
+
+        with pytest.raises(_StopLoop):
+            check_payment_emails_multi(
+                check_interval=1,
+                mesh_contexts_fn=contexts_fn_factory([ctx]),
+                adb=None,
+                providers=_HARDCODED_FALLBACK,
+                iso_codes="USD|CAD",
+            )
+        apply_fn.assert_called_once()
+        action, params = apply_fn.call_args[0]
+        assert action == "payment-received"
+        assert params["amount_cents"] == 5000
+
+    def test_skips_when_payer_mismatch(self, monkeypatch, tmp_path):
+        """A WorldRemit-shaped email from a random remitter must NOT credit
+        when the bunny has configured an allowlist that doesn't include it."""
+        ident = self._identity_with_allow(tmp_path, ["bunny@x.com"])
+        apply_fn = MagicMock()
+        ctx = self._ctx(identity=ident, apply_fn=apply_fn)
+        _install_fake_imap(
+            monkeypatch,
+            [
+                _make_imap_email(
+                    sender="alerts@worldremit.com",
+                    subject="WorldRemit: Money received",
+                    body="You received $250.00 deposited to your account",
+                )
+            ],
+        )
+        monkeypatch.setattr("focuslock_payment.time.sleep", _make_sleep_stop(1))
+
+        with pytest.raises(_StopLoop):
+            check_payment_emails_multi(
+                check_interval=1,
+                mesh_contexts_fn=contexts_fn_factory([ctx]),
+                adb=None,
+                providers=_HARDCODED_FALLBACK,
+                iso_codes="USD|CAD",
+            )
+        apply_fn.assert_not_called()
+
+    def test_empty_allow_fails_closed(self, monkeypatch, tmp_path, caplog):
+        """Identity present but allow empty → FAIL CLOSED: credit nothing + a
+        one-time WARN per scan cycle. (Was legacy match-anything, which credited
+        unrelated incoming transfers — the reported bug.)"""
+        import logging
+
+        # Reset the per-process WARN dedupe so caplog sees a fresh warning.
+        from focuslock_payment import _scan_mesh_imap_once
+
+        if hasattr(_scan_mesh_imap_once, "_warned_unconfigured"):
+            _scan_mesh_imap_once._warned_unconfigured.clear()
+
+        ident = self._identity_with_allow(tmp_path, allow=[])
+        apply_fn = MagicMock()
+        ctx = self._ctx(identity=ident, apply_fn=apply_fn)
+        _install_fake_imap(
+            monkeypatch,
+            [_make_imap_email(sender="random@whatever", body="$10.00 e-transfer autodeposit")],
+        )
+        monkeypatch.setattr("focuslock_payment.time.sleep", _make_sleep_stop(1))
+
+        with caplog.at_level(logging.WARNING, logger="focuslock_payment"):
+            with pytest.raises(_StopLoop):
+                check_payment_emails_multi(
+                    check_interval=1,
+                    mesh_contexts_fn=contexts_fn_factory([ctx]),
+                    adb=None,
+                    providers=_HARDCODED_FALLBACK,
+                    iso_codes="USD|CAD",
+                )
+        apply_fn.assert_not_called()  # fail-closed: nothing credited
+        assert any("payer allowlist unconfigured" in r.message for r in caplog.records)
+
+    def test_generic_only_allow_fails_closed(self, monkeypatch, tmp_path):
+        """An allowlist of only channel/domain tokens (e.g. 'interac.ca') is
+        configured but identifies nobody — it must credit nothing, not match
+        every e-transfer. This is the configured-but-loose form of the bug."""
+        ident = self._identity_with_allow(tmp_path, ["interac.ca", "gmail.com"])
+        apply_fn = MagicMock()
+        ctx = self._ctx(identity=ident, apply_fn=apply_fn)
+        _install_fake_imap(
+            monkeypatch,
+            [_make_imap_email(sender="someone@gmail.com", body="$40.00 via INTERAC e-transfer autodeposit")],
+        )
+        monkeypatch.setattr("focuslock_payment.time.sleep", _make_sleep_stop(1))
+
+        with pytest.raises(_StopLoop):
+            check_payment_emails_multi(
+                check_interval=1,
+                mesh_contexts_fn=contexts_fn_factory([ctx]),
+                adb=None,
+                providers=_HARDCODED_FALLBACK,
+                iso_codes="USD|CAD",
+            )
+        apply_fn.assert_not_called()
+
+    def test_matched_payer_logged_but_not_in_ledger(self, monkeypatch, tmp_path, caplog):
+        """The matched payer needle goes to the SERVER LOG (operator debugging)
+        but must NOT appear in the ledger description — the ledger is shown by
+        Lion's Share (/mesh/ledger) and the needle is Bunny's payment email,
+        which Lion must never see (the PaymentIdentity privacy guarantee)."""
+        import logging
+
+        ident = self._identity_with_allow(tmp_path, ["bunny@x.com"])
+        apply_fn = MagicMock()
+        ctx = self._ctx(identity=ident, apply_fn=apply_fn)
+        _install_fake_imap(
+            monkeypatch,
+            [_make_imap_email(sender="bunny@x.com", body="$50.00 e-transfer autodeposit")],
+        )
+        monkeypatch.setattr("focuslock_payment.time.sleep", _make_sleep_stop(1))
+
+        with caplog.at_level(logging.INFO, logger="focuslock_payment"):
+            with pytest.raises(_StopLoop):
+                check_payment_emails_multi(
+                    check_interval=1,
+                    mesh_contexts_fn=contexts_fn_factory([ctx]),
+                    adb=None,
+                    providers=_HARDCODED_FALLBACK,
+                    iso_codes="USD|CAD",
+                )
+        # Privacy: needle NOT in the Lion-visible ledger description.
+        desc = ctx["payment_ledger"].add_entry.call_args.kwargs["description"]
+        assert "bunny@x.com" not in desc
+        # Auditability: needle IS in the server-side confirmation log.
+        assert any("payer: bunny@x.com" in r.message for r in caplog.records)
+
+
+class TestApplyPaymentReversal:
+    """The reversal helper is the unit-testable core of /admin/reverse-payment.
+
+    Tests append directly to the in-memory ledger + orders, then call the
+    helper and assert the negative entry + decremented total_paid_cents.
+    """
+
+    def _setup(
+        self,
+        tmp_path,
+        monkeypatch,
+        source="<orig@msg>",
+        amount=50.0,
+        description="Interac: $50.00",
+        total_paid_cents=15000,
+    ):
+        """Provision a real PaymentLedger + a MagicMock OrdersDocument for one
+        mesh, install them into focuslock-mail's registries, return mesh_id."""
+        import importlib
+
+        import focuslock_mesh as fm
+
+        # Import focuslock-mail via importlib because of the hyphen.
+        fm_mail = importlib.import_module("focuslock-mail")
+
+        mesh_id = "rev_test_mesh"
+        ledger = fm.PaymentLedger(persist_path=str(tmp_path / "l.json"))
+        # Seed with the bogus payment we'll reverse.
+        ledger.add_entry(
+            entry_type="payment",
+            amount=amount,
+            source=source,
+            description=description,
+        )
+
+        # Fake orders doc with set/get + bump_version.
+        store = {"total_paid_cents": total_paid_cents}
+        orders = MagicMock()
+        orders.get.side_effect = lambda k, default=None: store.get(k, default)
+        orders.set.side_effect = lambda k, v: store.__setitem__(k, v)
+        orders.bump_version = MagicMock()
+        orders._store = store
+
+        monkeypatch.setitem(fm_mail._payment_ledgers, mesh_id, ledger)
+        fm_mail._orders_registry.docs[mesh_id] = orders
+        return fm_mail, mesh_id, ledger, orders, source, amount
+
+    def test_happy_path(self, tmp_path, monkeypatch):
+        fm_mail, mesh_id, ledger, orders, source, amount = self._setup(tmp_path, monkeypatch)
+        result = fm_mail._apply_payment_reversal(mesh_id, source)
+
+        assert result["_status"] == 200
+        assert result["ok"] is True
+        assert result["reversed_amount"] == amount
+        # 15000 cents - 5000 cents = 10000 cents
+        assert result["new_total_paid_cents"] == 10000
+        assert orders._store["total_paid_cents"] == 10000
+        # Ledger has an extra entry tagged "rev:<orig>"
+        sources = [e.get("source") for e in ledger.entries]
+        assert ("rev:" + source) in sources
+        rev_entry = next(e for e in ledger.entries if e.get("source") == "rev:" + source)
+        assert rev_entry["type"] == "reversal"
+        assert rev_entry["amount"] == -amount
+
+    def test_missing_source_404(self, tmp_path, monkeypatch):
+        fm_mail, mesh_id, *_ = self._setup(tmp_path, monkeypatch)
+        result = fm_mail._apply_payment_reversal(mesh_id, "<doesnotexist>")
+        assert result["_status"] == 404
+
+    def test_idempotent_returns_409(self, tmp_path, monkeypatch):
+        fm_mail, mesh_id, _, _, source, _ = self._setup(tmp_path, monkeypatch)
+        first = fm_mail._apply_payment_reversal(mesh_id, source)
+        assert first["_status"] == 200
+        second = fm_mail._apply_payment_reversal(mesh_id, source)
+        assert second["_status"] == 409
+        assert "already reversed" in second["error"]
+
+    def test_clamps_total_paid_at_zero(self, tmp_path, monkeypatch):
+        """If total_paid_cents has somehow dropped below the reversal amount
+        (e.g. concurrent reversals), the new value clamps at 0 rather than
+        going negative."""
+        fm_mail, mesh_id, _, orders, source, _ = self._setup(
+            tmp_path,
+            monkeypatch,
+            amount=50.0,
+            total_paid_cents=2000,
+        )
+        result = fm_mail._apply_payment_reversal(mesh_id, source)
+        assert result["new_total_paid_cents"] == 0
+        assert orders._store["total_paid_cents"] == 0

@@ -271,13 +271,25 @@ def walk_imap_folders(mail, since_date, skip_patterns=DEFAULT_SKIP_FOLDERS):
     return messages
 
 
-def _resolve_imap_creds(mesh_orders, static_fallback=None):
-    """Resolve IMAP creds for one mesh: prefer Lion-configured (hot-swappable)
-    from mesh orders, fall back to static tuple `(host, user, pass)` if given.
+def _resolve_imap_creds(mesh_orders, static_fallback=None, identity=None):
+    """Resolve IMAP creds for one mesh.
+
+    Precedence (most → least preferred):
+      1. PaymentIdentity (server-only file written by Lion via the signed
+         set-payee-identity endpoint — kept off the vault so Bunny apps
+         can't read Lion's email).
+      2. Legacy vault `payment_imap_*` (older deployments that haven't
+         migrated; deprecated path — Lion's email leaks across to Bunny
+         apps that decrypt the vault).
+      3. Static fallback tuple — relay's own IMAP config (operator mesh).
 
     Returns (host, user, pass) — any element may be empty string if unset.
     Caller checks completeness.
     """
+    if identity is not None:
+        ih, iu, ip = identity.resolve_imap()
+        if ih and iu and ip:
+            return ih, iu, ip
     dyn_host = str(mesh_orders.get("payment_imap_host", "") or "")
     dyn_user = str(mesh_orders.get("payment_imap_user", "") or "")
     dyn_pass = str(mesh_orders.get("payment_imap_pass", "") or "")
@@ -304,6 +316,7 @@ def _scan_mesh_imap_once(
     phone_url,
     phone_pin,
     apply_fn,
+    identity=None,
 ):
     """Run one IMAP scan cycle for one mesh with already-resolved creds.
 
@@ -377,6 +390,47 @@ def _scan_mesh_imap_once(
             # Lion's Share → server scans Lion's inbox. "You received $X"
             # in Lion's inbox proves a genuine incoming transfer.
 
+            # Payer-identity filter: when Bunny has configured an allowlist
+            # via set-payer-identity, require the sender or body to contain
+            # at least one of those substrings. This stops random incoming
+            # remittances (WorldRemit, refunds, generic deposit notices)
+            # from being credited as Bunny payments. The substrings live
+            # in the server-only PaymentIdentity file — Lion's Share can't
+            # read them, Bunny Tasker can't read Lion's email. With an
+            # empty allowlist we fall back to legacy match-anything and
+            # log a one-time WARN per scan cycle so the operator notices.
+            # matched_needle is the specific allowlist entry that identified this
+            # payment — recorded in the ledger so every credit is explainable.
+            # When the allowlist is unconfigured (or all-generic) we FAIL CLOSED:
+            # credit nothing, instead of the old match-anything that credited
+            # unrelated incoming transfers. Legacy single-mesh callers pass
+            # identity=None and keep the old behavior.
+            matched_needle = None
+            if identity is not None:
+                if identity.payer_configured():
+                    matched_needle = identity.matched_payer_needle(sender, all_text)
+                    if not matched_needle:
+                        logger.info(
+                            "%spayer mismatch: from=%s subj=%s provider=%s (skipped)",
+                            tag,
+                            sender[:60],
+                            subject[:60],
+                            best_provider["name"],
+                        )
+                        continue
+                else:
+                    # No payer allowlist → fail closed. Warn once per scan cycle.
+                    if not hasattr(_scan_mesh_imap_once, "_warned_unconfigured"):
+                        _scan_mesh_imap_once._warned_unconfigured = set()
+                    if mesh_id not in _scan_mesh_imap_once._warned_unconfigured:
+                        _scan_mesh_imap_once._warned_unconfigured.add(mesh_id)
+                        logger.warning(
+                            "%spayer allowlist unconfigured — NOT crediting (fail-closed). "
+                            "Have Bunny set their payment email in Bunny Tasker to enable.",
+                            tag,
+                        )
+                    continue
+
             amount = extract_amount(all_text, iso_codes)
             if amount < min_payment:
                 continue
@@ -384,7 +438,12 @@ def _scan_mesh_imap_once(
                 logger.warning("%sIgnoring suspicious amount: $%.2f (max: $%s)", tag, amount, max_payment)
                 continue
 
-            # Deduplicate via ledger using email Message-ID
+            # Deduplicate via ledger using email Message-ID. NOTE: the ledger is
+            # fetched + displayed by Lion's Share (/mesh/ledger), so the
+            # description must NOT contain the matched payer needle — that's
+            # Bunny's payment identifier and the whole point of the server-only
+            # PaymentIdentity is that Lion can't read Bunny's email. The needle
+            # goes to the server log only (operator-side debugging).
             msg_id = msg.get("Message-ID", f"imap-{int(time.time())}-{num.decode()}")
             ledger_result = payment_ledger.add_entry(
                 entry_type="payment",
@@ -396,12 +455,13 @@ def _scan_mesh_imap_once(
                 continue  # Already processed
 
             logger.info(
-                "%sPayment confirmed: $%.2f via %s (score: %s, need: $%.2f)",
+                "%sPayment confirmed: $%.2f via %s (score: %s, need: $%.2f, payer: %s)",
                 tag,
                 amount,
                 best_provider["name"],
                 best_score,
                 paywall,
+                matched_needle or "(legacy/unfiltered)",
             )
 
             # Notify Lion via mesh pinned message
@@ -529,6 +589,7 @@ def check_payment_emails(
                 phone_url=phone_url,
                 phone_pin=phone_pin,
                 apply_fn=apply_fn,
+                identity=None,  # single-mesh callers pre-date identity; legacy mode
             )
         except Exception as e:
             logger.error("IMAP error: %s", e)
@@ -581,7 +642,8 @@ def check_payment_emails_multi(
                 if mesh_orders is None or payment_ledger is None:
                     continue
                 static_fallback = ctx.get("static_fallback")
-                host, user, pwd = _resolve_imap_creds(mesh_orders, static_fallback)
+                identity = ctx.get("payment_identity")
+                host, user, pwd = _resolve_imap_creds(mesh_orders, static_fallback, identity=identity)
                 if not host or not user or not pwd:
                     continue
                 try:
@@ -600,6 +662,7 @@ def check_payment_emails_multi(
                         phone_url=phone_url,
                         phone_pin=phone_pin,
                         apply_fn=ctx.get("apply_fn"),
+                        identity=identity,
                     )
                 except Exception as e:
                     logger.error("IMAP error mesh=%s: %s", mid, e)
