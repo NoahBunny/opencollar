@@ -57,6 +57,19 @@ public class FocusActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // Hardening: FocusActivity must stay exported to act as the HOME launcher,
+        // so any app can startActivity() it. If we're not actually locked, bounce
+        // to the real launcher and finish BEFORE any side effects (immersive,
+        // SHOW_WHEN_LOCKED/DISMISS_KEYGUARD, starting ControlService, flashing the
+        // jail UI). The only legitimate reason to show the jail is
+        // focus_lock_active==1, which an attacker cannot set. finish() in onCreate
+        // skips onStart/onResume, so the fields below are never touched. The
+        // onResume guard is kept as defense-in-depth (lock cleared while foreground).
+        if (!isLockActive()) {
+            launchPriorHome();
+            finish();
+            return;
+        }
         setContentView(getResources().getIdentifier("activity_focus", "layout", getPackageName()));
 
         messageView = (TextView) findViewById(fid("focus_message"));
