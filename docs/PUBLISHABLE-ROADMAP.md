@@ -1,5 +1,41 @@
 # Publishable Roadmap
 
+## Status — 2026-05-25 (whole-ecosystem review: delivery + security criticals + Phase-3 polish + payment + conformance QA)
+
+A full Lion↔Bunny ecosystem review across two same-day sessions, triggered by
+"a few message-delivery issues," scoped up (operator sign-off) to **review + fix +
+automated-QA buildout**. Plan files:
+`~/.claude/plans/let-s-work-on-the-transient-rabbit.md` (Phases 1–2 + payment + QA)
+and `~/.claude/plans/let-s-cotninue-work-on-binary-squid.md` (Phase 3). **All
+changes live in the working tree — no `git` in the build sandbox; commit via
+`~/.octc/commit-opencollar.sh` (see `SESSION-HANDOFF-2026-05-25*.md`).**
+
+**Phase 1 — message delivery (the reported pain):**
+- ✅ `focuslock_mesh.py` `MessageStore`: monotonic `{ts}_{seq}` ids (was `{ts}_{len}`, collided after the 500-cap → wrong-message read/edit/delete) + `client_msg_id` idempotency in `add()`. `focuslock-mail.py /messages/send` threads `client_msg_id`.
+- ✅ Controller: server-store post is authoritative for "Sent" (was masked by the `/api/message` fallback); bounded retry; honest "Not delivered". Companion: clears the mandatory-reply obligation only on actual delivery; bounded retry. `tests/test_message_delivery.py` (9 cases).
+
+**Phase 2 — security criticals:**
+- ✅ **Collar `/mesh/sync` was fully unauthenticated** — `ControlService.verifyMeshOrdersSignature()` now verifies the Lion signature over gossiped orders before applying, on both paths (push + poll-response), closing the unauthenticated lock/paywall + `orders_version` poisoning hole. Permissive only pre-pairing.
+- ✅ Collar `SmsReceiver`: `Long.parseLong` wrapped + `mins` clamped `[0,525600]` (crash + overflow); opt-in `focus_lock_sms_token` shared-secret gate. `focuslock_mesh.py handle_mesh_order` tightened (valid Lion sig required once `lion_pubkey` set). Desktop secret perms (0700 dir + `icacls` on Windows).
+
+**Phase 3 — security polish + correctness/UX (this session):**
+- ✅ **A1 SMS token provisioned** — Collar `doPair` generates a random 8-char token (`genSmsToken`/`ensureSmsToken`), persists `focus_lock_sms_token` (auto-arms the previously dormant `SmsReceiver` gate) and returns it in the pair JSON; Lion's Share stores it per-bunny and shows `sit-boy <token> 15 $20` (tap-to-copy) in Setup. **Existing direct Collars need a one-time re-pair to provision.**
+- ✅ **A2 direct `/mesh/status` signed** — Collar signs a flat status core with `focus_lock_bunny_privkey`; Lion's Share `verifyStatusSignature` rebuilds + verifies with the stored bunny pubkey and drops forged/unsigned status (keeps last-good). Closes the LAN-spoof of locked/paywall/escapes. **Breaking: old-Collar(empty sig) + new-Lion in direct mode → status rejected until both updated together.**
+- ✅ **A3 exported `FocusActivity` DoS** — lock-state guard at the top of `onCreate` (before immersive / SHOW_WHEN_LOCKED / ControlService start) bounces a not-locked launch to the prior launcher.
+- ✅ **B1 atomic apply** — `MeshOrderApply.orderForApply` writes `lock_active` last → no torn new-lock + stale-message render in FocusActivity's 5s poll.
+- ✅ **B2 Linux desktop mid-lock refresh** — `update_lock` regenerates the KDE lock wallpaper (PNG + `kscreenlockerrc`) when message/pin/paywall change while already locked (previously only poked dead GTK labels).
+- ✅ **B3 E2EE "not encrypted" (warn + allow)** — per-peer banner + plaintext send tag in both apps when no peer pubkey is available.
+
+**Payment matching — credited unrelated transfers (fixed):** fail-OPEN on empty allowlist + substring-against-whole-body matching → generic needle matched every e-transfer. `PaymentIdentity` generic-needle guard + word-boundary matching; scanner now **fails closed**; matched payer logged server-side only (payee/payer privacy split). **Operator action:** too-generic payer entries stop crediting until a specific identifier is set.
+
+**QA / conformance:** Java↔Python conformance harness extended — slave `sign-status` CLI + 2 status-signature tests (`tests/test_android_conformance.py`); new JVM unit tests `MeshOrderApplyTest` (×4) + controller `E2EEHelperTest` (×3). Layer-1 coverage gates (`.coveragerc.mesh` 80% floor), `make qa-android`, CI `build-android` conformance step.
+
+**Verification:** all 3 APKs build + sign + `apksigner verify`; JUnit 13/13; conformance pytest 19/19; regression `test_mesh`+`test_messages`+`test_message_delivery` 171/171. (Full suite still errors under py3.14 in-sandbox — run subsets; CI 3.10–3.12 clean.)
+
+**Next milestone / tracked:** commit + push the working tree (CHANGELOG `[Unreleased]` already carries this whole day); extend JVM/conformance to companion `PairingManager` + slave `SigVerifier`; fix the py3.14 EBADF full-suite test-isolation bug; ratchet `.coveragerc.server` `fail_under` off the CI baseline. Related still-open audit item: **L-4** (`network_security_config.xml` cleartext tightening) complements the new signed direct-status.
+
+---
+
 ## Status — 2026-04-28 (Stream B first pass)
 
 Stream B kicked off this evening on top of the day's Stream A + Stream
