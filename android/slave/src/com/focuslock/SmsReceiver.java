@@ -60,7 +60,29 @@ public class SmsReceiver extends BroadcastReceiver {
                 continue;
             }
 
-            Matcher m = CMD_PATTERN.matcher(body.trim());
+            // Optional shared-secret gate. Sender-number matching alone is
+            // spoofable (caller-ID / SMS gateways), so if a token is provisioned
+            // the command must carry it immediately after the keyword:
+            //   sit-boy <token> [mins] [$amount]
+            // Backward-compatible: with no token configured, behavior is
+            // unchanged (sender match only).
+            String cmdBody = body.trim();
+            String smsToken = Settings.Global.getString(
+                context.getContentResolver(), "focus_lock_sms_token");
+            if (smsToken != null && !smsToken.trim().isEmpty()) {
+                Matcher tm = Pattern.compile(
+                        "^sit-boy\\s+" + Pattern.quote(smsToken.trim()) + "(?:\\s+|$)",
+                        Pattern.CASE_INSENSITIVE)
+                    .matcher(cmdBody);
+                if (!tm.find()) {
+                    Log.w(TAG, "sit-boy rejected: missing/incorrect SMS token");
+                    continue;
+                }
+                // Strip "sit-boy <token>" so the normal parser sees the rest.
+                cmdBody = "sit-boy " + cmdBody.substring(tm.end());
+            }
+
+            Matcher m = CMD_PATTERN.matcher(cmdBody);
             if (!m.find()) continue;
 
             Log.w(TAG, "sit-boy command from " + sender + ": " + body);
@@ -72,7 +94,17 @@ public class SmsReceiver extends BroadcastReceiver {
                 (targetStr.equalsIgnoreCase("desktop") || targetStr.equalsIgnoreCase("pc"));
             long mins = 0;
             String paywall = "0";
-            if (minsStr != null) mins = Long.parseLong(minsStr);
+            if (minsStr != null) {
+                // Guard against a non-parseable (>19-digit) value crashing the
+                // receiver, and clamp so mins*60000 can't overflow / go negative.
+                try {
+                    mins = Long.parseLong(minsStr);
+                } catch (NumberFormatException e) {
+                    mins = 0;
+                }
+                if (mins < 0) mins = 0;
+                if (mins > 525600) mins = 525600; // 1 year in minutes
+            }
             if (amountStr != null) paywall = amountStr;
 
             if (desktopOnly) {

@@ -1762,6 +1762,32 @@ public class ControlService extends Service {
         return "{\"ok\":true,\"action\":\"photo_task_assigned\"}";
     }
 
+    /** Generate a random 8-char [A-Za-z0-9] SMS gate token (SecureRandom). */
+    private static String genSmsToken() {
+        final String charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        java.security.SecureRandom rng = new java.security.SecureRandom();
+        StringBuilder sb = new StringBuilder(8);
+        for (int i = 0; i < 8; i++) sb.append(charset.charAt(rng.nextInt(charset.length())));
+        return sb.toString();
+    }
+
+    /**
+     * Return the provisioned SMS "sit-boy" gate token, generating + persisting a
+     * fresh one if none exists. Writing focus_lock_sms_token auto-activates the
+     * (otherwise dormant) shared-secret gate in SmsReceiver — sender-number
+     * matching alone is spoofable. Shared with Lion's Share by returning it in
+     * the pair response; already-paired Collars provision lazily on next pair.
+     */
+    private String ensureSmsToken() {
+        String t = gstr("focus_lock_sms_token");
+        if (t.isEmpty()) {
+            t = genSmsToken();
+            Settings.Global.putString(getContentResolver(), "focus_lock_sms_token", t);
+            Log.i(TAG, "doPair: provisioned SMS gate token");
+        }
+        return t;
+    }
+
     private String doPair(String body) {
         String lionPubKey = jval(body, "lion_pubkey");
         if (lionPubKey == null || lionPubKey.isEmpty()) return "{\"error\":\"lion_pubkey required\"}";
@@ -1773,7 +1799,8 @@ public class ControlService extends Service {
             // "Collar thinks it's paired, Lion thinks it isn't" stuck state.
             if (existing.equals(lionPubKey)) {
                 Log.i(TAG, "doPair: idempotent re-pair from same lion key");
-                return "{\"ok\":true,\"action\":\"already-paired\",\"bunny_pubkey\":\"" + esc(bunnyPubKey) + "\"}";
+                return "{\"ok\":true,\"action\":\"already-paired\",\"bunny_pubkey\":\"" + esc(bunnyPubKey)
+                    + "\",\"sms_token\":\"" + esc(ensureSmsToken()) + "\"}";
             }
             // Different key → genuine conflict. The Collar is already paired
             // to a different Lion; no in-app recovery path exists by design
@@ -1790,7 +1817,8 @@ public class ControlService extends Service {
         Settings.Global.putString(getContentResolver(), "focus_lock_lion_pubkey", lionPubKey);
         Log.i(TAG, "PAIRED with Lion. Key fingerprint: " +
             lionPubKey.substring(0, Math.min(8, lionPubKey.length())) + "...");
-        return "{\"ok\":true,\"action\":\"paired\",\"bunny_pubkey\":\"" + esc(bunnyPubKey) + "\"}";
+        return "{\"ok\":true,\"action\":\"paired\",\"bunny_pubkey\":\"" + esc(bunnyPubKey)
+            + "\",\"sms_token\":\"" + esc(ensureSmsToken()) + "\"}";
     }
 
     // doPairReset removed 2026-04-24: the bunny-initiated pair reset was a
@@ -2747,8 +2775,11 @@ public class ControlService extends Service {
     }
 
     private void applyOrdersFromMesh(String ordersJson) {
-        // Parse and write each field to Settings.Global
-        for (String k : MESH_ORDER_KEYS) {
+        // Parse and write each field to Settings.Global. lock_active is written
+        // LAST (see MeshOrderApply.orderForApply) so FocusActivity never observes
+        // a half-applied state where the lock flag flipped before the new
+        // message/mode/paywall. The reorder helper is unit-tested off-device.
+        for (String k : MeshOrderApply.orderForApply(MESH_ORDER_KEYS)) {
             String v = jval(ordersJson, k);
             if (v != null) {
                 Settings.Global.putString(getContentResolver(), meshToAdbKey(k), v);
@@ -2758,6 +2789,33 @@ public class ControlService extends Service {
         int nowActive = Settings.Global.getInt(getContentResolver(), "focus_lock_active", 0);
         if (nowActive == 1) {
             launchFocus();
+        }
+    }
+
+    /**
+     * Verify the Lion signature on a gossiped orders document before applying it.
+     *
+     * Gossip (/mesh/sync) was previously unauthenticated — any peer that could
+     * reach the gossip HTTP port could inject orders (lock/paywall/message) and
+     * poison orders_version so legitimate Lion orders were ignored. Orders are
+     * Lion-signed end-to-end: the relay/Lion's Share sign canonical_json(orders)
+     * (OrdersDocument.sign_orders), and VaultCrypto.verifySignature canonicalizes
+     * (map minus "signature") and verifies — so re-attaching the wire signature
+     * as a field reproduces exactly the signed input. This mirrors the already-
+     * verified vault path (vaultSync) and the relay's apply_remote policy.
+     *
+     * Fail-closed: any missing/invalid signature or parse error returns false.
+     */
+    private boolean verifyMeshOrdersSignature(String ordersJson, String sigB64, String lionPubB64) {
+        if (sigB64 == null || sigB64.isEmpty() || lionPubB64 == null || lionPubB64.isEmpty()) return false;
+        try {
+            java.util.Map<String, Object> orders =
+                new java.util.HashMap<>(VaultCrypto.jsonToMap(new org.json.JSONObject(ordersJson)));
+            orders.put("signature", sigB64);
+            return VaultCrypto.verifySignature(orders, lionPubB64);
+        } catch (Exception e) {
+            Log.w(TAG, "verifyMeshOrdersSignature failed: " + e.getMessage());
+            return false;
         }
     }
 
@@ -2807,10 +2865,20 @@ public class ControlService extends Service {
                             else if (body.charAt(i) == '}') { depth--; if (depth == 0) { braceEnd = i; break; } }
                         }
                         String ordersJson = body.substring(braceStart, braceEnd + 1);
-                        Log.w(TAG, "Mesh: applying orders v" + remoteVersion + " from " + remoteId);
-                        applyOrdersFromMesh(ordersJson);
-                        meshVersion.set(remoteVersion);
-                        Settings.Global.putLong(getContentResolver(), "focus_lock_mesh_version", meshVersion.get());
+                        // SECURITY: require a valid Lion signature before applying.
+                        // Permissive only when no lion_pubkey is provisioned yet
+                        // (pre-pairing bootstrap) — matches apply_remote.
+                        String lionPub = gstr("focus_lock_lion_pubkey");
+                        if (!lionPub.isEmpty()
+                                && !verifyMeshOrdersSignature(ordersJson, jval(body, "signature"), lionPub)) {
+                            Log.w(TAG, "Mesh: REJECTED orders v" + remoteVersion + " from " + remoteId
+                                + " — invalid/missing signature");
+                        } else {
+                            Log.w(TAG, "Mesh: applying orders v" + remoteVersion + " from " + remoteId);
+                            applyOrdersFromMesh(ordersJson);
+                            meshVersion.set(remoteVersion);
+                            Settings.Global.putLong(getContentResolver(), "focus_lock_mesh_version", meshVersion.get());
+                        }
                     }
                 }
             }
@@ -3245,10 +3313,35 @@ public class ControlService extends Service {
         String offerStatus = gstr("focus_lock_offer_status");
         String subTier = gstr("focus_lock_sub_tier");
 
+        // SECURITY: sign the security-relevant status core with the bunny key so
+        // Lion's Share can reject a spoofed direct-mode /mesh/status (LAN MITM).
+        // The signed core is a canonical flat map; Lion rebuilds the identical
+        // map from the parsed wire fields and verifies — mirrors the orders path
+        // (verifyMeshOrdersSignature) so format drift can't silently disable it.
+        // Native types (Boolean/Long/String) MUST match Python canonical_json.
+        java.util.TreeMap<String, Object> statusCore = new java.util.TreeMap<>();
+        statusCore.put("locked", isLocked);
+        statusCore.put("escapes", (long) escapes);
+        statusCore.put("paywall", paywall);
+        statusCore.put("timer_remaining_ms", timerRemainingMs);
+        statusCore.put("task_reps", (long) taskReps);
+        statusCore.put("task_done", (long) taskDone);
+        statusCore.put("offer", offer);
+        statusCore.put("offer_status", offerStatus);
+        statusCore.put("sub_tier", subTier);
+        statusCore.put("orders_version", meshVersion.get());
+        String statusSig = "";
+        try {
+            String bunnyPriv = gstr("focus_lock_bunny_privkey");
+            if (!bunnyPriv.isEmpty()) statusSig = VaultCrypto.signBlob(statusCore, bunnyPriv);
+        } catch (Exception e) {
+            Log.w(TAG, "handleMeshStatus: signing failed: " + e.getMessage());
+        }
+
         StringBuilder sb = new StringBuilder();
         sb.append("{\"orders_version\":").append(meshVersion.get());
         sb.append(",\"orders\":").append(buildOrdersJson());
-        sb.append(",\"signature\":\"\"");
+        sb.append(",\"signature\":\"").append(esc(statusSig)).append("\"");
         sb.append(",\"locked\":").append(isLocked);
         sb.append(",\"escapes\":").append(escapes);
         sb.append(",\"paywall\":\"").append(esc(paywall)).append("\"");
@@ -3513,6 +3606,12 @@ public class ControlService extends Service {
                 Log.w(TAG, "vault: GET " + url + " failed");
                 return;
             }
+            // Bump mesh-last-sync timestamp on every successful vault GET so
+            // the Bunny Tasker connection-crown lights up even on quiet meshes
+            // (no new Lion-signed blobs to bump focus_lock_lion_last_seen).
+            // BunnyTasker.updateCrownConnectionState reads this.
+            Settings.Global.putLong(getContentResolver(),
+                "focus_lock_mesh_last_sync_ms", System.currentTimeMillis());
 
             org.json.JSONObject sinceResp = new org.json.JSONObject(resp);
             org.json.JSONArray blobsArr = sinceResp.optJSONArray("blobs");
@@ -4310,10 +4409,22 @@ public class ControlService extends Service {
                                                 else if (respBody.charAt(i) == '}') { depth--; if (depth == 0) { braceEnd = i; break; } }
                                             }
                                             String ordersJson = respBody.substring(braceStart, braceEnd + 1);
-                                            Log.w(TAG, "Mesh gossip: applying v" + remVer + " from " + peerId);
-                                            applyOrdersFromMesh(ordersJson);
-                                            meshVersion.set(remVer);
-                                            Settings.Global.putLong(getContentResolver(), "focus_lock_mesh_version", meshVersion.get());
+                                            // SECURITY: verify the Lion signature on
+                                            // gossiped orders before applying (see
+                                            // verifyMeshOrdersSignature). Permissive
+                                            // only pre-pairing (no lion_pubkey yet).
+                                            String lionPub = gstr("focus_lock_lion_pubkey");
+                                            if (!lionPub.isEmpty() && !verifyMeshOrdersSignature(
+                                                    ordersJson, jval(respBody, "signature"), lionPub)) {
+                                                Log.w(TAG, "Mesh gossip: REJECTED v" + remVer + " from " + peerId
+                                                    + " — invalid/missing signature");
+                                            } else {
+                                                Log.w(TAG, "Mesh gossip: applying v" + remVer + " from " + peerId);
+                                                applyOrdersFromMesh(ordersJson);
+                                                meshVersion.set(remVer);
+                                                Settings.Global.putLong(getContentResolver(),
+                                                    "focus_lock_mesh_version", meshVersion.get());
+                                            }
                                         }
                                     }
                                 }
