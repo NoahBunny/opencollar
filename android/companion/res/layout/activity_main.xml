@@ -353,7 +353,31 @@
             android:clickable="true"
             android:focusable="true" />
 
+        <!-- messages_body wraps the input row + scroll so the collapse
+             toggle actually shrinks the section. Toggling only
+             messages_container left the 380dp ScrollView taking up the
+             same vertical space, so "collapsed" looked the same as
+             "expanded but empty". -->
         <LinearLayout
+            android:id="@+id/messages_body"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/messages_e2ee_warning"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="⚠ Not encrypted — Lion's key not yet exchanged"
+            android:textColor="#ff8866"
+            android:textSize="11sp"
+            android:background="#2a1010"
+            android:padding="8dp"
+            android:layout_marginBottom="6dp"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:id="@+id/messages_send_row"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
@@ -418,6 +442,8 @@
                 android:orientation="vertical" />
 
         </ScrollView>
+
+        </LinearLayout> <!-- end messages_body -->
 
         </LinearLayout> <!-- end section_messages -->
 
@@ -713,6 +739,40 @@
 
         <!-- Divider -->
         <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1028" android:layout_marginBottom="12dp" />
+
+        <!-- Payer Identity (lets the scanner verify incoming payment emails
+             actually originated from this bunny — substrings matched against
+             email From + body. Lives in a server-only file, never in the
+             vault, so Lion's Share cannot read what you entered here. -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="YOUR PAYER IDENTITY"
+            android:textColor="#5a4a6a"
+            android:textSize="10sp"
+            android:letterSpacing="0.15"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:id="@+id/payer_identity_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Not set — every matched payment email will count"
+            android:textColor="#aa6644"
+            android:textSize="11sp"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/btn_setup_payer_identity"
+            android:layout_width="match_parent"
+            android:layout_height="42dp"
+            android:text="Set Payer Identity"
+            android:textSize="13sp"
+            android:backgroundTint="#0e0c16"
+            android:textColor="#aa88cc"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:layout_marginBottom="12dp" />
 
         <!-- Email Setup (for payment detection) -->
         <TextView
