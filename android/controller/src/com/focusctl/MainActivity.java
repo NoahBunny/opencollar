@@ -2,6 +2,10 @@ package com.focusctl;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
@@ -101,6 +105,7 @@ public class MainActivity extends Activity {
     private String pairMode = "";
     private String bunnyDirectUrl = "";
     private String bunnyPubkeyB64 = "";
+    private String smsToken = "";
 
     /** One row in the `bunnies` JSON array. */
     private static class BunnyEntry {
@@ -127,6 +132,16 @@ public class MainActivity extends Activity {
         executor = Executors.newSingleThreadExecutor();
         handler = new Handler(Looper.getMainLooper());
         prefs = getSharedPreferences("focusctl", MODE_PRIVATE);
+
+        // Android 13+ requires runtime POST_NOTIFICATIONS grant — without
+        // this, every notification this app posts (new bunny message,
+        // mandatory reply) is silently dropped by the system. One-shot
+        // request on first launch; the system remembers the grant.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU
+                && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 7401);
+        }
 
         // Settings.Global fallback for legacy mesh_url (pre-multi-bunny installs
         // that had the ADB-provisioned url sitting in Settings.Global). This
@@ -320,7 +335,17 @@ public class MainActivity extends Activity {
                 i == index ? 0xFF2a2510 : 0xFF111118));
             tabs[i].setTextColor(i == index ? 0xFFDAA520 : 0xFF555555);
         }
-        if (index == 2) { refreshInbox(); markLionRead(); }
+        if (index == 2) { refreshInbox(); markLionRead(); updateE2eeWarning(); }
+    }
+
+    /** Show the inbox "not encrypted" banner when there's no bunny pubkey to
+     *  encrypt to (E2EE is per-peer; canEncrypt is false until pairing exchanges
+     *  the key). Warn + allow — messages still send in plaintext. UI thread only. */
+    private void updateE2eeWarning() {
+        View warn = findViewById(getId("inbox_e2ee_warning"));
+        if (warn != null) {
+            warn.setVisibility(E2EEHelper.canEncrypt(bunnyPubkeyB64) ? View.GONE : View.VISIBLE);
+        }
     }
 
     // ── Status Polling ──
@@ -678,6 +703,7 @@ public class MainActivity extends Activity {
             pairMode = "";
             bunnyDirectUrl = "";
             bunnyPubkeyB64 = "";
+            smsToken = "";
             return;
         }
         // Find label from the list.
@@ -692,6 +718,7 @@ public class MainActivity extends Activity {
         pairMode       = prefs.getString(bunnyKey(activeBunnyId, "pair_mode"), "");
         bunnyDirectUrl = prefs.getString(bunnyKey(activeBunnyId, "bunny_direct_url"), "");
         bunnyPubkeyB64 = prefs.getString(bunnyKey(activeBunnyId, "bunny_pubkey_b64"), "");
+        smsToken       = prefs.getString(bunnyKey(activeBunnyId, "sms_token"), "");
     }
 
     /**
@@ -1773,6 +1800,53 @@ public class MainActivity extends Activity {
         return meshPost(fullUrl, body, null);
     }
 
+    /** Lion → server signed POST of payee identity (Lion's email + IMAP
+     *  creds). Replaces the legacy /api/set-payment-email vault path so
+     *  Lion's email stops landing inside the shared mesh-orders vault
+     *  (which Bunny's apps decrypt). Wire format matches the body-field
+     *  signature shape the server's set-payee-identity handler expects:
+     *    payload = mesh|controller|set-payee-identity|ts|sha256(email|host|pass)
+     *  Returns the raw response body or null on transport failure. */
+    private String postSetPayeeIdentity(String email, String imapHost, String imapPass) {
+        if (meshUrl.isEmpty() || meshId.isEmpty()) return null;
+        String lionPriv = prefs.getString("lion_privkey", "");
+        if (lionPriv.isEmpty()) return null;
+        long ts = System.currentTimeMillis();
+        String contentHash;
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] dig = md.digest((email + "|" + imapHost + "|" + imapPass).getBytes("UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : dig) sb.append(String.format("%02x", b));
+            contentHash = sb.toString();
+        } catch (Exception e) { return null; }
+        String payload = meshId + "|controller|set-payee-identity|" + ts + "|" + contentHash;
+        String sig;
+        try { sig = VaultCrypto.signString(payload, lionPriv); }
+        catch (Exception e) { return null; }
+        String body = "{\"node_id\":\"controller\","
+            + "\"ts\":" + ts + ","
+            + "\"email\":\"" + esc(email) + "\","
+            + "\"imap_host\":\"" + esc(imapHost) + "\","
+            + "\"imap_pass\":\"" + esc(imapPass) + "\","
+            + "\"signature\":\"" + esc(sig) + "\"}";
+        return meshPost(meshUrl + "/api/mesh/" + meshId + "/set-payee-identity", body);
+    }
+
+    /** Lion → server admin POST that reverses a previously-credited bogus
+     *  payment. Hits /admin/reverse-payment with the admin_token saved in
+     *  prefs ("admin_token"). Caller should prompt the user for the token
+     *  on first use. */
+    private String postAdminReversal(String source) {
+        if (meshUrl.isEmpty() || meshId.isEmpty()) return null;
+        String adminToken = prefs.getString("admin_token", "");
+        if (adminToken.isEmpty()) return "{\"error\":\"admin_token not set\"}";
+        String body = "{\"admin_token\":\"" + esc(adminToken) + "\","
+            + "\"mesh_id\":\"" + esc(meshId) + "\","
+            + "\"source\":\"" + esc(source) + "\"}";
+        return meshPost(meshUrl + "/admin/reverse-payment", body);
+    }
+
     /**
      * Audit C1: build X-FL-Ts / X-FL-Nonce / X-FL-Sig headers for a direct-mode
      * POST to the Collar's local HTTP server. Returns null if lion_privkey is
@@ -1854,8 +1928,20 @@ public class MainActivity extends Activity {
         // bunny slot (see loadActiveBunny).
         if ("direct".equals(pairMode) && !bunnyDirectUrl.isEmpty()
             && (path.equals("/mesh/status") || path.startsWith("/mesh/status?"))) {
-            // Hit the Collar's /mesh/status directly for the locked/escapes/paywall fields
-            return directGet(bunnyDirectUrl + "/mesh/status");
+            // Hit the Collar's /mesh/status directly for the locked/escapes/paywall fields.
+            String resp = directGet(bunnyDirectUrl + "/mesh/status");
+            if (resp == null) return null;
+            // SECURITY: direct-mode status is plain LAN HTTP and was previously
+            // unauthenticated — a LAN MITM could spoof locked/paywall/escapes.
+            // Require a valid bunny signature over the status core once a bunny
+            // pubkey is known (post-pairing); drop a forged/unsigned status so
+            // callers keep the last-good snapshot. Permissive only pre-pairing
+            // (no bunny pubkey yet), mirroring the orders-apply policy.
+            if (!bunnyPubkeyB64.isEmpty() && !verifyStatusSignature(resp, bunnyPubkeyB64)) {
+                android.util.Log.w("focusctl", "REJECTED direct /mesh/status — invalid/missing signature");
+                return null;
+            }
+            return resp;
         }
         if (meshUrl.isEmpty()) return null;
         try {
@@ -2229,6 +2315,19 @@ public class MainActivity extends Activity {
             } else {
                 resultView.setText("No mesh configured. Tap Create Mesh.");
             }
+            // SMS gate token (provisioned by the Collar at pairing). Show the exact
+            // command to text Bunny's number; tap to copy. Present in both mesh and
+            // direct mode. Without it a "sit-boy" SMS is rejected by the Collar.
+            if (!smsToken.isEmpty()) {
+                final String smsCmd = "sit-boy " + smsToken + " 15 $20";
+                resultView.setText(resultView.getText() + "\n\nSMS lock: " + smsCmd + "\n(tap to copy)");
+                resultView.setOnClickListener(cv -> {
+                    android.content.ClipboardManager cb =
+                        (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                    cb.setPrimaryClip(android.content.ClipData.newPlainText("sit-boy", smsCmd));
+                    setStatus("SMS command copied");
+                });
+            }
         }
 
         // Capture for use inside lambdas
@@ -2401,6 +2500,37 @@ public class MainActivity extends Activity {
         } catch (Exception e) { return ""; }
     }
 
+    /**
+     * Verify the bunny signature on a direct-mode /mesh/status response before
+     * trusting locked/paywall/escapes. Rebuilds the SAME flat "status core" the
+     * Collar signed (ControlService.handleMeshStatus): identical field set and
+     * native types (Boolean / Long / String) so canonical_json matches byte-for-
+     * byte. Re-attaches the wire signature and verifies with the paired bunny
+     * pubkey. Fail-closed: any parse/verify error (or a tampered field) returns
+     * false. Mirrors the Collar's verifyMeshOrdersSignature symmetry.
+     */
+    private boolean verifyStatusSignature(String statusJson, String bunnyPubB64) {
+        if (statusJson == null || bunnyPubB64 == null || bunnyPubB64.isEmpty()) return false;
+        try {
+            java.util.TreeMap<String, Object> core = new java.util.TreeMap<>();
+            core.put("locked", parseJsonBool(statusJson, "locked"));
+            core.put("escapes", parseJsonLong(statusJson, "escapes"));
+            core.put("paywall", parseJsonStr(statusJson, "paywall"));
+            core.put("timer_remaining_ms", parseJsonLong(statusJson, "timer_remaining_ms"));
+            core.put("task_reps", parseJsonLong(statusJson, "task_reps"));
+            core.put("task_done", parseJsonLong(statusJson, "task_done"));
+            core.put("offer", parseJsonStr(statusJson, "offer"));
+            core.put("offer_status", parseJsonStr(statusJson, "offer_status"));
+            core.put("sub_tier", parseJsonStr(statusJson, "sub_tier"));
+            core.put("orders_version", parseJsonLong(statusJson, "orders_version"));
+            core.put("signature", parseJsonStr(statusJson, "signature"));
+            return VaultCrypto.verifySignature(core, bunnyPubB64);
+        } catch (Exception e) {
+            android.util.Log.w("focusctl", "verifyStatusSignature failed: " + e.getMessage());
+            return false;
+        }
+    }
+
     private void pairDirect(String bunnyUrl, String expectedFingerprint) {
         try {
             // Generate Lion's keypair if missing
@@ -2453,6 +2583,10 @@ public class MainActivity extends Activity {
                 setStatus("Pair failed: no bunny pubkey");
                 return;
             }
+            // SMS gate token: provisioned by the Collar at pairing (random, ships
+            // once in the pair response). Lion can't derive it, so store + display
+            // it so the operator knows what to text: "sit-boy <token> 15 $20".
+            String smsTokenResp = parseJsonStr(resp, "sms_token");
 
             // Audit C5: verify the returned bunny_pubkey against the
             // fingerprint the user read off the bunny's own screen. If
@@ -2484,9 +2618,11 @@ public class MainActivity extends Activity {
             final String newId = addBunnySlot("bunny");
             final String fBunnyUrl = bunnyUrl;
             final String fBunnyPubB64 = bunnyPubB64;
+            final String fSmsToken = smsTokenResp;
             prefs.edit()
                 .putString(bunnyKey(newId, "bunny_direct_url"), fBunnyUrl)
                 .putString(bunnyKey(newId, "bunny_pubkey_b64"), fBunnyPubB64)
+                .putString(bunnyKey(newId, "sms_token"), fSmsToken)
                 .putString(bunnyKey(newId, "pair_mode"), "direct")
                 // Legacy keys also updated so rollback to v58 still works:
                 .putString("bunny_direct_url", fBunnyUrl)
@@ -3220,11 +3356,16 @@ public class MainActivity extends Activity {
                     .apply();
                 setStatus("Sending payment email config...");
                 executor.execute(() -> {
-                    String json = "{\"imap_host\":\"" + esc(host) + "\","
-                        + "\"user\":\"" + esc(user) + "\","
-                        + "\"pass\":\"" + esc(pass) + "\"}";
-                    String r = api("/api/set-payment-email", json);
-                    setStatus(r.contains("ok") ? "Payment email configured" : "Failed: " + r);
+                    // POST signed identity to the server-only path. The
+                    // legacy vault action /api/set-payment-email leaked
+                    // Lion's email into the shared mesh-orders vault where
+                    // Bunny's Collar/Tasker apps could decrypt it. The new
+                    // /api/mesh/{mid}/set-payee-identity endpoint writes
+                    // to payment_identities/{mid}.json — server-only.
+                    String r = postSetPayeeIdentity(user, host, pass);
+                    setStatus(r != null && r.contains("\"ok\":true")
+                        ? "Payment email configured"
+                        : "Failed: " + r);
                 });
             })
             .setNegativeButton("Cancel", null)
@@ -3674,6 +3815,49 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** Fire a heads-up notification for a fresh bunny message. Called from
+     *  updateMessageThread when the newest bunny message id differs from the
+     *  last one we've already surfaced. Tracks the id in prefs.last_bunny_msg_id
+     *  so re-renders (orientation change, tab switch) don't re-notify.
+     *
+     *  The Activity-bound polling means this only fires while the process is
+     *  alive — backgrounded but not killed. For fully-closed-app delivery,
+     *  install the ntfy.sh Android app and subscribe to focuslock-<mesh_id>:
+     *  the server already publishes there on every message append. */
+    private void showBunnyMessageNotification(String text, boolean mandatory, boolean pinned) {
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (nm == null) return;
+            String channelId = "bunny_msg";
+            NotificationChannel ch = new NotificationChannel(
+                channelId, "Messages from Bunny", NotificationManager.IMPORTANCE_HIGH);
+            ch.setLockscreenVisibility(android.app.Notification.VISIBILITY_PRIVATE);
+            nm.createNotificationChannel(ch);
+
+            String title = mandatory ? "Bunny replied (mandatory)"
+                         : pinned     ? "Bunny pinned a message"
+                                      : "Message from your bunny";
+
+            Intent open = new Intent(this, MainActivity.class);
+            open.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            PendingIntent pi = PendingIntent.getActivity(this, 0, open,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+            android.app.Notification.Builder b = new android.app.Notification.Builder(this, channelId)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setStyle(new android.app.Notification.BigTextStyle().bigText(text))
+                .setSmallIcon(android.R.drawable.ic_dialog_email)
+                .setAutoCancel(true)
+                .setContentIntent(pi)
+                .setVisibility(android.app.Notification.VISIBILITY_PRIVATE);
+
+            nm.notify(420, b.build());
+        } catch (Exception e) {
+            android.util.Log.w("focusctl", "Bunny notif failed: " + e);
+        }
+    }
+
     private void updateMessageThread(String msgsResp) {
         LinearLayout thread = (LinearLayout) findViewById(getId("lion_message_thread"));
         if (thread == null) {
@@ -3684,6 +3868,7 @@ public class MainActivity extends Activity {
             android.util.Log.w("focusctl", "updateMessageThread: msgsResp is null");
             return;
         }
+        updateE2eeWarning();
         android.util.Log.i("focusctl", "updateMessageThread: msgsResp len=" + msgsResp.length()
             + " has-messages=" + msgsResp.contains("\"messages\":"));
         thread.removeAllViews();
@@ -3719,6 +3904,12 @@ public class MainActivity extends Activity {
                 scanPos = e + 1;
             }
             java.util.Collections.reverse(objs);
+
+            // Track the newest bunny message ts we've already notified for —
+            // any incoming message past that fires a heads-up notification.
+            // Survives across refreshes via prefs.
+            long lastNotifiedBunnyTs = prefs.getLong("last_bunny_msg_ts", 0L);
+            long newestBunnyTs = lastNotifiedBunnyTs;
 
             int count = 0;
             for (String obj : objs) {
@@ -3773,6 +3964,23 @@ public class MainActivity extends Activity {
 
                 boolean fromBunny = "bunny".equals(from);
                 boolean isSystem = "system".equals(from);
+
+                // Fire a notification for fresh bunny messages — anything past
+                // the last-notified ts. Done in the render loop (rather than
+                // a separate pass) so it sees the post-decryption text.
+                if (fromBunny && !isDeleted) {
+                    String tsRaw = parseJsonNumStr(obj, "ts");
+                    if (tsRaw != null && !tsRaw.isEmpty()) {
+                        try {
+                            long mts = Long.parseLong(tsRaw);
+                            if (mts > lastNotifiedBunnyTs) {
+                                showBunnyMessageNotification(text, mandatory, pinned);
+                                if (mts > newestBunnyTs) newestBunnyTs = mts;
+                            }
+                        } catch (NumberFormatException nfe) { /* skip notif */ }
+                    }
+                }
+
                 int bgColor = isPraise ? 0xFF1a0e18 : fromBunny ? 0xFF120e1a : isSystem ? 0xFF0e1a0e : 0xFF1a1808;
                 int textColor = isPraise ? 0xFFe88ccc : fromBunny ? 0xFFaa88cc : isSystem ? 0xFF66aa66 : 0xFFDAA520;
 
@@ -3910,6 +4118,12 @@ public class MainActivity extends Activity {
                 thread.addView(tv);
             }
             android.util.Log.i("focusctl", "updateMessageThread: rendered " + count + " messages");
+            // Persist the newest bunny-message ts so the next refresh only
+            // notifies for messages that arrived AFTER this render. Without
+            // this, every poll would re-notify for the same recent message.
+            if (newestBunnyTs > lastNotifiedBunnyTs) {
+                prefs.edit().putLong("last_bunny_msg_ts", newestBunnyTs).apply();
+            }
             // Auto-scroll to the bottom so the freshest message is visible
             // — SMS-app pattern. post() defers until layout completes.
             ScrollView scroll = (ScrollView) findViewById(getId("lion_message_scroll"));
@@ -3962,18 +4176,33 @@ public class MainActivity extends Activity {
                 String amountStr = parseJsonNumStr(obj, "amount");
                 String desc = parseJsonStr(obj, "description");
                 String balStr = parseJsonNumStr(obj, "balance_after");
+                String source = parseJsonStr(obj, "source");
                 double amount = 0;
                 try { amount = Double.parseDouble(amountStr); } catch (Exception e) {}
                 boolean isPayment = "payment".equals(type) || "prepay".equals(type) || "historical".equals(type);
-                String prefix = isPayment ? "\u2193 $" : "\u2191 $";
-                int color = isPayment ? 0xFF44aa44 : 0xFFcc6644;
+                boolean isReversal = "reversal".equals(type);
+                String prefix = isReversal ? "\u21ba $" : isPayment ? "\u2193 $" : "\u2191 $";
+                int color = isReversal ? 0xFFaa6644 : isPayment ? 0xFF44aa44 : 0xFFcc6644;
                 if ("historical".equals(type)) color = 0xFF6688aa;
                 TextView tv = new TextView(this);
-                tv.setText(prefix + String.format("%.0f", amount) + "  " + desc
+                tv.setText(prefix + String.format("%.2f", Math.abs(amount)) + "  " + desc
                     + (balStr != null ? "  |  bal: $" + balStr : ""));
                 tv.setTextColor(color);
                 tv.setTextSize(11);
                 tv.setPadding(0, 6, 0, 6);
+                // Long-press a payment entry \u2192 confirm + POST /admin/reverse-payment.
+                // Only available on real payments (not reversals or charges); the
+                // source field is the original IMAP Message-ID the server keyed
+                // the ledger entry by. No source \u2192 nothing to reverse.
+                if (isPayment && source != null && !source.isEmpty() && !"historical".equals(type)) {
+                    final String fSource = source;
+                    final double fAmount = amount;
+                    final String fDesc = desc == null ? "" : desc;
+                    tv.setOnLongClickListener(v -> {
+                        showReversePaymentDialog(fSource, fAmount, fDesc);
+                        return true;
+                    });
+                }
                 historyContainer.addView(tv);
                 pos = objEnd + 1;
             }
@@ -3998,6 +4227,61 @@ public class MainActivity extends Activity {
                 historyContainer.addView(bal, 0);
             }
         } catch (Exception e) { /* parsing error — skip */ }
+    }
+
+    /** Long-press affordance from the payment history. Confirms with Lion
+     *  ("Reverse $X $desc?"), captures the admin_token on first use, and
+     *  POSTs to /admin/reverse-payment. The reversal does NOT touch the
+     *  paywall — only the lifetime PAID counter — because the paywall has
+     *  already moved on from subsequent activity. */
+    private void showReversePaymentDialog(String source, double amount, String desc) {
+        new AlertDialog.Builder(this)
+            .setTitle("Reverse this payment?")
+            .setMessage("Drop $" + String.format("%.2f", amount) + " from lifetime PAID.\n\n"
+                + desc + "\n\nThe paywall will not be re-instated — only the lifetime "
+                + "total is corrected. Add it back later via Add Paywall if needed.")
+            .setPositiveButton("Reverse", (d, w) -> {
+                String adminToken = prefs.getString("admin_token", "");
+                if (adminToken.isEmpty()) {
+                    promptAdminTokenThenReverse(source, amount);
+                    return;
+                }
+                executor.execute(() -> {
+                    String r = postAdminReversal(source);
+                    setStatus(r != null && r.contains("\"ok\":true")
+                        ? "Reversed $" + String.format("%.2f", amount)
+                        : "Reversal failed: " + (r == null ? "no response" : r));
+                    handler.post(() -> refreshInbox());
+                });
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    private void promptAdminTokenThenReverse(String source, double amount) {
+        EditText input = new EditText(this);
+        input.setHint("Admin token (one-time setup)");
+        input.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+            | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        new AlertDialog.Builder(this)
+            .setTitle("Admin token required")
+            .setMessage("Paste the FOCUSLOCK_ADMIN_TOKEN from your server config. "
+                + "Saved locally; not transmitted via vault.")
+            .setView(input)
+            .setPositiveButton("Save & reverse", (d, w) -> {
+                String t = input.getText().toString().trim();
+                if (t.isEmpty()) { setStatus("Token empty"); return; }
+                prefs.edit().putString("admin_token", t).apply();
+                executor.execute(() -> {
+                    String r = postAdminReversal(source);
+                    setStatus(r != null && r.contains("\"ok\":true")
+                        ? "Reversed $" + String.format("%.2f", amount)
+                        : "Reversal failed: " + (r == null ? "no response" : r));
+                    handler.post(() -> refreshInbox());
+                });
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
     }
 
     // ── App PIN Lock ──
@@ -4145,42 +4429,54 @@ public class MainActivity extends Activity {
             // suspenders: vault path is for fast Collar dispatch / pinned
             // banner / runtime mirror; server-store path is for the chat
             // thread on Bunny Tasker and for Lion's own multi-device sync.
-            String r;
-            if (vaultMode && !"direct".equals(pairMode)) {
-                r = api("/api/send-message", json.toString());
-                E2EEHelper.EncryptedMessage encVault = null;
-                if (E2EEHelper.canEncrypt(bunnyPubKey)) {
-                    encVault = E2EEHelper.encrypt(msg, bunnyPubKey);
+            // AUTHORITATIVE delivery: the server message store is what Bunny
+            // Tasker's chat thread fetches, so the "Sent" verdict is decided
+            // here — NOT by the best-effort side channels below. Previously a
+            // failed server-store post was masked by the /api/message fallback
+            // ("Sent via API"), so the Lion saw "sent" while the message never
+            // reached Bunny's chat. Bounded retry reuses ts + clientMsgId so
+            // the server dedups retries to a single message.
+            E2EEHelper.EncryptedMessage enc = null;
+            if (E2EEHelper.canEncrypt(bunnyPubKey)) {
+                enc = E2EEHelper.encrypt(msg, bunnyPubKey);
+            }
+            long ts = System.currentTimeMillis();
+            String clientMsgId = java.util.UUID.randomUUID().toString();
+            boolean delivered = false;
+            for (int attempt = 0; attempt < 3 && !delivered; attempt++) {
+                if (attempt > 0) {
+                    try { Thread.sleep(1000L * attempt); }
+                    catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
                 }
-                postLionMessage(msg, pinAsNotif, mandatory, encVault);
-            } else {
-                E2EEHelper.EncryptedMessage enc = null;
-                if (E2EEHelper.canEncrypt(bunnyPubKey)) {
-                    enc = E2EEHelper.encrypt(msg, bunnyPubKey);
-                }
-                boolean ok = postLionMessage(msg, pinAsNotif, mandatory, enc);
-                r = ok ? "{\"ok\":true}" : null;
-
-                // Also push to direct-mode Collar HTTP via the legacy api()
-                // helper so the bunny's phone gets an immediate notif even
-                // when polling is slow.
-                String apiJson = "{\"message\":\"" + esc(msg) + "\"}";
-                if (pinAsNotif) {
-                    api("/api/pin-message", apiJson);
-                } else {
-                    api("/api/message", apiJson);
-                }
+                delivered = postLionMessage(msg, pinAsNotif, mandatory, enc, ts, clientMsgId);
             }
 
-            final String result = r;
-            setStatus(result != null && result.contains("ok") ?
-                (mandatory ? "Sent (reply required)" : pinAsNotif ? "Pinned" : "Sent") : "Sent via API");
+            // BEST-EFFORT side channels — never override the delivery verdict.
+            //  - vault append → Collar pinned banner / local history / fast push
+            //  - direct-Collar /api/message|/api/pin-message → immediate notif
+            try {
+                if (vaultMode && !"direct".equals(pairMode)) {
+                    api("/api/send-message", json.toString());
+                } else {
+                    String apiJson = "{\"message\":\"" + esc(msg) + "\"}";
+                    if (pinAsNotif) api("/api/pin-message", apiJson);
+                    else api("/api/message", apiJson);
+                }
+            } catch (Exception ignored) {}
+
+            final boolean ok = delivered;
+            final boolean plaintext = !E2EEHelper.canEncrypt(bunnyPubKey);
+            String sentMsg = mandatory ? "Sent (reply required)" : pinAsNotif ? "Pinned" : "Sent";
+            if (plaintext) sentMsg += " ⚠ not encrypted";
+            setStatus(ok ? sentMsg : "Not delivered — check connection and resend");
             handler.post(() -> {
-                msgInput.setText("");
-                if (mandatoryToggle != null) mandatoryToggle.setChecked(false);
-                scheduledAtMs = 0;
-                TextView schedLabel = (TextView) findViewById(getId("schedule_label"));
-                if (schedLabel != null) schedLabel.setVisibility(View.GONE);
+                if (ok) {
+                    msgInput.setText("");
+                    if (mandatoryToggle != null) mandatoryToggle.setChecked(false);
+                    scheduledAtMs = 0;
+                    TextView schedLabel = (TextView) findViewById(getId("schedule_label"));
+                    if (schedLabel != null) schedLabel.setVisibility(View.GONE);
+                }
             });
         });
     }
@@ -4197,10 +4493,18 @@ public class MainActivity extends Activity {
      *  Returns true on 200. Blocking — call from executor. */
     private boolean postLionMessage(String text, boolean pinned, boolean mandatory,
                                     E2EEHelper.EncryptedMessage enc) {
+        return postLionMessage(text, pinned, mandatory, enc, System.currentTimeMillis(), null);
+    }
+
+    /** Full variant. ts + clientMsgId make the send retry-safe: reuse the same
+     *  ts (so the RSA signature still verifies inside the server's ±5min
+     *  window) and clientMsgId (so the server dedups retries to one stored
+     *  message — see MessageStore.add). Pass null clientMsgId to opt out. */
+    private boolean postLionMessage(String text, boolean pinned, boolean mandatory,
+                                    E2EEHelper.EncryptedMessage enc, long ts, String clientMsgId) {
         if (meshUrl.isEmpty() || meshId.isEmpty()) return false;
         String lionPriv = prefs.getString("lion_privkey", "");
         if (lionPriv.isEmpty()) return false;
-        long ts = System.currentTimeMillis();
         String signedText = (enc != null) ? "[e2ee]" : text;
         String payload = meshId + "|controller|lion|" + signedText
             + "|" + (pinned ? "1" : "0") + "|" + (mandatory ? "1" : "0") + "|" + ts;
@@ -4219,6 +4523,7 @@ public class MainActivity extends Activity {
                 body.put("iv", enc.iv);
             }
             body.put("ts", ts);
+            if (clientMsgId != null && !clientMsgId.isEmpty()) body.put("client_msg_id", clientMsgId);
             body.put("signature", signature);
             String resp = meshPost(meshUrl + "/api/mesh/" + meshId + "/messages/send", body.toString());
             return resp != null && resp.contains("\"ok\"");

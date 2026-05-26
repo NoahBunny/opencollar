@@ -321,6 +321,8 @@
             <!-- ── Message ── -->
             <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\u2709  MESSAGE" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
 
+            <TextView android:id="@+id/inbox_e2ee_warning" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\u26a0 Not encrypted \u2014 Bunny's key not yet exchanged" android:textColor="#ff8866" android:textSize="11sp" android:background="#2a1010" android:padding="8dp" android:layout_marginBottom="6dp" android:visibility="gone" />
+
             <EditText android:id="@+id/inbox_message_input" android:layout_width="match_parent" android:layout_height="80dp" android:hint="Message to bunny..." android:textColor="#e0e0e0" android:textColorHint="#3a3a4a" android:textSize="14sp" android:background="#111118" android:paddingLeft="16dp" android:paddingRight="16dp" android:paddingTop="12dp" android:inputType="textMultiLine" android:gravity="top" android:layout_marginBottom="6dp" />
 
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">

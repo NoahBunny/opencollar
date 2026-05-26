@@ -54,11 +54,16 @@ public class MainActivity extends Activity {
     private TextView pairingFingerprint, pairedFingerprint, pairingHint;
     private LinearLayout pinnedSection, messagesContainer;
     private View sectionStats, sectionSelflock, sectionMessages, sectionPairing, sectionPaired, sectionMainContent;
+    private View messagesBody;
     private android.widget.ImageView qrCodeView;
     private EditText messageInput;
     private Button btnPay, btnSend, btnFreeUnlock, btnShowQr, btnPrepay, btnSetupImap;
-    private TextView balanceAmount, balanceDetail, imapStatus, tierBadge, messagesHeader;
-    private boolean messagesExpanded = true;
+    private TextView balanceAmount, balanceDetail, imapStatus, tierBadge, messagesHeader, payerIdentityStatus;
+    // Collapsed by default — the messaging block runs to ~440dp (input row +
+    // 380dp scroll) and was overwhelming the home view. User flips it open
+    // when they want to compose. State persists across launches via
+    // prefs.messages_expanded so the choice sticks.
+    private boolean messagesExpanded = false;
     private static final int PICK_IMAGE = 1001;
     private static final int TAKE_PHOTO = 1002;
     private LinearLayout paymentHistory;
@@ -116,6 +121,7 @@ public class MainActivity extends Activity {
         btnDeadlineTaskClear.setOnClickListener(v -> doDeadlineTaskClear());
         pinnedMessage = (TextView) findViewById(fid("pinned_message"));
         messagesContainer = (LinearLayout) findViewById(fid("messages_container"));
+        messagesBody = findViewById(fid("messages_body"));
         messageInput = (EditText) findViewById(fid("message_input"));
         btnPay = (Button) findViewById(fid("btn_pay"));
         btnSend = (Button) findViewById(fid("btn_send"));
@@ -169,12 +175,14 @@ public class MainActivity extends Activity {
             sectionPairing.setVisibility(View.VISIBLE);
             sectionPaired.setVisibility(View.GONE);
             sectionMainContent.setVisibility(View.GONE);
+            renderPairingQr();
             // No cable in production — when Bunny Tasker opens unpaired and
             // the Collar isn't yet device-admin, kick the user into the
             // Collar's Terms-of-Surrender screen so the full flow happens
             // inside the normal UI path. Safe to call repeatedly.
             maybeLaunchCollarConsent();
         }
+        updateCrownConnectionState();
 
         // Subscription buttons
         findViewById(fid("btn_sub_bronze")).setOnClickListener(v -> doSubscribe("bronze", 25));
@@ -191,13 +199,20 @@ public class MainActivity extends Activity {
         imapStatus = (TextView) findViewById(fid("imap_status"));
         btnSetupImap = (Button) findViewById(fid("btn_setup_imap"));
         btnSetupImap.setOnClickListener(v -> doSetupImap());
+
+        payerIdentityStatus = (TextView) findViewById(fid("payer_identity_status"));
+        Button btnSetupPayerIdentity = (Button) findViewById(fid("btn_setup_payer_identity"));
+        btnSetupPayerIdentity.setOnClickListener(v -> doSetupPayerIdentity());
+        refreshPayerIdentityStatus();
         tierBadge = (TextView) findViewById(fid("tier_badge"));
         messagesHeader = (TextView) findViewById(fid("messages_header"));
+        messagesExpanded = prefs.getBoolean("messages_expanded", false);
+        applyMessagesExpanded();
         if (messagesHeader != null) {
             messagesHeader.setOnClickListener(v -> {
                 messagesExpanded = !messagesExpanded;
-                messagesContainer.setVisibility(messagesExpanded ? View.VISIBLE : View.GONE);
-                messagesHeader.setText(messagesExpanded ? "MESSAGE YOUR LION  \u25B2" : "MESSAGE YOUR LION  \u25BC");
+                prefs.edit().putBoolean("messages_expanded", messagesExpanded).apply();
+                applyMessagesExpanded();
             });
         }
 
@@ -563,7 +578,7 @@ public class MainActivity extends Activity {
                     statusText.setText("Unlocked");
                     statusBar.setBackgroundColor(0xFF9977bb);
                 }
-                connectionCrown.setAlpha(1.0f);
+                updateCrownConnectionState();
 
                 // Stats
                 statToday.setText(formatHours(fTodayMs));
@@ -710,6 +725,7 @@ public class MainActivity extends Activity {
                     sectionPairing.setVisibility(View.VISIBLE);
                     sectionPaired.setVisibility(View.GONE);
                     sectionMainContent.setVisibility(View.GONE);
+                    renderPairingQr();
                 }
 
                 // Pinned message
@@ -726,7 +742,7 @@ public class MainActivity extends Activity {
 
         } catch (Exception e) {
             handler.post(() -> {
-                connectionCrown.setAlpha(0.2f);
+                updateCrownConnectionState();
             });
         }
     }
@@ -771,6 +787,8 @@ public class MainActivity extends Activity {
                 conn.getOutputStream().write(payload.getBytes());
 
                 if (conn.getResponseCode() == 200) {
+                    Settings.Global.putLong(getContentResolver(),
+                        "focus_lock_mesh_last_sync_ms", System.currentTimeMillis());
                     try (java.io.BufferedReader br = new java.io.BufferedReader(
                             new java.io.InputStreamReader(conn.getInputStream()))) {
                         StringBuilder sb = new StringBuilder();
@@ -883,6 +901,77 @@ public class MainActivity extends Activity {
     // at /api/pair-reset now falls through to 403. Half-completed-pair
     // recovery requires reinstalling the Collar, which is gated on the
     // Lion releasing the device admin first.
+
+    /**
+     * Render the bunny's pairing QR into the inline qr_code ImageView shown in
+     * section_pairing. Same payload Lion's Share scans via the LAN-direct path.
+     */
+    private void renderPairingQr() {
+        if (qrCodeView == null) return;
+        String lanIp = "";
+        try {
+            android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager) getSystemService(WIFI_SERVICE);
+            android.net.wifi.WifiInfo wi = wm != null ? wm.getConnectionInfo() : null;
+            int ip = wi != null ? wi.getIpAddress() : 0;
+            if (ip != 0) {
+                lanIp = (ip & 0xff) + "." + ((ip >> 8) & 0xff) + "."
+                    + ((ip >> 16) & 0xff) + "." + ((ip >> 24) & 0xff);
+            }
+        } catch (Exception e) {}
+        String tsIp = "";
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> nets = java.net.NetworkInterface.getNetworkInterfaces();
+            while (nets.hasMoreElements()) {
+                java.net.NetworkInterface ni = nets.nextElement();
+                if (ni.getName().startsWith("tun")) {
+                    java.util.Enumeration<java.net.InetAddress> addrs = ni.getInetAddresses();
+                    while (addrs.hasMoreElements()) {
+                        java.net.InetAddress a = addrs.nextElement();
+                        if (a instanceof java.net.Inet4Address) tsIp = a.getHostAddress();
+                    }
+                }
+            }
+        } catch (Exception e) {}
+        try {
+            String payload = PairingManager.buildQrPayload(getContentResolver(), lanIp, tsIp);
+            Bitmap bmp = QrEncoder.encode(payload, 8);
+            if (bmp != null) qrCodeView.setImageBitmap(bmp);
+            String fp = PairingManager.getFingerprint(getContentResolver());
+            if (pairingFingerprint != null && fp != null) {
+                pairingFingerprint.setText("Key: " + fp);
+            }
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "QR render failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Crown is gold when paired AND we've seen the Lion (or a successful
+     * mesh poll) recently; gray (desaturated) otherwise. The Collar's
+     * vaultSync writes focus_lock_lion_last_seen each time it verifies a
+     * Lion-signed blob, which is the authoritative signal on vault-only
+     * meshes (BT's plaintext /api/mesh/.../sync returns 410 Gone there).
+     * BT's own meshSync still bumps mesh_last_sync_ms when it does work,
+     * so we accept either signal within the last 90s.
+     */
+    private void updateCrownConnectionState() {
+        if (connectionCrown == null) return;
+        boolean paired = PairingManager.isPaired(getContentResolver());
+        long lastSync = Settings.Global.getLong(getContentResolver(), "focus_lock_mesh_last_sync_ms", 0);
+        long lastLion = Settings.Global.getLong(getContentResolver(), "focus_lock_lion_last_seen", 0);
+        long mostRecent = Math.max(lastSync, lastLion);
+        boolean meshOk = (System.currentTimeMillis() - mostRecent) < 90_000L;
+        boolean connected = paired && meshOk;
+        if (connected) {
+            connectionCrown.clearColorFilter();
+            connectionCrown.setAlpha(1.0f);
+        } else {
+            android.graphics.ColorMatrix cm = new android.graphics.ColorMatrix();
+            cm.setSaturation(0f);
+            connectionCrown.setColorFilter(new android.graphics.ColorMatrixColorFilter(cm));
+            connectionCrown.setAlpha(0.6f);
+        }
+    }
 
     /**
      * Serverless pairing info: show the bunny's IP/port + key fingerprint so the Lion can
@@ -1683,6 +1772,182 @@ public class MainActivity extends Activity {
         });
     }
 
+    /** Bunny → server signed POST that tells the IMAP scanner which sender
+     *  strings count as "actually from this bunny." Without this, the
+     *  scanner credits every incoming payment notice (WorldRemit
+     *  remittances, refunds, random Generic deposit emails) as a payment.
+     *  The allowlist stays in a server-only file the Lion's Share app
+     *  cannot read — defense in depth so the Lion never learns the
+     *  bunny's email through the app surface. */
+    private void doSetupPayerIdentity() {
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(48, 24, 48, 24);
+
+        TextView help = new TextView(this);
+        help.setText("Your email or display name as it appears on Lion's bank "
+            + "notifications. One per line. Used only to filter incoming "
+            + "payment emails — never shown to the Lion.");
+        help.setTextColor(0xFF888888);
+        help.setTextSize(11);
+        help.setPadding(0, 0, 0, 16);
+        layout.addView(help);
+
+        EditText allowInput = new EditText(this);
+        allowInput.setHint("info@example.com\nYour Name");
+        allowInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+            | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        allowInput.setMinLines(3);
+        allowInput.setGravity(android.view.Gravity.TOP | android.view.Gravity.START);
+        String saved = prefs.getString("payer_identity_text", "");
+        if (!saved.isEmpty()) allowInput.setText(saved);
+        layout.addView(allowInput);
+
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Set Your Payer Identity")
+            .setView(layout)
+            .setPositiveButton("SAVE", (d, w) -> {
+                String raw = allowInput.getText().toString();
+                java.util.List<String> lines = new java.util.ArrayList<>();
+                for (String line : raw.split("\\r?\\n")) {
+                    String t = line.trim();
+                    if (!t.isEmpty()) lines.add(t);
+                }
+                if (lines.size() > 16) lines = lines.subList(0, 16);
+                // Snapshot the saved text so the dialog reopens with the
+                // bunny's last input (lets them edit instead of re-typing).
+                prefs.edit().putString("payer_identity_text", raw).apply();
+                final java.util.List<String> finalLines = lines;
+                executor.execute(() -> postSetPayerIdentity(finalLines));
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    /** Sign + POST the payer-allow list. Matches the wire format the server
+     *  expects in focuslock-mail.py set-payer-identity handler:
+     *    payload = mesh|node|set-payer-identity|ts|sha256(allow_canonical)
+     *  with allow_canonical = lines joined by "\n". */
+    private void postSetPayerIdentity(java.util.List<String> allow) {
+        String meshId = gstr("focus_lock_mesh_id");
+        String meshUrl = gstr("focus_lock_mesh_url");
+        String nodeId = gstr("focus_lock_mesh_node_id");
+        if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty()) {
+            handler.post(() -> statusText.setText("Mesh not configured"));
+            return;
+        }
+        long ts = System.currentTimeMillis();
+        StringBuilder canonical = new StringBuilder();
+        for (int i = 0; i < allow.size(); i++) {
+            if (i > 0) canonical.append("\n");
+            canonical.append(allow.get(i));
+        }
+        String contentHash;
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] dig = md.digest(canonical.toString().getBytes("UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : dig) sb.append(String.format("%02x", b));
+            contentHash = sb.toString();
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "payer identity hash failed", e);
+            return;
+        }
+        String payload = meshId + "|" + nodeId + "|set-payer-identity|" + ts + "|" + contentHash;
+        String signature = PairingManager.sign(getContentResolver(), payload);
+        if (signature == null || signature.isEmpty()) {
+            handler.post(() -> statusText.setText("Sign failed — pairing key missing"));
+            return;
+        }
+        try {
+            JSONObject body = new JSONObject();
+            body.put("node_id", nodeId);
+            body.put("ts", ts);
+            JSONArray arr = new JSONArray();
+            for (String s : allow) arr.put(s);
+            body.put("allow", arr);
+            body.put("signature", signature);
+            URL url = new URL(meshUrl + "/api/mesh/" + meshId + "/set-payer-identity");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(10000);
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.getOutputStream().write(body.toString().getBytes("UTF-8"));
+            int code = conn.getResponseCode();
+            // Parse the server summary so we can warn when entries are too
+            // generic to identify the payer (channel/domain/short tokens now
+            // match nothing — they'd never credit a payment).
+            int effective = allow.size();
+            int generic = 0;
+            if (code < 400) {
+                try {
+                    java.io.BufferedReader br = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(conn.getInputStream(), "UTF-8"));
+                    StringBuilder sb = new StringBuilder();
+                    String ln;
+                    while ((ln = br.readLine()) != null) sb.append(ln);
+                    JSONObject resp = new JSONObject(sb.toString());
+                    effective = resp.optInt("effective_count", allow.size());
+                    generic = resp.optInt("generic_rejected", 0);
+                } catch (Exception ignored) {}
+            }
+            conn.disconnect();
+            if (code < 400) {
+                final int eff = effective;
+                final int gen = generic;
+                prefs.edit()
+                    .putLong("payer_identity_set_at", System.currentTimeMillis())
+                    .putInt("payer_identity_count", allow.size())
+                    .putInt("payer_identity_effective", eff)
+                    .apply();
+                handler.post(() -> {
+                    if (eff == 0) {
+                        statusText.setText("Saved, but none of your entries identify you — "
+                            + "payments won't be credited. Use your full payment email or name "
+                            + "(not a bank/'interac' or bare domain).");
+                    } else if (gen > 0) {
+                        statusText.setText("Saved · " + eff + " usable, " + gen + " too generic to match");
+                    } else {
+                        statusText.setText("Payer identity saved (" + allow.size() + " entries)");
+                    }
+                    refreshPayerIdentityStatus();
+                });
+            } else {
+                handler.post(() -> statusText.setText("Save failed (HTTP " + code + ")"));
+            }
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "postSetPayerIdentity failed", e);
+            handler.post(() -> statusText.setText("Save failed: " + e.getMessage()));
+        }
+    }
+
+    private void refreshPayerIdentityStatus() {
+        if (payerIdentityStatus == null) return;
+        long setAt = prefs.getLong("payer_identity_set_at", 0);
+        int count = prefs.getInt("payer_identity_count", 0);
+        int effective = prefs.getInt("payer_identity_effective", count);
+        if (setAt == 0 || count == 0) {
+            // Fail-closed: until the payer is configured, the server credits
+            // nothing (was: counted every matched payment email).
+            payerIdentityStatus.setText("Not set — payments won't be credited until you add your payment email/name");
+            payerIdentityStatus.setTextColor(0xFFaa6644);
+        } else if (effective == 0) {
+            payerIdentityStatus.setText("⚠ Set, but entries too generic — payments won't be credited");
+            payerIdentityStatus.setTextColor(0xFFcc4444);
+        } else {
+            long ageMs = System.currentTimeMillis() - setAt;
+            String ago;
+            if (ageMs < 60_000L) ago = "just now";
+            else if (ageMs < 3_600_000L) ago = (ageMs / 60_000L) + "m ago";
+            else if (ageMs < 86_400_000L) ago = (ageMs / 3_600_000L) + "h ago";
+            else ago = (ageMs / 86_400_000L) + "d ago";
+            payerIdentityStatus.setText("Set · " + count + " entries · " + ago);
+            payerIdentityStatus.setTextColor(0xFF44aa44);
+        }
+    }
+
     private void doSetupImap() {
         View v = getLayoutInflater().inflate(android.R.layout.simple_list_item_1, null);
         // Build a simple dialog with email + password fields
@@ -2113,11 +2378,26 @@ public class MainActivity extends Activity {
      *  Returns true on 200, false otherwise. Blocking — call from executor. */
     private boolean postMeshMessage(String text, boolean pinned, boolean mandatory,
                                     E2EEHelper.EncryptedMessage enc) {
+        return postMeshMessageAt(text, pinned, mandatory, enc, System.currentTimeMillis());
+    }
+
+    /** Variant that takes an explicit ts so the caller can key a local
+     *  plaintext cache against the same ts the server will persist. */
+    private boolean postMeshMessageAt(String text, boolean pinned, boolean mandatory,
+                                      E2EEHelper.EncryptedMessage enc, long ts) {
+        return postMeshMessageAt(text, pinned, mandatory, enc, ts, null);
+    }
+
+    /** Full variant. clientMsgId is a stable idempotency key: a retried send
+     *  (same ts + signature + clientMsgId) dedups to a single stored message
+     *  server-side (see MessageStore.add), so the caller can retry safely
+     *  without spamming the Lion's inbox. Pass null to opt out. */
+    private boolean postMeshMessageAt(String text, boolean pinned, boolean mandatory,
+                                      E2EEHelper.EncryptedMessage enc, long ts, String clientMsgId) {
         String meshId = gstr("focus_lock_mesh_id");
         String meshUrl = gstr("focus_lock_mesh_url");
         String nodeId = gstr("focus_lock_mesh_node_id");
         if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty()) return false;
-        long ts = System.currentTimeMillis();
         String signedText = (enc != null) ? "[e2ee]" : text;
         String payload = meshId + "|" + nodeId + "|bunny|" + signedText
             + "|" + (pinned ? "1" : "0") + "|" + (mandatory ? "1" : "0") + "|" + ts;
@@ -2137,6 +2417,7 @@ public class MainActivity extends Activity {
                 body.put("iv", enc.iv);
             }
             body.put("ts", ts);
+            if (clientMsgId != null && !clientMsgId.isEmpty()) body.put("client_msg_id", clientMsgId);
             body.put("signature", signature);
             URL url = new URL(meshUrl + "/api/mesh/" + meshId + "/messages/send");
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
@@ -2236,19 +2517,54 @@ public class MainActivity extends Activity {
     }
 
     private void sendMessage(String msg) {
+        long ts = System.currentTimeMillis();
+        // Stable idempotency key so the bounded retry below can re-POST without
+        // the Lion seeing duplicates (server dedups on client_msg_id).
+        final String clientMsgId = java.util.UUID.randomUUID().toString();
+        // Cache the plaintext keyed by ts BEFORE the network call so even if
+        // the send races with the next refresh we can still re-render it.
+        // postMeshMessage signs over the same ts so the lookup is exact.
+        cacheSentPlaintext(ts, msg);
+        // E2EE is per-peer: with no Lion pubkey yet, this reply goes in plaintext.
+        // Warn + allow — tell her immediately (the persistent banner also shows).
+        final boolean plaintext = !E2EEHelper.canEncrypt(gstr("focus_lock_lion_pubkey"));
+        // Render optimistically so she immediately sees what she typed; the
+        // delivery side-effects below are gated on the send actually landing.
+        handler.post(() -> {
+            addMessageBubble(msg, true, ts);
+            if (plaintext) android.widget.Toast.makeText(this,
+                "Sending unencrypted — Lion's key not yet exchanged",
+                android.widget.Toast.LENGTH_SHORT).show();
+        });
         executor.execute(() -> {
             String lionPubKey = gstr("focus_lock_lion_pubkey");
             E2EEHelper.EncryptedMessage enc = null;
             if (E2EEHelper.canEncrypt(lionPubKey)) {
                 enc = E2EEHelper.encrypt(msg, lionPubKey);
             }
-            postMeshMessage(msg, false, false, enc);
-            // Record check-in timestamp (any message counts as check-in)
-            Settings.Global.putLong(getContentResolver(), "focus_lock_checkin_timestamp",
-                System.currentTimeMillis());
-            // Mark any pending mandatory replies as answered
-            markMandatoryReplied();
-            handler.post(() -> addMessageBubble(msg, true, System.currentTimeMillis()));
+            // Bounded retry. Reuse ts + clientMsgId every attempt so the
+            // signature stays valid and the server dedups to one message.
+            boolean ok = false;
+            for (int attempt = 0; attempt < 3 && !ok; attempt++) {
+                if (attempt > 0) {
+                    try { Thread.sleep(1000L * attempt); }
+                    catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+                }
+                ok = postMeshMessageAt(msg, false, false, enc, ts, clientMsgId);
+            }
+            if (ok) {
+                // Only a delivered reply counts: record the check-in and clear
+                // any outstanding mandatory-reply obligation. Previously these
+                // ran unconditionally, so a failed send still cleared the
+                // obligation and suppressed the auto-lock while the Lion never
+                // received the reply.
+                Settings.Global.putLong(getContentResolver(), "focus_lock_checkin_timestamp", ts);
+                markMandatoryReplied();
+            } else {
+                handler.post(() -> android.widget.Toast.makeText(this,
+                    "Message not delivered — check your connection and resend.",
+                    android.widget.Toast.LENGTH_LONG).show());
+            }
         });
     }
 
@@ -2354,6 +2670,14 @@ public class MainActivity extends Activity {
                     }
                 }
 
+                // Surface unread count on the collapsed header so the bunny
+                // sees a "• N new" hint without having to expand to find out.
+                // Counted BEFORE we fire the read-acks below — once those land
+                // the next refresh will reset this to 0 naturally.
+                int unreadCount = toMarkRead.size();
+                prefs.edit().putInt("messages_unread_lion", unreadCount).apply();
+                handler.post(() -> applyMessagesExpanded());
+
                 // Ack reads — fire-and-forget per message.
                 for (String mid : toMarkRead) markMeshMessage(mid, "read");
 
@@ -2386,7 +2710,13 @@ public class MainActivity extends Activity {
                                 text = "[encrypted — missing key]";
                             }
                         } else if (m.optBoolean("encrypted", false) && fromBunny) {
-                            text = "[encrypted — sent by you]";
+                            // The bunny encrypted this to Lion's pubkey, so
+                            // they can't decrypt it themselves. Use the local
+                            // plaintext cache (keyed by ts) — the bubble
+                            // shown right after send put it there, so refresh
+                            // doesn't replace the visible text with a stub.
+                            String cached = lookupSentPlaintext(ts);
+                            text = cached != null ? cached : "[encrypted — sent by you]";
                         }
                         boolean isMandatory = m.optBoolean("mandatory_reply", false)
                             && !m.optBoolean("replied", false) && !deleted;
@@ -2465,6 +2795,70 @@ public class MainActivity extends Activity {
                 if (!mid.isEmpty()) markMeshMessage(mid, "replied");
             }
         } catch (Exception e) { android.util.Log.e("BunnyTasker", "Mark replied", e); }
+    }
+
+    /** Apply current messagesExpanded state to header + body visibility.
+     *  Toggles the wrapper (input row + 380dp scroll) rather than the inner
+     *  container so collapsed actually shrinks the section. */
+    private void applyMessagesExpanded() {
+        if (messagesBody != null) {
+            messagesBody.setVisibility(messagesExpanded ? View.VISIBLE : View.GONE);
+        }
+        if (messagesHeader != null) {
+            int unread = prefs.getInt("messages_unread_lion", 0);
+            String suffix = (!messagesExpanded && unread > 0) ? "  • " + unread + " new" : "";
+            messagesHeader.setText("MESSAGE YOUR LION" + suffix
+                + (messagesExpanded ? "  ▲" : "  ▼"));
+        }
+        updateMsgE2eeWarning();
+    }
+
+    /** Show the "not encrypted" banner when there's no Lion pubkey to encrypt to
+     *  (E2EE is per-peer; canEncrypt is false until pairing exchanges the key).
+     *  Warn + allow — replies still send in plaintext. UI thread only. */
+    private void updateMsgE2eeWarning() {
+        View warn = findViewById(fid("messages_e2ee_warning"));
+        if (warn != null) {
+            warn.setVisibility(E2EEHelper.canEncrypt(gstr("focus_lock_lion_pubkey")) ? View.GONE : View.VISIBLE);
+        }
+    }
+
+    /** Cache plaintext for a bunny-sent message keyed by ts. Lets the chat
+     *  thread render the bunny's own outgoing messages after the next refresh
+     *  wipes the bubble — the server-stored copy is ciphertext (encrypted to
+     *  Lion's pubkey) and the bunny can't decrypt it.
+     *
+     *  Kept in SharedPreferences (cap 200 entries) so it survives an app
+     *  restart but doesn't grow forever. Storing only the bunny's own
+     *  plaintext on the bunny's own device adds no new exposure surface —
+     *  the bunny already authored it. */
+    private static final int SENT_PLAINTEXT_CAP = 200;
+
+    private void cacheSentPlaintext(long ts, String plaintext) {
+        if (plaintext == null) return;
+        SharedPreferences sp = getSharedPreferences("bunny_sent_plain", MODE_PRIVATE);
+        SharedPreferences.Editor ed = sp.edit();
+        ed.putString("t" + ts, plaintext);
+        // Cheap eviction: when we cross the cap, drop the oldest ~50.
+        java.util.Map<String, ?> all = sp.getAll();
+        if (all.size() > SENT_PLAINTEXT_CAP) {
+            java.util.TreeSet<Long> tsKeys = new java.util.TreeSet<>();
+            for (String k : all.keySet()) {
+                if (k.startsWith("t")) {
+                    try { tsKeys.add(Long.parseLong(k.substring(1))); } catch (Exception ignored) {}
+                }
+            }
+            int toDrop = tsKeys.size() - (SENT_PLAINTEXT_CAP - 50);
+            java.util.Iterator<Long> it = tsKeys.iterator();
+            while (toDrop-- > 0 && it.hasNext()) ed.remove("t" + it.next());
+        }
+        ed.apply();
+    }
+
+    private String lookupSentPlaintext(long ts) {
+        if (ts <= 0) return null;
+        SharedPreferences sp = getSharedPreferences("bunny_sent_plain", MODE_PRIVATE);
+        return sp.getString("t" + ts, null);
     }
 
     private void addMessageBubble(String text, boolean fromBunny, long timestamp) {
@@ -2853,6 +3247,8 @@ public class MainActivity extends Activity {
     private void showBankingPicker() {
         executor.execute(() -> {
             java.util.List<String[]> installed = new java.util.ArrayList<>();
+            int totalCandidates = 0;
+            int regionsScanned = 0;
             android.content.pm.PackageManager pm = getPackageManager();
             try {
                 java.io.InputStream is = getAssets().open("banks.json");
@@ -2869,6 +3265,7 @@ public class MainActivity extends Activity {
                     if (region.startsWith("_")) continue;
                     Object val = root.opt(region);
                     if (!(val instanceof JSONArray)) continue;
+                    regionsScanned++;
                     JSONArray arr = (JSONArray) val;
                     for (int i = 0; i < arr.length(); i++) {
                         JSONObject b = arr.optJSONObject(i);
@@ -2876,21 +3273,35 @@ public class MainActivity extends Activity {
                         String pkg = b.optString("package", "");
                         String name = b.optString("name", pkg);
                         if (pkg.isEmpty() || !seen.add(pkg)) continue;
+                        totalCandidates++;
                         if (pm.getLaunchIntentForPackage(pkg) != null) {
                             installed.add(new String[]{pkg, name});
+                            android.util.Log.i("BunnyTasker", "banking-picker: matched " + name + " (" + pkg + ")");
                         }
                     }
                 }
+                android.util.Log.i("BunnyTasker", "banking-picker: " + regionsScanned + " regions, "
+                    + totalCandidates + " unique packages, " + installed.size() + " installed");
             } catch (Exception e) {
-                android.util.Log.w("BunnyTasker", "banks.json read failed: " + e.getMessage());
+                android.util.Log.w("BunnyTasker", "banks.json read failed: " + e.getMessage(), e);
             }
+            // Diagnostic: surface the count to the user — silent "no apps" was
+            // the original symptom; now tap count + per-package log line +
+            // user-visible counter make it obvious whether banks.json was
+            // read, how many candidates it had, and what the PackageManager
+            // saw as installed.
+            final int fTotal = totalCandidates;
+            final int fInstalled = installed.size();
             handler.post(() -> {
                 if (installed.isEmpty()) {
                     new android.app.AlertDialog.Builder(this)
                         .setTitle("No banking app detected")
-                        .setMessage("None of the apps in shared/banks.json appear to be installed. "
-                            + "Install your bank's app, then tap Pay again. "
-                            + "If your bank isn't on the list, send a PR to shared/banks.json.")
+                        .setMessage("Scanned banks.json: " + fTotal + " candidate packages.\n"
+                            + "PackageManager reports 0 of them installed.\n\n"
+                            + "If your bank IS installed, the most likely cause is that "
+                            + "Bunny Tasker can't see it through Android's package-visibility "
+                            + "filter. Check logcat for `banking-picker:` lines. "
+                            + "If your bank isn't in shared/banks.json, send a PR.")
                         .setPositiveButton("OK", null)
                         .show();
                     return;
