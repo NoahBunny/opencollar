@@ -81,6 +81,25 @@ else
     KEY_ALIAS="focuslock"
 fi
 
+# Optional embedded Tor (A3 — see docs/TOR-ONION.md). DEFAULT OFF: when
+# FOCUSLOCK_TOR_AAR is unset, TOR_CP/TOR_DEX_INPUTS/TOR_LIB_DIR stay empty and
+# the build is byte-identical to before.
+TOR_CP=""
+TOR_DEX_INPUTS=""
+TOR_LIB_DIR=""
+if [ -n "${FOCUSLOCK_TOR_AAR:-}" ]; then
+    echo "Embedding Tor from $FOCUSLOCK_TOR_AAR ..."
+    TOR_WORK="$(mktemp -d)"
+    unzip -o -q "$FOCUSLOCK_TOR_AAR" -d "$TOR_WORK"          # AAR → classes.jar + jni/<abi>/*.so
+    TOR_CP=":$TOR_WORK/classes.jar"
+    TOR_DEX_INPUTS="$TOR_WORK/classes.jar"
+    if [ -n "${FOCUSLOCK_JTORCTL_JAR:-}" ]; then
+        TOR_CP="$TOR_CP:$FOCUSLOCK_JTORCTL_JAR"
+        TOR_DEX_INPUTS="$TOR_DEX_INPUTS $FOCUSLOCK_JTORCTL_JAR"
+    fi
+    TOR_LIB_DIR="$TOR_WORK/jni"
+fi
+
 echo "Compiling resources..."
 aapt2 compile --dir res -o compiled.zip
 
@@ -89,16 +108,28 @@ aapt2 link -o unaligned.apk -I "$ANDROID_JAR" --manifest AndroidManifest.xml \
     --java src compiled.zip --auto-add-overlay
 
 echo "Compiling Java..."
-javac -encoding UTF-8 -source 17 -target 17 -classpath "$ANDROID_JAR" -d classes src/com/focuslock/*.java
+javac -encoding UTF-8 -source 17 -target 17 -classpath "$ANDROID_JAR$TOR_CP" -d classes src/com/focuslock/*.java
 
 echo "Dexing..."
-d8 --min-api 33 --output classes.zip classes/com/focuslock/*.class
+d8 --min-api 33 --output classes.zip classes/com/focuslock/*.class $TOR_DEX_INPUTS
 
 echo "Packaging..."
 cp unaligned.apk app.apk
 unzip -o classes.zip classes.dex
 zip -u app.apk classes.dex
-zipalign -f 4 app.apk aligned.apk
+if [ -n "$TOR_LIB_DIR" ] && [ -d "$TOR_LIB_DIR" ]; then
+    # Stage native libs under lib/<abi>/ and add uncompressed (-0) so Android can
+    # mmap them directly; zipalign -p page-aligns them below.
+    rm -rf libstage && mkdir -p libstage/lib
+    for abidir in "$TOR_LIB_DIR"/*/; do
+        abi="$(basename "$abidir")"
+        mkdir -p "libstage/lib/$abi"
+        cp "$abidir"*.so "libstage/lib/$abi/" 2>/dev/null || true
+    done
+    (cd libstage && zip -0 -r -q ../app.apk lib)
+    rm -rf libstage
+fi
+zipalign -p -f 4 app.apk aligned.apk
 
 echo "Signing ($([ "$RELEASE" = "1" ] && echo release || echo debug))..."
 apksigner sign --ks "$KEYSTORE_PATH" --ks-pass "pass:$KEYSTORE_PASS" \
