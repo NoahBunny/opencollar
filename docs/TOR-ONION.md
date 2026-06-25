@@ -8,12 +8,20 @@ service that Lion's Share dials like any other address — no account, no
 port-forward, no public IP — kept battery-cheap by leaving Tor **cold** and
 waking it with the existing zero-knowledge ntfy `{"v":N}` push.
 
-> Status: foundation laid (address advertisement, `.onion` candidate plumbing,
-> `maybeWakeBunny()` hook, gating). The native pieces below must be completed
-> **with the build toolchain in the loop** (`javac` against the real
-> tor-android API) and validated on devices/waydroid — do NOT commit the native
-> binary or control-port code without compiling it. This is why A3 sequences
-> after C2 (toolchain install).
+> Status (2026-06-26): **code-complete and compiling.** OnionKeys (crypto),
+> OnionControl (jtorctl helper), Collar + Lion `TorManager`, the `TorHook`
+> reflection bridge, the pairing/SOCKS/ntfy-wake integration, and the build.sh +
+> manifest plumbing are all written and build into both APKs against
+> tor-android 0.4.9.9.1 (libtor.so for arm64-v8a + x86_64 + armeabi-v7a + x86,
+> all Tor classes dexed, signed). The `.onion`/keyblob crypto is unit-verified
+> against a Python reference (OnionKeysTest, 6/6). The default-off build is
+> proven byte-clean (no libtor.so, no Tor classes; only the inert TorHook stub).
+> Requires build-tools >= 36.0.0 (`FOCUSLOCK_BUILD_TOOLS=36.0.0`) — the AAR ships
+> Java-24 bytecode. **REMAINING (C3, device/waydroid only):** runtime validation
+> of the control port (ADD_ONION + ClientAuthV3 acceptance, ONION_CLIENT_AUTH_ADD,
+> bootstrap latency, the foregroundServiceType question, client-auth rejection,
+> end-to-end onion round-trip + relay fallback). Keep `FOCUSLOCK_TOR_AAR` unset
+> in production until C3 passes.
 
 ## Why onion services (recap)
 

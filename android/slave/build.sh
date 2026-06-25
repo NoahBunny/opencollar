@@ -25,7 +25,10 @@ cd "$SCRIPT_DIR"
 
 # Auto-detect SDK paths
 ANDROID_SDK="${ANDROID_SDK:-/tmp/android-sdk}"
-BUILD_TOOLS="$ANDROID_SDK/build-tools/35.0.0"
+# Default build-tools 35.0.0; override with FOCUSLOCK_BUILD_TOOLS. The optional
+# A3 Tor AAR (tor-android 0.4.9.x) ships Java-24 bytecode, which only d8 from
+# build-tools >= 36.0.0 can dex — set FOCUSLOCK_BUILD_TOOLS=36.0.0 for Tor builds.
+BUILD_TOOLS="$ANDROID_SDK/build-tools/${FOCUSLOCK_BUILD_TOOLS:-35.0.0}"
 ANDROID_JAR="$ANDROID_SDK/platforms/android-36/android.jar"
 
 # Verify tools exist
@@ -97,7 +100,23 @@ if [ -n "${FOCUSLOCK_TOR_AAR:-}" ]; then
         TOR_CP="$TOR_CP:$FOCUSLOCK_JTORCTL_JAR"
         TOR_DEX_INPUTS="$TOR_DEX_INPUTS $FOCUSLOCK_JTORCTL_JAR"
     fi
+    if [ -n "${FOCUSLOCK_BCPROV_JAR:-}" ]; then          # raw Ed25519/X25519 + SHA3
+        TOR_CP="$TOR_CP:$FOCUSLOCK_BCPROV_JAR"
+        TOR_DEX_INPUTS="$TOR_DEX_INPUTS $FOCUSLOCK_BCPROV_JAR"
+    fi
     TOR_LIB_DIR="$TOR_WORK/jni"
+fi
+
+# Source set: the base app, plus the optional A3 Tor files ONLY when Tor is
+# enabled. OnionKeys/OnionControl/TorManager import bcprov/tor/jtorctl (on the
+# classpath solely when FOCUSLOCK_TOR_AAR is set), so they are excluded
+# otherwise. TorHook has no Tor imports and is always compiled (reflection),
+# keeping the default-off build green. find-based so the net/freehaven package
+# is picked up (the old src/com/focuslock/*.java glob missed it).
+if [ -n "${FOCUSLOCK_TOR_AAR:-}" ]; then
+    SRCS="$(find src -name '*.java')"
+else
+    SRCS="$(find src -name '*.java' ! -name 'OnionKeys.java' ! -name 'OnionControl.java' ! -name 'TorManager.java')"
 fi
 
 echo "Compiling resources..."
@@ -108,10 +127,10 @@ aapt2 link -o unaligned.apk -I "$ANDROID_JAR" --manifest AndroidManifest.xml \
     --java src compiled.zip --auto-add-overlay
 
 echo "Compiling Java..."
-javac -encoding UTF-8 -source 17 -target 17 -classpath "$ANDROID_JAR$TOR_CP" -d classes src/com/focuslock/*.java
+javac -encoding UTF-8 -source 17 -target 17 -classpath "$ANDROID_JAR$TOR_CP" -d classes $SRCS
 
 echo "Dexing..."
-d8 --min-api 33 --output classes.zip classes/com/focuslock/*.class $TOR_DEX_INPUTS
+d8 --min-api 33 --output classes.zip $(find classes -name '*.class') $TOR_DEX_INPUTS
 
 echo "Packaging..."
 cp unaligned.apk app.apk

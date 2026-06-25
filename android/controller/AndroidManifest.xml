@@ -16,6 +16,10 @@
          app and subscribe to topic "focuslock-<mesh_id>" — that delivers
          instant push without a foreground service in our codebase. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- A3 (optional embedded Tor): the tor-android TorService may run as a
+         foreground service. Harmless when the APK is built without
+         FOCUSLOCK_TOR_AAR (the service is never started). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
     <application
         android:label="Lion's Share"
@@ -41,6 +45,13 @@
             android:exported="false"
             android:theme="@style/AppTheme"
             android:screenOrientation="portrait" />
+
+        <!-- A3 (optional embedded Tor) — declared as the tor-android AAR does
+             (no manifest merger here). Inert without FOCUSLOCK_TOR_AAR. C3
+             device-validation: confirm the startForeground type under API 34+. -->
+        <service
+            android:name="org.torproject.jni.TorService"
+            android:exported="false" />
 
     </application>
 </manifest>
