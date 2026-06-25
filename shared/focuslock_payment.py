@@ -277,11 +277,14 @@ def _resolve_imap_creds(mesh_orders, static_fallback=None, identity=None):
     Precedence (most → least preferred):
       1. PaymentIdentity (server-only file written by Lion via the signed
          set-payee-identity endpoint — kept off the vault so Bunny apps
-         can't read Lion's email).
-      2. Legacy vault `payment_imap_*` (older deployments that haven't
-         migrated; deprecated path — Lion's email leaks across to Bunny
-         apps that decrypt the vault).
-      3. Static fallback tuple — relay's own IMAP config (operator mesh).
+         can't read Lion's email). This is the ONLY per-mesh source.
+      2. Static fallback tuple — relay's own IMAP config (operator mesh).
+
+    SECURITY (privacy isolation, 2026-06-25): the legacy vault `payment_imap_*`
+    source was REMOVED — reading Lion's IMAP creds out of the shared orders/vault
+    kept that leaky storage location alive (the vault is decryptable by the
+    Bunny's apps). `mesh_orders` is retained in the signature for callers but is
+    no longer read for credentials.
 
     Returns (host, user, pass) — any element may be empty string if unset.
     Caller checks completeness.
@@ -290,11 +293,6 @@ def _resolve_imap_creds(mesh_orders, static_fallback=None, identity=None):
         ih, iu, ip = identity.resolve_imap()
         if ih and iu and ip:
             return ih, iu, ip
-    dyn_host = str(mesh_orders.get("payment_imap_host", "") or "")
-    dyn_user = str(mesh_orders.get("payment_imap_user", "") or "")
-    dyn_pass = str(mesh_orders.get("payment_imap_pass", "") or "")
-    if dyn_host and dyn_user and dyn_pass:
-        return dyn_host, dyn_user, dyn_pass
     if static_fallback is not None:
         return static_fallback[0] or "", static_fallback[1] or "", static_fallback[2] or ""
     return "", "", ""
