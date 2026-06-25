@@ -841,6 +841,9 @@ public class MainActivity extends Activity {
      */
     private String postDirectWithFailover(String path, String body, java.util.Map<String, String> sigHeaders) {
         for (String base : orderedDirectCandidates()) {
+            // A3: wake the cold Collar only when we actually reach its .onion
+            // (cheaper LAN/Tailscale candidates ahead of it already failed).
+            if (base.contains(".onion")) maybeWakeBunny(base);
             String r = meshPost(base + path, body, sigHeaders);
             if (r != null) { bunnyDirectPreferred = base; return r; }
         }
@@ -979,9 +982,10 @@ public class MainActivity extends Activity {
             if (sigHeaders == null) {
                 return "{\"error\":\"direct post: missing lion_privkey — re-pair to generate one\"}";
             }
-            // Wake a cold Collar (Tor cold-start via ntfy) before probing its
-            // onion address, then try every direct candidate. No-op in A1.
-            maybeWakeBunny();
+            // Try every direct candidate (sticky/LAN/Tailscale first). The
+            // cold-Collar Tor wake fires lazily inside postDirectWithFailover —
+            // only when an .onion candidate is reached after the cheaper ones
+            // failed — so LAN actions never pay the wake latency.
             String r = postDirectWithFailover(path, jsonBody, sigHeaders);
             if (r != null) return r;
             // Every direct address was unreachable. Fall back to the shared
@@ -1020,10 +1024,70 @@ public class MainActivity extends Activity {
         return r;
     }
 
-    /** Cold-Collar wake hook (A3): publishes a zero-knowledge ntfy bump so a
-     *  battery-cold Collar brings its Tor onion up before we probe it. No-op
-     *  until Tor/ntfy-publish is wired (A3). */
-    private void maybeWakeBunny() { /* A3 */ }
+    /** Cold-Collar wake hook (A3): bump the onion-derived ntfy topic so a
+     *  battery-cold Collar boots Tor + republishes its onion, then bring our own
+     *  Tor up and authorize the onion. Called from postDirectWithFailover right
+     *  before an .onion candidate is dialed (i.e. LAN/Tailscale already failed),
+     *  so it never adds latency on the LAN path. No-op when Tor isn't bundled.
+     *  Blocking; runs on the executor thread. On timeout the caller falls through
+     *  to the relay. */
+    private void maybeWakeBunny(String onionBase) {
+        if (onionBase == null || !onionBase.contains(".onion") || !TorHook.available(this)) return;
+        try {
+            String host = new URL(onionBase).getHost();              // <56-b32>.onion
+            String onionNoSuffix = host.endsWith(".onion")
+                ? host.substring(0, host.length() - ".onion".length()) : host;
+            postNtfyWake(torWakeTopic(host));                        // zero-knowledge {"v":ts}
+            handler.post(() -> setStatus("Waking Collar…"));
+            TorHook.wakeAndAuthorize(this, onionNoSuffix, 120_000);
+        } catch (Exception e) {
+            android.util.Log.w("focusctl", "maybeWakeBunny", e);
+        }
+    }
+
+    /** Onion-derived ntfy wake topic, byte-for-byte matching the Collar's
+     *  TorManager.wakeTopicForOnion: "focuslock-w-" + base32(SHA256(onion))[0:16].
+     *  Implemented inline (no Tor/bcprov dep) so the default-off build compiles. */
+    private static String torWakeTopic(String onion) {
+        try {
+            byte[] h = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(onion.getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            final String B32 = "abcdefghijklmnopqrstuvwxyz234567";
+            StringBuilder sb = new StringBuilder();
+            int buf = 0, bits = 0;
+            for (byte b : h) {
+                buf = (buf << 8) | (b & 0xff); bits += 8;
+                while (bits >= 5) { sb.append(B32.charAt((buf >> (bits - 5)) & 31)); bits -= 5; }
+            }
+            if (bits > 0) sb.append(B32.charAt((buf << (5 - bits)) & 31));
+            return "focuslock-w-" + sb.substring(0, 16);
+        } catch (Exception e) { return ""; }
+    }
+
+    /** Fire a zero-knowledge ntfy wake bump {"v":<ts>} to the given topic. */
+    private void postNtfyWake(String topic) {
+        if (topic == null || topic.isEmpty()) return;
+        try {
+            String server = prefs.getString("ntfy_server", "https://ntfy.sh");
+            if (server.isEmpty()) server = "https://ntfy.sh";
+            HttpURLConnection c = (HttpURLConnection) new URL(server + "/" + topic).openConnection();
+            c.setConnectTimeout(5000); c.setReadTimeout(5000);
+            c.setRequestMethod("POST"); c.setDoOutput(true);
+            c.getOutputStream().write(("{\"v\":" + (System.currentTimeMillis() / 1000) + "}").getBytes());
+            c.getResponseCode();
+            c.disconnect();
+        } catch (Exception e) { android.util.Log.w("focusctl", "postNtfyWake", e); }
+    }
+
+    /** SOCKS proxy to the embedded Tor (A3). .onion hosts MUST be resolved by Tor
+     *  (SOCKS5h remote DNS): an HttpURLConnection opened through this proxy does
+     *  that; a hand-rolled java.net.Socket+SOCKS is SOCKS4-only and throws on
+     *  .onion. Default port 9050 (tor-android) — when Tor isn't bundled nothing
+     *  listens and the .onion candidate just fails over to the relay. */
+    private static java.net.Proxy torSocksProxy() {
+        return new java.net.Proxy(java.net.Proxy.Type.SOCKS,
+            new java.net.InetSocketAddress("127.0.0.1", 9050));
+    }
 
     /**
      * Phase D vault-mode write path. Encrypts {action, params} as a Lion-signed
@@ -2116,9 +2180,14 @@ public class MainActivity extends Activity {
     private String meshPost(String fullUrl, String body, java.util.Map<String, String> extraHeaders) {
         try {
             URL url = new URL(fullUrl);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(5000);
-            conn.setReadTimeout(10000);
+            // A3: route .onion through the embedded Tor SOCKS proxy (remote DNS),
+            // with longer timeouts than LAN — onion circuits are slow to build.
+            boolean onion = url.getHost().endsWith(".onion");
+            HttpURLConnection conn = onion
+                ? (HttpURLConnection) url.openConnection(torSocksProxy())
+                : (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(onion ? 15000 : 5000);
+            conn.setReadTimeout(onion ? 20000 : 10000);
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "application/json");
             if (!authToken.isEmpty()) {
@@ -2249,9 +2318,13 @@ public class MainActivity extends Activity {
     private String directGet(String fullUrl) {
         try {
             URL url = new URL(fullUrl);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(5000);
-            conn.setReadTimeout(10000);
+            // A3: .onion goes through the embedded Tor SOCKS proxy, longer timeouts.
+            boolean onion = url.getHost().endsWith(".onion");
+            HttpURLConnection conn = onion
+                ? (HttpURLConnection) url.openConnection(torSocksProxy())
+                : (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(onion ? 15000 : 5000);
+            conn.setReadTimeout(onion ? 20000 : 10000);
             conn.setRequestMethod("GET");
             int code = conn.getResponseCode();
             java.io.InputStream is = (code >= 200 && code < 300)
@@ -2815,7 +2888,13 @@ public class MainActivity extends Activity {
             // POST {lion_pubkey} to bunny's /api/pair. Try the primary (LAN)
             // URL first, then the Tailscale bootstrap fallback if it didn't
             // answer — so pairing completes even when LAN/Tailscale differ.
-            String body = "{\"lion_pubkey\":\"" + lionPubB64 + "\"}";
+            // A3: also send Lion's x25519 client-auth pubkey (base32) so the
+            // Collar can key its onion to us (ClientAuthV3). Empty + omitted when
+            // Tor isn't bundled, leaving the pair body unchanged.
+            String onionAuthPub = TorHook.authPubBase32(this);
+            String body = onionAuthPub.isEmpty()
+                ? "{\"lion_pubkey\":\"" + lionPubB64 + "\"}"
+                : "{\"lion_pubkey\":\"" + lionPubB64 + "\",\"onion_auth_pub\":\"" + onionAuthPub + "\"}";
             String pairedVia = bunnyUrl;
             String resp = meshPost(bunnyUrl + "/api/pair", body);
             if (resp == null && altUrl != null && !altUrl.isEmpty()) {

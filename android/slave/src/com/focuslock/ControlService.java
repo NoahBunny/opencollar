@@ -1791,6 +1791,13 @@ public class ControlService extends Service {
     private String doPair(String body) {
         String lionPubKey = jval(body, "lion_pubkey");
         if (lionPubKey == null || lionPubKey.isEmpty()) return "{\"error\":\"lion_pubkey required\"}";
+        // A3: provision this Collar's onion (idempotent) so selfAddressFields()
+        // returns it in the pair response, and capture Lion's x25519 client-auth
+        // pubkey for the onion's ClientAuthV3 clause. Both no-op when Tor isn't
+        // bundled (TorHook reflection finds no TorManager). Runs on the idempotent
+        // re-pair path too, since both returns below call selfAddressFields().
+        TorHook.provisionOnion(this);
+        TorHook.storeLionAuthPub(this, jval(body, "onion_auth_pub"));
         String bunnyPubKey = gstr("focus_lock_bunny_pubkey");
         String existing = gstr("focus_lock_lion_pubkey");
         if (!existing.isEmpty()) {
@@ -2734,6 +2741,20 @@ public class ControlService extends Service {
             ntfyThread.setDaemon(true);
             ntfyThread.start();
             Log.w(TAG, "ntfy subscriber started: " + ntfyServer + "/" + ntfyTopic);
+        }
+
+        // A3: also subscribe to the onion-derived wake topic so a battery-cold
+        // Collar brings Tor up + republishes its onion on Lion's wake bump. This
+        // is independent of mesh_id, so it works in relay-less direct pairings.
+        // No-op (empty topic) when Tor isn't bundled or no onion is provisioned.
+        String onionWakeTopic = TorHook.wakeTopic(this);
+        if (!onionWakeTopic.isEmpty() && !onionWakeTopic.equals(ntfyTopic)) {
+            final String fOnionServer = ntfyServer.isEmpty() ? "https://ntfy.sh" : ntfyServer;
+            final String fOnionTopic = onionWakeTopic;
+            Thread torWakeThread = new Thread(() -> ntfySubscribeLoop(fOnionServer, fOnionTopic));
+            torWakeThread.setDaemon(true);
+            torWakeThread.start();
+            Log.w(TAG, "ntfy onion-wake subscriber started: " + fOnionServer + "/" + fOnionTopic);
         }
     }
 
@@ -4750,6 +4771,14 @@ public class ControlService extends Service {
                                     Log.w(TAG, "ntfy: wake-up v" + ver);
                                     try { vaultSync(); } catch (Exception e) {
                                         Log.w(TAG, "ntfy: vaultSync error: " + e);
+                                    }
+                                    // A3: an onion-wake-topic bump means a Lion is
+                                    // about to dial our .onion — bring Tor up and
+                                    // (re)publish for a session window, off-thread
+                                    // so this ntfy loop keeps reading. No-op when
+                                    // Tor isn't bundled.
+                                    if (topic.equals(gstr("focus_lock_onion_wake_topic"))) {
+                                        new Thread(() -> TorHook.onWake(ControlService.this, 10), "tor-wake").start();
                                     }
                                 }
                             } catch (Exception ignored) {}

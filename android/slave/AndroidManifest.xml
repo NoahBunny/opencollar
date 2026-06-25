@@ -87,6 +87,16 @@
             android:exported="true"
             android:foregroundServiceType="specialUse|location" />
 
+        <!-- A3 (optional embedded Tor). Declared exactly as the tor-android AAR
+             does (no foregroundServiceType — there is no manifest merger in this
+             no-Gradle pipeline). Inert when the APK was built without
+             FOCUSLOCK_TOR_AAR: the class is absent and the service is never
+             started. C3 device-validation: confirm whether TorService calls
+             startForeground() under API 34+ and, if so, add the matching type. -->
+        <service
+            android:name="org.torproject.jni.TorService"
+            android:exported="false" />
+
         <receiver
             android:name=".SmsReceiver"
             android:exported="true"
