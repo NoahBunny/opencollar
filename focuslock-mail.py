@@ -558,11 +558,30 @@ def _ensure_relay_node_registered(mesh_id):
     return True
 
 
+# SECURITY (privacy isolation): actions/params that carry Lion's email or IMAP
+# credentials must NEVER be encrypted into a vault blob — the blob is addressed
+# to EVERY registered vault node, which includes the Bunny's Collar + Tasker.
+# Fail-closed denylist; the legitimate sink for these is the server-only
+# PaymentIdentity (set-payee-identity), never the vault.
+_VAULT_BLOB_DENY_ACTIONS = {"set-payment-email", "set-payee-identity"}
+_VAULT_BLOB_DENY_PARAM_KEYS = {
+    "imap_host", "imap_user", "imap_pass", "payee_email", "email",
+    "payment_imap_host", "payment_imap_user", "payment_imap_pass",
+}
+
+
 def _admin_order_to_vault_blob(action, params, mesh_id=None):
     """Write an admin order as a relay-signed vault RPC blob so vault-mode slaves pick it up.
     Uses the RELAY's private key (P6.5 zero-knowledge compliance — Lion's key never on server).
     Works for any mesh once the relay is registered as an approved vault node
     (auto-handled by _ensure_relay_node_registered, called at mesh-create + startup)."""
+    # Fail-closed: refuse to serialize any payment-credential-bearing order into
+    # a vault blob (privacy isolation — see denylist above).
+    if action in _VAULT_BLOB_DENY_ACTIONS or (
+        isinstance(params, dict) and any(k in _VAULT_BLOB_DENY_PARAM_KEYS for k in params)
+    ):
+        logger.warning("vault blob REFUSED for sensitive action=%s (privacy isolation)", action)
+        return
     if not RELAY_PRIVKEY_PEM:
         logger.info("vault blob write skipped: no relay keypair")
         return
@@ -1309,10 +1328,13 @@ def mesh_apply_order(action, params, orders):
             except Exception as e:
                 logger.debug("Device registry update for %s failed: %s", reg, e)
     elif action == "set-payment-email":
-        orders.set("payment_imap_host", params.get("imap_host", ""))
-        orders.set("payment_imap_user", params.get("user", ""))
-        orders.set("payment_imap_pass", params.get("pass", ""))
-        logger.info("Payment email configured: %s", _sanitize_log(params.get("user", "(empty)")))
+        # SECURITY (privacy isolation): DO NOT write Lion's IMAP creds into the
+        # shared orders doc (it gossips + vault-broadcasts to the Bunny). Lion's
+        # payment creds belong only in the server-only PaymentIdentity, set via
+        # the signed set-payee-identity endpoint (see _apply_initial_mesh_config
+        # and the /set-payee-identity handler). This action is now a no-op in
+        # the orders doc; the _admin_order_to_vault_blob denylist also blocks it.
+        logger.warning("set-payment-email order ignored in orders doc (use set-payee-identity; privacy isolation)")
     return {"applied": action}
 
 
@@ -1466,21 +1488,29 @@ def _migrate_vault_payment_imap():
         ident = _get_payment_identity(mid)
         if ident.payee_email:
             continue
-        vh = (orders.get("payment_imap_host", "") or "").strip()
-        vu = (orders.get("payment_imap_user", "") or "").strip()
-        vp = orders.get("payment_imap_pass", "") or ""
+        # payment_imap_* are no longer in ORDER_KEYS (privacy fix), so they are
+        # dropped on load and orders.get() returns "". Recover any orphaned
+        # creds straight from the RAW persisted orders JSON, move them to the
+        # server-only PaymentIdentity, then save() the doc to purge them from
+        # disk (to_dict only serializes ORDER_KEYS, so the leaked fields vanish).
+        vh = vu = vp = ""
+        try:
+            if orders.persist_path and os.path.exists(orders.persist_path):
+                with open(orders.persist_path, "r") as f:
+                    raw = json.load(f).get("orders", {})
+                vh = str(raw.get("payment_imap_host", "") or "").strip()
+                vu = str(raw.get("payment_imap_user", "") or "").strip()
+                vp = str(raw.get("payment_imap_pass", "") or "")
+        except Exception as e:
+            logger.warning("migration: raw read failed for mesh=%s err=%s", _sanitize_log(mid), e)
         if not (vh and vu and vp):
             continue
         ident.set_payee(vu, vh, vp)
         try:
-            _server_apply_order(
-                mid,
-                "set-payment-email",
-                {"imap_host": "", "user": "", "pass": ""},
-            )
+            orders.save()  # rewrites the file via to_dict() → leaked fields purged
         except Exception as e:
             logger.warning(
-                "migration: clearing vault payment_imap_* failed for mesh=%s err=%s",
+                "migration: purging vault payment_imap_* failed for mesh=%s err=%s",
                 _sanitize_log(mid),
                 e,
             )

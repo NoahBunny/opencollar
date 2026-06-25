@@ -587,8 +587,11 @@ class TestCheckPaymentEmails:
             )
         imap_ctor.assert_not_called()
 
-    def test_dynamic_mesh_creds_preferred_over_static(self, monkeypatch):
-        """When mesh_orders has payment_imap_* set, those win over static args."""
+    def test_vault_mesh_creds_ignored_static_used(self, monkeypatch):
+        """Privacy fix (2026-06-25): legacy payment_imap_* in mesh_orders is now
+        IGNORED — it used to leak Lion's email into the shared vault the Bunny
+        decrypts. The single-mesh legacy caller falls back to its static creds
+        instead of the vault values."""
         mesh = self._make_mesh_orders(
             paywall="50",
             imap_host="dyn.host",
@@ -623,7 +626,7 @@ class TestCheckPaymentEmails:
                 providers=_HARDCODED_FALLBACK,
                 iso_codes="USD|CAD",
             )
-        assert ctor_calls == ["dyn.host"]  # dynamic creds used
+        assert ctor_calls == ["static.host"]  # vault mesh creds IGNORED; static used
 
     def test_imap_exception_caught_and_loop_continues(self, monkeypatch):
         """A raised exception inside the try: body must be caught, logged, and sleep proceeds."""
@@ -945,7 +948,7 @@ class TestCheckPaymentEmailsMultiMesh:
         with pytest.raises(_StopLoop):
             check_payment_emails_multi(
                 check_interval=1,
-                mesh_contexts_fn=lambda: contexts,
+                mesh_contexts_fn=lambda: _attach_identities(contexts),
                 adb=adb,
                 providers=_HARDCODED_FALLBACK,
                 iso_codes="USD|CAD",
@@ -990,7 +993,7 @@ class TestCheckPaymentEmailsMultiMesh:
         with pytest.raises(_StopLoop):
             check_payment_emails_multi(
                 check_interval=1,
-                mesh_contexts_fn=lambda: contexts,
+                mesh_contexts_fn=lambda: _attach_identities(contexts),
                 adb=adb,
                 providers=_HARDCODED_FALLBACK,
                 iso_codes="USD|CAD",
@@ -1037,7 +1040,7 @@ class TestCheckPaymentEmailsMultiMesh:
         with pytest.raises(_StopLoop):
             check_payment_emails_multi(
                 check_interval=1,
-                mesh_contexts_fn=lambda: contexts,
+                mesh_contexts_fn=lambda: _attach_identities(contexts),
                 adb=adb,
                 providers=_HARDCODED_FALLBACK,
                 iso_codes="USD|CAD",
@@ -1096,7 +1099,7 @@ class TestCheckPaymentEmailsMultiMesh:
         with pytest.raises(_StopLoop):
             check_payment_emails_multi(
                 check_interval=1,
-                mesh_contexts_fn=lambda: contexts,
+                mesh_contexts_fn=lambda: _attach_identities(contexts),
                 adb=adb,
                 providers=_HARDCODED_FALLBACK,
                 iso_codes="USD|CAD",
@@ -1150,7 +1153,7 @@ class TestCheckPaymentEmailsMultiMesh:
         with pytest.raises(_StopLoop):
             check_payment_emails_multi(
                 check_interval=1,
-                mesh_contexts_fn=lambda: contexts,
+                mesh_contexts_fn=lambda: _attach_identities(contexts),
                 adb=adb,
                 providers=_HARDCODED_FALLBACK,
                 iso_codes="USD|CAD",
@@ -1209,7 +1212,7 @@ class TestCheckPaymentEmailsMultiMesh:
         with pytest.raises(_StopLoop):
             check_payment_emails_multi(
                 check_interval=1,
-                mesh_contexts_fn=contexts_fn,
+                mesh_contexts_fn=lambda: _attach_identities(contexts_fn()),
                 adb=adb,
                 providers=_HARDCODED_FALLBACK,
                 iso_codes="USD|CAD",
@@ -1279,10 +1282,36 @@ class TestCheckPaymentEmailsMultiMesh:
         assert any(c.kwargs.get("source") == "<b-only@x>" for c in ledger_b.add_entry.call_args_list)
 
 
+def _attach_identities(contexts):
+    """Privacy fix (2026-06-25): Lion's IMAP creds no longer flow through the
+    shared mesh_orders/vault (that leaked them to the Bunny's apps). The scanner
+    now sources creds ONLY from the per-mesh server-only PaymentIdentity
+    (ctx['payment_identity']). These tests stash creds in mesh_orders._store for
+    convenience; derive a fake PaymentIdentity from them so the contexts exercise
+    the real (safe) cred path. Idempotent."""
+    for ctx in contexts:
+        if "payment_identity" in ctx:
+            continue
+        mo = ctx.get("mesh_orders")
+        store = getattr(mo, "_store", {}) if mo is not None else {}
+        h = store.get("payment_imap_host", "")
+        u = store.get("payment_imap_user", "")
+        p = store.get("payment_imap_pass", "")
+        if h and u and p:
+            ident = MagicMock()
+            ident.resolve_imap.return_value = (h, u, p)
+            # Simulate a configured + matching Bunny payer allowlist so credits
+            # proceed (the scanner fails CLOSED when payer is unconfigured).
+            ident.payer_configured.return_value = True
+            ident.matched_payer_needle.return_value = "test-payer"
+            ctx["payment_identity"] = ident
+    return contexts
+
+
 def contexts_fn_factory(contexts):
     """Helper to bind a static contexts list to a callable. Defined at module
     level so multiple TestCheckPaymentEmailsMultiMesh tests can share it."""
-    return lambda: contexts
+    return lambda: _attach_identities(contexts)
 
 
 # ── PaymentIdentity + scanner payer-allow filter (tasks #1-#3) ──
