@@ -184,7 +184,12 @@ public class MainActivity extends Activity {
             showAppPinPrompt(appPin);
         }
 
-        if (meshId.isEmpty()) {
+        // First-run onboarding wizard (gold/regal). One-time, gated by the
+        // "lion_onboarded" pref. It returns a chosen connection method that we
+        // route into the existing doPairDirect()/doSetup() flows (onActivityResult).
+        if (!prefs.getBoolean("lion_onboarded", false)) {
+            startActivityForResult(new Intent(this, LionOnboardingActivity.class), REQ_LION_ONBOARD);
+        } else if (meshId.isEmpty()) {
             new Handler(Looper.getMainLooper()).post(this::doSetup);
         }
 

@@ -176,12 +176,21 @@ public class MainActivity extends Activity {
             sectionPairing.setVisibility(View.VISIBLE);
             sectionPaired.setVisibility(View.GONE);
             sectionMainContent.setVisibility(View.GONE);
+            // Always render the pairing QR FIRST so it's ready underneath — the
+            // onboarding must never gate the user out of pairing.
             renderPairingQr();
-            // No cable in production — when Bunny Tasker opens unpaired and
-            // the Collar isn't yet device-admin, kick the user into the
-            // Collar's Terms-of-Surrender screen so the full flow happens
-            // inside the normal UI path. Safe to call repeatedly.
-            maybeLaunchCollarConsent();
+            // First-run: show Bunny Tasker's own warm welcome (independent of the
+            // Collar's Terms of Surrender), THEN hand off to the Collar consent.
+            // Ordering: welcome → Terms of Surrender → device-admin.
+            if (!prefs.getBoolean("bunny_onboarded", false)) {
+                startActivityForResult(new Intent(this, BunnyWelcomeActivity.class), REQ_BUNNY_ONBOARD);
+            } else {
+                // No cable in production — when Bunny Tasker opens unpaired and
+                // the Collar isn't yet device-admin, kick the user into the
+                // Collar's Terms-of-Surrender screen so the full flow happens
+                // inside the normal UI path. Safe to call repeatedly.
+                maybeLaunchCollarConsent();
+            }
         }
         updateCrownConnectionState();
 
