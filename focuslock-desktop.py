@@ -610,8 +610,18 @@ def _try_sync(url, name, my_addrs, lion_pubkey):
     )
 
 
+_preferred_endpoint = None
+
+
+def _set_preferred_endpoint(url):
+    """Sticky last-good endpoint — remember what worked so the next tick tries
+    it first instead of paying a direct-probe timeout when off-network."""
+    global _preferred_endpoint
+    _preferred_endpoint = url
+
+
 def direct_sync_poll():
-    """Poll mesh — try configured endpoints in priority order, then discovered peers."""
+    """Poll mesh DIRECT-FIRST (LAN/Tailscale), relay/homelab as fallback."""
     logger.debug("Direct sync: polling (local v%s)", mesh_orders.version)
     _shared_direct_sync_poll(
         mesh_url=MESH_URL,
@@ -630,6 +640,8 @@ def direct_sync_poll():
         pin=_cfg.get("pin", "") or str(mesh_orders.get("pin", "")),
         get_tailscale_ip_fn=mesh.get_tailscale_ip_for_node,
         mesh_id=MESH_ID,
+        preferred_endpoint=_preferred_endpoint,
+        on_preferred_endpoint=_set_preferred_endpoint,
     )
 
 

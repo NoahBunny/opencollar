@@ -152,8 +152,8 @@
                 <Button android:id="@+id/btn_unlock_device" android:layout_width="0dp" android:layout_weight="1" android:layout_height="54dp" android:text="Release Device..." android:textSize="14sp" android:backgroundTint="#1a1a10" android:textColor="#b8960f" />
             </LinearLayout>
 
-            <!-- Body Check -->
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0e1a" android:padding="14dp" android:layout_marginBottom="12dp">
+            <!-- Body Check (gated: needs a homelab for Ollama photo verification) -->
+            <LinearLayout android:id="@+id/body_check_card" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0e1a" android:padding="14dp" android:layout_marginBottom="12dp">
                 <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\uD83E\uDE7A  BODY CHECK" android:textColor="#DAA520" android:textSize="10sp" android:letterSpacing="0.15" android:layout_marginBottom="6dp" />
                 <TextView android:id="@+id/body_check_status" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Not active" android:textColor="#888" android:textSize="12sp" android:layout_marginBottom="8dp" />
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">

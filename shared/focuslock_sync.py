@@ -31,6 +31,7 @@ def try_sync(
     on_orders_applied=None,
     pin="",
     mesh_id="",
+    timeout=5,
 ):
     """Attempt mesh sync with a single endpoint.
 
@@ -70,7 +71,7 @@ def try_sync(
         # Use account-based endpoint if mesh_id is configured
         sync_path = f"/api/mesh/{mesh_id}/sync" if mesh_id else "/mesh/sync"
         req = urllib.request.Request(f"{url}{sync_path}", data=payload, headers={"Content-Type": "application/json"})
-        resp = urllib.request.urlopen(req, timeout=5)
+        resp = urllib.request.urlopen(req, timeout=timeout)
         data = json.loads(resp.read())
 
         # Update peer info from response
@@ -133,14 +134,24 @@ def direct_sync_poll(
     pin="",
     get_tailscale_ip_fn=None,
     mesh_id="",
+    preferred_endpoint=None,
+    on_preferred_endpoint=None,
+    direct_timeout=2.5,
+    relay_timeout=5,
 ):
-    """Poll mesh endpoints in priority order, then discovered peers.
+    """Poll mesh endpoints DIRECT-FIRST, then fall back to the relay.
 
-    Tries endpoints in this order:
-        1. HTTPS mesh URL (cloud relay)
-        2. Homelab (LAN server)
-        3. Configured phone addresses
-        4. Tailscale IPs for known peers
+    Endpoint priority (homelab demoted to optional last; direct is primary):
+        1. Configured phone addresses (direct LAN)
+        2. Tailscale IPs for known peers (direct, cross-network P2P)
+        3. (A3) .onion addresses via the local Tor SOCKS proxy
+        4. HTTPS mesh URL (shared cloud relay — fallback)
+        5. Homelab (optional self-hosted server — last)
+
+    A sticky last-good endpoint (preferred_endpoint) is tried first so we don't
+    pay a direct-probe timeout on every tick when off-network; the endpoint that
+    succeeds is reported back via on_preferred_endpoint. Direct probes use a
+    short timeout (direct_timeout) so the fall-through to the relay stays snappy.
 
     Stops after the first successful sync.
 
@@ -161,6 +172,11 @@ def direct_sync_poll(
         pin: Mesh PIN.
         get_tailscale_ip_fn: Optional callable(node_id) -> IP string.
         mesh_id: Account-based mesh ID for server endpoints.
+        preferred_endpoint: Last-good endpoint URL to try first (or None).
+        on_preferred_endpoint: Optional callback(url_or_None) recording the
+            endpoint that just succeeded (or None when all failed).
+        direct_timeout: Per-probe timeout (s) for direct LAN/Tailscale/onion.
+        relay_timeout: Per-probe timeout (s) for the relay/homelab.
 
     Returns:
         True if any endpoint responded, False if all failed.
@@ -182,29 +198,38 @@ def direct_sync_poll(
         pin=pin,
     )
 
-    # 1. HTTPS mesh URL (if configured) — uses account-based endpoint if mesh_id set
-    if mesh_url and try_sync(mesh_url, "mesh", mesh_id=mesh_id, **common):
-        return True
-
-    # 2. Homelab (if configured) — also uses account-based endpoint
-    if homelab_url and try_sync(homelab_url, "homelab", mesh_id=mesh_id, **common):
-        return True
-
-    # 3. Phone addresses (if configured)
+    # Build the ordered candidate list as (url, name, mesh_id, timeout) tuples.
+    # Direct paths first (short timeout); relay/homelab last (longer timeout).
+    candidates = []
     for addr in phone_addresses:
-        url = f"http://{addr}:{phone_port}"
-        if try_sync(url, "phone", **common):
-            return True
-
-    # 4. Tailscale IPs for known peers
+        candidates.append((f"http://{addr}:{phone_port}", "phone", "", direct_timeout))
     if get_tailscale_ip_fn:
         for peer in mesh_peers.get_all_except(node_id):
             ts_ip = get_tailscale_ip_fn(peer.node_id)
             if ts_ip:
-                url = f"http://{ts_ip}:{peer.port}"
-                if try_sync(url, f"ts:{peer.node_id}", **common):
-                    return True
+                candidates.append((f"http://{ts_ip}:{peer.port}", f"ts:{peer.node_id}", "", direct_timeout))
+    # A3 inserts .onion endpoints here (direct, via the Tor SOCKS proxy).
+    if mesh_url:
+        candidates.append((mesh_url, "mesh", mesh_id, relay_timeout))
+    if homelab_url:
+        candidates.append((homelab_url, "homelab", mesh_id, relay_timeout))
 
+    # Sticky last-good: promote the preferred endpoint to the front so we skip
+    # dead direct probes when we already know what works.
+    if preferred_endpoint:
+        promoted = [c for c in candidates if c[0] == preferred_endpoint]
+        if promoted:
+            rest = [c for c in candidates if c[0] != preferred_endpoint]
+            candidates = promoted + rest
+
+    for url, name, mid, timeout in candidates:
+        if try_sync(url, name, mesh_id=mid, timeout=timeout, **common):
+            if on_preferred_endpoint:
+                on_preferred_endpoint(url)
+            return True
+
+    if on_preferred_endpoint:
+        on_preferred_endpoint(None)
     return False
 
 

@@ -1800,7 +1800,7 @@ public class ControlService extends Service {
             if (existing.equals(lionPubKey)) {
                 Log.i(TAG, "doPair: idempotent re-pair from same lion key");
                 return "{\"ok\":true,\"action\":\"already-paired\",\"bunny_pubkey\":\"" + esc(bunnyPubKey)
-                    + "\",\"sms_token\":\"" + esc(ensureSmsToken()) + "\"}";
+                    + "\",\"sms_token\":\"" + esc(ensureSmsToken()) + "\"" + selfAddressFields() + "}";
             }
             // Different key → genuine conflict. The Collar is already paired
             // to a different Lion; no in-app recovery path exists by design
@@ -1818,7 +1818,7 @@ public class ControlService extends Service {
         Log.i(TAG, "PAIRED with Lion. Key fingerprint: " +
             lionPubKey.substring(0, Math.min(8, lionPubKey.length())) + "...");
         return "{\"ok\":true,\"action\":\"paired\",\"bunny_pubkey\":\"" + esc(bunnyPubKey)
-            + "\",\"sms_token\":\"" + esc(ensureSmsToken()) + "\"}";
+            + "\",\"sms_token\":\"" + esc(ensureSmsToken()) + "\"" + selfAddressFields() + "}";
     }
 
     // doPairReset removed 2026-04-24: the bunny-initiated pair reset was a
@@ -2673,6 +2673,13 @@ public class ControlService extends Service {
                 } catch (Exception e) {
                     Log.e(TAG, "Mesh gossip error", e);
                 }
+                try {
+                    // Serverless recurring tribute: when no homelab is driving
+                    // weekly charges, the Collar fires them on-device.
+                    maybeFireLocalSubscriptionCharge();
+                } catch (Exception e) {
+                    Log.e(TAG, "Local subscription charge error", e);
+                }
                 // Vault sync + runtime push run when vault mode is on.
                 // In Phase B/C the vault was an additive read path. Phase D
                 // promotes the slave to a vault writer for runtime state, so
@@ -3296,6 +3303,57 @@ public class ControlService extends Service {
         return "{\"ok\":true,\"action\":\"" + esc(action) + "\",\"orders_version\":" + newVer + "}";
     }
 
+    /**
+     * Direct-mode (no-homelab) weekly subscription charger. The Collar already
+     * APPLIES `subscribe-charge` orders (bumps paywall, advances sub_due); this
+     * is the on-device DRIVER that fires the charge when sub_due passes, so
+     * recurring tribute works fully serverless.
+     *
+     * Disabled when a webhook host (homelab) is configured — the homelab's
+     * server-side ticker is then the single authoritative charger, avoiding a
+     * double charge. Idempotent: advances sub_due by 7 days from the previous
+     * due (so a brief offline gap still charges), but caps catch-up to one
+     * cycle so a long-powered-off device doesn't lump-charge months at once.
+     * Runtime state (paywall/sub_due) propagates to Lion via /mesh/status and
+     * the vault runtime push, so no orders-version bump is needed.
+     */
+    private void maybeFireLocalSubscriptionCharge() {
+        // Homelab present → its server-side ticker is the charger.
+        if (!gstr("focus_lock_webhook_host").isEmpty()) return;
+        String tier = gstr("focus_lock_sub_tier");
+        if (tier == null || tier.isEmpty()) return;  // no active subscription
+        tier = tier.toLowerCase();
+        int amt;
+        if ("bronze".equals(tier)) amt = 25;
+        else if ("silver".equals(tier)) amt = 35;
+        else if ("gold".equals(tier)) amt = 50;
+        else return;
+
+        long now = System.currentTimeMillis();
+        final long WEEK = 7L * 24 * 3600 * 1000;
+        long due = Settings.Global.getLong(getContentResolver(), "focus_lock_sub_due", 0);
+        if (due == 0) {
+            // First tick after subscribing — the subscribe action already
+            // charged once; schedule the next due a week out, don't re-charge.
+            Settings.Global.putLong(getContentResolver(), "focus_lock_sub_due", now + WEEK);
+            return;
+        }
+        if (now < due) return;  // not due yet
+
+        String pw = gstr("focus_lock_paywall");
+        int curPw = 0;
+        try { curPw = Integer.parseInt(pw); } catch (Exception e) {}
+        Settings.Global.putString(getContentResolver(), "focus_lock_paywall", String.valueOf(curPw + amt));
+
+        long newDue = due + WEEK;
+        if (newDue < now) newDue = now + WEEK;  // cap catch-up to a single cycle
+        Settings.Global.putLong(getContentResolver(), "focus_lock_sub_due", newDue);
+        long totalOwed = Settings.Global.getLong(getContentResolver(), "focus_lock_sub_total_owed", 0);
+        Settings.Global.putLong(getContentResolver(), "focus_lock_sub_total_owed", totalOwed + amt);
+        Settings.Global.putLong(getContentResolver(), "focus_lock_sub_last_charged", now);
+        Log.i(TAG, "on-device subscription charge: " + tier + " +$" + amt + " (serverless), next due " + newDue);
+    }
+
     private String handleMeshStatus() {
         String nodeId = gstr("focus_lock_mesh_node_id");
         if (nodeId.isEmpty()) nodeId = "pixel";
@@ -3351,6 +3409,10 @@ public class ControlService extends Service {
         sb.append(",\"offer\":\"").append(esc(offer)).append("\"");
         sb.append(",\"offer_status\":\"").append(esc(offerStatus)).append("\"");
         sb.append(",\"sub_tier\":\"").append(esc(subTier)).append("\"");
+        // Advertise our own reachable addresses so Lion's Share can refresh its
+        // direct-failover candidate list (DHCP/WiFi self-heal). Advisory only —
+        // status security core above is signed; addresses are not load-bearing.
+        sb.append(selfAddressFields());
         sb.append(",\"nodes\":{\"").append(esc(nodeId)).append("\":{\"type\":\"phone\",\"online\":true,\"orders_version\":")
           .append(meshVersion.get()).append(",\"status\":{\"escapes\":")
           .append(escapes).append("}}");
@@ -4506,6 +4568,39 @@ public class ControlService extends Service {
                 pos = colonPos + 1;
             }
         }
+    }
+
+    /** Best-effort Tailscale (tun*) IPv4 address, or "" if Tailscale isn't up. */
+    private String getTailscaleIp() {
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> nets = java.net.NetworkInterface.getNetworkInterfaces();
+            while (nets != null && nets.hasMoreElements()) {
+                java.net.NetworkInterface ni = nets.nextElement();
+                if (ni.getName() != null && ni.getName().startsWith("tun")) {
+                    java.util.Enumeration<java.net.InetAddress> addrs = ni.getInetAddresses();
+                    while (addrs.hasMoreElements()) {
+                        java.net.InetAddress a = addrs.nextElement();
+                        if (a instanceof java.net.Inet4Address) return a.getHostAddress();
+                    }
+                }
+            }
+        } catch (Exception e) {}
+        return "";
+    }
+
+    /**
+     * Reachable-address advertisement appended to the /api/pair response and the
+     * /mesh/status body. Lets Lion's Share build a multi-address failover list
+     * (LAN, Tailscale, .onion) and self-heal when an address changes (DHCP/WiFi).
+     * The `.onion` is empty until the Collar has provisioned its onion key (A3).
+     * These fields are advisory transport hints — every order and status remains
+     * end-to-end RSA-signed, so a tampered address can DoS but never forge.
+     */
+    private String selfAddressFields() {
+        return ",\"addresses\":" + getLocalAddressesJson()
+            + ",\"tailscale_ip\":\"" + esc(getTailscaleIp()) + "\""
+            + ",\"onion\":\"" + esc(gstr("focus_lock_onion_addr")) + "\""
+            + ",\"direct_port\":" + PORT;
     }
 
     /** Get current local IP addresses as a JSON array string, refreshed each call. */
