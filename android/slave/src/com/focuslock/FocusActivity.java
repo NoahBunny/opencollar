@@ -433,7 +433,13 @@ public class FocusActivity extends Activity {
         new Thread(() -> {
             String photoBase64 = captureSelfieSilent();
             String host = webhookHost();
-            if (host.isEmpty()) return;  // No webhook configured — skip silently
+            if (host.isEmpty()) {
+                // No homelab → don't silently drop the evidence. Queue the text
+                // for Bunny Tasker to deliver into the Lion's in-app inbox (the
+                // serverless "evidence log") via its signed message channel.
+                enqueueEvidenceForLion(webhookPath, textJson);
+                return;
+            }
             // Audit 2026-04-27 H-2: every evidence webhook is now slave-signed.
             // SlaveSigner.signAndAttach merges mesh_id/node_id/ts/signature
             // into the body and returns null when prefs are missing (unpaired).
@@ -478,6 +484,38 @@ public class FocusActivity extends Activity {
                 } catch (Exception e) {}
             }
         }).start();
+    }
+
+    /** Serverless evidence log: when no homelab webhook host is configured,
+     *  queue the evidence text into a shared Settings.Global outbox that Bunny
+     *  Tasker drains into the Lion's in-app inbox (drainEvidenceOutbox). Reuses
+     *  the companion's already-signed message channel — no new server/signature
+     *  surface on the Collar. Capped to avoid unbounded growth if undrained. */
+    private void enqueueEvidenceForLion(String webhookPath, String textJson) {
+        try {
+            String type = webhookPath.startsWith("/webhook/")
+                ? webhookPath.substring("/webhook/".length()) : webhookPath;
+            org.json.JSONObject o = new org.json.JSONObject(textJson);
+            String text = o.optString("text", "");
+            if (text.isEmpty() && o.has("entries")) {
+                org.json.JSONArray ents = o.optJSONArray("entries");
+                if (ents != null) {
+                    StringBuilder sb = new StringBuilder();
+                    for (int i = 0; i < ents.length(); i++) { if (i > 0) sb.append("; "); sb.append(ents.optString(i)); }
+                    text = sb.toString();
+                }
+            }
+            if (text.isEmpty()) text = type;
+            String cur = gstr("focus_lock_evidence_outbox");
+            org.json.JSONArray arr = cur.isEmpty() ? new org.json.JSONArray() : new org.json.JSONArray(cur);
+            org.json.JSONObject e = new org.json.JSONObject();
+            e.put("ts", System.currentTimeMillis());
+            e.put("text", type + ": " + text);
+            arr.put(e);
+            while (arr.length() > 50) arr.remove(0);
+            android.provider.Settings.Global.putString(getContentResolver(),
+                "focus_lock_evidence_outbox", arr.toString());
+        } catch (Exception ex) { /* best effort */ }
     }
 
     /** Camera2 silent front camera capture. Returns base64 JPEG or empty string on failure. */

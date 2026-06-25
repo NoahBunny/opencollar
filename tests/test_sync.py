@@ -455,7 +455,9 @@ class TestDirectSyncPollPriority:
         defaults.update(overrides)
         return defaults
 
-    def test_mesh_url_first_success_short_circuits(self):
+    def test_phone_first_success_short_circuits(self):
+        # DIRECT-FIRST: a configured phone (LAN) is tried before the relay, even
+        # when mesh_url/homelab are also set. The relay is only a fallback now.
         ok_resp = _mock_response({"orders_version": 0})
         with patch("focuslock_sync.urllib.request.urlopen", return_value=ok_resp) as urlopen:
             ok = direct_sync_poll(
@@ -466,9 +468,62 @@ class TestDirectSyncPollPriority:
                 **self._common_kwargs(),
             )
         assert ok is True
-        # exactly one HTTP call — mesh_url succeeded, others skipped
+        # exactly one HTTP call — the phone (direct LAN) succeeded, relay skipped
+        assert urlopen.call_count == 1
+        assert urlopen.call_args.args[0].full_url == "http://10.0.0.5:8432/mesh/sync"
+
+    def test_relay_tried_only_after_direct_addresses_fail(self):
+        # phone fails → mesh_url (relay) is the fallback, tried after the phone.
+        ok_resp = _mock_response({"orders_version": 0})
+        with patch(
+            "focuslock_sync.urllib.request.urlopen",
+            side_effect=[OSError(), ok_resp],
+        ) as urlopen:
+            ok = direct_sync_poll(
+                mesh_url="https://relay.example",
+                homelab_url="http://homelab",
+                phone_addresses=["10.0.0.5"],
+                mesh_id="meshA",
+                **self._common_kwargs(),
+            )
+        assert ok is True
+        assert urlopen.call_count == 2
+        assert urlopen.call_args_list[0].args[0].full_url == "http://10.0.0.5:8432/mesh/sync"
+        assert urlopen.call_args_list[1].args[0].full_url == "https://relay.example/api/mesh/meshA/sync"
+
+    def test_preferred_endpoint_tried_first(self):
+        # Sticky last-good: the relay was preferred, so it's tried before the
+        # phone even though direct normally wins.
+        ok_resp = _mock_response({"orders_version": 0})
+        seen = []
+        with patch("focuslock_sync.urllib.request.urlopen", return_value=ok_resp) as urlopen:
+            ok = direct_sync_poll(
+                mesh_url="https://relay.example",
+                homelab_url="",
+                phone_addresses=["10.0.0.5"],
+                mesh_id="meshA",
+                preferred_endpoint="https://relay.example",
+                on_preferred_endpoint=seen.append,
+                **self._common_kwargs(),
+            )
+        assert ok is True
         assert urlopen.call_count == 1
         assert urlopen.call_args.args[0].full_url == "https://relay.example/api/mesh/meshA/sync"
+        assert seen == ["https://relay.example"]
+
+    def test_on_preferred_endpoint_none_when_all_fail(self):
+        seen = []
+        with patch("focuslock_sync.urllib.request.urlopen", side_effect=OSError()):
+            ok = direct_sync_poll(
+                mesh_url="https://relay",
+                homelab_url="",
+                phone_addresses=["10.0.0.5"],
+                mesh_id="",
+                on_preferred_endpoint=seen.append,
+                **self._common_kwargs(),
+            )
+        assert ok is False
+        assert seen == [None]
 
     def test_homelab_tried_when_mesh_url_fails(self):
         ok_resp = _mock_response({"orders_version": 0})
@@ -484,12 +539,12 @@ class TestDirectSyncPollPriority:
         assert urlopen.call_count == 2
         assert urlopen.call_args_list[1].args[0].full_url == "http://homelab/api/mesh/meshA/sync"
 
-    def test_phones_tried_in_order_after_http_failures(self):
+    def test_phones_tried_in_order_before_relay(self):
         ok_resp = _mock_response({"orders_version": 0})
-        # 1st (mesh_url) fail, 2nd (homelab) fail, 3rd (first phone) fail, 4th (second phone) success
+        # DIRECT-FIRST order: phone1 fail, phone2 fail, then relay (mesh_url) ok.
         with patch(
             "focuslock_sync.urllib.request.urlopen",
-            side_effect=[OSError(), OSError(), OSError(), ok_resp],
+            side_effect=[OSError(), OSError(), ok_resp],
         ) as urlopen:
             ok = direct_sync_poll(
                 mesh_url="https://relay",
@@ -499,10 +554,12 @@ class TestDirectSyncPollPriority:
                 **self._common_kwargs(phone_port=8432),
             )
         assert ok is True
-        assert urlopen.call_count == 4
-        # phone calls use legacy /mesh/sync (no mesh_id)
-        assert urlopen.call_args_list[2].args[0].full_url == "http://10.0.0.5:8432/mesh/sync"
-        assert urlopen.call_args_list[3].args[0].full_url == "http://10.0.0.6:8432/mesh/sync"
+        assert urlopen.call_count == 3
+        # phones come first, in order, using legacy /mesh/sync (no mesh_id)
+        assert urlopen.call_args_list[0].args[0].full_url == "http://10.0.0.5:8432/mesh/sync"
+        assert urlopen.call_args_list[1].args[0].full_url == "http://10.0.0.6:8432/mesh/sync"
+        # relay (mesh_url) only tried after both phones failed; mesh_id="" → legacy path
+        assert urlopen.call_args_list[2].args[0].full_url == "https://relay/mesh/sync"
 
     def test_tailscale_tried_when_provided_and_other_endpoints_fail(self):
         peers = PeerRegistry()

@@ -8,6 +8,14 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- POST_NOTIFICATIONS is runtime-granted on Android 13+; the manifest
+         declaration alone is not enough. Used by the in-app refresh path to
+         fire a heads-up notification when a fresh bunny message lands while
+         Lion's Share is backgrounded (process alive but Activity not on
+         screen). For Lion's Share fully closed → install the ntfy Android
+         app and subscribe to topic "focuslock-<mesh_id>" — that delivers
+         instant push without a foreground service in our codebase. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:label="Lion's Share"

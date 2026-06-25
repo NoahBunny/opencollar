@@ -169,10 +169,15 @@ ORDER_KEYS = {
     "streak_escapes_at_start": 0,  # escape count when streak began
     "streak_7d_claimed": 0,  # 1 if 7d bonus already applied this streak
     "streak_30d_claimed": 0,  # 1 if 30d bonus already applied this streak
-    # Payment email — Lion's IMAP creds (set via Lion's Share)
-    "payment_imap_host": "",
-    "payment_imap_user": "",
-    "payment_imap_pass": "",
+    # SECURITY (privacy isolation, 2026-06-25): Lion's IMAP email/password are
+    # DELIBERATELY NOT in ORDER_KEYS. They used to live here (payment_imap_*),
+    # which propagated them via signed gossip AND the encrypted vault blob to
+    # every mesh node — including the Bunny's Collar + Tasker, who could decrypt
+    # the vault. Lion's payment creds now live ONLY server-side in
+    # payment_identities/{mesh_id}.json (PaymentIdentity), written via the signed
+    # set-payee-identity endpoint and never serialized into the orders doc or a
+    # vault blob. Three adversarial audits confirmed the old path was a real
+    # Lion-email -> Bunny breach. Do NOT re-add payment_imap_* here.
     # Lifetime payout — server-authoritative, projected from payment_ledger.json.
     # Migrated 2026-04-15 from phone-local Settings.Global so it survives device
     # swap. Server IMAP bot increments on confirmed payment; vault propagates.
@@ -1610,6 +1615,11 @@ class PaymentIdentity:
         self.imap_host = ""
         self.imap_pass = ""
         self.imap_set_at = 0
+        # Lion's evidence/report recipient email — where compliments, gratitude,
+        # photos, etc. are delivered. Lion's own email; server-only (same trust
+        # boundary as payee_email — never readable by the Bunny's apps).
+        self.evidence_email = ""
+        self.evidence_set_at = 0
         self.payer_allow = []  # list[str] of substrings (case-insensitive)
         self.payer_set_at = 0
         self.persist_path = persist_path
@@ -1627,6 +1637,8 @@ class PaymentIdentity:
             self.imap_host = str(data.get("imap_host", "") or "")
             self.imap_pass = str(data.get("imap_pass", "") or "")
             self.imap_set_at = int(data.get("imap_set_at", 0) or 0)
+            self.evidence_email = str(data.get("evidence_email", "") or "")
+            self.evidence_set_at = int(data.get("evidence_set_at", 0) or 0)
             raw_allow = data.get("payer_allow", []) or []
             if isinstance(raw_allow, list):
                 self.payer_allow = [str(s) for s in raw_allow if s]
@@ -1648,6 +1660,8 @@ class PaymentIdentity:
                         "imap_host": self.imap_host,
                         "imap_pass": self.imap_pass,
                         "imap_set_at": self.imap_set_at,
+                        "evidence_email": self.evidence_email,
+                        "evidence_set_at": self.evidence_set_at,
                         "payer_allow": self.payer_allow,
                         "payer_set_at": self.payer_set_at,
                     },
@@ -1677,6 +1691,14 @@ class PaymentIdentity:
                 "payee_configured": bool(self.payee_email),
                 "imap_configured": bool(self.imap_host and self.imap_pass),
             }
+
+    def set_evidence_email(self, email: str) -> dict:
+        """Set the Lion's evidence/report recipient email (server-only)."""
+        with self.lock:
+            self.evidence_email = (email or "").strip()
+            self.evidence_set_at = int(time.time() * 1000)
+            self.save()
+            return {"evidence_configured": bool(self.evidence_email)}
 
     def set_payer_allow(self, allow: list) -> dict:
         with self.lock:

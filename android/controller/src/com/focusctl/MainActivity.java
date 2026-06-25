@@ -104,8 +104,24 @@ public class MainActivity extends Activity {
     private String activeBunnyLabel = "";
     private String pairMode = "";
     private String bunnyDirectUrl = "";
+    // Direct-first multi-address failover: the ordered set of base URLs the
+    // bunny's Collar is reachable at (LAN first, Tailscale, then .onion). The
+    // last address that worked is cached in bunnyDirectPreferred and tried
+    // first next time, so a paired bunny survives DHCP/WiFi/network changes
+    // without re-pairing. Populated at pair time from the Collar's advertised
+    // addresses and refreshed opportunistically from each signed /mesh/status.
+    // CopyOnWriteArrayList: read on the executor thread (failover) and mutated
+    // on the UI thread (opportunistic address refresh) — snapshot iteration
+    // avoids ConcurrentModificationException without explicit locking.
+    private java.util.List<String> bunnyDirectUrls = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private volatile String bunnyDirectPreferred = "";
+    private volatile String lastDirectGetBase = "";
     private String bunnyPubkeyB64 = "";
     private String smsToken = "";
+    // Optional homelab (self-hosted server) attached to the active bunny. When
+    // unset, homelab-only controls hide and direct-mode fallbacks take over.
+    private String homelabUrl = "";
+    private boolean homelabCaps = false;
 
     /** One row in the `bunnies` JSON array. */
     private static class BunnyEntry {
@@ -313,6 +329,9 @@ public class MainActivity extends Activity {
         }
         // Hide phone spinner (no longer needed — all via mesh relay)
         if (phoneSpinner != null) phoneSpinner.setVisibility(View.GONE);
+        // Homelab-only controls (payment email, body check) are hidden unless a
+        // homelab is attached to the active bunny.
+        applyHomelabGating();
         startStatusPolling();
     }
 
@@ -424,6 +443,12 @@ public class MainActivity extends Activity {
     }
 
     private void updateLiveStatus(String json) {
+        // Direct mode: the Collar's /mesh/status (verified in meshGet) carries
+        // its current reachable addresses. Merge them into the failover list so
+        // a DHCP/WiFi address change self-heals without re-pairing.
+        if ("direct".equals(pairMode) && json != null) {
+            mergeDirectCandidates(candidatesFromAdvertisement(json));
+        }
         isLocked = parseJsonBool(json, "locked");
         lastEscapes = parseJsonInt(json, "escapes");
         long timerMs = parseJsonLong(json, "timer_remaining_ms");
@@ -684,7 +709,8 @@ public class MainActivity extends Activity {
         SharedPreferences.Editor ed = prefs.edit();
         String[] fields = {
             "mesh_url", "mesh_id", "auth_token", "invite_code", "pin",
-            "vault_mode", "pair_mode", "bunny_direct_url", "bunny_pubkey_b64"
+            "vault_mode", "pair_mode", "bunny_direct_url", "bunny_direct_urls",
+            "bunny_pubkey_b64", "sms_token", "homelab_url", "homelab_caps"
         };
         for (String f : fields) ed.remove(bunnyKey(id, f));
         ed.apply();
@@ -702,8 +728,12 @@ public class MainActivity extends Activity {
             vaultMode = false;
             pairMode = "";
             bunnyDirectUrl = "";
+            bunnyDirectUrls = new java.util.concurrent.CopyOnWriteArrayList<>();
+            bunnyDirectPreferred = "";
             bunnyPubkeyB64 = "";
             smsToken = "";
+            homelabUrl = "";
+            homelabCaps = false;
             return;
         }
         // Find label from the list.
@@ -717,8 +747,148 @@ public class MainActivity extends Activity {
         vaultMode      = prefs.getBoolean(bunnyKey(activeBunnyId, "vault_mode"), false);
         pairMode       = prefs.getString(bunnyKey(activeBunnyId, "pair_mode"), "");
         bunnyDirectUrl = prefs.getString(bunnyKey(activeBunnyId, "bunny_direct_url"), "");
+        bunnyDirectUrls = new java.util.concurrent.CopyOnWriteArrayList<>(loadDirectUrls(activeBunnyId));
+        bunnyDirectPreferred = "";
         bunnyPubkeyB64 = prefs.getString(bunnyKey(activeBunnyId, "bunny_pubkey_b64"), "");
         smsToken       = prefs.getString(bunnyKey(activeBunnyId, "sms_token"), "");
+        homelabUrl     = prefs.getString(bunnyKey(activeBunnyId, "homelab_url"), "");
+        homelabCaps    = prefs.getBoolean(bunnyKey(activeBunnyId, "homelab_caps"), false);
+    }
+
+    /** A homelab (self-hosted server) uniquely powers IMAP payment auto-detect,
+     *  Ollama photo verification, evidence email, and ADB enforcement. When no
+     *  homelab is attached to the active bunny those controls hide and the
+     *  direct-mode fallbacks take over (manual photo review, on-device
+     *  subscription ticker, manual balance, in-app evidence log). */
+    private boolean homelabConfigured() {
+        return !homelabUrl.isEmpty() || homelabCaps;
+    }
+
+    /** Show/hide homelab-only controls per homelabConfigured(). Called after
+     *  view wiring (onCreate) and whenever the active bunny changes. UI thread. */
+    private void applyHomelabGating() {
+        int vis = homelabConfigured() ? View.VISIBLE : View.GONE;
+        View pe = findViewById(getId("btn_payment_email"));
+        if (pe != null) pe.setVisibility(vis);
+        View bc = findViewById(getId("body_check_card"));
+        if (bc != null) bc.setVisibility(vis);
+    }
+
+    /** Persist the optional homelab URL (from the Setup dialog) to the active
+     *  bunny slot and re-evaluate gating. Empty URL detaches the homelab. */
+    private void persistHomelab(EditText input) {
+        if (input == null) return;
+        String url = input.getText().toString().trim();
+        homelabUrl = url;
+        homelabCaps = !url.isEmpty();
+        SharedPreferences.Editor ed = prefs.edit();
+        if (!activeBunnyId.isEmpty()) {
+            ed.putString(bunnyKey(activeBunnyId, "homelab_url"), url);
+            ed.putBoolean(bunnyKey(activeBunnyId, "homelab_caps"), homelabCaps);
+        }
+        ed.putString("homelab_url", url);  // legacy/global compat
+        ed.apply();
+        applyHomelabGating();
+    }
+
+    /** Build the ordered direct-address candidate list for a bunny slot from the
+     *  newline-separated `bunny_direct_urls` pref (LAN first, .onion last),
+     *  falling back to the legacy single `bunny_direct_url`. De-duplicated. */
+    private java.util.List<String> loadDirectUrls(String id) {
+        java.util.ArrayList<String> out = new java.util.ArrayList<>();
+        String multi = prefs.getString(bunnyKey(id, "bunny_direct_urls"), "");
+        if (!multi.isEmpty()) {
+            for (String u : multi.split("\n")) {
+                u = u.trim();
+                if (!u.isEmpty() && !out.contains(u)) out.add(u);
+            }
+        }
+        String single = prefs.getString(bunnyKey(id, "bunny_direct_url"), "");
+        if (!single.isEmpty() && !out.contains(single)) out.add(single);
+        return out;
+    }
+
+    /** Persist the current candidate list back to the active bunny slot. */
+    private void persistDirectUrls() {
+        if (activeBunnyId.isEmpty()) return;
+        StringBuilder sb = new StringBuilder();
+        for (String u : bunnyDirectUrls) { if (sb.length() > 0) sb.append("\n"); sb.append(u); }
+        prefs.edit().putString(bunnyKey(activeBunnyId, "bunny_direct_urls"), sb.toString()).apply();
+    }
+
+    /** Candidate base URLs with the sticky last-good endpoint promoted to front. */
+    private java.util.List<String> orderedDirectCandidates() {
+        java.util.ArrayList<String> ordered = new java.util.ArrayList<>();
+        String pref = bunnyDirectPreferred;
+        if (pref != null && !pref.isEmpty() && bunnyDirectUrls.contains(pref)) ordered.add(pref);
+        for (String u : bunnyDirectUrls) if (!ordered.contains(u)) ordered.add(u);
+        return ordered;
+    }
+
+    /**
+     * Signed direct POST against every known address for the bunny's Collar
+     * (sticky last-good first, then LAN, Tailscale, .onion). The SAME signed
+     * body + headers are reused across candidates — we sign once and retry, so
+     * a single timestamp/nonce is presented to whichever address answers
+     * (preserving the Collar's replay protection). Returns the first HTTP
+     * response body, or null if every address was unreachable (caller then
+     * falls back to the relay).
+     */
+    private String postDirectWithFailover(String path, String body, java.util.Map<String, String> sigHeaders) {
+        for (String base : orderedDirectCandidates()) {
+            String r = meshPost(base + path, body, sigHeaders);
+            if (r != null) { bunnyDirectPreferred = base; return r; }
+        }
+        return null;
+    }
+
+    /** GET counterpart of postDirectWithFailover for the status endpoint. Does
+     *  NOT set the sticky preferred — the caller promotes the address only after
+     *  the bunny signature on the status verifies, so a tampered/forged address
+     *  can never become the preferred endpoint. */
+    private String getDirectWithFailover(String pathOnCollar) {
+        for (String base : orderedDirectCandidates()) {
+            String r = directGet(base + pathOnCollar);
+            if (r != null) { lastDirectGetBase = base; return r; }
+        }
+        return null;
+    }
+
+    /** Parse a Collar address advertisement (from a pair response or a signed
+     *  /mesh/status) into an ordered list of base URLs to try directly. */
+    private java.util.List<String> candidatesFromAdvertisement(String json) {
+        java.util.ArrayList<String> out = new java.util.ArrayList<>();
+        try {
+            org.json.JSONObject o = new org.json.JSONObject(json);
+            int port = o.optInt("direct_port", 8432);
+            if (port <= 0) port = 8432;
+            org.json.JSONArray arr = o.optJSONArray("addresses");
+            if (arr != null) {
+                for (int i = 0; i < arr.length(); i++) {
+                    String a = arr.optString(i, "").trim();
+                    if (!a.isEmpty()) out.add("http://" + a + ":" + port);
+                }
+            }
+            String ts = o.optString("tailscale_ip", "").trim();
+            if (!ts.isEmpty()) out.add("http://" + ts + ":" + port);
+            String onion = o.optString("onion", "").trim();
+            // .onion is routed through the embedded Tor SOCKS proxy in meshPost (A3).
+            if (!onion.isEmpty()) out.add("http://" + onion + ":" + port);
+        } catch (Exception e) {}
+        return out;
+    }
+
+    /** Merge freshly-advertised direct candidates into the list (append-only so
+     *  we never drop a known-good address), cap the list, and persist if
+     *  changed. Called only with VERIFIED status / trusted pair responses. */
+    private void mergeDirectCandidates(java.util.List<String> fresh) {
+        if (fresh == null || fresh.isEmpty()) return;
+        boolean changed = false;
+        for (String u : fresh) {
+            if (!bunnyDirectUrls.contains(u)) { bunnyDirectUrls.add(u); changed = true; }
+        }
+        while (bunnyDirectUrls.size() > 8) bunnyDirectUrls.remove(bunnyDirectUrls.size() - 1);
+        if (changed) persistDirectUrls();
     }
 
     /**
@@ -752,6 +922,7 @@ public class MainActivity extends Activity {
         handler.post(() -> {
             setStatus("Switched to " + activeBunnyLabel);
             refreshInbox();
+            applyHomelabGating();  // re-evaluate homelab-only controls for this slot
         });
     }
 
@@ -793,20 +964,32 @@ public class MainActivity extends Activity {
     // ── HTTP ──
 
     private String api(String path, String jsonBody) {
-        // Direct (serverless) mode: post directly to the bunny's Collar at <ip>:8432.
-        // This bypasses any mesh server entirely and works on LAN/Tailscale/VPN.
-        // pairMode / bunnyDirectUrl are instance vars loaded from the active
-        // bunny slot (see loadActiveBunny).
-        if ("direct".equals(pairMode) && !bunnyDirectUrl.isEmpty()) {
+        // DIRECT-FIRST (serverless): reach the bunny's Collar over every known
+        // address — LAN, Tailscale, and (A3) its .onion — preferring whichever
+        // worked last. This is the primary path; the relay below is only a
+        // fallback. pairMode / bunnyDirectUrls are loaded from the active bunny
+        // slot (see loadActiveBunny).
+        if ("direct".equals(pairMode) && !bunnyDirectUrls.isEmpty()) {
             java.util.Map<String, String> sigHeaders = buildDirectSigHeaders(path, jsonBody);
             if (sigHeaders == null) {
                 return "{\"error\":\"direct post: missing lion_privkey — re-pair to generate one\"}";
             }
-            String r = meshPost(bunnyDirectUrl + path, jsonBody, sigHeaders);
-            return r != null ? r : "{\"error\":\"connection failed (direct)\"}";
+            // Wake a cold Collar (Tor cold-start via ntfy) before probing its
+            // onion address, then try every direct candidate. No-op in A1.
+            maybeWakeBunny();
+            String r = postDirectWithFailover(path, jsonBody, sigHeaders);
+            if (r != null) return r;
+            // Every direct address was unreachable. Fall back to the shared
+            // relay if one is configured for this bunny (Tor-primary + relay-
+            // fallback); otherwise report the direct failure honestly.
+            if (meshUrl.isEmpty() || meshId.isEmpty()) {
+                return "{\"error\":\"connection failed (direct; no relay fallback configured)\"}";
+            }
+            android.util.Log.w("focusctl", "direct addresses unreachable — falling back to relay " + meshUrl);
+            // fall through to the relay/vault path below
         }
-        // Mesh-server mode: configured?
-        if (meshUrl.isEmpty() || meshId.isEmpty() || authToken.isEmpty()) {
+        // Mesh-server / relay mode: configured?
+        if (meshUrl.isEmpty() || meshId.isEmpty()) {
             return "{\"error\":\"not configured — run Setup\"}";
         }
         String action = path.replace("/api/", "");
@@ -816,17 +999,26 @@ public class MainActivity extends Activity {
         // mode we encrypt the order itself as a Lion-signed RPC blob and POST
         // it to /vault/{id}/append. The slave's vaultSync decrypts and
         // dispatches via handleMeshOrder (see ControlService.java vaultSync
-        // RPC dispatch branch).
+        // RPC dispatch branch). Vault mode needs no auth token, so it is also
+        // the relay-fallback path for a direct bunny.
         if (vaultMode) {
             return apiVault(action, jsonBody);
         }
 
-        // Mesh-server mode (legacy): proxy through the relay server
+        // Legacy non-vault relay proxy requires an auth token.
+        if (authToken.isEmpty()) {
+            return "{\"error\":\"not configured — run Setup\"}";
+        }
         String body = "{\"action\":\"" + action + "\",\"params\":" + jsonBody + "}";
         String r = meshPost(meshUrl + "/api/mesh/" + meshId + "/order", body);
         if (r == null) return "{\"error\":\"connection failed\"}";
         return r;
     }
+
+    /** Cold-Collar wake hook (A3): publishes a zero-knowledge ntfy bump so a
+     *  battery-cold Collar brings its Tor onion up before we probe it. No-op
+     *  until Tor/ntfy-publish is wired (A3). */
+    private void maybeWakeBunny() { /* A3 */ }
 
     /**
      * Phase D vault-mode write path. Encrypts {action, params} as a Lion-signed
@@ -1181,11 +1373,16 @@ public class MainActivity extends Activity {
     private static final int QR_SCAN_REQUEST = 9001;
     // ── Pair Direct: scan Bunny Tasker's pair-QR to fill IP + fingerprint ──
     private static final int PAIR_QR_SCAN_REQUEST = 9002;
+    // ── First-run onboarding wizard result ──
+    private static final int REQ_LION_ONBOARD = 9101;
     // Pending pair-QR fields — populated by the PAIR_QR_SCAN_REQUEST handler,
     // consumed + cleared by the next doPairDirect() dialog open.
     private String pendingPairIp = "";
     private String pendingPairPort = "";
     private String pendingPairFp = "";
+    // Tailscale URL from a scanned pair-QR, kept as a bootstrap fallback so
+    // pairing still completes if the LAN address isn't reachable.
+    private String pendingPairAltUrl = "";
 
     private void doWebRemoteScan() {
         // Try launching a QR scanner via Intent (ZXing Barcode Scanner, Google Lens, etc.)
@@ -1300,6 +1497,10 @@ public class MainActivity extends Activity {
                 pendingPairIp = ip;
                 pendingPairPort = String.valueOf(port);
                 pendingPairFp = fp;
+                // Keep the Tailscale address (no longer discarded) as a bootstrap
+                // fallback for the pair POST, and it joins the failover list once
+                // the Collar confirms the pairing.
+                pendingPairAltUrl = (!ts.isEmpty() && !ts.equals(ip)) ? ("http://" + ts + ":" + port) : "";
                 setStatus("QR scanned — verify fingerprint");
                 doPairDirect();  // re-open with fields pre-filled
             } catch (org.json.JSONException e) {
@@ -1926,10 +2127,11 @@ public class MainActivity extends Activity {
         // Direct (serverless) mode: hit the bunny's Collar status endpoint directly.
         // pairMode / bunnyDirectUrl are instance vars loaded from the active
         // bunny slot (see loadActiveBunny).
-        if ("direct".equals(pairMode) && !bunnyDirectUrl.isEmpty()
+        if ("direct".equals(pairMode) && !bunnyDirectUrls.isEmpty()
             && (path.equals("/mesh/status") || path.startsWith("/mesh/status?"))) {
-            // Hit the Collar's /mesh/status directly for the locked/escapes/paywall fields.
-            String resp = directGet(bunnyDirectUrl + "/mesh/status");
+            // Hit the Collar's /mesh/status over every known address (LAN,
+            // Tailscale, .onion) until one answers.
+            String resp = getDirectWithFailover("/mesh/status");
             if (resp == null) return null;
             // SECURITY: direct-mode status is plain LAN HTTP and was previously
             // unauthenticated — a LAN MITM could spoof locked/paywall/escapes.
@@ -1941,6 +2143,9 @@ public class MainActivity extends Activity {
                 android.util.Log.w("focusctl", "REJECTED direct /mesh/status — invalid/missing signature");
                 return null;
             }
+            // Status verified (or pre-pairing) — make the answering address the
+            // sticky preferred so the next order/status tries it first.
+            if (!lastDirectGetBase.isEmpty()) bunnyDirectPreferred = lastDirectGetBase;
             return resp;
         }
         if (meshUrl.isEmpty()) return null;
@@ -2278,11 +2483,21 @@ public class MainActivity extends Activity {
         View ipField = v.findViewById(getId("setup_tailscale_ip"));
         View lanField = v.findViewById(getId("setup_lan_ip"));
         View pinField = v.findViewById(getId("setup_pair_code"));
-        View httpsField = v.findViewById(getId("setup_https_url"));
         if (ipField != null) ipField.setVisibility(View.GONE);
         if (lanField != null) lanField.setVisibility(View.GONE);
         if (pinField != null) pinField.setVisibility(View.GONE);
-        if (httpsField != null) httpsField.setVisibility(View.GONE);
+
+        // Repurpose the (otherwise unused) HTTPS-URL field as the OPTIONAL
+        // homelab URL. Homelab is an advanced add-on — leaving it blank keeps
+        // the serverless direct experience; filling it unhides the IMAP/photo-
+        // AI/email controls (applyHomelabGating).
+        EditText homelabInput = (EditText) v.findViewById(getId("setup_https_url"));
+        if (homelabInput != null) {
+            homelabInput.setVisibility(View.VISIBLE);
+            homelabInput.setHint("Homelab URL (optional — enables IMAP, photo AI, email)");
+            homelabInput.setText(homelabUrl);
+        }
+        final EditText homelabInputFinal = homelabInput;
 
         if (serverInput != null) {
             serverInput.setHint("Server URL (e.g. https://your-mesh.example.com)");
@@ -2347,6 +2562,7 @@ public class MainActivity extends Activity {
                     .putString("mesh_url", sUrl)
                     .putBoolean("vault_mode", newVault)
                     .apply();
+                persistHomelab(homelabInputFinal);
                 setStatus("Creating mesh...");
                 final String fUrl = sUrl;
                 executor.execute(() -> createMesh(fUrl));
@@ -2358,6 +2574,7 @@ public class MainActivity extends Activity {
                     vaultMode = newVault;
                     prefs.edit().putBoolean("vault_mode", newVault).apply();
                 }
+                persistHomelab(homelabInputFinal);
                 doPairDirect();
             })
             .setNegativeButton("Save", (d, w) -> {
@@ -2383,6 +2600,7 @@ public class MainActivity extends Activity {
                     }
                 }
                 ed.apply();
+                persistHomelab(homelabInputFinal);
                 setStatus("Saved" + (vaultMode ? " (vault mode on)" : ""));
             }).show();
     }
@@ -2480,9 +2698,11 @@ public class MainActivity extends Activity {
                 if (ip.isEmpty()) { setStatus("Enter an IP"); return; }
                 if (port.isEmpty()) port = "8432";
                 final String bunnyUrl = "http://" + ip + ":" + port;
+                final String altUrl = pendingPairAltUrl;
+                pendingPairAltUrl = "";
                 final String expectedFp = fp;
                 setStatus("Pairing direct...");
-                executor.execute(() -> pairDirect(bunnyUrl, expectedFp));
+                executor.execute(() -> pairDirect(bunnyUrl, altUrl, expectedFp));
             })
             .setNegativeButton("Cancel", null)
             .show();
@@ -2531,7 +2751,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void pairDirect(String bunnyUrl, String expectedFingerprint) {
+    private void pairDirect(String bunnyUrl, String altUrl, String expectedFingerprint) {
         try {
             // Generate Lion's keypair if missing
             String lionPubB64 = prefs.getString("lion_pubkey_b64", "");
@@ -2549,9 +2769,17 @@ public class MainActivity extends Activity {
                     .apply();
             }
 
-            // POST {lion_pubkey} to bunny's /api/pair
+            // POST {lion_pubkey} to bunny's /api/pair. Try the primary (LAN)
+            // URL first, then the Tailscale bootstrap fallback if it didn't
+            // answer — so pairing completes even when LAN/Tailscale differ.
             String body = "{\"lion_pubkey\":\"" + lionPubB64 + "\"}";
+            String pairedVia = bunnyUrl;
             String resp = meshPost(bunnyUrl + "/api/pair", body);
+            if (resp == null && altUrl != null && !altUrl.isEmpty()) {
+                android.util.Log.w("focusctl", "pair POST to " + bunnyUrl + " failed; trying " + altUrl);
+                resp = meshPost(altUrl + "/api/pair", body);
+                if (resp != null) pairedVia = altUrl;
+            }
 
             if (resp == null) {
                 setStatus("Pair failed: connection error");
@@ -2616,11 +2844,25 @@ public class MainActivity extends Activity {
             // active. The slot gets a default label "bunny" which the user can
             // rename from Advanced → Bunnies.
             final String newId = addBunnySlot("bunny");
-            final String fBunnyUrl = bunnyUrl;
+            final String fBunnyUrl = pairedVia;
             final String fBunnyPubB64 = bunnyPubB64;
             final String fSmsToken = smsTokenResp;
+
+            // Build the direct-failover candidate list: the address that
+            // answered the pair POST (preferred), every address the Collar
+            // advertised (LAN/Tailscale/.onion), and the Tailscale bootstrap
+            // fallback. De-duplicated, newline-joined for bunny_direct_urls.
+            java.util.ArrayList<String> cands = new java.util.ArrayList<>();
+            cands.add(fBunnyUrl);
+            for (String c : candidatesFromAdvertisement(resp)) if (!cands.contains(c)) cands.add(c);
+            if (altUrl != null && !altUrl.isEmpty() && !cands.contains(altUrl)) cands.add(altUrl);
+            StringBuilder urlsJoined = new StringBuilder();
+            for (String c : cands) { if (urlsJoined.length() > 0) urlsJoined.append("\n"); urlsJoined.append(c); }
+            final String fUrls = urlsJoined.toString();
+
             prefs.edit()
                 .putString(bunnyKey(newId, "bunny_direct_url"), fBunnyUrl)
+                .putString(bunnyKey(newId, "bunny_direct_urls"), fUrls)
                 .putString(bunnyKey(newId, "bunny_pubkey_b64"), fBunnyPubB64)
                 .putString(bunnyKey(newId, "sms_token"), fSmsToken)
                 .putString(bunnyKey(newId, "pair_mode"), "direct")

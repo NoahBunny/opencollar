@@ -57,7 +57,7 @@ public class MainActivity extends Activity {
     private View messagesBody;
     private android.widget.ImageView qrCodeView;
     private EditText messageInput;
-    private Button btnPay, btnSend, btnFreeUnlock, btnShowQr, btnPrepay, btnSetupImap;
+    private Button btnPay, btnSend, btnFreeUnlock, btnShowQr, btnPrepay, btnSetupImap, btnSetupPayerIdentity;
     private TextView balanceAmount, balanceDetail, imapStatus, tierBadge, messagesHeader, payerIdentityStatus;
     // Collapsed by default — the messaging block runs to ~440dp (input row +
     // 380dp scroll) and was overwhelming the home view. User flips it open
@@ -66,6 +66,7 @@ public class MainActivity extends Activity {
     private boolean messagesExpanded = false;
     private static final int PICK_IMAGE = 1001;
     private static final int TAKE_PHOTO = 1002;
+    private static final int REQ_BUNNY_ONBOARD = 1003;
     private LinearLayout paymentHistory;
     private View balanceCard;
     private View statusBar;
@@ -201,9 +202,10 @@ public class MainActivity extends Activity {
         btnSetupImap.setOnClickListener(v -> doSetupImap());
 
         payerIdentityStatus = (TextView) findViewById(fid("payer_identity_status"));
-        Button btnSetupPayerIdentity = (Button) findViewById(fid("btn_setup_payer_identity"));
+        btnSetupPayerIdentity = (Button) findViewById(fid("btn_setup_payer_identity"));
         btnSetupPayerIdentity.setOnClickListener(v -> doSetupPayerIdentity());
         refreshPayerIdentityStatus();
+        applyHomelabGating();
         tierBadge = (TextView) findViewById(fid("tier_badge"));
         messagesHeader = (TextView) findViewById(fid("messages_header"));
         messagesExpanded = prefs.getBoolean("messages_expanded", false);
@@ -273,7 +275,10 @@ public class MainActivity extends Activity {
 
         // Start polling
         poller = () -> {
+            applyHomelabGating();  // UI-thread re-eval each tick (cheap; handles host set mid-session)
             executor.execute(() -> refreshStats());
+            executor.execute(this::drainEvidenceOutbox);  // serverless evidence → Lion's inbox
+            executor.execute(this::maybeSendPendingPayerIdentity);  // deferred onboarding payer identity
             handler.postDelayed(poller, 5000);
         };
         handler.post(poller);
@@ -1661,6 +1666,13 @@ public class MainActivity extends Activity {
         String task = gstr("focus_lock_deadline_task_text");
         String hint = gstr("focus_lock_deadline_task_proof_hint");
         String prompt = task + (hint.isEmpty() ? "" : " (" + hint + ")");
+        // No homelab Ollama to auto-verify → route to the Lion for manual
+        // approval instead of the (dead) /webhook/verify-photo. The task is held
+        // until the Lion replies "approve" (see maybeHandleDeadlineApproval).
+        if (gstr("focus_lock_webhook_host").isEmpty()) {
+            submitPhotoForLionReview(bitmap, prompt);
+            return;
+        }
         handler.post(() -> setDeadlineTaskStatus("Verifying photo..."));
         try {
             // Audit 2026-04-27 M-4: bunny-signed.
@@ -1708,9 +1720,57 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** Direct-mode (no-homelab) photo proof: there is no Ollama to auto-verify,
+     *  so save the proof locally and notify the Lion via the message channel,
+     *  holding the deadline until the Lion approves. Reuses postMeshMessage —
+     *  no new server surface. Blocking; call from an executor thread. */
+    private void submitPhotoForLionReview(Bitmap bitmap, String prompt) {
+        try {
+            java.io.File dir = new java.io.File(getFilesDir(), "deadline-proofs");
+            dir.mkdirs();
+            java.io.File f = new java.io.File(dir, "proof-" + System.currentTimeMillis() + ".jpg");
+            try (java.io.FileOutputStream fos = new java.io.FileOutputStream(f)) {
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, fos);
+            }
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "save proof failed", e);
+        }
+        Settings.Global.putString(getContentResolver(), "focus_lock_deadline_review_pending", "1");
+        String msg = "📸 Photo proof ready for: " + prompt
+            + "\nReply \"approve\" to clear it, or \"redo\" to send me back.";
+        boolean sent = postMeshMessage(msg, true, false, null);
+        final boolean fsent = sent;
+        handler.post(() -> setDeadlineTaskStatus(fsent
+            ? "Sent to your Lion for approval — waiting…"
+            : "Saved proof; couldn't reach your Lion (will retry next time)"));
+    }
+
+    /** Direct-mode photo review: clear the deadline on the Lion's "approve"
+     *  reply, or re-arm on "redo"/"reject". No-op unless a review is pending.
+     *  Called per unread Lion message from refreshMeshMessages (executor). */
+    private void maybeHandleDeadlineApproval(String lionText) {
+        if (!"1".equals(gstr("focus_lock_deadline_review_pending")) || lionText == null) return;
+        String t = lionText.trim().toLowerCase();
+        if (t.startsWith("approve") || t.startsWith("pass") || t.equals("ok")) {
+            Settings.Global.putString(getContentResolver(), "focus_lock_deadline_review_pending", "0");
+            postDeadlineClear();
+            handler.post(() -> setDeadlineTaskStatus("Approved by your Lion ✓ — task cleared"));
+        } else if (t.startsWith("redo") || t.startsWith("reject") || t.startsWith("re-arm") || t.startsWith("fail")) {
+            Settings.Global.putString(getContentResolver(), "focus_lock_deadline_review_pending", "0");
+            handler.post(() -> setDeadlineTaskStatus("Your Lion asked you to redo it"));
+        }
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_BUNNY_ONBOARD) {
+            // The warm welcome is done — now hand off to the Collar's Terms of
+            // Surrender exactly as before (regardless of skip/back). The welcome
+            // never replaces the ToS; it leads into it.
+            maybeLaunchCollarConsent();
+            return;
+        }
         if (resultCode != RESULT_OK) return;
 
         executor.execute(() -> {
@@ -1921,6 +1981,20 @@ public class MainActivity extends Activity {
             android.util.Log.w("BunnyTasker", "postSetPayerIdentity failed", e);
             handler.post(() -> statusText.setText("Save failed: " + e.getMessage()));
         }
+    }
+
+    /** IMAP credentials and payer-identity setup only do anything when a
+     *  homelab/server (webhook host) is configured — without one they POST into
+     *  an empty HOMELAB_URLS and silently no-op. Hide them so the companion UI
+     *  is honest; they reappear once a server is attached. Shared via the
+     *  Collar's Settings.Global focus_lock_webhook_host. */
+    private void applyHomelabGating() {
+        boolean homelab = !gstr("focus_lock_webhook_host").isEmpty();
+        int vis = homelab ? View.VISIBLE : View.GONE;
+        if (btnSetupImap != null) btnSetupImap.setVisibility(vis);
+        if (imapStatus != null) imapStatus.setVisibility(vis);
+        if (btnSetupPayerIdentity != null) btnSetupPayerIdentity.setVisibility(vis);
+        if (payerIdentityStatus != null) payerIdentityStatus.setVisibility(vis);
     }
 
     private void refreshPayerIdentityStatus() {
@@ -2436,6 +2510,65 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** Deferred payer-identity send: the Bunny welcome (BunnyWelcomeActivity)
+     *  collects the payer email/name BEFORE pairing, so it can't reach the
+     *  server-only payer allowlist yet. Once paired (mesh configured), send it
+     *  via the existing signed postSetPayerIdentity. Retries each poll until
+     *  postSetPayerIdentity records success (payer_identity_set_at), then clears
+     *  the pending flag. The payer identity never reaches the Lion's app.
+     *  Blocking — call from an executor thread. */
+    private void maybeSendPendingPayerIdentity() {
+        if (!prefs.getBoolean("payer_identity_pending", false)) return;
+        if (prefs.getLong("payer_identity_set_at", 0) > 0) {  // already set on server
+            prefs.edit().putBoolean("payer_identity_pending", false).apply();
+            return;
+        }
+        if (gstr("focus_lock_mesh_id").isEmpty() || gstr("focus_lock_mesh_url").isEmpty()
+                || gstr("focus_lock_mesh_node_id").isEmpty()) {
+            return;  // not paired yet — try again next poll
+        }
+        String raw = prefs.getString("payer_identity_text", "");
+        java.util.ArrayList<String> lines = new java.util.ArrayList<>();
+        for (String line : raw.split("\\r?\\n")) {
+            String t = line.trim();
+            if (!t.isEmpty()) lines.add(t);
+        }
+        if (lines.isEmpty()) {
+            prefs.edit().putBoolean("payer_identity_pending", false).apply();
+            return;
+        }
+        postSetPayerIdentity(lines);  // sets payer_identity_set_at on success → cleared next poll
+    }
+
+    /** Serverless evidence log: drain the Collar's shared evidence outbox
+     *  (focus_lock_evidence_outbox, populated by FocusActivity.enqueueEvidenceForLion
+     *  when no homelab is configured) into the Lion's in-app inbox via the signed
+     *  message channel. Best-effort: entries that fail to send are kept for the
+     *  next tick. Blocking — call from an executor thread. */
+    private void drainEvidenceOutbox() {
+        try {
+            String cur = gstr("focus_lock_evidence_outbox");
+            if (cur.isEmpty()) return;
+            // Only drain when Lion is reachable (mesh configured), else keep queued.
+            if (gstr("focus_lock_mesh_url").isEmpty() || gstr("focus_lock_mesh_id").isEmpty()) return;
+            JSONArray arr = new JSONArray(cur);
+            if (arr.length() == 0) { Settings.Global.putString(getContentResolver(), "focus_lock_evidence_outbox", ""); return; }
+            JSONArray remaining = new JSONArray();
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject e = arr.optJSONObject(i);
+                if (e == null) continue;
+                String text = e.optString("text", "");
+                if (text.isEmpty()) continue;
+                boolean sent = postMeshMessage("📋 " + text, false, false, null);
+                if (!sent) remaining.put(e);  // retry next tick
+            }
+            Settings.Global.putString(getContentResolver(), "focus_lock_evidence_outbox",
+                remaining.length() == 0 ? "" : remaining.toString());
+        } catch (Exception ex) {
+            android.util.Log.w("BunnyTasker", "drainEvidenceOutbox", ex);
+        }
+    }
+
     /** Roadmap #6: signed fetch of the per-mesh message log.
      *  Returns the raw JSONObject response {ok, messages[], since} or null on error.
      *  Caller derives unread/pinned/mandatory state locally from message fields —
@@ -2651,6 +2784,9 @@ public class MainActivity extends Activity {
                             notifText = decrypted != null ? decrypted : "[encrypted message]";
                         }
                         showLionMessageNotification(notifText, pinnedFlag, mandatoryFlag);
+                        // Direct-mode photo review: a Lion "approve"/"redo" reply
+                        // clears or re-arms a pending deadline-proof review.
+                        maybeHandleDeadlineApproval(notifText);
                         if (!mid.isEmpty()) toMarkRead.add(mid);
                     }
 
