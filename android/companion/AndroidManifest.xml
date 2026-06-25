@@ -34,6 +34,15 @@
             </intent-filter>
         </activity>
 
+        <!-- First-run warm welcome (started by MainActivity for result).
+             Standard launch mode so it returns its result to the singleTask
+             MainActivity. Independent of the Collar's Terms of Surrender. -->
+        <activity
+            android:name=".BunnyWelcomeActivity"
+            android:exported="false"
+            android:theme="@style/BunnyTheme"
+            android:screenOrientation="portrait" />
+
         <service
             android:name=".BunnyService"
             android:exported="false"
