@@ -73,7 +73,7 @@ class TestEmptyConfig:
         assert mail_module._apply_initial_mesh_config(mesh_id, {"random_key": "value"}) == []
 
 
-# ──────────────────────── set-payment-email ────────────────────────
+# ──────────────────────── payment email (server-only, isolated) ────────────────────────
 
 
 class TestPaymentEmail:
@@ -85,26 +85,36 @@ class TestPaymentEmail:
         # Missing pass
         assert mail_module._apply_initial_mesh_config(mesh_id, {"imap_host": "h", "imap_user": "x@y.z"}) == []
 
-    def test_all_three_present_applies(self, mail_module, mesh_id):
+    def test_all_three_present_goes_to_server_only_identity(self, mail_module, mesh_id):
+        # SECURITY (privacy isolation): IMAP creds must land in the server-only
+        # PaymentIdentity, NOT the shared orders doc (which gossips + vault-
+        # broadcasts to the Bunny). The applied action is set-payee-identity.
         applied = mail_module._apply_initial_mesh_config(
             mesh_id,
             {"imap_host": "imap.test", "imap_user": "lion@test", "imap_pass": "secret"},
         )
-        assert "set-payment-email" in applied
+        assert "set-payee-identity" in applied
+        assert "set-payment-email" not in applied
+        # NOT in the shared orders doc:
         orders = mail_module._orders_registry.get(mesh_id)
-        assert orders.get("payment_imap_host") == "imap.test"
-        assert orders.get("payment_imap_user") == "lion@test"
-        assert orders.get("payment_imap_pass") == "secret"
+        assert not orders.get("payment_imap_host")
+        assert not orders.get("payment_imap_user")
+        assert not orders.get("payment_imap_pass")
+        # IS in the server-only PaymentIdentity:
+        ident = mail_module._get_payment_identity(mesh_id)
+        host, user, pwd = ident.resolve_imap()
+        assert (host, user, pwd) == ("imap.test", "lion@test", "secret")
 
     def test_whitespace_stripped(self, mail_module, mesh_id):
         applied = mail_module._apply_initial_mesh_config(
             mesh_id,
             {"imap_host": "  h  ", "imap_user": "  u  ", "imap_pass": "p"},
         )
-        assert "set-payment-email" in applied
-        orders = mail_module._orders_registry.get(mesh_id)
-        assert orders.get("payment_imap_host") == "h"
-        assert orders.get("payment_imap_user") == "u"
+        assert "set-payee-identity" in applied
+        ident = mail_module._get_payment_identity(mesh_id)
+        host, user, _ = ident.resolve_imap()
+        assert host == "h"
+        assert user == "u"
 
 
 # ──────────────────────── set-tribute ────────────────────────
@@ -225,7 +235,7 @@ class TestCombined:
             },
         )
         assert set(applied) == {
-            "set-payment-email",
+            "set-payee-identity",
             "set-tribute",
             "subscribe",
             "set-bedtime",

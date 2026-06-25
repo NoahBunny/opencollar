@@ -1418,6 +1418,44 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_LION_ONBOARD) {
+            // Route the onboarding choice into the EXISTING pairing/setup flows —
+            // reuse, don't reinvent. Handles skip (no method) without stranding.
+            String method = data != null ? data.getStringExtra("method") : null;
+            if ("scan".equals(method)) {
+                try {
+                    Intent scan = new Intent("com.google.zxing.client.android.SCAN");
+                    scan.putExtra("SCAN_MODE", "QR_CODE_MODE");
+                    startActivityForResult(scan, PAIR_QR_SCAN_REQUEST);
+                } catch (Exception e) { doPairDirect(); }
+            } else if ("tailscale".equals(method) || "direct".equals(method)) {
+                doPairDirect();
+            } else if ("advanced".equals(method)) {
+                // Relay path: the onboarding collected the server URL + Lion's
+                // account/payment/evidence emails. If a server URL was given,
+                // create the mesh directly (emails ride the create body /
+                // initial_config — server-only, never the vault). Otherwise fall
+                // back to the manual Setup dialog.
+                String serverUrl = data != null ? data.getStringExtra("server_url") : null;
+                if (serverUrl != null && !serverUrl.trim().isEmpty()) {
+                    final String fUrl = serverUrl.trim();
+                    final String aEmail = data.getStringExtra("account_email");
+                    final String aPass = data.getStringExtra("account_pass");
+                    final String iHost = data.getStringExtra("imap_host");
+                    final String iUser = data.getStringExtra("imap_user");
+                    final String iPass = data.getStringExtra("imap_pass");
+                    final String evEmail = data.getStringExtra("evidence_email");
+                    meshUrl = fUrl;
+                    setStatus("Creating mesh…");
+                    executor.execute(() -> createMesh(fUrl, aEmail, aPass, iHost, iUser, iPass, evEmail));
+                } else {
+                    doSetup();
+                }
+            } else if (meshId.isEmpty()) {
+                doSetup();  // skipped & still unconfigured — don't strand the user
+            }
+            return;
+        }
         if (requestCode == QR_SCAN_REQUEST && resultCode == RESULT_OK && data != null) {
             String scannedUrl = data.getStringExtra("SCAN_RESULT");
             if (scannedUrl != null && scannedUrl.contains("/web-login")) {
@@ -2910,6 +2948,15 @@ public class MainActivity extends Activity {
     }
 
     private void createMesh(String serverUrl) {
+        createMesh(serverUrl, "", "", "", "", "", "");
+    }
+
+    /** Create a mesh, optionally seeding the Lion's account + email config from
+     *  onboarding. account_email/account_pass go in the create body (server-only
+     *  mesh record); the IMAP + evidence emails ride initial_config, which the
+     *  server routes to the server-only PaymentIdentity — never the vault. */
+    private void createMesh(String serverUrl, String accountEmail, String accountPass,
+                            String imapHost, String imapUser, String imapPass, String evidenceEmail) {
         try {
             // Generate RSA 2048 keypair
             KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
@@ -2918,8 +2965,26 @@ public class MainActivity extends Activity {
             String pubKey = android.util.Base64.encodeToString(kp.getPublic().getEncoded(), android.util.Base64.NO_WRAP);
             String privKey = android.util.Base64.encodeToString(kp.getPrivate().getEncoded(), android.util.Base64.NO_WRAP);
 
-            // POST /api/mesh/create
-            String body = "{\"lion_pubkey\":\"" + pubKey + "\"}";
+            // POST /api/mesh/create — seed account + email config (all optional).
+            StringBuilder bodyB = new StringBuilder("{\"lion_pubkey\":\"" + pubKey + "\"");
+            if (accountEmail != null && !accountEmail.isEmpty())
+                bodyB.append(",\"account_email\":\"").append(esc(accountEmail)).append("\"");
+            if (accountPass != null && !accountPass.isEmpty())
+                bodyB.append(",\"account_pass\":\"").append(esc(accountPass)).append("\"");
+            StringBuilder cfg = new StringBuilder();
+            if (imapHost != null && !imapHost.isEmpty() && imapUser != null && !imapUser.isEmpty()
+                    && imapPass != null && !imapPass.isEmpty()) {
+                cfg.append("\"imap_host\":\"").append(esc(imapHost)).append("\",")
+                   .append("\"imap_user\":\"").append(esc(imapUser)).append("\",")
+                   .append("\"imap_pass\":\"").append(esc(imapPass)).append("\"");
+            }
+            if (evidenceEmail != null && !evidenceEmail.isEmpty()) {
+                if (cfg.length() > 0) cfg.append(",");
+                cfg.append("\"evidence_email\":\"").append(esc(evidenceEmail)).append("\"");
+            }
+            if (cfg.length() > 0) bodyB.append(",\"initial_config\":{").append(cfg).append("}");
+            bodyB.append("}");
+            String body = bodyB.toString();
             URL url = new URL(serverUrl + "/api/mesh/create");
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setConnectTimeout(10000);

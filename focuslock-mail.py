@@ -1666,14 +1666,25 @@ def enforce_jail():
 from focuslock_evidence import send_evidence as _send_evidence_impl
 
 
-def send_evidence(text, evidence_type="compliment"):
-    """Convenience wrapper capturing module-level config."""
+def send_evidence(text, evidence_type="compliment", mesh_id=None):
+    """Convenience wrapper capturing module-level config. When mesh_id is given,
+    deliver to that mesh's Lion evidence email (server-only PaymentIdentity, set
+    in onboarding), falling back to the operator-wide PARTNER_EMAIL. The per-mesh
+    address is the Lion's own email and is never exposed to the Bunny's apps."""
+    recipient = PARTNER_EMAIL
+    if mesh_id:
+        try:
+            ev = (_get_payment_identity(mesh_id).evidence_email or "").strip()
+            if ev:
+                recipient = ev
+        except Exception:
+            pass
     _send_evidence_impl(
         text,
         evidence_type,
         mesh_orders=mesh_orders,
         adb=adb,
-        partner_email=PARTNER_EMAIL,
+        partner_email=recipient,
         smtp_host=SMTP_HOST,
         mail_user=MAIL_USER,
         mail_pass=MAIL_PASS,
@@ -1808,20 +1819,31 @@ def _apply_initial_mesh_config(mesh_id, cfg):
     if not isinstance(cfg, dict):
         return applied
 
-    # Payment email
+    # Payment email — route to the SERVER-ONLY PaymentIdentity (privacy
+    # isolation). NEVER via set-payment-email/_server_apply_order: that would
+    # write Lion's IMAP creds into the shared orders doc + an encrypted vault
+    # blob the Bunny can decrypt. set_payee() writes payment_identities/{mid}.json
+    # only — identical to the in-app /set-payee-identity endpoint.
     imap_host = (cfg.get("imap_host") or "").strip()
     imap_user = (cfg.get("imap_user") or "").strip()
     imap_pass = cfg.get("imap_pass") or ""
     if imap_host and imap_user and imap_pass:
         try:
-            _server_apply_order(
-                mesh_id,
-                "set-payment-email",
-                {"imap_host": imap_host, "user": imap_user, "pass": imap_pass},
-            )
-            applied.append("set-payment-email")
+            _get_payment_identity(mesh_id).set_payee(imap_user, imap_host, imap_pass)
+            applied.append("set-payee-identity")
         except Exception:
-            logger.exception("initial_config: set-payment-email failed")
+            logger.exception("initial_config: set-payee-identity failed")
+
+    # Evidence/report email — Lion's own; server-only PaymentIdentity (never
+    # vault). Set at onboarding so we don't need the controller registered as a
+    # vault node yet (unlike the signed set-evidence-email endpoint).
+    evidence_email = (cfg.get("evidence_email") or "").strip()
+    if evidence_email:
+        try:
+            _get_payment_identity(mesh_id).set_evidence_email(evidence_email)
+            applied.append("set-evidence-email")
+        except Exception:
+            logger.exception("initial_config: set-evidence-email failed")
 
     # Daily tribute
     try:
@@ -2356,7 +2378,7 @@ class MeshAccountStore:
         ts.append(time.time())
         self._create_rate[client_ip] = ts
 
-    def create(self, lion_pubkey, pin="", client_ip=""):
+    def create(self, lion_pubkey, pin="", client_ip="", account_email="", account_pass_hash=""):
         with self.lock:
             if client_ip:
                 self._record_create(client_ip)
@@ -2369,6 +2391,11 @@ class MeshAccountStore:
                 "mesh_id": mesh_id,
                 "lion_pubkey": lion_pubkey,
                 "auth_token": auth_token,
+                # Lion's account email + (optional) password hash — server-only
+                # contact/recovery for THIS mesh. The Lion's own email; never
+                # exposed to the Bunny's apps (account record is not vault/gossip).
+                "account_email": (account_email or "").strip(),
+                "account_pass_hash": account_pass_hash or "",
                 "invite_code": invite_code,
                 "invite_expires_at": int(time.time()) + self.INVITE_TTL_S,
                 "invite_uses": 0,
@@ -3586,7 +3613,21 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             req_pin = (data.get("pin") or "").strip()
             if not (req_pin.isdigit() and len(req_pin) == 4):
                 req_pin = ""
-            account = _mesh_accounts.create(lion_pubkey, pin=req_pin, client_ip=client_ip)
+            # Optional Lion account email + password (from onboarding). The
+            # password is stored ONLY as a SHA-256 hash; the raw value never
+            # touches disk. Both are server-only (the Lion's own contact info).
+            account_email = str(data.get("account_email", "") or "").strip()
+            account_pass = data.get("account_pass", "") or ""
+            account_pass_hash = (
+                __import__("hashlib").sha256(account_pass.encode("utf-8")).hexdigest() if account_pass else ""
+            )
+            account = _mesh_accounts.create(
+                lion_pubkey,
+                pin=req_pin,
+                client_ip=client_ip,
+                account_email=account_email,
+                account_pass_hash=account_pass_hash,
+            )
             # Auto-register the relay as an approved vault signer for this
             # new mesh so server-driven mutations (subscribe, compound
             # interest, payment-received, set-geofence …) propagate to the
@@ -4464,6 +4505,81 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             )
             # Response intentionally omits the email back — defense in depth
             # against a future bug that might log/echo it.
+            self.respond(200, {"ok": True, **summary})
+
+        # ── Lion-authed evidence email (where compliments/photos are sent) ──
+        # Path: /api/mesh/{mesh_id}/set-evidence-email
+        # Body: {node_id, ts, evidence_email, signature}
+        # signature = SHA256withRSA over
+        #     "mesh_id|node_id|set-evidence-email|ts|sha256(evidence_email)"
+        # Controller-only. Stored server-only in payment_identities/{mid}.json —
+        # the Lion's own email; never readable by the Bunny's apps.
+        elif self.path.startswith("/api/mesh/") and self.path.endswith("/set-evidence-email"):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 4 or parts[3] != "set-evidence-email":
+                self.respond(400, {"error": "bad path"})
+                return
+            mesh_id = parts[2]
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            if not _mesh_accounts.get(mesh_id):
+                self.respond(404, {"error": "mesh not found"})
+                return
+            node_id = data.get("node_id", "")
+            signature = data.get("signature", "")
+            evidence_email = str(data.get("evidence_email", "") or "").strip()
+            if not node_id or not signature:
+                self.respond(400, {"error": "node_id, signature required"})
+                return
+            try:
+                ts_i = int(data.get("ts", 0) or 0)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            if abs(int(time.time() * 1000) - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+            vault_node = None
+            for vnode in _vault_store.get_nodes(mesh_id):
+                if vnode.get("node_id") == node_id and vnode.get("node_pubkey"):
+                    vault_node = vnode
+                    break
+            if not vault_node:
+                self.respond(403, {"error": "node not registered in vault"})
+                return
+            ntype = (vault_node.get("node_type") or vault_node.get("type") or "").lower()
+            if ntype != "controller":
+                self.respond(403, {"error": "controller node required for evidence email"})
+                return
+            import base64 as _b64_ev
+            import hashlib as _h_ev
+
+            from cryptography.hazmat.primitives import hashes as _hh_ev
+            from cryptography.hazmat.primitives import serialization as _ser_ev
+            from cryptography.hazmat.primitives.asymmetric import padding as _pad_ev
+
+            body_hash = _h_ev.sha256(evidence_email.encode()).hexdigest()
+            payload = f"{mesh_id}|{node_id}|set-evidence-email|{ts_i}|{body_hash}"
+            try:
+                pub = _ser_ev.load_der_public_key(_b64_ev.b64decode(vault_node["node_pubkey"]))
+                pub.verify(
+                    _b64_ev.b64decode(signature),
+                    payload.encode("utf-8"),
+                    _pad_ev.PKCS1v15(),
+                    _hh_ev.SHA256(),
+                )
+            except Exception as e:
+                logger.warning("set-evidence-email sig verify failed: mesh=%s err=%s", _sanitize_log(mesh_id), e)
+                self.respond(403, {"error": "invalid signature"})
+                return
+            summary = _get_payment_identity(mesh_id).set_evidence_email(evidence_email)
+            logger.info(
+                "set-evidence-email: mesh=%s node=%s configured=%s",
+                _sanitize_log(mesh_id),
+                _sanitize_log(node_id),
+                summary["evidence_configured"],
+            )
             self.respond(200, {"ok": True, **summary})
 
         # ── Bunny-authed payer identity (Bunny's email/name allowlist) ──
