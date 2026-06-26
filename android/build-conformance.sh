@@ -38,7 +38,7 @@ JUNIT_JAR="$CACHE/junit-platform-console-standalone-$JUNIT_VER.jar"
 
 rm -rf "$BUILD"; mkdir -p "$BUILD"
 
-echo "== compiling VaultCrypto (controller + slave) + shims + tests (JDK: $("$JAVAC" -version 2>&1)) =="
+echo "== compiling Android src (controller + slave + companion) + shims + tests (JDK: $("$JAVAC" -version 2>&1)) =="
 "$JAVAC" -d "$BUILD" -cp "$JSON_JAR:$JUNIT_JAR" \
     "$SCRIPT_DIR/test-support/android/util/Base64.java" \
     "$SCRIPT_DIR/test-support/android/util/Log.java" \
@@ -50,7 +50,13 @@ echo "== compiling VaultCrypto (controller + slave) + shims + tests (JDK: $("$JA
     "$SCRIPT_DIR/slave/src/com/focuslock/VaultCrypto.java" \
     "$SCRIPT_DIR/slave/src/com/focuslock/MeshOrderApply.java" \
     "$SCRIPT_DIR/slave/test/com/focuslock/ConformanceCli.java" \
-    "$SCRIPT_DIR/slave/test/com/focuslock/MeshOrderApplyTest.java"
+    "$SCRIPT_DIR/slave/test/com/focuslock/MeshOrderApplyTest.java" \
+    "$SCRIPT_DIR/test-support/android/content/ContentResolver.java" \
+    "$SCRIPT_DIR/test-support/android/provider/Settings.java" \
+    "$SCRIPT_DIR/slave/src/com/focuslock/SigVerifier.java" \
+    "$SCRIPT_DIR/slave/test/com/focuslock/SigVerifierTest.java" \
+    "$SCRIPT_DIR/companion/src/com/bunnytasker/PairingManager.java" \
+    "$SCRIPT_DIR/companion/test/com/bunnytasker/PairingManagerTest.java"
 
 echo "== running JUnit unit tests =="
 "$JAVA" -jar "$JUNIT_JAR" execute \
