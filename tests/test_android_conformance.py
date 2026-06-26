@@ -231,6 +231,42 @@ class TestSlaveCollarConformance:
     def test_slave_canonical_matches_python(self):
         assert self._run("canonical", stdin=json.dumps(GOLDEN_OBJ)).strip() == GOLDEN_CANONICAL
 
+    def test_slave_direct_post_canonicalize_matches_python(self):
+        """SigVerifier.canonicalize (the RSA-SHA256 signing input for the Collar's
+        direct /api/* POSTs, Audit C1) must match the Python reference
+        c1_canonicalize byte-for-byte — drift there silently breaks every
+        direct-post signature. Feed the golden vectors through BOTH and compare."""
+        try:
+            from test_http import c1_canonicalize
+        except ImportError:
+            from tests.test_http import c1_canonicalize
+
+        # The same vectors pinned in tests/test_http.py and SigVerifierTest.java,
+        # incl. the malformed-JSON _raw fallback and a non-ASCII (UTF-8) value.
+        vectors = [
+            ("/api/lock", '{"duration_min":60,"mode":"basic"}', 1_700_000_000_000, "abc12345"),
+            ("/api/unlock", "", 1_700_000_000_000, "abc12345"),
+            ("/api/speak", "hello world", 111, "nonce"),
+            ("/api/lock", '{"zebra":1,"apple":2,"mango":3}', 0, "n"),
+            ("/api/lock", '{"shame":true,"silent":false}', 0, "n"),
+            ("/api/set-volume", '{"level":3.0}', 0, "n"),
+            ("/api/set-geofence", '{"lat":40.7128}', 0, "n"),
+            ("/api/lock", '{"duration_min":60,"message":null,"mode":"basic"}', 0, "n"),
+            ("/api/message", '{"text":"hi & bye | done"}', 0, "n"),
+            ("/api/message", '{"text":"héllo"}', 0, "n"),
+            ("/api/add-paywall", '{"amount":500}', 42, "nn"),
+            ("/x", "{bad", 0, "n"),
+        ]
+        for path, body, ts, nonce in vectors:
+            cmd = _CLI_SLAVE_ARGV + ["canonicalize", path, str(ts), nonce]
+            # Body goes on stdin verbatim (no added newline); force UTF-8 so the
+            # non-ASCII vector is byte-stable regardless of the runner's locale.
+            out = subprocess.run(
+                cmd, input=body, capture_output=True, encoding="utf-8", timeout=30, check=True
+            ).stdout
+            expected = c1_canonicalize(path, body, ts, nonce)
+            assert out == expected, f"{path} {body!r}: Java {out!r} != Python {expected!r}"
+
     def test_collar_accepts_lion_signed_orders(self, lion_keypair):
         orders = {"active": "1", "paywall": "500", "pinned_message": "no phone"}
         sig = _sign_orders_py(orders, lion_keypair["priv_pem"])

@@ -14,9 +14,15 @@ import org.json.JSONObject;
  * (and rejects forgeries). Test classpath only — never bundled in an APK.
  *
  * Contract (subcommand on argv, input on stdin, result on stdout):
- *   canonical                       stdin=JSON object        -> canonical_json string
- *   verify-orders <sigB64> <pubB64> stdin=orders JSON        -> "ok" | "fail"
- *   sign-status <privKeyB64>        stdin=status-core JSON    -> base64 signature
+ *   canonical                        stdin=JSON object        -> canonical_json string
+ *   canonicalize <path> <ts> <nonce> stdin=raw body           -> SigVerifier C1 direct-post canonical
+ *   verify-orders <sigB64> <pubB64>  stdin=orders JSON        -> "ok" | "fail"
+ *   sign-status <privKeyB64>         stdin=status-core JSON    -> base64 signature
+ *
+ * canonicalize lets tests/test_android_conformance.py prove SigVerifier.canonicalize
+ * (the RSA-SHA256 signing input for the Collar's direct /api/* POSTs) matches the
+ * Python reference c1_canonicalize byte-for-byte — drift there silently breaks every
+ * direct-post signature.
  *
  * verify-orders mirrors ControlService.verifyMeshOrdersSignature exactly:
  * re-attach the wire signature as a field, then VaultCrypto.verifySignature
@@ -35,6 +41,15 @@ public final class ConformanceCli {
             case "canonical": {
                 byte[] out = VaultCrypto.canonicalJson(VaultCrypto.jsonToMap(new JSONObject(stdin)));
                 System.out.write(out);
+                System.out.flush();
+                break;
+            }
+            case "canonicalize": {
+                if (args.length < 4) {
+                    System.err.println("canonicalize requires <path> <ts> <nonce>");
+                    System.exit(2);
+                }
+                System.out.print(SigVerifier.canonicalize(args[1], stdin, Long.parseLong(args[2]), args[3]));
                 System.out.flush();
                 break;
             }
