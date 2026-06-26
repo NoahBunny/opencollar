@@ -1,5 +1,43 @@
 # Publishable Roadmap
 
+## Status — 2026-06-26 (ecosystem-review branch committed + native Tor A3 code-complete)
+
+Branch `feat/ecosystem-review-2026-05-25`, **9 commits** on `8671ba8`. Handoff:
+`docs/HANDOFF-2026-06-26.md`. `git` + `javac` now work in-sandbox (commit directly);
+Android toolchain at `~/android-sdk` (build-tools 35.0.0 + 36.0.0), env at
+`~/.config/focuslock-android.env.sh`.
+
+**Part 1 — the 2026-06-25 work, committed as 6 logical commits:**
+- ✅ **A1/A2/A4** direct-first multi-address failover + optional homelab + serverless
+  fallbacks (`ed453b5`). ✅ **B1/B2** first-run onboarding wizards, both apps (`21099dd`).
+- ✅ **#9 security** — Lion IMAP creds no longer leak into the shared (Bunny-decryptable)
+  vault; 5-layer fix + isolation regression tests (`60561c9`).
+- ✅ **#10–12** Lion email onboarding (account/IMAP/evidence) seeded server-only,
+  never the vault (`f5ec543`). ✅ **C1** Fedora waydroid/SDK setup (`4294224`).
+- ✅ docs + default-off Tor build hook (`b67a81c`). 151 py tests pass.
+
+**Part 2 — #13 native Tor (A3): code-complete + COMPILES, 3 commits.**
+- ✅ `OnionKeys` offline .onion/keyblob crypto — **unit-verified 6/6** vs a Python
+  reference (the base32-vs-base64 footgun) (`a2c2026`). ✅ `OnionControl` jtorctl helper +
+  Collar/Lion `TorManager` + `TorHook` reflection bridge (`7d57833`). ✅ pairing/SOCKS/
+  cold-wake integration + build.sh (bcprov + Tor-file-excluding find-globs) + manifests
+  (`fa18e16`). Cold-wake topic derived from the `.onion` → works relay-less.
+- **Verified:** both APKs build/dex/sign with Tor on (libtor.so ×4 ABIs incl. x86_64);
+  the **default-off build is byte-clean** (232K, zero Tor) — strictly additive. Tor builds
+  need `FOCUSLOCK_BUILD_TOOLS=36.0.0` (AAR ships Java-24 bytecode) + the deps at `~/android-libs/`.
+
+**REMAINING (the only Tor gate left): C3 device/waydroid runtime validation** — control
+port ADD_ONION+ClientAuthV3 / ONION_CLIENT_AUTH_ADD acceptance, bootstrap latency, the
+`foregroundServiceType` question (AAR declares none — crash-loop risk under API 34+),
+client-auth rejection, end-to-end onion round-trip + relay fallback. Checklist in
+`docs/TOR-ONION.md`. **Keep `FOCUSLOCK_TOR_AAR` unset in production until C3 passes.**
+
+**Also still open:** waydroid QA of the email-onboarding panels; JVM/conformance for
+companion `PairingManager` + slave `SigVerifier`; py3.14 full-suite `[Errno 9]` bug;
+audit-deferred M-5/L-1/L-2/L-4; `main` branch protection; per-tier subscription amounts.
+
+---
+
 ## Status — 2026-05-25 (whole-ecosystem review: delivery + security criticals + Phase-3 polish + payment + conformance QA)
 
 A full Lion↔Bunny ecosystem review across two same-day sessions, triggered by
