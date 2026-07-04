@@ -1,5 +1,14 @@
 # Publishable Roadmap
 
+## Out of scope — covert capture & no-exit coercion (permanent)
+
+These capabilities are **permanently out of scope** and must not be (re)built. They are dangerous regardless of consent and are trivially repurposable against a non-consenting person. Removed 2026-07 (see `docs/THREAT-MODEL.md § Consent and harm reduction`):
+
+- **No covert capture** — no silent camera capture, no hidden/intercepted SMS, no app-invisibility hardening. Photo and SMS flows are wearer-visible and wearer-driven.
+- **No covert location** — the wearer's GPS coordinates never leave their phone. Geofences are enforced locally; only a boolean breach is reported.
+- **A guaranteed ultimate exit** — factory reset is never blocked (no `DISALLOW_FACTORY_RESET`), and every install ships a bunny-controlled **panic safeword** that needs neither the Lion nor the homelab. The "No-adb consumer install" Device-Owner/QR strategy (which would block factory reset + uninstall) is struck for this reason.
+- **No punish-the-exit mechanics** — no financial penalty for tampering or leaving. The paywall is the consensual cost of *unlocking*, not a fine for *leaving*.
+
 ## Status — 2026-06-26 (ecosystem-review branch committed + native Tor A3 code-complete)
 
 Branch `feat/ecosystem-review-2026-05-25`, **9 commits** on `8671ba8`. Handoff:
@@ -249,8 +258,8 @@ Three-phase migration — documented in conversation 2026-04-24:
 - ~~**Phase 1 — Lion's Share local state to SharedPreferences**~~ *(2026-04-24 — already done, no change needed)*. Investigation turned up only 2 references to `Settings.Global` in `controller/MainActivity.java` (lines 131, 1742) — both are **legacy-fallback READS** wrapped in try/catch, not writes. `Settings.Global.getString` doesn't require `WRITE_SECURE_SETTINGS`; any permission-denied path just returns null and Lion's Share falls through to its SharedPreferences source of truth. All Lion's Share state (lion privkey, mesh_url, mesh_id, pin, active bunny slot, vault_mode) was already stored in `prefs.edit().put*(...)` via the multi-bunny slot scheme — confirmed by grep of the controller module. Verified on OnePlus (ColorOS, `pm grant` refused) — v70 launches + runs without any security exception. Legacy fallback reads kept in place for migration compat with users upgrading from the pre-multi-bunny adb-provisioned setup.
 - **Phase 2 — Collar + Bunny Tasker client-state redesign** *(multi-session, ~4h + design review)*. Three strategies evaluated:
   - **A.** ContentProvider exposed by Collar, Bunny Tasker queries it. No perm. Loses Clear-Data resistance.
-  - **B.** Hardware-backed AndroidKeyStore + server-authoritative state. Local is cache, authoritative state on mesh server. Clear-Data wipes cache but not enforcement. Needs server-side "suspicious re-pair detected → $500 tamper" logic. **Closest to where P2 paywall hardening (2026-04-17) already moved things.**
-  - **C.** Device Owner via QR provisioning. DPM prevents Clear-Data + uninstall. Requires factory reset at setup. Strongest but highest user cost.
+  - **B.** Hardware-backed AndroidKeyStore + server-authoritative state. Local is cache, authoritative state on mesh server. Clear-Data wipes cache but not enforcement. **Closest to where P2 paywall hardening (2026-04-17) already moved things.** *(The "suspicious re-pair → $500 tamper" idea is **struck** — no financial penalty for tampering/leaving; see § Out of scope at the top of this file.)*
+  - ~~**C.** Device Owner via QR provisioning. DPM prevents Clear-Data + uninstall.~~ **STRUCK** — blocking factory reset / uninstall would remove the guaranteed ultimate exit (the safety floor). Permanently out of scope. Use strategy A or B only.
 - **Phase 3 — Bunny Tasker + Collar migration + server-side tamper-reappear detection**. Dependent on Phase 2 strategy choice. Must preserve the admin-reactivation nag + mutual-admin monitor added 2026-04-24 (independent of `Settings.Global`).
 
 Strategy choice for Phase 2 is deferred — needs a proper design round after reading how much state is already server-authoritative vs phone-authoritative.

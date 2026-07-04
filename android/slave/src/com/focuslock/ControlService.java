@@ -102,14 +102,17 @@ public class ControlService extends Service {
         DevicePolicyManager dpm = dpm();
         ComponentName admin = adminComponent();
         try {
-            // Block uninstalling the collar
+            // Block uninstalling the collar (friction)
             dpm.setUninstallBlocked(admin, getPackageName(), true);
-            // Block safe mode boot
+            // Block safe mode boot (friction)
             dpm.addUserRestriction(admin, UserManager.DISALLOW_SAFE_BOOT);
-            // Block factory reset from Settings (the Lion can still release via
-            // Release Forever which calls clearDeviceOwnerApp first)
-            dpm.addUserRestriction(admin, UserManager.DISALLOW_FACTORY_RESET);
-            Log.i(TAG, "Device owner restrictions applied (uninstall blocked, safe boot blocked, factory reset blocked)");
+            // Factory reset is DELIBERATELY left available — it is the guaranteed
+            // ultimate exit (the safety floor). We never set DISALLOW_FACTORY_RESET,
+            // and clear it defensively in case an older build set it. This is what
+            // keeps consensual inescapability from becoming an actual trap.
+            // See docs/THREAT-MODEL.md.
+            try { dpm.clearUserRestriction(admin, UserManager.DISALLOW_FACTORY_RESET); } catch (Exception ignore) {}
+            Log.i(TAG, "Device owner restrictions applied (uninstall + safe boot blocked; factory reset ALWAYS allowed)");
         } catch (Exception e) {
             Log.w(TAG, "Failed to apply device owner restrictions", e);
         }
@@ -277,6 +280,11 @@ public class ControlService extends Service {
                 try {
                     Thread.sleep(2000);
 
+                    // Terminal safety floor — once released (safeword / Release
+                    // Forever), do NO enforcement of any kind (countdown, geofence,
+                    // curfew, bedtime, screen-time, mutual-admin). See THREAT-MODEL.
+                    if (isReleased()) { wasLocked = false; continue; }
+
                     // Check lock flag
                     int active = Settings.Global.getInt(getContentResolver(), "focus_lock_active", 0);
                     if (active == 1 && !wasLocked) {
@@ -335,7 +343,7 @@ public class ControlService extends Service {
                         Settings.Global.putLong(getContentResolver(), "focus_lock_countdown_warn_tier", 0);
                     }
 
-                    // Mutual admin monitoring — lock + penalty if BunnyTasker admin removed
+                    // Mutual admin monitoring — re-lock (friction, no penalty) if BunnyTasker admin removed
                     if (healthCounter % 3 == 0) {
                         long breakglassUntil = Settings.Global.getLong(getContentResolver(), "focus_lock_breakglass_until", 0);
                         int releaseAuth = Settings.Global.getInt(getContentResolver(), "focus_lock_release_authorized", 0);
@@ -349,18 +357,18 @@ public class ControlService extends Service {
                                         Log.w(TAG, "BunnyTasker admin removed — locking + reporting tamper");
                                         Settings.Global.putInt(getContentResolver(), "focus_lock_bt_admin_removed", 1);
                                         Settings.Global.putString(getContentResolver(), "focus_lock_message",
-                                            "BunnyTasker admin removed.\n+$500 penalty.\nRe-enable it in Settings → Security → Device admin.");
+                                            "BunnyTasker admin removed.\nRe-enable it in Settings → Security → Device admin.");
                                         Settings.Global.putInt(getContentResolver(), "focus_lock_shame", 1);
-                                        // P2 paywall hardening (2026-04-17): $500 + lifetime_tamper
-                                        // applied server-side by tamper-recorded(kind=detected).
-                                        // The new paywall lands back here via the next vault pull.
+                                        // Report for accountability only — the server-side
+                                        // tamper-recorded handler no longer applies a penalty
+                                        // (costly-exit, not punish-exit — see THREAT-MODEL).
                                         ControlService.postEventToServer(ControlService.this, "tamper_detected", null);
                                         // Full-screen reactivation prompt — brings up the Android
                                         // admin-activation dialog so the user can re-grant without
                                         // navigating Settings manually. Fires once per 0→1 flip.
                                         launchAdminActivation(btAdmin,
                                             "Bunny Tasker admin was removed. Tap to reactivate — until then, "
-                                                + "the Collar keeps the phone locked and $500 is on the paywall.");
+                                                + "the Collar keeps the phone locked.");
                                     }
                                     Settings.Global.putInt(getContentResolver(), "focus_lock_active", 1);
                                     Settings.Global.putLong(getContentResolver(), "focus_lock_locked_at",
@@ -453,15 +461,17 @@ public class ControlService extends Service {
                                         Settings.Global.putString(getContentResolver(), "focus_lock_mode", "basic");
                                         Settings.Global.putLong(getContentResolver(), "focus_lock_locked_at", System.currentTimeMillis());
                                         launchFocus();
-                                        reportGeofenceBreach(lat, lon, dist[0]);
-                                        // P2 paywall hardening (2026-04-17): server applies the
-                                        // $100 breach penalty + updates lifetime_geofence_breaches
-                                        // in one atomic op; the new paywall lands on this device
-                                        // via the next vault pull.
+                                        // Tattle the breach WITHOUT coordinates — only the
+                                        // violation magnitude is sent, never where the phone is.
+                                        reportGeofenceBreach(dist[0]);
+                                        // Server applies the $100 breach penalty + updates
+                                        // lifetime_geofence_breaches in one atomic op; the new
+                                        // paywall lands on this device via the next vault pull.
                                         postEventToServer(this, "geofence_breach",
                                             String.format("%.0fm outside zone", dist[0]));
                                     }
-                                    reportLocation(lat, lon);
+                                    // Location is evaluated locally only. It is never reported
+                                    // off-device (covert-location removal — see THREAT-MODEL).
                                 }
                             }
                         } catch (SecurityException e) {
@@ -923,13 +933,10 @@ public class ControlService extends Service {
         String mode = gstr("focus_lock_mode");
         String offer = gstr("focus_lock_offer");
         String offerStatus = gstr("focus_lock_offer_status");
-        // Current location for Lion's Share "Confine" button
-        double curLat = 0, curLon = 0;
-        try {
-            android.location.LocationManager lm = (android.location.LocationManager) getSystemService(LOCATION_SERVICE);
-            android.location.Location loc = lm.getLastKnownLocation(android.location.LocationManager.NETWORK_PROVIDER);
-            if (loc != null) { curLat = loc.getLatitude(); curLon = loc.getLongitude(); }
-        } catch (Exception e) {}
+        // Location is deliberately NOT read or exposed here. The wearer's
+        // coordinates never leave the phone; geofence enforcement is local
+        // and only a boolean breach event is reported (see the jail watcher).
+        // Covert-location removal — see docs/THREAT-MODEL.md.
         return "{\"locked\":" + (active == 1)
             + ",\"message\":\"" + esc(msg)
             + "\",\"task\":\"" + esc(task)
@@ -955,7 +962,6 @@ public class ControlService extends Service {
             + "\",\"auth_challenge_desc\":\"" + esc(gstr("focus_lock_auth_challenge_desc"))
             + "\",\"checkin_deadline\":" + Settings.Global.getInt(getContentResolver(), "focus_lock_checkin_deadline", -1)
             + ",\"checkin_last\":" + Settings.Global.getLong(getContentResolver(), "focus_lock_checkin_timestamp", 0)
-            + ",\"lat\":" + curLat + ",\"lon\":" + curLon
             + ",\"geofence_active\":" + (!gstr("focus_lock_geofence_lat").isEmpty())
             + ",\"geofence_radius\":\"" + esc(gstr("focus_lock_geofence_radius_m"))
             + "\",\"bridge_heartbeat\":" + Settings.Global.getLong(getContentResolver(), "focus_lock_bridge_heartbeat", 0)
@@ -1892,7 +1898,10 @@ public class ControlService extends Service {
                     new java.io.InputStreamReader(p.getInputStream()));
                 String line;
                 while ((line = br.readLine()) != null) {
-                    if (line.startsWith("focus_lock_") && !line.startsWith("focus_lock_release_authorized")) {
+                    // Preserve every focus_lock_release* key (release_authorized,
+                    // released, release_timestamp) so the terminal released state
+                    // survives the wipe and the bridge/ControlService keep honoring it.
+                    if (line.startsWith("focus_lock_") && !line.startsWith("focus_lock_release")) {
                         String key = line.split("=")[0].trim();
                         try {
                             Runtime.getRuntime().exec(new String[]{"settings", "delete", "global", key});
@@ -1925,6 +1934,54 @@ public class ControlService extends Service {
             }
         }).start();
         return "{\"ok\":true,\"action\":\"released_forever\"}";
+    }
+
+    /** Terminal safety floor: once released (via safeword or Release Forever),
+     *  no order, geofence, curfew, bedtime, or bridge action may re-lock this
+     *  device. Guards launchFocus() and applyOrdersFromMesh(). See THREAT-MODEL. */
+    boolean isReleased() {
+        return Settings.Global.getInt(getContentResolver(), "focus_lock_released", 0) == 1;
+    }
+
+    /** Panic safeword — the wearer's always-available exit. Needs neither the
+     *  Lion nor the homelab. Sets the terminal `released` flag (honored by the
+     *  order-apply path, the jail, and the bridge), notifies the Lion for
+     *  aftercare (not permission), and runs the full teardown with NO penalty.
+     *  See docs/THREAT-MODEL.md. */
+    String doSafewordRelease() {
+        Log.w(TAG, "SAFEWORD — wearer-initiated release");
+        Settings.Global.putInt(getContentResolver(), "focus_lock_released", 1);
+        Settings.Global.putLong(getContentResolver(), "focus_lock_release_timestamp",
+            System.currentTimeMillis());
+        notifyLionSafeword();  // aftercare, best-effort, non-blocking
+        try { Thread.sleep(400); } catch (Exception e) {}  // let the notice fire before teardown wipes creds
+        return doReleaseForever();
+    }
+
+    /** Best-effort aftercare notice to the Lion that the wearer safeworded out.
+     *  Reuses the signed evidence-webhook channel; fails silently if unpaired or
+     *  no homelab. This is a scene-ender, so it also states re-pairing is needed. */
+    private void notifyLionSafeword() {
+        new Thread(() -> {
+            try {
+                String host = webhookHost();
+                if (host.isEmpty()) return;
+                org.json.JSONObject body = new org.json.JSONObject();
+                body.put("text", "Safeword used — the wearer has ended the arrangement. "
+                    + "The collar is released with no penalty. Re-pairing is required to resume.");
+                String signed = SlaveSigner.signAndAttach(this, "compliment", body);
+                if (signed == null) return;
+                java.net.URL url = new java.net.URL("http://" + host + "/webhook/compliment");
+                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("POST");
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setDoOutput(true);
+                conn.setConnectTimeout(3000);
+                conn.getOutputStream().write(signed.getBytes("UTF-8"));
+                conn.getResponseCode();
+                conn.disconnect();
+            } catch (Exception e) {}
+        }).start();
     }
 
     // ── Lovense Integration ──
@@ -2016,30 +2073,18 @@ public class ControlService extends Service {
         return "{\"ok\":true,\"action\":\"message_pinned\"}";
     }
 
-    private void reportLocation(double lat, double lon) {
-        new Thread(() -> {
-            String host = webhookHost();
-            if (host.isEmpty()) return;
-            try {
-                String json = "{\"lat\":" + lat + ",\"lon\":" + lon + ",\"time\":" + System.currentTimeMillis() + "}";
-                java.net.URL url = new java.net.URL("http://" + host + "/webhook/location");
-                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("POST"); conn.setRequestProperty("Content-Type", "application/json");
-                conn.setDoOutput(true); conn.setConnectTimeout(5000);
-                conn.getOutputStream().write(json.getBytes()); conn.getResponseCode(); conn.disconnect();
-            } catch (Exception e) {}
-        }).start();
-    }
+    // Location is enforced locally and never reported off-device. The old
+    // reportLocation() / webhook-location path was removed (covert-location
+    // removal — see docs/THREAT-MODEL.md).
 
-    private void reportGeofenceBreach(double lat, double lon, float distance) {
+    private void reportGeofenceBreach(float distance) {
         new Thread(() -> {
             String host = webhookHost();
             if (host.isEmpty()) return;
             try {
-                // Audit 2026-04-27 H-2: slave-signed evidence webhook.
+                // Slave-signed breach tattle — carries only the violation
+                // magnitude, never coordinates.
                 org.json.JSONObject body = new org.json.JSONObject();
-                body.put("lat", lat);
-                body.put("lon", lon);
                 body.put("distance", distance);
                 String signed = SlaveSigner.signAndAttach(this, "geofence-breach", body);
                 if (signed == null) return;  // unpaired — skip silently
@@ -2140,6 +2185,7 @@ public class ControlService extends Service {
     }
 
     private void launchFocus() {
+        if (isReleased()) return;  // safety floor — never re-jail a released device
         // Direct activity start — works when screen is on (fullScreenIntent only
         // auto-launches when the keyguard is showing / screen is off).
         try {
@@ -2803,6 +2849,10 @@ public class ControlService extends Service {
     }
 
     private void applyOrdersFromMesh(String ordersJson) {
+        if (isReleased()) {
+            Log.w(TAG, "Device is released — ignoring incoming mesh/vault orders");
+            return;
+        }
         // Parse and write each field to Settings.Global. lock_active is written
         // LAST (see MeshOrderApply.orderForApply) so FocusActivity never observes
         // a half-applied state where the lock flag flipped before the new
@@ -2947,6 +2997,8 @@ public class ControlService extends Service {
     }
 
     private String handleMeshOrder(String body) {
+        // Terminal safety floor — a released device accepts no further orders.
+        if (isReleased()) return "{\"error\":\"released\",\"released\":true}";
         String action = jval(body, "action");
         if (action == null || action.isEmpty()) return "{\"error\":\"action required\"}";
 
@@ -4806,6 +4858,9 @@ public class ControlService extends Service {
     @Override public int onStartCommand(Intent i, int f, int id) {
         if (i != null && i.getBooleanExtra("mesh_bump", false)) {
             meshBumpAndPush();
+        }
+        if (i != null && i.getBooleanExtra("safeword", false)) {
+            doSafewordRelease();
         }
         return START_STICKY;
     }

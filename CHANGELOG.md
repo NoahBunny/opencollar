@@ -8,6 +8,23 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-07-04 remove covert-coercion primitives + add a real safety floor ───────── -->
+
+### Removed
+- **Covert front-camera capture is gone** (`android/slave/src/com/focuslock/FocusActivity.java`, `focuslock-mail.py`, slave manifest). Deleted `captureSelfieSilent()` (Camera2) and the "silent selfie attached to every task-completion evidence webhook" path — `sendWebhook()` is now text-only. The `CAMERA` permission was dropped from the Collar manifest (the wearer-driven photo-task uses `ACTION_IMAGE_CAPTURE`, which needs no permission). The **explicit, wearer-submitted photo-task is unchanged** — the wearer knowingly takes and submits that photo (`/webhook/verify-photo` LLM check + `/webhook/evidence-photo` delivery, now the endpoint's only caller).
+- **No hidden SMS interception** (`android/slave/src/com/focuslock/SmsReceiver.java`). Dropped `abortBroadcast()` so the `sit-boy` command SMS reaches the default messaging app like any other message. It still parses/locks and honors the `focus_lock_sms_token` gate — it is just no longer hidden from the wearer.
+- **The wearer's location never leaves their phone** (`android/slave/.../ControlService.java`, `android/controller/.../MainActivity.java`, `web/index.html`, `focuslock-mail.py`). Removed `lat`/`lon` from `/api/status`, deleted `reportLocation()` + the `/webhook/location` sink, and stripped coordinates from the geofence-breach report (only the violation magnitude is sent). Geofences are enforced **locally**; the phone tattles the *fact* of a breach → +$100 paywall. `Set Geofence` / `Confine Home` no longer read the wearer's coordinates (Confine Home uses the Collar's own local GPS via `/api/confine-home`). Supersedes the deferred L-2 "signed `/api/location`" idea — there is no location endpoint at all.
+
+### Added
+- **Panic safeword — the wearer's always-available exit** (`android/slave/src/com/focuslock/{ControlService,FocusActivity,ConsentActivity}.java`, `focuslock-bridge.sh`). Long-press the lock message → type your pre-set safeword phrase (chosen in the consent screen, stored as `focus_lock_safeword`) → confirm → immediate full release with **no penalty**, needing neither the Lion nor the homelab. It sets a terminal `focus_lock_released` flag that is honored by the jail-watcher loop, `launchFocus()`, `isLockActive()`, `applyOrdersFromMesh()`, `handleMeshOrder()`, and the ADB bridge (`poll_device` ceases all enforcement when `released=1`), so nothing can re-lock a released device. It notifies the Lion for aftercare (not permission) and is a scene-ender (resuming requires re-pairing). `doReleaseForever()`'s settings-wipe now preserves every `focus_lock_release*` key so the terminal state survives teardown.
+
+### Changed
+- **Costly-exit, not punish-exit** (`android/slave/src/com/focuslock/{AdminReceiver,ControlService,FocusActivity}.java`, `focuslock-mail.py`). Disabling device admin still re-locks the phone (friction) and notifies the Lion for accountability, but the **$500/$1000/$500 tamper penalties are gone** — the server-side `tamper-recorded` handler now only increments `lifetime_tamper` (no paywall bump). Factory reset is **never** blocked: `applyDeviceOwnerRestrictions()` no longer sets `DISALLOW_FACTORY_RESET` (and clears it defensively), so the ultimate exit is always available even in device-owner mode. The in-app factory-reset shortcut now appears after a few escape attempts instead of 150. The consent screen ("Terms of Surrender") and `docs/THREAT-MODEL.md` were updated to describe the guaranteed exits, the no-covert-capture guarantee, and costly-vs-punitive framing.
+- **Roadmap: covert & no-exit capabilities are permanently out of scope** (`docs/PUBLISHABLE-ROADMAP.md`). Added an "Out of scope" principle at the top and **struck** the "No-adb consumer install" Device-Owner/QR strategy (it would block factory reset + uninstall) and the server-side "$500 tamper" idea.
+
+### Tests
+- Updated `tests/test_paywall_hardening.py` (tamper = counter-only, no fine), `tests/test_e2e_qa.py` (tamper event applies no penalty), `tests/test_e2e_uncovered_webhooks.py` (`/webhook/location` removed → 404), and `tests/test_audit_2026_04_27_h2_evidence_webhooks.py` (geofence-breach body carries only `distance`; evidence-photo reframed as wearer-submitted photo-task proof). Python suites green (Android APKs must be rebuilt + signed on the toolchain host; not built in this workstation session).
+
 <!-- ───────── 2026-05-25 whole-ecosystem review (delivery + security + Phase-3 polish + payment + conformance QA) ───────── -->
 
 ### Security

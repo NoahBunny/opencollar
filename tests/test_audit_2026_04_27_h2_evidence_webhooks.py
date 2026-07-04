@@ -1,13 +1,13 @@
 """Audit 2026-04-27 H-2 — slave-signed evidence webhooks.
 
 The 2026-04-17 audit closed /webhook/bunny-message against forged
-evidence emails by requiring a bunny-signed payload. Seven sibling
+evidence emails by requiring a bunny-signed payload. Its sibling
 webhooks fire `send_evidence()` with the same shape and were missed:
 
   /webhook/compliment        /webhook/gratitude
   /webhook/love_letter       /webhook/offer
-  /webhook/geofence-breach   /webhook/evidence-photo
-  /webhook/subscription-charge
+  /webhook/geofence-breach   /webhook/subscription-charge
+  /webhook/evidence-photo    (now wearer-submitted photo-task proof only)
 
 Each now requires (mesh_id, node_id, ts, signature) with canonical
 payload "{mesh_id}|{node_id}|<webhook-type>|{ts_i}". Server returns
@@ -256,9 +256,9 @@ def test_valid_signature_accepts(live_server, seeded, mail_module, monkeypatch, 
         "ts": ts,
         "signature": sig,
     }
-    # Per-endpoint inner content. send_evidence always runs except for
-    # evidence-photo when both photo + PARTNER_EMAIL are set, in which
-    # case the handler builds its own multipart email.
+    # Per-endpoint inner content. send_evidence runs once for every webhook
+    # except evidence-photo when photo + PARTNER_EMAIL are set (the handler
+    # builds its own multipart email for the wearer-submitted photo-task).
     if webhook_type == "compliment":
         body_payload["text"] = "good boy"
     elif webhook_type == "gratitude":
@@ -268,9 +268,10 @@ def test_valid_signature_accepts(live_server, seeded, mail_module, monkeypatch, 
     elif webhook_type == "offer":
         body_payload["offer"] = "30 min"
     elif webhook_type == "geofence-breach":
-        body_payload.update({"lat": 40.0, "lon": -74.0, "distance": 250})
+        # Covert-location removal: only the violation magnitude, never coordinates.
+        body_payload.update({"distance": 250})
     elif webhook_type == "evidence-photo":
-        body_payload.update({"photo": "", "type": "obedience", "text": "task done"})
+        body_payload.update({"photo": "", "type": "photo_task", "text": "task done"})
     elif webhook_type == "subscription-charge":
         body_payload.update({"tier": "gold", "amount": 50})
 

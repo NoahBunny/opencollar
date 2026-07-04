@@ -102,6 +102,18 @@ See `SECURITY.md`. **Do not** open public issues for security bugs. Disclosure S
 
 ## Consent and harm reduction
 
-The hardest threats this project faces are not technical. Read `DISCLAIMER.md` and the consent screen embedded in every install. The Release Forever button and 150-escape factory-reset path exist as safety valves precisely because consent can be withdrawn at any time.
+The hardest threats this project faces are not technical. Read `DISCLAIMER.md` and the consent screen embedded in every install.
+
+**Guaranteed exits (safety floor).** Consent can be withdrawn at any time, so the software guarantees the wearer always has a real way out — independent of the Lion *and* the homelab:
+
+- **Panic safeword.** On the lock screen, long-press the message and type your pre-set safeword phrase for an immediate, penalty-free release. It needs neither the Lion's approval nor the homelab bridge; it sets a terminal `released` state that the enforcement loop, the jail (`isLockActive`/`launchFocus`), the mesh/vault order-apply path, and the ADB bridge all honor, and it notifies the Lion for aftercare. Using it ends the arrangement; resuming requires re-pairing.
+- **Factory reset is always available.** The Collar never sets `DISALLOW_FACTORY_RESET`, even in device-owner mode (and clears it defensively on upgrade), so a factory reset always removes the software. The in-app shortcut appears after a few escape attempts; the OS-level reset is available regardless.
+- **Release Forever.** The Lion-initiated teardown remains.
+
+A consensual-inescapability *feeling* is fine; an *actual* trap is not. The friction (device admin, launcher lockout, the paywall) stays — but a real trap door always exists underneath it.
+
+**No covert surveillance.** The suite does not covertly capture the wearer: no silent camera capture, no hidden SMS interception (command texts stay visible in the default messaging app), and GPS coordinates never leave the wearer's phone — geofences are enforced locally and only the *fact* of a breach is reported.
+
+**Costly-exit, not punish-exit.** Leaving is never financially punished. Disabling device admin re-locks the phone (friction) and notifies the Lion for accountability, but applies no penalty. The paywall economy is the consensual cost of *unlocking*, not a fine for *leaving*.
 
 If a dynamic becomes harmful, **stop using the software and seek appropriate support.** Crypto can't fix that. Neither can we.
