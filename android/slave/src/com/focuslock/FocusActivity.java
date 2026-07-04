@@ -192,6 +192,13 @@ public class FocusActivity extends Activity {
             );
         }
 
+        // Hidden panic safeword: long-press the lock message → passphrase → confirm.
+        // Always available, no penalty, no Lion/homelab needed. The wearer's
+        // guaranteed consensual exit. Nothing happens without the correct phrase.
+        if (messageView != null) {
+            messageView.setOnLongClickListener(v -> { showSafewordDialog(); return true; });
+        }
+
         applyImmersive();
         getWindow().addFlags(
             WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
@@ -424,14 +431,11 @@ public class FocusActivity extends Activity {
         }
     }
 
-    private void sendWebhook(String path, String json) {
-        // Take a front camera selfie first, then send webhook with photo
-        takeSelfieAndSend(path, json);
-    }
-
-    private void takeSelfieAndSend(String webhookPath, String textJson) {
+    private void sendWebhook(String webhookPath, String textJson) {
+        // Text-only evidence. Covert front-camera capture was removed — a photo
+        // is sent only via the explicit photo-task the wearer knowingly submits
+        // (btnTakePhoto / takePhotoForTask). See docs/THREAT-MODEL.md.
         new Thread(() -> {
-            String photoBase64 = captureSelfieSilent();
             String host = webhookHost();
             if (host.isEmpty()) {
                 // No homelab → don't silently drop the evidence. Queue the text
@@ -440,13 +444,12 @@ public class FocusActivity extends Activity {
                 enqueueEvidenceForLion(webhookPath, textJson);
                 return;
             }
-            // Audit 2026-04-27 H-2: every evidence webhook is now slave-signed.
+            // Audit 2026-04-27 H-2: every evidence webhook is slave-signed.
             // SlaveSigner.signAndAttach merges mesh_id/node_id/ts/signature
             // into the body and returns null when prefs are missing (unpaired).
             String webhookType = webhookPath.startsWith("/webhook/")
                 ? webhookPath.substring("/webhook/".length())
                 : webhookPath;
-            // Send text evidence (compliment/gratitude/love_letter/etc.)
             try {
                 org.json.JSONObject body = new org.json.JSONObject(textJson);
                 String signed = SlaveSigner.signAndAttach(this, webhookType, body);
@@ -463,26 +466,6 @@ public class FocusActivity extends Activity {
                     conn.disconnect();
                 }
             } catch (Exception e) {}
-            // Send photo evidence separately under /webhook/evidence-photo
-            if (photoBase64 != null && !photoBase64.isEmpty()) {
-                try {
-                    org.json.JSONObject photoBody = new org.json.JSONObject(textJson);
-                    photoBody.put("photo", photoBase64);
-                    photoBody.put("type", webhookType);
-                    String signed = SlaveSigner.signAndAttach(this, "evidence-photo", photoBody);
-                    if (signed == null) return;
-                    java.net.URL url = new java.net.URL("http://" + host + "/webhook/evidence-photo");
-                    java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
-                    conn.setRequestMethod("POST");
-                    conn.setRequestProperty("Content-Type", "application/json");
-                    conn.setDoOutput(true);
-                    conn.setConnectTimeout(10000);
-                    conn.setReadTimeout(10000);
-                    conn.getOutputStream().write(signed.getBytes("UTF-8"));
-                    conn.getResponseCode();
-                    conn.disconnect();
-                } catch (Exception e) {}
-            }
         }).start();
     }
 
@@ -516,121 +499,6 @@ public class FocusActivity extends Activity {
             android.provider.Settings.Global.putString(getContentResolver(),
                 "focus_lock_evidence_outbox", arr.toString());
         } catch (Exception ex) { /* best effort */ }
-    }
-
-    /** Camera2 silent front camera capture. Returns base64 JPEG or empty string on failure. */
-    private String captureSelfieSilent() {
-        try {
-            android.hardware.camera2.CameraManager cm =
-                (android.hardware.camera2.CameraManager) getSystemService(CAMERA_SERVICE);
-            String frontId = null;
-            for (String id : cm.getCameraIdList()) {
-                android.hardware.camera2.CameraCharacteristics chars = cm.getCameraCharacteristics(id);
-                Integer facing = chars.get(android.hardware.camera2.CameraCharacteristics.LENS_FACING);
-                if (facing != null && facing == android.hardware.camera2.CameraCharacteristics.LENS_FACING_FRONT) {
-                    frontId = id;
-                    break;
-                }
-            }
-            if (frontId == null) return "";
-
-            // Set up ImageReader for JPEG capture
-            android.media.ImageReader reader = android.media.ImageReader.newInstance(640, 480,
-                android.graphics.ImageFormat.JPEG, 1);
-
-            final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
-            final String[] resultBase64 = {""};
-
-            reader.setOnImageAvailableListener(r -> {
-                android.media.Image img = r.acquireLatestImage();
-                if (img != null) {
-                    java.nio.ByteBuffer buf = img.getPlanes()[0].getBuffer();
-                    byte[] bytes = new byte[buf.remaining()];
-                    buf.get(bytes);
-                    resultBase64[0] = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP);
-                    img.close();
-                }
-                latch.countDown();
-            }, handler);
-
-            // Dummy SurfaceTexture for GrapheneOS (no preview surface available)
-            android.graphics.SurfaceTexture dummyTexture = new android.graphics.SurfaceTexture(0);
-            dummyTexture.setDefaultBufferSize(1, 1);
-            android.view.Surface dummySurface = new android.view.Surface(dummyTexture);
-
-            final java.util.concurrent.CountDownLatch openLatch = new java.util.concurrent.CountDownLatch(1);
-            final android.hardware.camera2.CameraDevice[] camDevice = {null};
-
-            cm.openCamera(frontId, new android.hardware.camera2.CameraDevice.StateCallback() {
-                @Override
-                public void onOpened(android.hardware.camera2.CameraDevice camera) {
-                    camDevice[0] = camera;
-                    openLatch.countDown();
-                }
-                @Override
-                public void onDisconnected(android.hardware.camera2.CameraDevice camera) {
-                    camera.close();
-                    openLatch.countDown();
-                }
-                @Override
-                public void onError(android.hardware.camera2.CameraDevice camera, int error) {
-                    camera.close();
-                    openLatch.countDown();
-                }
-            }, handler);
-
-            if (!openLatch.await(5, java.util.concurrent.TimeUnit.SECONDS) || camDevice[0] == null) {
-                dummySurface.release();
-                dummyTexture.release();
-                return "";
-            }
-
-            android.hardware.camera2.CaptureRequest.Builder captureBuilder =
-                camDevice[0].createCaptureRequest(android.hardware.camera2.CameraDevice.TEMPLATE_STILL_CAPTURE);
-            captureBuilder.addTarget(reader.getSurface());
-            captureBuilder.set(android.hardware.camera2.CaptureRequest.CONTROL_MODE,
-                android.hardware.camera2.CaptureRequest.CONTROL_MODE_AUTO);
-
-            final java.util.concurrent.CountDownLatch sessionLatch = new java.util.concurrent.CountDownLatch(1);
-            final android.hardware.camera2.CameraCaptureSession[] sessionRef = {null};
-
-            camDevice[0].createCaptureSession(
-                java.util.Arrays.asList(reader.getSurface(), dummySurface),
-                new android.hardware.camera2.CameraCaptureSession.StateCallback() {
-                    @Override
-                    public void onConfigured(android.hardware.camera2.CameraCaptureSession session) {
-                        sessionRef[0] = session;
-                        sessionLatch.countDown();
-                    }
-                    @Override
-                    public void onConfigureFailed(android.hardware.camera2.CameraCaptureSession session) {
-                        sessionLatch.countDown();
-                    }
-                }, handler);
-
-            if (!sessionLatch.await(5, java.util.concurrent.TimeUnit.SECONDS) || sessionRef[0] == null) {
-                camDevice[0].close();
-                dummySurface.release();
-                dummyTexture.release();
-                return "";
-            }
-
-            sessionRef[0].capture(captureBuilder.build(), null, handler);
-            latch.await(5, java.util.concurrent.TimeUnit.SECONDS);
-
-            sessionRef[0].close();
-            camDevice[0].close();
-            reader.close();
-            dummySurface.release();
-            dummyTexture.release();
-
-            return resultBase64[0];
-        } catch (SecurityException e) {
-            // CAMERA permission not granted — fall back to no photo
-            return "";
-        } catch (Exception e) {
-            return "";
-        }
     }
 
     private String escJson(String s) {
@@ -849,9 +717,13 @@ public class FocusActivity extends Activity {
             paywallBankingBtn.setVisibility(View.GONE);
         }
 
-        // Factory reset button — last resort after 150 escapes
+        // Factory reset button — the guaranteed ultimate exit. Gated behind a
+        // few escape attempts (not 150) so it isn't the first thing you see, but
+        // is reachable the moment you're actually trying to leave. The OS factory
+        // reset is always available regardless; this is just the in-app shortcut.
+        // See docs/THREAT-MODEL.md (safety floor).
         int escapes = Settings.Global.getInt(getContentResolver(), "focus_lock_escapes", 0);
-        factoryResetBtn.setVisibility(escapes >= 150 ? View.VISIBLE : View.GONE);
+        factoryResetBtn.setVisibility(escapes >= 3 ? View.VISIBLE : View.GONE);
 
         // Shame counter
         int shame = Settings.Global.getInt(getContentResolver(), "focus_lock_shame", 0);
@@ -1320,7 +1192,58 @@ public class FocusActivity extends Activity {
     }
 
     private boolean isLockActive() {
+        // Released is terminal — the jail never shows again once the wearer has
+        // safeworded out (or Release Forever ran). Safety floor.
+        if (Settings.Global.getInt(getContentResolver(), "focus_lock_released", 0) == 1) return false;
         return Settings.Global.getInt(getContentResolver(), "focus_lock_active", 0) == 1;
+    }
+
+    /** Hidden panic safeword — the wearer's always-available exit (no penalty,
+     *  no Lion, no homelab). Reached by long-pressing the lock message, then
+     *  typing the pre-set safeword phrase, then a final confirm. See THREAT-MODEL. */
+    private void showSafewordDialog() {
+        String saved = Settings.Global.getString(getContentResolver(), "focus_lock_safeword");
+        final String expected = (saved == null || saved.trim().isEmpty()) ? "I NEED OUT" : saved.trim();
+        final EditText input = new EditText(this);
+        input.setHint("Safeword phrase");
+        input.setTextColor(0xFFe0e0e0);
+        input.setHintTextColor(0xFF555555);
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("End the arrangement")
+            .setMessage("This is your safeword — an always-available exit, no penalty.\n\n"
+                + "Using it ends the arrangement (re-pairing is required to resume) and "
+                + "notifies your partner for aftercare.\n\nType your safeword phrase to continue.")
+            .setView(input)
+            .setPositiveButton("Continue", (d, w) -> {
+                String typed = input.getText().toString().trim();
+                if (!typed.equalsIgnoreCase(expected)) {
+                    messageView.setText("Safeword phrase did not match.");
+                    return;
+                }
+                confirmSafeword();
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    private void confirmSafeword() {
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Release now?")
+            .setMessage("The collar will be released immediately — no penalty, no approval "
+                + "needed. This ends the arrangement. (You can always factory-reset too.)")
+            .setPositiveButton("SAFEWORD — RELEASE ME", (d, w) -> {
+                allowPause = true;  // permit leaving the jail during teardown
+                messageView.setText("Safeword accepted. Releasing…");
+                try {
+                    Intent svc = new Intent(this, ControlService.class);
+                    svc.putExtra("safeword", true);
+                    startForegroundService(svc);
+                } catch (Exception e) {
+                    messageView.setText("Safeword failed to start: " + e.getMessage());
+                }
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
     }
 
     /** When we're ROLE_HOME but not locked, forward to the real launcher. */

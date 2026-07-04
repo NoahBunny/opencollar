@@ -16,13 +16,15 @@ public class AdminReceiver extends DeviceAdminReceiver {
                 return "Authorized release in progress.";
             }
         } catch (Exception e) {}
-        // Lock immediately. $500 attempt penalty applied server-side by
-        // tamper-recorded(kind=attempt) (P2 paywall hardening, 2026-04-17) —
-        // new paywall lands back here on the next vault pull.
+        // Re-lock the phone (friction) and record the attempt for the Lion's
+        // accountability. Costly-exit, not punish-exit (see docs/THREAT-MODEL.md):
+        // NO financial penalty is applied for touching admin — the act of
+        // leaving is never punished. The wearer can always factory-reset or
+        // use the panic safeword to end the arrangement.
         try {
             Settings.Global.putInt(context.getContentResolver(), "focus_lock_active", 1);
             Settings.Global.putString(context.getContentResolver(), "focus_lock_message",
-                "Admin removal attempted.\n+$500 penalty.\nYour partner has been notified.");
+                "Admin removal attempted.\nThe phone is locked and your partner has been notified.");
             Settings.Global.putInt(context.getContentResolver(), "focus_lock_shame", 1);
             Settings.Global.putInt(context.getContentResolver(), "focus_lock_admin_tamper", 1);
         } catch (Exception e) {}
@@ -35,18 +37,15 @@ public class AdminReceiver extends DeviceAdminReceiver {
             context.startActivity(jail);
         } catch (Exception e) {}
 
-        // Alert mesh server (bunny-signed, vault-propagated). tamper_attempt
-        // triggers the $500 server-side penalty + increments lifetime_tamper.
+        // Notify the Lion for accountability (non-financial — the server-side
+        // tamper-recorded handler no longer applies a penalty).
         ControlService.postEventToServer(context, "tamper_attempt", null);
-        notifyHomelab(context, "ALERT: Admin deactivation ATTEMPTED. $500 penalty applied.");
+        notifyHomelab(context, "Admin deactivation attempted.");
 
-        return "You are about to lose all phone privileges.\n\n"
-            + "A $500 penalty has already been applied.\n"
-            + "Your partner has been notified.\n"
-            + "The phone is now locked.\n\n"
-            + "If you proceed, the penalty will increase to $1000\n"
-            + "and the bridge will re-enable admin within seconds.\n\n"
-            + "There is no escape. Press Cancel.";
+        return "Disabling admin will re-lock the phone and notify your partner.\n\n"
+            + "No penalty is applied — this arrangement is consensual, and you can\n"
+            + "always factory-reset or use the safeword to end it.\n\n"
+            + "Press Cancel to stay locked, or proceed to disable admin.";
     }
 
     @Override
@@ -58,11 +57,11 @@ public class AdminReceiver extends DeviceAdminReceiver {
                 return;
             }
         } catch (Exception e) {}
-        Log.w("FocusLock", "DEVICE ADMIN DEACTIVATED — reporting tamper_removed");
+        Log.w("FocusLock", "DEVICE ADMIN DEACTIVATED — reporting tamper_removed (non-financial)");
         try {
             Settings.Global.putInt(context.getContentResolver(), "focus_lock_active", 1);
             Settings.Global.putString(context.getContentResolver(), "focus_lock_message",
-                "Admin was removed.\n+$1000 penalty.\nYour partner has been notified.\nThe bridge will re-enable admin.");
+                "Admin was removed.\nThe phone is locked and your partner has been notified.");
             Settings.Global.putInt(context.getContentResolver(), "focus_lock_shame", 1);
             Settings.Global.putInt(context.getContentResolver(), "focus_lock_admin_removed", 1);
         } catch (Exception e) {}
@@ -75,11 +74,11 @@ public class AdminReceiver extends DeviceAdminReceiver {
             context.startActivity(jail);
         } catch (Exception e) {}
 
-        // P2 paywall hardening (2026-04-17): server applies the +$1000 on
-        // tamper_removed and propagates via vault. Phone no longer writes
-        // paywall locally.
+        // Notify the Lion for accountability (non-financial — no penalty is
+        // applied). The bridge may re-enable admin as friction, but factory
+        // reset and the panic safeword remain available. See THREAT-MODEL.
         ControlService.postEventToServer(context, "tamper_removed", null);
-        notifyHomelab(context, "CRITICAL: Admin was REMOVED. $1000 penalty applied. Re-enabling via bridge.");
+        notifyHomelab(context, "Admin was removed.");
     }
 
     @Override

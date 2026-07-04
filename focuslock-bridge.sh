@@ -175,6 +175,25 @@ poll_device() {
         return
     fi
 
+    # Terminal safety floor: once the wearer has safeworded (or Release Forever
+    # ran), focus_lock_released=1 is permanent. Honor it — never re-lock, never
+    # re-enable Bunny Tasker/ControlService. A safeword the bridge could override
+    # would not be a safeword. See docs/THREAT-MODEL.md.
+    local released
+    released=$(adb_dev "$name" settings get global focus_lock_released)
+    if [ "$released" = "1" ]; then
+        if [ "${DEV_LOCKED[$name]}" != "released" ]; then
+            echo "[$(date +%H:%M:%S)] [$name] RELEASED — safeword honored, ceasing all enforcement"
+            adb_dev "$name" cmd statusbar disable-for-setup false
+            adb_dev "$name" pm enable --user 0 "$launcher_pkg"
+            adb_dev "$name" settings put global user_switcher_enabled 1
+            adb_dev "$name" cmd package set-home-activity "$default_launcher"
+            adb_dev "$name" input keyevent KEYCODE_HOME
+            DEV_LOCKED[$name]="released"
+        fi
+        return
+    fi
+
     # Lock/unlock transitions
     if [ "$flag" = "1" ] && [ "${DEV_LOCKED[$name]}" = "0" ]; then
         echo "[$(date +%H:%M:%S)] [$name] LOCKING"

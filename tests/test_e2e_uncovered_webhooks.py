@@ -116,22 +116,13 @@ class TestEntrapWebhook:
             mail_module.ADMIN_TOKEN = original
 
 
-# ── /webhook/location (currently public — pin behavior) ───────────────────
+# ── /webhook/location (REMOVED — covert-location removal) ──────────────────
 
 
 class TestLocationWebhook:
-    def test_accepts_unsigned_lat_lon(self, live_server, mail_module, monkeypatch):
-        # Pin current "public, just logs" behavior. Audit L-2 (deferred)
-        # tracks tightening this to a signed /api/location path.
-        log_calls = []
-        monkeypatch.setattr(mail_module.logger, "info", lambda msg, *a: log_calls.append((msg, a)))
+    def test_location_webhook_removed(self, live_server, mail_module):
+        # Covert-location removal (docs/THREAT-MODEL.md): the wearer's GPS
+        # coordinates never leave their phone, so /webhook/location no longer
+        # exists. The endpoint is gone; posting to it 404s.
         status, body = _post(f"{live_server}/webhook/location", {"lat": 40.7, "lon": -74.0})
-        assert status == 200
-        assert body["ok"] is True
-
-    def test_accepts_empty_body(self, live_server, mail_module):
-        # Defaults to 0,0 — handler doesn't validate; this pin catches if
-        # someone adds validation without updating the contract.
-        status, body = _post(f"{live_server}/webhook/location", {})
-        assert status == 200
-        assert body["ok"] is True
+        assert status == 404

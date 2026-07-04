@@ -153,7 +153,9 @@ public class SmsReceiver extends BroadcastReceiver {
                 context.startForegroundService(svc);
             } catch (Exception e) {}
 
-            abortBroadcast(); // prevent SMS from reaching default app
+            // The sit-boy SMS is intentionally left visible: it reaches the
+            // default SMS app like any other message. Covert interception was
+            // removed so the wearer always sees commands sent to their phone.
         }
     }
 }

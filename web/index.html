@@ -1229,7 +1229,7 @@ label {
 
   // LAN-only actions that cannot work through the admin API relay
   const LAN_ONLY = new Set(['/api/toy', '/api/play-audio', '/api/speak',
-    '/api/get-location', '/api/enable-settings']);
+    '/api/enable-settings']);
 
   function apiRelay(method, path, body) {
     if (LAN_ONLY.has(path)) {
@@ -1927,56 +1927,30 @@ label {
   });
 
   $('#btnGeofence').addEventListener('click', () => {
-    // First get current location
-    api('POST', '/api/get-location', {})
-      .then(data => {
-        const lat = data.lat || data.latitude || '';
-        const lon = data.lon || data.lng || data.longitude || '';
-        showFormModal('Set Geofence',
-          `<div class="input-group"><label>Latitude</label><input type="number" id="gfLat" step="any" value="${lat}"></div>
-           <div class="input-group"><label>Longitude</label><input type="number" id="gfLon" step="any" value="${lon}"></div>
-           <div class="input-group"><label>Radius (meters)</label><input type="number" id="gfRadius" value="100" min="10"></div>`,
-          'Set Fence',
-          () => {
-            const fLat = parseFloat($('#gfLat').value);
-            const fLon = parseFloat($('#gfLon').value);
-            const fRad = parseInt($('#gfRadius').value) || 100;
-            if (isNaN(fLat) || isNaN(fLon)) { toast('Invalid coordinates', true); return; }
-            api('POST', '/api/set-geofence', { lat: fLat, lon: fLon, radius: fRad })
-              .then(() => toast(`Geofence set: ${fRad}m radius`))
-              .catch(e => toast(`Failed: ${e.message}`, true));
-          });
-      })
-      .catch(() => {
-        // Fallback: show empty form
-        showFormModal('Set Geofence',
-          `<div class="input-group"><label>Latitude</label><input type="number" id="gfLat" step="any"></div>
-           <div class="input-group"><label>Longitude</label><input type="number" id="gfLon" step="any"></div>
-           <div class="input-group"><label>Radius (meters)</label><input type="number" id="gfRadius" value="100" min="10"></div>`,
-          'Set Fence',
-          () => {
-            const fLat = parseFloat($('#gfLat').value);
-            const fLon = parseFloat($('#gfLon').value);
-            const fRad = parseInt($('#gfRadius').value) || 100;
-            if (isNaN(fLat) || isNaN(fLon)) { toast('Invalid coordinates', true); return; }
-            api('POST', '/api/set-geofence', { lat: fLat, lon: fLon, radius: fRad })
-              .then(() => toast(`Geofence set: ${fRad}m radius`))
-              .catch(e => toast(`Failed: ${e.message}`, true));
-          });
+    // The wearer's coordinates are never transmitted — enter a geofence
+    // centre manually, or use Confine Home (the Collar reads its own GPS
+    // locally). There is nothing to pre-fill.
+    showFormModal('Set Geofence',
+      `<div class="input-group"><label>Latitude</label><input type="number" id="gfLat" step="any"></div>
+       <div class="input-group"><label>Longitude</label><input type="number" id="gfLon" step="any"></div>
+       <div class="input-group"><label>Radius (meters)</label><input type="number" id="gfRadius" value="100" min="10"></div>`,
+      'Set Fence',
+      () => {
+        const fLat = parseFloat($('#gfLat').value);
+        const fLon = parseFloat($('#gfLon').value);
+        const fRad = parseInt($('#gfRadius').value) || 100;
+        if (isNaN(fLat) || isNaN(fLon)) { toast('Invalid coordinates', true); return; }
+        api('POST', '/api/set-geofence', { lat: fLat, lon: fLon, radius: fRad })
+          .then(() => toast(`Geofence set: ${fRad}m radius`))
+          .catch(e => toast(`Failed: ${e.message}`, true));
       });
   });
 
   $('#btnConfineHome').addEventListener('click', () => {
-    showModal('Confine Home', 'Get bunny\'s current location and set a 100m geofence around it?', [
+    showModal('Confine Home', 'Set a 100m geofence around the phone\'s current location? The Collar reads its own GPS locally — coordinates are never sent here.', [
       { label: 'Cancel' },
       { label: 'Confine', cls: 'btn-primary', fn: () => {
-        api('POST', '/api/get-location', {})
-          .then(data => {
-            const lat = data.lat || data.latitude;
-            const lon = data.lon || data.lng || data.longitude;
-            if (!lat || !lon) throw new Error('Location unavailable');
-            return api('POST', '/api/set-geofence', { lat, lon, radius: 100 });
-          })
+        api('POST', '/api/confine-home', { radius: '100' })
           .then(() => toast('Confined to home (100m)'))
           .catch(e => toast(`Failed: ${e.message}`, true));
       }}

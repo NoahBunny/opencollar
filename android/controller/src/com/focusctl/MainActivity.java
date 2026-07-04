@@ -3569,17 +3569,10 @@ public class MainActivity extends Activity {
     }
 
     private void doSetGeofence() {
-        setStatus("Getting location...");
-        executor.execute(() -> {
-            String locResp = api("/api/get-location", "{}");
-            String prefillLat = "", prefillLon = "";
-            if (locResp != null && locResp.contains("\"lat\":")) {
-                prefillLat = parseJsonNumStr(locResp, "lat");
-                prefillLon = parseJsonNumStr(locResp, "lon");
-            }
-            final String fLat = prefillLat, fLon = prefillLon;
-            handler.post(() -> showGeofenceDialog(fLat, fLon));
-        });
+        // The wearer's coordinates are never transmitted, so there is nothing
+        // to pre-fill. Enter a geofence centre manually, or use "Confine Home"
+        // (the Collar reads its OWN GPS locally and never sends it here).
+        showGeofenceDialog("", "");
     }
 
     private void showGeofenceDialog(String prefillLat, String prefillLon) {
@@ -3601,7 +3594,6 @@ public class MainActivity extends Activity {
         radiusInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
         radiusInput.setTextColor(0xFFe0e0e0); radiusInput.setHintTextColor(0xFF555555);
         layout.addView(latInput); layout.addView(lonInput); layout.addView(radiusInput);
-        setStatus("Location pre-filled");
 
         new AlertDialog.Builder(this)
             .setTitle("Set Geofence")

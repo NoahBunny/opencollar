@@ -97,9 +97,10 @@ public class ConsentActivity extends Activity {
 
         addTerm(root,
             "4.  The Lion may: play audio at maximum volume on your phone, enforce GPS geofences " +
-            "that auto-lock your phone with a $100 paywall if breached, assign writing tasks, " +
-            "take silent front camera photos as proof of obedience, and remotely control " +
-            "connected Lovense devices at any intensity.",
+            "that auto-lock your phone with a $100 paywall if breached (your location stays on " +
+            "your phone — only the fact of a breach is reported), assign writing and photo tasks " +
+            "that you complete and submit yourself, and remotely control connected Lovense " +
+            "devices at any intensity.",
             null, 0xFFcccccc, 16);
 
         addTerm(root,
@@ -109,17 +110,16 @@ public class ConsentActivity extends Activity {
             "The Lion sets the tier. You pay it.", 0xFFcccccc, 16);
 
         addTerm(root,
-            "6.  This app cannot be uninstalled except by the Lion. " +
-            "It is protected by device administrator privileges. " +
-            "Attempting to remove it triggers a $500 penalty. " +
-            "Succeeding triggers a $1,000 penalty. " +
-            "The bridge will re-enable it within seconds.",
+            "6.  This app resists casual removal — it holds device-administrator privileges, " +
+            "re-locks if disabled, and the bridge may re-enable it. This is friction, not a trap: " +
+            "no financial penalty is applied for tampering, and you are never locked in.",
             null, 0xFFcccccc, 16);
 
         addTerm(root,
-            "7.  You may revoke consent at any time by communicating directly with the Lion, " +
-            "or by performing a factory reset (available after 150 escape attempts). " +
-            "The restriction system is consensual. ",
+            "7.  You may end this at any time — your consent is always revocable. Use your " +
+            "panic safeword (long-press the lock message, then type your phrase) for an " +
+            "immediate release with no penalty; a factory reset is always available as the " +
+            "ultimate exit. The restriction system is consensual. ",
             "The power dynamic within it is not.", 0xFFcccccc, 16);
 
         // The kicker
@@ -131,6 +131,28 @@ public class ConsentActivity extends Activity {
         kicker.setGravity(android.view.Gravity.CENTER);
         kicker.setPadding(0, 16, 0, 40);
         root.addView(kicker);
+
+        // Safeword setup — the wearer's guaranteed, always-available exit phrase.
+        TextView safewordLabel = new TextView(this);
+        safewordLabel.setText("Set your safeword phrase. Type it on the lock screen at any time "
+            + "(long-press the message) for an immediate release with no penalty — no approval "
+            + "needed. Leave blank to use the default: \"I NEED OUT\".");
+        safewordLabel.setTextColor(0xFFc8a84e);
+        safewordLabel.setTextSize(14);
+        safewordLabel.setLineSpacing(6, 1.15f);
+        safewordLabel.setPadding(0, 0, 0, 12);
+        root.addView(safewordLabel);
+
+        final android.widget.EditText safewordInput = new android.widget.EditText(this);
+        safewordInput.setHint("Safeword phrase (optional)");
+        safewordInput.setTextColor(0xFFe0e0e0);
+        safewordInput.setHintTextColor(0xFF555555);
+        safewordInput.setPadding(24, 24, 24, 24);
+        LinearLayout.LayoutParams swLp = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        swLp.setMargins(0, 0, 0, 32);
+        safewordInput.setLayoutParams(swLp);
+        root.addView(safewordInput);
 
         // Consent button
         Button consentBtn = new Button(this);
@@ -146,6 +168,9 @@ public class ConsentActivity extends Activity {
         consentLp.setMargins(0, 0, 0, 16);
         consentBtn.setLayoutParams(consentLp);
         consentBtn.setOnClickListener(v -> {
+            String sw = safewordInput.getText().toString().trim();
+            Settings.Global.putString(getContentResolver(), "focus_lock_safeword",
+                sw.isEmpty() ? "I NEED OUT" : sw);
             Settings.Global.putInt(getContentResolver(), "focus_lock_consented", 1);
             Settings.Global.putLong(getContentResolver(), "focus_lock_consent_time",
                 System.currentTimeMillis());

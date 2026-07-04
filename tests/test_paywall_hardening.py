@@ -103,24 +103,27 @@ class TestEscapeRecorded:
 
 
 class TestTamperRecorded:
-    def test_attempt_fires_500(self, mail_module, orders):
+    # Costly-exit, not punish-exit (docs/THREAT-MODEL.md): device-admin tampering
+    # is tracked for accountability (lifetime_tamper) but NEVER fined. The act of
+    # leaving is never financially punished.
+    def test_attempt_no_penalty(self, mail_module, orders):
         orders.set("paywall", "0")
         result = mail_module.mesh_apply_order("tamper-recorded", {"kind": "attempt"}, orders)
-        assert result["penalty"] == 500
-        assert result["paywall"] == 500
+        assert "penalty" not in result
+        assert orders.get("paywall") == "0"
         assert result["lifetime_tamper"] == 1
 
-    def test_detected_fires_500(self, mail_module, orders):
+    def test_detected_no_penalty(self, mail_module, orders):
         orders.set("paywall", "0")
         result = mail_module.mesh_apply_order("tamper-recorded", {"kind": "detected"}, orders)
-        assert result["penalty"] == 500
-        assert result["paywall"] == 500
+        assert "penalty" not in result
+        assert orders.get("paywall") == "0"
 
-    def test_removed_fires_1000(self, mail_module, orders):
+    def test_removed_no_penalty(self, mail_module, orders):
         orders.set("paywall", "0")
         result = mail_module.mesh_apply_order("tamper-recorded", {"kind": "removed"}, orders)
-        assert result["penalty"] == 1000
-        assert result["paywall"] == 1000
+        assert "penalty" not in result
+        assert orders.get("paywall") == "0"
 
     def test_unknown_kind_no_penalty(self, mail_module, orders):
         orders.set("paywall", "0")
@@ -129,13 +132,13 @@ class TestTamperRecorded:
         assert orders.get("paywall") == "0"
         assert result["lifetime_tamper"] == 1  # counter still bumps
 
-    def test_counters_accumulate(self, mail_module, orders):
+    def test_counters_accumulate_without_penalty(self, mail_module, orders):
         orders.set("paywall", "0")
         mail_module.mesh_apply_order("tamper-recorded", {"kind": "attempt"}, orders)
         mail_module.mesh_apply_order("tamper-recorded", {"kind": "detected"}, orders)
         mail_module.mesh_apply_order("tamper-recorded", {"kind": "removed"}, orders)
-        # 500 + 500 + 1000 = 2000; 3 events in lifetime_tamper
-        assert int(orders.get("paywall", "0")) == 2000
+        # No penalties applied — paywall unchanged; 3 events in lifetime_tamper.
+        assert int(orders.get("paywall", "0")) == 0
         assert int(orders.get("lifetime_tamper", 0)) == 3
 
 

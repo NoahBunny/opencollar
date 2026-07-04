@@ -264,16 +264,19 @@ class TestEscapeEventE2E:
         applied = int(mail_module._orders_registry.get(mesh).get("paywall", "0"))
         assert applied == 5  # tier 1 (first 3 escapes)
 
-    def test_tamper_attempt_applies_500(self, live_server, seeded_mesh, mail_module):
+    def test_tamper_attempt_no_penalty(self, live_server, seeded_mesh, mail_module):
+        # Costly-exit, not punish-exit (docs/THREAT-MODEL.md): a tamper event is
+        # tracked but never fined. The paywall is unchanged.
         mesh = seeded_mesh["mesh_id"]
-        mail_module._orders_registry.get(mesh).set("paywall", "0")
+        orders = mail_module._orders_registry.get(mesh)
+        orders.set("paywall", "0")
         status, _ = _http_post(
             f"{live_server}/api/mesh/{mesh}/escape-event",
             self._valid_body(seeded_mesh, "tamper_attempt"),
         )
         assert status == 200
-        applied = int(mail_module._orders_registry.get(mesh).get("paywall", "0"))
-        assert applied == 500
+        assert int(orders.get("paywall", "0")) == 0
+        assert int(orders.get("lifetime_tamper", 0)) == 1
 
     def test_geofence_applies_100_and_seeds_original(self, live_server, seeded_mesh, mail_module):
         mesh = seeded_mesh["mesh_id"]

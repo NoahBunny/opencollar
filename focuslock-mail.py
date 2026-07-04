@@ -227,9 +227,6 @@ from focuslock_penalties import (
     GOOD_BEHAVIOR_INTERVAL_MS,
     GOOD_BEHAVIOR_REWARD,
     SIT_BOY_MAX_AMOUNT,
-    TAMPER_ATTEMPT_PENALTY,
-    TAMPER_DETECTED_PENALTY,
-    TAMPER_REMOVED_PENALTY,
     UNSUBSCRIBE_FEES,
     compound_interest_rate,
     escape_penalty,
@@ -1076,37 +1073,17 @@ def mesh_apply_order(action, params, orders):
             "paywall": new_pw,
         }
     elif action == "tamper-recorded":
-        # Phone reports device-admin tampering:
-        #   attempt  — onDisableRequested (user tapped deactivate, prompt fired)
-        #   detected — peer app (BunnyTasker ↔ Collar watcher) sees other's admin gone
-        #   removed  — admin actually stripped, big penalty
-        # P2 paywall hardening (2026-04-17): all three apply server-side now.
+        # Phone reports device-admin tampering (attempt/detected/removed).
+        # Costly-exit, not punish-exit (see docs/THREAT-MODEL.md): tampering is
+        # tracked and the Lion is notified for accountability, but it no longer
+        # applies a financial penalty. Disabling admin is friction, not a fine —
+        # the act of leaving is never punished.
         kind = (params.get("kind", "") or "").lower()
         try:
             cur = int(orders.get("lifetime_tamper", 0) or 0)
         except (ValueError, TypeError):
             cur = 0
         orders.set("lifetime_tamper", cur + 1)
-        penalty_by_kind = {
-            "attempt": TAMPER_ATTEMPT_PENALTY,
-            "detected": TAMPER_DETECTED_PENALTY,
-            "removed": TAMPER_REMOVED_PENALTY,
-        }
-        penalty = penalty_by_kind.get(kind, 0)
-        if penalty > 0:
-            try:
-                current_pw = int(orders.get("paywall", "0") or "0")
-            except (ValueError, TypeError):
-                current_pw = 0
-            new_pw = current_pw + penalty
-            orders.set("paywall", str(new_pw))
-            return {
-                "applied": action,
-                "kind": kind,
-                "lifetime_tamper": cur + 1,
-                "penalty": penalty,
-                "paywall": new_pw,
-            }
         return {"applied": action, "kind": kind, "lifetime_tamper": cur + 1}
     elif action == "streak-bonus":
         # 7d or 30d clean-streak reward: subtract credit from paywall
@@ -3003,11 +2980,12 @@ def _verify_blob_two_writer(blob, lion_pubkey, registered_nodes):
 def _verify_slave_signed_webhook(data, webhook_type, *, version_field="min_collar_version", min_version=74):
     """Verify a slave-signed (or companion-signed) evidence webhook.
 
-    Audit 2026-04-27 H-2: gates the seven evidence webhooks the slave
+    Audit 2026-04-27 H-2: gates the evidence webhooks the slave
     APK / Bunny Tasker fires (compliment, gratitude, love_letter,
     geofence-breach, evidence-photo, offer, subscription-charge) plus
-    the original bunny-message that the 2026-04-17 audit closed with
-    the same shape.
+    the original bunny-message that the 2026-04-17 audit closed with the
+    same shape. (evidence-photo is now wearer-submitted photo-task proof
+    only — covert front-camera capture was removed.)
 
     Canonical payload: "{mesh_id}|{node_id}|{webhook_type}|{ts_i}"
     Signed with the bunny_privkey (focus_lock_bunny_privkey on the
@@ -3158,12 +3136,6 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             send_evidence(text, "negotiation offer")
             self.respond(200, {"ok": True})
 
-        elif self.path == "/webhook/location":
-            lat = data.get("lat", 0)
-            lon = data.get("lon", 0)
-            logger.info("Location: %s, %s", lat, lon)
-            self.respond(200, {"ok": True})
-
         elif self.path == "/webhook/geofence-breach":
             # Audit 2026-04-27 H-2. Caller-controlled lat/lon/distance
             # are content-only; the signature only proves the request
@@ -3173,13 +3145,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if verdict[0] == "error":
                 self.respond(verdict[1], verdict[2])
                 return
-            lat = data.get("lat", 0)
-            lon = data.get("lon", 0)
-            distance = data.get("distance", 0)
-            logger.warning("GEOFENCE BREACH: %.0fm from center at %s,%s", distance, lat, lon)
+            # Covert-location removal: the Collar reports only the violation
+            # magnitude, never coordinates. See docs/THREAT-MODEL.md.
+            distance = float(data.get("distance", 0) or 0)
+            logger.warning("GEOFENCE BREACH: %.0fm outside zone", distance)
             send_evidence(
-                f"GEOFENCE BREACH\n\nDistance from center: {distance:.0f}m\n"
-                f"Location: {lat}, {lon}\n"
+                f"GEOFENCE BREACH\n\nDistance outside zone: {distance:.0f}m\n"
                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 f"Phone has been auto-locked with $100 paywall.",
                 "geofence breach",
@@ -3187,26 +3158,25 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             self.respond(200, {"ok": True})
 
         elif self.path == "/webhook/evidence-photo":
-            # Audit 2026-04-27 H-2. Sig binds (mesh, node, ts) only —
-            # photo bytes themselves are content-only. A tampered slave
-            # could still upload a misleading photo to its own Lion;
-            # this gate stops third-parties on the network from doing
-            # the same.
+            # Wearer-submitted photo-task proof ONLY. Covert front-camera capture
+            # was removed (see docs/THREAT-MODEL.md); the sole caller now is the
+            # explicit photo-task the wearer knowingly takes and submits. Sig
+            # binds (mesh, node, ts); the photo bytes are content-only.
             verdict = _verify_slave_signed_webhook(data, "evidence-photo")
             if verdict[0] == "error":
                 self.respond(verdict[1], verdict[2])
                 return
             photo_b64 = data.get("photo", "")
-            evidence_type = data.get("type", "obedience")
+            evidence_type = data.get("type", "photo_task")
             text = data.get("text", "")
-            logger.info("Evidence photo received (%s)", _sanitize_log(evidence_type))
+            logger.info("Photo-task proof received (%s)", _sanitize_log(evidence_type))
             if photo_b64 and PARTNER_EMAIL:
                 try:
                     photo_bytes = base64.b64decode(photo_b64)
                     msg = MIMEMultipart()
                     msg["From"] = MAIL_USER
                     msg["To"] = PARTNER_EMAIL
-                    msg["Subject"] = f"Lion's Share — {evidence_type.title()} Photo Evidence"
+                    msg["Subject"] = f"Lion's Share — {evidence_type.title()} Photo"
                     body_text = (
                         f"Lion's Share — {evidence_type.title()} Photo\n\n"
                         f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -3214,7 +3184,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     )
                     if text:
                         body_text += f"\nContent:\n{text}\n"
-                    body_text += "\n---\nSelfie taken automatically on task completion.\n"
+                    body_text += "\n---\nPhoto submitted by the wearer for the photo-task.\n"
                     msg.attach(MIMEText(body_text, "plain"))
                     attachment = MIMEBase("image", "jpeg")
                     attachment.set_payload(photo_bytes)
@@ -3222,18 +3192,18 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     attachment.add_header(
                         "Content-Disposition",
                         "attachment",
-                        filename=f"evidence_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg",
+                        filename=f"phototask_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg",
                     )
                     msg.attach(attachment)
                     with smtplib.SMTP(SMTP_HOST, 587) as server:
                         server.starttls()
                         server.login(MAIL_USER, MAIL_PASS)
                         server.send_message(msg)
-                    logger.info("Evidence photo email sent to %s", PARTNER_EMAIL)
+                    logger.info("Photo-task email sent to %s", PARTNER_EMAIL)
                 except Exception:
-                    logger.exception("Evidence photo email error")
+                    logger.exception("Photo-task email error")
             elif not photo_b64:
-                send_evidence(text or "Photo capture failed", evidence_type)
+                send_evidence(text or "Photo task", evidence_type)
             self.respond(200, {"ok": True})
 
         elif self.path == "/webhook/verify-photo":
