@@ -204,6 +204,13 @@ PHONE_PIN = os.environ.get("PHONE_PIN", _cfg.get("pin", ""))
 IMAP_CHECK_INTERVAL = 30  # seconds
 WEBHOOK_PORT = _cfg.get("homelab_port", 8434)
 
+# Public-facing base URL (e.g. https://collar.example.com) when the relay sits
+# behind a TLS reverse proxy. When set, it's what the relay ADVERTISES to apps
+# during pairing instead of a bare LAN/Tailscale IP:port — so a phone enrolled
+# from anywhere reaches the homelab over the public name. Empty = advertise the
+# discovered local address (LAN/Tailscale-only deployments). No trailing slash.
+PUBLIC_URL = (_cfg.get("public_url", "") or os.environ.get("FOCUSLOCK_PUBLIC_URL", "")).rstrip("/")
+
 # Runtime state directory — hosts orders, peers, device registry, and per-mesh
 # vaults. Overridable via FOCUSLOCK_STATE_DIR for staging / tests / non-root
 # environments (systemd prod uses /run/focuslock via a tmpfiles.d unit).
@@ -5438,8 +5445,11 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             # Build config payload
             local_addrs = mesh.get_local_addresses()
             homelab_ip = local_addrs[0] if local_addrs else "127.0.0.1"
+            # Prefer the public reverse-proxy URL when configured, so apps
+            # enrolled off-LAN reach the homelab by name over HTTPS.
+            base_url = PUBLIC_URL or f"http://{homelab_ip}:{WEBHOOK_PORT}"
             config = {
-                "homelab_url": f"http://{homelab_ip}:{WEBHOOK_PORT}",
+                "homelab_url": base_url,
                 "mesh_pin": str(mesh_orders.get("pin", "")),
                 "pubkey_pem": get_lion_pubkey() or "",
                 "mesh_port": _cfg.get("mesh_port", 8435),
@@ -5449,7 +5459,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             pair_file = os.path.join(pair_dir, f"{code}.json")
             with open(pair_file, "w") as f:
                 json.dump({"config": config, "expires_at": time.time() + expires_min * 60}, f)
-            pair_url = f"http://{homelab_ip}:{WEBHOOK_PORT}/api/pair/{code}"
+            pair_url = f"{base_url}/api/pair/{code}"
             logger.info("Pairing code created: %s (expires %smin)", code, expires_min)
             self.respond(200, {"ok": True, "code": code, "url": pair_url, "expires_minutes": expires_min})
 
