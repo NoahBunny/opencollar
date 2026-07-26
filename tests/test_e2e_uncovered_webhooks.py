@@ -124,5 +124,5 @@ class TestLocationWebhook:
         # Covert-location removal (docs/THREAT-MODEL.md): the wearer's GPS
         # coordinates never leave their phone, so /webhook/location no longer
         # exists. The endpoint is gone; posting to it 404s.
-        status, body = _post(f"{live_server}/webhook/location", {"lat": 40.7, "lon": -74.0})
+        status, _ = _post(f"{live_server}/webhook/location", {"lat": 40.7, "lon": -74.0})
         assert status == 404

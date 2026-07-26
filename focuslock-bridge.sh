@@ -292,36 +292,45 @@ poll_device() {
 }
 
 # ── Main ──
-load_devices
+main() {
+    load_devices
 
-echo "FocusLock Bridge (multi-device)"
-echo "  Device count: ${#DEV_NAMES[@]}"
-echo "  Devices: ${DEV_NAMES[*]}"
-for name in "${DEV_NAMES[@]}"; do
-    echo "    $name: LAN=${DEV_LAN_IP[$name]}:${DEV_ADB_PORT[$name]} TS=${DEV_TS_IP[$name]}"
-done
-echo "  Polling every ${POLL}s"
-echo ""
-
-# Initial connect attempt for all devices
-for name in "${DEV_NAMES[@]}"; do
-    reconnect_device "$name"
-done
-
-registry_counter=0
-
-while true; do
-    # Poll each device
+    echo "FocusLock Bridge (multi-device)"
+    echo "  Device count: ${#DEV_NAMES[@]}"
+    echo "  Devices: ${DEV_NAMES[*]}"
     for name in "${DEV_NAMES[@]}"; do
-        poll_device "$name"
+        echo "    $name: LAN=${DEV_LAN_IP[$name]}:${DEV_ADB_PORT[$name]} TS=${DEV_TS_IP[$name]}"
+    done
+    echo "  Polling every ${POLL}s"
+    echo ""
+
+    # Initial connect attempt for all devices
+    for name in "${DEV_NAMES[@]}"; do
+        reconnect_device "$name"
     done
 
-    # Reload device registry every ~60s (allows hot-adding devices)
-    registry_counter=$((registry_counter + 1))
-    if [ "$registry_counter" -ge 30 ]; then
-        registry_counter=0
-        load_devices
-    fi
+    local registry_counter=0
 
-    sleep $POLL
-done
+    while true; do
+        # Poll each device
+        for name in "${DEV_NAMES[@]}"; do
+            poll_device "$name"
+        done
+
+        # Reload device registry every ~60s (allows hot-adding devices)
+        registry_counter=$((registry_counter + 1))
+        if [ "$registry_counter" -ge 30 ]; then
+            registry_counter=0
+            load_devices
+        fi
+
+        sleep $POLL
+    done
+}
+
+# Run the daemon only when executed directly. When sourced (e.g. by
+# tests/bridge_relock_test.sh, which exercises poll_device's focus_lock_released
+# guard in isolation with a mocked adb_dev), define the functions but don't loop.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    main "$@"
+fi

@@ -39,7 +39,7 @@ JUNIT_JAR="$CACHE/junit-platform-console-standalone-$JUNIT_VER.jar"
 rm -rf "$BUILD"; mkdir -p "$BUILD"
 
 echo "== compiling Android src (controller + slave + companion) + shims + tests (JDK: $("$JAVAC" -version 2>&1)) =="
-"$JAVAC" -d "$BUILD" -cp "$JSON_JAR:$JUNIT_JAR" \
+"$JAVAC" -encoding UTF-8 -d "$BUILD" -cp "$JSON_JAR:$JUNIT_JAR" \
     "$SCRIPT_DIR/test-support/android/util/Base64.java" \
     "$SCRIPT_DIR/test-support/android/util/Log.java" \
     "$SCRIPT_DIR/controller/src/com/focusctl/VaultCrypto.java" \
