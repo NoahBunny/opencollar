@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.focuslock"
-    android:versionCode="78"
-    android:versionName="8.35">
+    android:versionCode="79"
+    android:versionName="8.36">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
 
@@ -87,6 +87,22 @@
             android:name=".ControlService"
             android:exported="true"
             android:foregroundServiceType="specialUse|location" />
+
+        <!-- Notification-shade guard (non-device-owner shade blocking). The system
+             binds accessibility services, so it must be exported and protected by
+             BIND_ACCESSIBILITY_SERVICE. Enabled by the operator via adb in recage. -->
+        <service
+            android:name=".ShadeGuardService"
+            android:label="@string/shade_guard_label"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/shade_guard_accessibility" />
+        </service>
 
         <!-- A3 (optional embedded Tor). Declared exactly as the tor-android AAR
              does (no foregroundServiceType — there is no manifest merger in this

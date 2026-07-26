@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Config for ShadeGuardService. Minimal privilege: it does NOT retrieve window
+     content (canRetrieveWindowContent=false) — it only needs to know a SystemUI
+     panel surfaced so it can collapse the shade during a lock. -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowsChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:notificationTimeout="0"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/shade_guard_desc" />
