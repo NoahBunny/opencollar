@@ -97,7 +97,9 @@ COMPANION_APK_PATH=$(find_apk "$TARGET_COMPANION_APK")
 #     it's granted first; the rest are dangerous-class but pre-grant via adb
 #     works on Android 14+)
 #   - Active device admin for .AdminReceiver
-#   - focus_lock_consent_given flag (consent presumed by maintainer; skip the dialog)
+#   - focus_lock_consented flag (consent presumed by maintainer; skip the dialog).
+#     Must match the key ConsentActivity/FocusActivity read (was focus_lock_consent_given,
+#     which nothing read — the dialog was never actually skipped).
 #   - Force-stop + foreground-service start so the new perms take effect
 #
 # (Removed 2026-04-17: notification-listener allowance for .PaymentListener.
@@ -122,7 +124,7 @@ recage_focuslock() {
         adb_cmd -s "$dev" shell "pm grant com.focuslock android.permission.$p" >/dev/null 2>&1 || true
     done
     adb_cmd -s "$dev" shell "dpm set-active-admin --user 0 com.focuslock/.AdminReceiver" >/dev/null 2>&1 || true
-    adb_cmd -s "$dev" shell "settings put global focus_lock_consent_given 1" >/dev/null 2>&1 || true
+    adb_cmd -s "$dev" shell "settings put global focus_lock_consented 1" >/dev/null 2>&1 || true
     # Make The Collar the default home app so the home button always lands in FocusActivity.
     # Stores the prior launcher first so unlock can forward back to it.
     local prior_home
