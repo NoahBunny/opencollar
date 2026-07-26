@@ -38,11 +38,21 @@ public final class R {
   public static final class layout {
     public static final int activity_focus=0x7f030000;
   }
+  public static final class string {
+    public static final int shade_guard_desc=0x7f040000;
+    /**
+     * Accessibility service (notification-shade guard during a lock). Shown in
+     * Settings > Accessibility, which cannot be hidden — labeled honestly, in
+     * keeping with the no-covert principle in docs/THREAT-MODEL.md.
+     */
+    public static final int shade_guard_label=0x7f040001;
+  }
   public static final class style {
-    public static final int FocusTheme=0x7f040000;
+    public static final int FocusTheme=0x7f050000;
   }
   public static final class xml {
-    public static final int device_admin=0x7f050000;
-    public static final int network_security_config=0x7f050001;
+    public static final int device_admin=0x7f060000;
+    public static final int network_security_config=0x7f060001;
+    public static final int shade_guard_accessibility=0x7f060002;
   }
 }

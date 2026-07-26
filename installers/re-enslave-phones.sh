@@ -125,6 +125,19 @@ recage_focuslock() {
     done
     adb_cmd -s "$dev" shell "dpm set-active-admin --user 0 com.focuslock/.AdminReceiver" >/dev/null 2>&1 || true
     adb_cmd -s "$dev" shell "settings put global focus_lock_consented 1" >/dev/null 2>&1 || true
+    # Enable the notification-shade guard (ShadeGuardService accessibility service).
+    # Non-device-owner devices can't pre-disable the status bar, so this reactively
+    # collapses the shade during a lock. Accessibility services live in a
+    # colon-separated secure setting — APPEND so we never clobber the wearer's own.
+    local a11y_svc="com.focuslock/com.focuslock.ShadeGuardService"
+    local a11y_cur
+    a11y_cur=$(adb_cmd -s "$dev" shell "settings get secure enabled_accessibility_services" 2>/dev/null | tr -d '\r\n')
+    if [ "$a11y_cur" = "null" ] || [ -z "$a11y_cur" ]; then
+        adb_cmd -s "$dev" shell "settings put secure enabled_accessibility_services $a11y_svc" >/dev/null 2>&1 || true
+    elif ! printf '%s' "$a11y_cur" | grep -qF "$a11y_svc"; then
+        adb_cmd -s "$dev" shell "settings put secure enabled_accessibility_services ${a11y_cur}:${a11y_svc}" >/dev/null 2>&1 || true
+    fi
+    adb_cmd -s "$dev" shell "settings put secure accessibility_enabled 1" >/dev/null 2>&1 || true
     # Make The Collar the default home app so the home button always lands in FocusActivity.
     # Stores the prior launcher first so unlock can forward back to it.
     local prior_home
