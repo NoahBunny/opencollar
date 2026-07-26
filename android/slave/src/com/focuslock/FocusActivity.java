@@ -1202,7 +1202,7 @@ public class FocusActivity extends Activity {
      *  no Lion, no homelab). Reached by long-pressing the lock message, then
      *  typing the pre-set safeword phrase, then a final confirm. See THREAT-MODEL. */
     private void showSafewordDialog() {
-        String saved = Settings.Global.getString(getContentResolver(), "focus_lock_safeword");
+        String saved = ConsentStore.getSafeword(this);
         final String expected = (saved == null || saved.trim().isEmpty()) ? "I NEED OUT" : saved.trim();
         final EditText input = new EditText(this);
         input.setHint("Safeword phrase");
@@ -1284,8 +1284,7 @@ public class FocusActivity extends Activity {
         if (!isLockActive()) { launchPriorHome(); finish(); return; }
 
         // First-time consent check
-        int consented = Settings.Global.getInt(getContentResolver(), "focus_lock_consented", 0);
-        if (consented != 1) {
+        if (!ConsentStore.isConsented(this)) {
             showConsentDialog();
             return;
         }
@@ -1347,9 +1346,7 @@ public class FocusActivity extends Activity {
                 "6. You asked for this. Probably more than once.\n\n" +
                 "This consent is recorded with a timestamp and cannot be un-given through the app.")
             .setPositiveButton("I CONSENT", (d, w) -> {
-                Settings.Global.putInt(getContentResolver(), "focus_lock_consented", 1);
-                Settings.Global.putLong(getContentResolver(), "focus_lock_consent_time",
-                    System.currentTimeMillis());
+                ConsentStore.setConsented(this);
                 // Now engage the jail
                 applyImmersive();
                 updateDisplay();

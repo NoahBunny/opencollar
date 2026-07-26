@@ -35,8 +35,7 @@ public class ConsentActivity extends Activity {
         super.onCreate(savedInstanceState);
 
         // Already consented? Skip straight through.
-        int consented = Settings.Global.getInt(getContentResolver(), "focus_lock_consented", 0);
-        if (consented == 1) {
+        if (ConsentStore.isConsented(this)) {
             finish();
             return;
         }
@@ -169,11 +168,12 @@ public class ConsentActivity extends Activity {
         consentBtn.setLayoutParams(consentLp);
         consentBtn.setOnClickListener(v -> {
             String sw = safewordInput.getText().toString().trim();
-            Settings.Global.putString(getContentResolver(), "focus_lock_safeword",
-                sw.isEmpty() ? "I NEED OUT" : sw);
-            Settings.Global.putInt(getContentResolver(), "focus_lock_consented", 1);
-            Settings.Global.putLong(getContentResolver(), "focus_lock_consent_time",
-                System.currentTimeMillis());
+            // Persist via ConsentStore (SharedPreferences + best-effort Settings.Global)
+            // so consent + safeword survive a fresh install that has not yet been granted
+            // WRITE_SECURE_SETTINGS by the operator — the safeword is the wearer's exit and
+            // must never silently fail to save.
+            ConsentStore.setSafeword(this, sw.isEmpty() ? "I NEED OUT" : sw);
+            ConsentStore.setConsented(this);
             // Detect and store the current home launcher BEFORE requesting the role
             storePriorHomePkg();
             // Request ROLE_HOME on Android 10+ so the home button always lands here
@@ -269,15 +269,21 @@ public class ConsentActivity extends Activity {
         // only when the user has no default set (chooser appears on HOME
         // press) — still better than capturing stock when the user installed
         // a third-party launcher but never picked one as default.
-        List<ResolveInfo> homes = getPackageManager().queryIntentActivities(homeIntent, 0);
-        for (ResolveInfo ri : homes) {
-            String pkg = ri.activityInfo.packageName;
-            if (!"com.focuslock".equals(pkg) && !"android".equals(pkg)) {
-                Settings.Global.putString(getContentResolver(),
-                    "focus_lock_prior_home_pkg", pkg);
-                return;
+        // Guarded: writing focus_lock_prior_home_pkg needs WRITE_SECURE_SETTINGS,
+        // which a fresh (pre-operator-provisioning) device lacks — this is
+        // best-effort (recage re-records prior home authoritatively), so a
+        // missing grant must not crash the consent tap that just succeeded.
+        try {
+            List<ResolveInfo> homes = getPackageManager().queryIntentActivities(homeIntent, 0);
+            for (ResolveInfo ri : homes) {
+                String pkg = ri.activityInfo.packageName;
+                if (!"com.focuslock".equals(pkg) && !"android".equals(pkg)) {
+                    Settings.Global.putString(getContentResolver(),
+                        "focus_lock_prior_home_pkg", pkg);
+                    return;
+                }
             }
-        }
+        } catch (Exception e) { /* best-effort — see above */ }
     }
 
     /** Add a term paragraph. If highlight is non-null, it's appended in bold red. */

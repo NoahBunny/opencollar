@@ -1884,7 +1884,7 @@ public class ControlService extends Service {
         Settings.Global.putString(getContentResolver(), "focus_lock_paywall", "0");
         Settings.Global.putString(getContentResolver(), "focus_lock_paywall_original", "0");
         Settings.Global.putString(getContentResolver(), "focus_lock_message", "");
-        Settings.Global.putInt(getContentResolver(), "focus_lock_consented", 0);
+        ConsentStore.clearConsented(this);
 
         // Clear device-owner restrictions + status bar BEFORE revoking device owner
         if (isDeviceOwner()) {
