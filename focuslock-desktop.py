@@ -2353,8 +2353,7 @@ for (var i = 0; i < c.length; i++) {
             self._prev_display = cur
             try:
                 self.generate_lock_wallpaper()
-                self._apply_kde_lock_wallpaper(
-                    os.path.expanduser("~/.local/share/focuslock/lock-wallpaper.png"))
+                self._apply_kde_lock_wallpaper(os.path.expanduser("~/.local/share/focuslock/lock-wallpaper.png"))
             except Exception as e:
                 logger.warning("mid-lock wallpaper refresh failed: %s", e)
 

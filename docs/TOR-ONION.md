@@ -51,8 +51,22 @@ Arti onion **hosting** is still "not for production" per the Tor Project — use
 ```bash
 export FOCUSLOCK_TOR_AAR=/path/to/tor-android-0.4.9.x.aar
 export FOCUSLOCK_JTORCTL_JAR=/path/to/jtorctl.jar
+export FOCUSLOCK_BCPROV_JAR=/path/to/bcprov-jdk18on-1.78.1.jar
 bash android/slave/build.sh        # and android/controller/build.sh
 ```
+
+**Toolchain (Tor builds only — verified 2026-07-05):** the tor-android AAR ships
+**Java-24 bytecode** (class major version 68). This forces **two** raised
+requirements beyond a default build, and both must be met or the build fails:
+- **`javac` must be JDK ≥ 24** — a JDK-17 `javac` cannot even *read* the AAR's
+  `TorService.class` on the classpath (`cannot access TorService … class file
+  has wrong version 68.0, should be 61.0`), so the compile fails before dexing.
+  Point `JAVA_HOME` at a JDK 24+ for the Tor build. `build.sh` already passes
+  `-source 17 -target 17`, so app bytecode stays Java-17 regardless.
+- **`d8` must be build-tools ≥ 36.0.0** (`FOCUSLOCK_BUILD_TOOLS=36.0.0`) — only
+  that d8 can dex the Java-24 AAR classes.
+
+A default (Tor-off) build has neither requirement: JDK 17 + build-tools 35 is fine.
 
 The hook unzips the AAR and:
 1. puts `classes.jar` (+ jtorctl jar) on the `javac -classpath` and into the

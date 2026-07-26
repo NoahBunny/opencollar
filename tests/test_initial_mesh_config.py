@@ -308,9 +308,7 @@ class TestPaymentEmailIsolation:
                 mail_module._admin_order_to_vault_blob(
                     "set-payment-email", {"imap_host": "h", "user": "lion@x", "pass": "p"}, mid
                 )
-                mail_module._admin_order_to_vault_blob(
-                    "some-other-action", {"payee_email": "lion@x"}, mid
-                )
+                mail_module._admin_order_to_vault_blob("some-other-action", {"payee_email": "lion@x"}, mid)
             finally:
                 mail_module._vault_store.append = orig
             assert calls["n"] == 0, "sensitive payment-cred orders must never be vault-broadcast"
@@ -366,9 +364,7 @@ class TestServerEmailSupport:
     def test_send_evidence_prefers_per_mesh_email(self, mail_module, mesh_id, monkeypatch):
         mail_module._get_payment_identity(mesh_id).set_evidence_email("permesh@lion.com")
         captured = {}
-        monkeypatch.setattr(
-            mail_module, "_send_evidence_impl", lambda *a, **k: captured.update(k)
-        )
+        monkeypatch.setattr(mail_module, "_send_evidence_impl", lambda *a, **k: captured.update(k))
         mail_module.send_evidence("compliment text", "compliment", mesh_id=mesh_id)
         assert captured.get("partner_email") == "permesh@lion.com"
         # Without a mesh_id → falls back to the operator PARTNER_EMAIL.

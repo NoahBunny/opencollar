@@ -258,12 +258,10 @@ class TestSlaveCollarConformance:
             ("/x", "{bad", 0, "n"),
         ]
         for path, body, ts, nonce in vectors:
-            cmd = _CLI_SLAVE_ARGV + ["canonicalize", path, str(ts), nonce]
+            cmd = [*_CLI_SLAVE_ARGV, "canonicalize", path, str(ts), nonce]
             # Body goes on stdin verbatim (no added newline); force UTF-8 so the
             # non-ASCII vector is byte-stable regardless of the runner's locale.
-            out = subprocess.run(
-                cmd, input=body, capture_output=True, encoding="utf-8", timeout=30, check=True
-            ).stdout
+            out = subprocess.run(cmd, input=body, capture_output=True, encoding="utf-8", timeout=30, check=True).stdout
             expected = c1_canonicalize(path, body, ts, nonce)
             assert out == expected, f"{path} {body!r}: Java {out!r} != Python {expected!r}"
 

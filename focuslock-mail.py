@@ -562,8 +562,14 @@ def _ensure_relay_node_registered(mesh_id):
 # PaymentIdentity (set-payee-identity), never the vault.
 _VAULT_BLOB_DENY_ACTIONS = {"set-payment-email", "set-payee-identity"}
 _VAULT_BLOB_DENY_PARAM_KEYS = {
-    "imap_host", "imap_user", "imap_pass", "payee_email", "email",
-    "payment_imap_host", "payment_imap_user", "payment_imap_pass",
+    "imap_host",
+    "imap_user",
+    "imap_pass",
+    "payee_email",
+    "email",
+    "payment_imap_host",
+    "payment_imap_user",
+    "payment_imap_pass",
 }
 
 

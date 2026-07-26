@@ -114,6 +114,7 @@ extend-exclude = [
     "web",
     "dist",
     "build",
+    "(OLD)",
     "__pycache__",
     "*.bak",
     "*.bak.*",
