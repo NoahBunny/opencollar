@@ -205,7 +205,36 @@ public class ControlService extends Service {
             .setContentText("Always on")
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setOngoing(true).build();
-        startForeground(1, n);
+
+        // startForeground() enforces EVERY foregroundServiceType the manifest
+        // declares (specialUse|location). On API 34+ the "location" type also
+        // requires ACCESS_COARSE/FINE_LOCATION to be held AND the app to be in an
+        // eligible start state at this instant. On a fresh install neither is true,
+        // so the plain startForeground(1, n) throws SecurityException and the whole
+        // cage (HTTP API, jail-watcher, paywall) crash-loops on every boot. Request
+        // only what we can satisfy: always specialUse; add location when its runtime
+        // permission is held, and fall back to specialUse-only if the platform still
+        // refuses it (geofence stays inert until a restart in a permitted state — the
+        // cage core must never be gated behind the geofence permission).
+        if (android.os.Build.VERSION.SDK_INT >= 34) {
+            int special = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE;
+            boolean hasLocation =
+                checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)
+                        == android.content.pm.PackageManager.PERMISSION_GRANTED
+                || checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION)
+                        == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            int type = hasLocation
+                ? special | android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+                : special;
+            try {
+                startForeground(1, n, type);
+            } catch (SecurityException e) {
+                Log.w(TAG, "location FGS type rejected; starting specialUse-only: " + e.getMessage());
+                startForeground(1, n, special);
+            }
+        } else {
+            startForeground(1, n);
+        }
 
         // Initialize TTS for talk-through-mic
         tts = new android.speech.tts.TextToSpeech(this, status -> {

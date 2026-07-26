@@ -8,6 +8,14 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-07-26 on-device QA fixes ───────── -->
+
+### Fixed
+- **The Collar's `ControlService` crash-looped on every boot on Android 14+ (API 34+)** (`android/slave/src/com/focuslock/ControlService.java`, slave **77 / 8.34**). `onCreate` called the no-type `startForeground(1, n)`, which makes the platform enforce **every** `foregroundServiceType` the manifest declares (`specialUse|location`). On API 34+ the `location` type additionally requires `ACCESS_COARSE/FINE_LOCATION` to be held at that instant — and on a fresh install it never is (geofence is opt-in and its permission may never be granted), so `startForeground` threw `SecurityException` and took the **entire** service down (HTTP API, jail-watcher, paywall, mesh) — Android then only retried on a multi-minute backoff. Now the FGS type is computed at runtime: always `specialUse`, plus `location` **only** when its runtime permission is actually held, with a fallback to `specialUse`-only if the platform still refuses it. The cage core no longer depends on the geofence permission. **Found and verified on-device** (Samsung SM-S908, Android 16 / API 36, via adb): before the fix the service crashed with `SecurityException: Starting FGS with type location`; after, it comes up cleanly with **no** location grant, and with location granted it runs as `types=0x40000008` (`SPECIAL_USE|LOCATION`).
+
+### On-device QA (2026-07-26)
+- **First real end-to-end run of the Collar's signed HTTP control surface**, exercised against a live device over adb with a Lion stand-in (RSA-2048 keypair, C1-canonical PKCS1v15/SHA-256 request signing). Verified: `/api/pair` bootstrap (unsigned) stores the Lion pubkey; signed `/api/message`, `/api/lock` (with `timer` → `timer_remaining_ms` counting down, `mode`/`shame`/`paywall` applied), `/api/unlock`, and `/api/clear-paywall` all accepted (200); an unsigned/forged request is rejected 403 (`stale_ts` for an old timestamp, `bad_sig` for a fresh-ts wrong signature). Confirmed the `timer` lock key is the real Collar↔Lion contract (`ControlService.doLock` reads `timer`; controller `buildLockJson` sends `timer`) — the `duration_min` in the `c1_canonicalize` golden vectors is only a format example, not the API key.
+
 <!-- ───────── 2026-07-04 remove covert-coercion primitives + add a real safety floor ───────── -->
 
 ### Removed
