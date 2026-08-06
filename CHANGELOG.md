@@ -8,6 +8,117 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-07 ecosystem-review fix-forward (cage tiers, safeword, optimistic UI, display name) ───────── -->
+
+Landed the previously-uncommitted feature stack (cage tiers, optimistic order
+reflection, bunny display name, desktop-task webhook, Windows liberation, panic
+safeword.exe) after a full adversarial review — fixing the safety-floor
+collisions, security holes, and correctness bugs the review surfaced before
+shipping. Versions: slave **80 / 8.37**, controller **73 / 73.0**, companion
+**59 / 2.26**; `installers/re-enslave-lib.sh` TARGET_*_VERSIONCODE synced.
+
+### Security
+- **Lion's Share no longer trusts a relay-advertised bunny E2EE key over a
+  verified one** (`android/controller/src/com/focusctl/MainActivity.java`).
+  `persistBunnyPubkey()` adopted whatever `bunny_pubkey` the (untrusted, zero-
+  knowledge) relay returned in `/vault/{id}/nodes`, **overwriting** the pairing-
+  fingerprint-verified key — and anyone holding the reusable invite code can
+  register an arbitrary key. That silently defeated the C5 MITM check and let
+  Lion→Bunny messages be encrypted to an attacker. Now it is trust-on-first-use
+  only: it NEVER overwrites a stored key (rotation goes through re-pairing), logs
+  a mismatch, and resolves the target bunny slot at call time (no cross-slot
+  write on a mid-fetch bunny switch).
+- **`GET /vault/{id}/nodes` enrichment is now Lion-authenticated**
+  (`focuslock-mail.py`). The base node list stays readable for E2EE bootstrap,
+  but the newly-added bunny display name (PII), mesh-level bunny pubkey, and
+  `auto_accept` state (a reconnaissance aid) are only returned to a caller with a
+  valid `auth_token` — previously any anonymous caller who knew the semi-public
+  `mesh_id` got them.
+- **`join()` no longer blanks a stored bunny pubkey** (`focuslock-mail.py`). A
+  re-join carrying an empty `bunny_pubkey` (Bunny Tasker sends `""` on a transient
+  keypair miss) overwrote the good key, 403-ing every bunny-signed endpoint with
+  no recovery. Now preserved like `display_name`.
+
+### Fixed — Collar (slave) safety floor
+- **The foreground-app watchdog no longer closes the documented factory-reset
+  exits** (`ShadeGuardService.java`, `FocusActivity.java`). At COLLAR/SEALED the
+  watchdog bounced the **Settings app** (closing the OS factory reset the Terms of
+  Surrender call "always available", and ignoring the Lion's own
+  `/api/enable-settings` grant), and `onStop` delegating all re-jailing to the
+  watchdog **froze the escape counter at 0**, so the in-app factory-reset button
+  (gated at escapes ≥ 3) and the paywall/shame escalation never fired. Now:
+  Settings is reachable when the Lion granted a window OR the wearer has crossed
+  the escape threshold; the watchdog records a debounced escape on each bounce
+  (restoring the counter + server escape event); the **camera** (Photo Task's only
+  exit), **emergency dialer / in-call UI** (every tier, incl. SEALED "no calls"),
+  and **runtime-permission dialogs** (permissioncontroller) are allowlisted.
+- **Cage ceiling has a consent author and is bridge-unwritable**
+  (`ConsentActivity.java`, `ConsentStore.java`, `ShadeGuardService.java`). Nothing
+  wrote `focus_lock_cage_level`, so every device silently defaulted to COLLAR (a
+  full app-bouncing brick the wearer never chose). The Terms-of-Surrender screen
+  now has a Leash/Collar/Sealed chooser stored **app-private** (the one store the
+  Lion's ADB bridge cannot write, making "the Lion may only loosen" enforceable),
+  and an unset ceiling defaults to **Leash** — shipping the watchdog never
+  silently tightens an already-provisioned device.
+- **Watchdog-disabled tamper is now detectable** (`ControlService.java`). When
+  caged at COLLAR+ but the accessibility service is off, re-jailing silently
+  stopped and nothing noticed; the jail watcher now notifies the Lion once
+  (`shadeguard_disabled`), the same accountability as disabling device admin.
+
+### Fixed — Lion's Share (controller) optimistic reflection
+- Cleared the process-wide optimistic + `lastSnapshotJson` caches on a bunny
+  switch (they leaked bunny A's lock/timer/balance onto bunny B and merged A's
+  Collar addresses into B's direct-failover list); restored the phone fallback in
+  the Release-Device dialog (it dead-ended "No devices registered" on cold
+  start / legacy mode); the optimistic confirm now waits for the timer to catch
+  up (a re-lock to extend the timer no longer self-confirms against the old
+  remaining time); a no-real-snapshot render no longer blanks
+  escapes/tier/geofence via a synthetic `{}`; `cancelOptimistic` is generation-
+  guarded so a late failure can't cancel a newer command; quick-lock now reflects
+  a typed paywall amount.
+
+### Fixed — server webhooks
+- **`/webhook/desktop-task` no longer charges for an undeliverable task**
+  (`focuslock-mail.py`). It is now operator-mesh only (an armed task reaches the
+  phone only via operator-mesh gossip; a non-operator mesh would apply the miss
+  penalty for a task the phone never showed — this also closes the vault_only
+  plaintext bypass), refuses when a task is already armed (protecting a Lion-armed
+  recurring task and preventing an unclearable miss-lock), bounds the task text,
+  and emails evidence to the mesh's own Lion (`mesh_id` passed to
+  `send_evidence`, not the operator-wide address). `/webhook/desktop-penalty`
+  gained the same vault_only guard + per-mesh evidence routing.
+
+### Added
+- **Bunny display name is editable after pairing** (`bunnytasker` MainActivity +
+  `focuslock-mail.py` new bunny-signed `POST /api/mesh/{id}/set-display-name`).
+  Previously write-once at join (and unreachable for already-provisioned devices).
+  The join dialog's "Save" button now actually persists the typed name (it was
+  silently discarded), and a long-press on the paired fingerprint opens an editor
+  that signs + pushes the change.
+
+### Fixed — Windows desktop collar + tools
+- **Release Forever is honest about a declined UAC** (`focuslock-desktop-win.py`).
+  The durable teardown (scheduled tasks + `C:\focuslock`) needs elevation; when it
+  must request UAC the farewell now warns that the prompt must be accepted or the
+  collar returns at next sign-in, instead of unconditionally saying "you are free".
+  Also: the liberation helper quotes the firewall-rule `name=` token as one arg
+  (it was left behind), clears the forced HKLM lock-screen policy, and
+  `safeword.py` clears it too (was a visible residual). `sync_standing_orders`
+  now validates `settings.json` as JSON and writes atomically (a proxy error page
+  or a mid-write kill can no longer corrupt `~/.claude` config). `self_install`
+  now deploys `safeword.exe` (the double-click escape tool was built but never
+  copied to the collared machine). `report_tamper.py` advances its escalation
+  counter only after the server accepts the penalty (a failed report no longer
+  over-prices the next one).
+
+### Known follow-ups (tracked, not in this pass)
+- `report_tamper.py`'s escalation counter is still local (a rooted bunny can reset
+  it to the $5 floor); a server-authoritative per-mesh tamper tier would make it
+  tamper-proof.
+- The Collar's `"pixel"` `node_id` fallback can still register a phantom vault row
+  under a mismatched id (a narrow join-time race); needs reordering the Collar's
+  `joinMesh` Settings writes.
+
 <!-- ───────── 2026-07-26 on-device QA fixes ───────── -->
 
 ### Fixed
