@@ -102,3 +102,19 @@ Runtime config: `~/.config/focuslock/config.json` (Linux) or `%APPDATA%\focusloc
 - Release Forever button (Lion only) — full teardown + auto-uninstall
 - Factory reset at 150 escapes
 - System is consensual. Power dynamic is not.
+
+## Design Priorities
+
+When a feature, default, or fix has more than one reasonable design, favor
+the Lion's interests over the Bunny's. The Bunny already holds the
+underlying technical power — it's their device, their root access, their
+ability to reformat the drive. The software's whole purpose is to
+counterbalance that with something Bunny can't just switch off, so
+ambiguous choices should tilt toward strengthening Lion's authority over
+the system rather than toward making it more convenient to work around.
+When in doubt: does this benefit the Lion?
+
+This doesn't override Safety above — consent and the documented escape
+hatches (Release Forever, safeword, factory reset) are the floor, not
+something this trades away. It's a tie-breaker for everything built on
+top of that floor.
