@@ -36,7 +36,12 @@ public class FocusActivity extends Activity {
     private Handler handler;
     private Runnable timerChecker;
     private Random random = new Random();
-    private boolean allowPause = false; // true when launching banking app or Bunny Tasker
+    // VESTIGIAL: still assigned in a few places but no longer read — its only
+    // consumers were the old onStop() self-relaunch/grace-window logic, now
+    // removed. The "let the wearer use the banking app / camera during a lock"
+    // behavior it approximated is handled properly by ShadeGuardService's
+    // allowlist (isAllowed()). Kept only to avoid churn; do not add readers.
+    private boolean allowPause = false;
     private boolean activityVisible = false; // track screen on/off vs real app launch
     private long lastEscapeTime = 0; // debounce escapes
     private TextView messageView, taskPromptView, taskTargetView;
@@ -1395,28 +1400,14 @@ public class FocusActivity extends Activity {
     protected void onStop() {
         super.onStop();
         activityVisible = false;
-        if (isLockActive() && !allowPause) {
-            // App switch / notification tap while locked = escape attempt.
-            // recordEscape() checks isInteractive() so screen-off won't count.
-            recordEscape();
-            // Relaunch fast — 200ms keeps us ahead of notification-tap app launches
-            handler.postDelayed(() -> {
-                if (isLockActive() && !allowPause) {
-                    startActivity(new Intent(this, FocusActivity.class)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT));
-                }
-            }, 200);
-        }
-        if (allowPause) {
-            // 15 seconds for banking app, then jail comes back
-            handler.postDelayed(() -> {
-                allowPause = false;
-                if (isLockActive()) {
-                    startActivity(new Intent(this, FocusActivity.class)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT));
-                }
-            }, 15000);
-        }
+        // Re-jailing is owned by ShadeGuardService's foreground-app watchdog.
+        // As an accessibility service it can actually relaunch over another app on
+        // Android 16 non-owner; the self-relaunch that used to live here was
+        // silently dropped by background-activity-launch restrictions AND it
+        // double-penalised the wearer for opening allow-listed apps (Bunny Tasker,
+        // the banking app) — which they are permitted to use during a lock. The
+        // watchdog's allowlist now lets those run freely and bounces everything
+        // else, so onStop no longer records escapes or fights for the foreground.
     }
 
     @Override

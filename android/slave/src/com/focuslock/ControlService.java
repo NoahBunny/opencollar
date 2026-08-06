@@ -303,6 +303,7 @@ public class ControlService extends Service {
         Thread watcher = new Thread(() -> {
             Log.w(TAG, "Jail watcher thread started");
             boolean wasLocked = false;
+            boolean shadeGuardWarned = false;
             int healthCounter = 0;
             long bootTime = System.currentTimeMillis();
             while (running) {
@@ -333,6 +334,24 @@ public class ControlService extends Service {
                         enforceEscapeHatches();
                     } else if (active == 0 && wasLocked) {
                         wasLocked = false;
+                    }
+
+                    // Watchdog liveness (detectable tamper): when the effective cage
+                    // tier is COLLAR+ the foreground-app watchdog (ShadeGuardService)
+                    // is what actually re-jails other apps. If it is disabled while
+                    // locked, re-jailing silently stops — so notify the Lion once,
+                    // the same accountability signal as disabling device admin. Only
+                    // meaningful at COLLAR+; at LEASH the watchdog is off by design.
+                    if (active == 1
+                            && ShadeGuardService.effectiveCageLevel(this) >= ShadeGuardService.LEVEL_COLLAR
+                            && !ShadeGuardService.isEnabled(this)) {
+                        if (!shadeGuardWarned) {
+                            shadeGuardWarned = true;
+                            postEventToServer(this, "shadeguard_disabled", null);
+                            Log.w(TAG, "ShadeGuardService disabled while caged at COLLAR+ — watchdog inactive");
+                        }
+                    } else {
+                        shadeGuardWarned = false;  // re-arm once restored / unlocked
                     }
 
                     // Countdown to lock — fires the lock at countdown_lock_at, with notification warnings

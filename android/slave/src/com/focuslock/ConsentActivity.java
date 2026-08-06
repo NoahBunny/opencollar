@@ -30,6 +30,11 @@ public class ConsentActivity extends Activity {
 
     private static final int REQ_ROLE_HOME = 1001;
 
+    // Radio ids for the cage-ceiling chooser (arbitrary, view-local).
+    private static final int RB_LEASH = 2001;
+    private static final int RB_COLLAR = 2002;
+    private static final int RB_SEALED = 2003;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -153,6 +158,43 @@ public class ConsentActivity extends Activity {
         safewordInput.setLayoutParams(swLp);
         root.addView(safewordInput);
 
+        // Cage ceiling — the wearer's own boundary for how tight the Collar may
+        // ever get. This is set ONLY here, and stored app-private, so the Lion
+        // (or their bridge) can loosen it but can never tighten past it. Defaults
+        // to Leash so consenting never silently hands over a stricter cage than
+        // the wearer chose.
+        TextView cageLabel = new TextView(this);
+        cageLabel.setText("How tight may the cage get? This is your ceiling — the Lion can "
+            + "loosen it but never exceed it, and it can only be set here.");
+        cageLabel.setTextColor(0xFFc8a84e);
+        cageLabel.setTextSize(14);
+        cageLabel.setLineSpacing(6, 1.15f);
+        cageLabel.setPadding(0, 0, 0, 12);
+        root.addView(cageLabel);
+
+        final android.widget.RadioGroup cageGroup = new android.widget.RadioGroup(this);
+        cageGroup.setOrientation(LinearLayout.VERTICAL);
+        cageGroup.setPadding(0, 0, 0, 32);
+        final android.widget.RadioButton rbLeash = new android.widget.RadioButton(this);
+        rbLeash.setId(RB_LEASH);
+        rbLeash.setText("Leash — the home button brings you back here, but you can still "
+            + "open your other apps. (default)");
+        final android.widget.RadioButton rbCollar = new android.widget.RadioButton(this);
+        rbCollar.setId(RB_COLLAR);
+        rbCollar.setText("Collar — opening any non-allowed app snaps you back to the cage. "
+            + "Calls, keyboard, your banking app and the camera still work.");
+        final android.widget.RadioButton rbSealed = new android.widget.RadioButton(this);
+        rbSealed.setId(RB_SEALED);
+        rbSealed.setText("Sealed — Collar, plus no ordinary calls. Emergency calls always work.");
+        for (android.widget.RadioButton rb : new android.widget.RadioButton[]{rbLeash, rbCollar, rbSealed}) {
+            rb.setTextColor(0xFFcccccc);
+            rb.setTextSize(14);
+            rb.setPadding(12, 10, 0, 10);
+            cageGroup.addView(rb);
+        }
+        cageGroup.check(RB_LEASH);
+        root.addView(cageGroup);
+
         // Consent button
         Button consentBtn = new Button(this);
         consentBtn.setText("I CONSENT TO THESE TERMS");
@@ -173,6 +215,14 @@ public class ConsentActivity extends Activity {
             // WRITE_SECURE_SETTINGS by the operator — the safeword is the wearer's exit and
             // must never silently fail to save.
             ConsentStore.setSafeword(this, sw.isEmpty() ? "I NEED OUT" : sw);
+            // Persist the chosen cage ceiling (app-private, bridge-unwritable).
+            int cage;
+            switch (cageGroup.getCheckedRadioButtonId()) {
+                case RB_COLLAR: cage = 1; break;  // ShadeGuardService.LEVEL_COLLAR
+                case RB_SEALED: cage = 2; break;  // ShadeGuardService.LEVEL_SEALED
+                default:        cage = 0; break;  // ShadeGuardService.LEVEL_LEASH
+            }
+            ConsentStore.setCageLevel(this, cage);
             ConsentStore.setConsented(this);
             // Detect and store the current home launcher BEFORE requesting the role
             storePriorHomePkg();

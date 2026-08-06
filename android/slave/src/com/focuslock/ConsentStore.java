@@ -27,6 +27,7 @@ final class ConsentStore {
     private static final String K_CONSENTED = "focus_lock_consented";
     private static final String K_CONSENT_TIME = "focus_lock_consent_time";
     private static final String K_SAFEWORD = "focus_lock_safeword";
+    private static final String K_CAGE_LEVEL = "focus_lock_cage_level";
 
     private ConsentStore() {}
 
@@ -86,5 +87,28 @@ final class ConsentStore {
         try { g = Settings.Global.getString(ctx.getContentResolver(), K_SAFEWORD); } catch (Exception e) {}
         if (g != null && !g.isEmpty()) return g;
         return prefs(ctx).getString(K_SAFEWORD, null);
+    }
+
+    /**
+     * Record the wearer's chosen cage ceiling (the tightest the Collar may ever
+     * get: 0=LEASH, 1=COLLAR, 2=SEALED — see ShadeGuardService.LEVEL_*). Stored
+     * ONLY in app-private SharedPreferences and DELIBERATELY NOT mirrored to
+     * Settings.Global: the ceiling is the bunny's consent boundary, and the
+     * Lion's ADB bridge can write Settings.Global (`settings put global …`) but
+     * cannot write another app's private prefs. Keeping the ceiling here is what
+     * makes "the Lion can only loosen, never tighten" actually enforceable
+     * (see ShadeGuardService.effectiveCageLevel()).
+     */
+    static void setCageLevel(Context ctx, int level) {
+        if (level < 0) level = 0;
+        if (level > 2) level = 2;
+        prefs(ctx).edit().putInt(K_CAGE_LEVEL, level).apply();
+    }
+
+    /** The bunny's chosen cage ceiling, or -1 if never set (caller defaults to
+     *  LEASH so an un-provisioned / pre-consent device is never silently caged
+     *  tighter than the wearer opted into). */
+    static int getCageLevel(Context ctx) {
+        return prefs(ctx).getInt(K_CAGE_LEVEL, -1);
     }
 }
