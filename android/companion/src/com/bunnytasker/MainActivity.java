@@ -149,6 +149,13 @@ public class MainActivity extends Activity {
         btnShowQr.setOnClickListener(v -> showJoinMeshDialog());
         btnShowQr.setOnLongClickListener(v -> { showDirectPairingInfo(); return true; });
 
+        // Post-pairing display-name editor: long-press the paired fingerprint.
+        // Gives already-joined devices (which never see the join dialog again) a
+        // way to set/change how they appear to the Lion.
+        if (pairedFingerprint != null) {
+            pairedFingerprint.setOnLongClickListener(v -> { showEditNameDialog(); return true; });
+        }
+
         // Pair-reset button intentionally hidden: per the consensual design
         // (CLAUDE.md: "Release Forever button (Lion only)"), only the Lion
         // or a factory reset can release the Collar. Previously Bunny
@@ -1133,6 +1140,25 @@ public class MainActivity extends Activity {
             | android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
         layout.addView(inviteInput);
 
+        // How the bunny wants to appear to their Lion (shown in the Bunnies list
+        // instead of the raw device model). Prefilled with any saved name.
+        EditText nameInput = new EditText(this);
+        nameInput.setHint("Your name (how your Lion sees you)");
+        nameInput.setTextSize(15);
+        nameInput.setTextColor(0xFFe0e0e0);
+        nameInput.setHintTextColor(0xFF555555);
+        nameInput.setBackgroundColor(0xFF111118);
+        nameInput.setPadding(24, 18, 24, 18);
+        try {
+            String savedName = Settings.Global.getString(getContentResolver(), "focus_lock_bunny_name");
+            if (savedName != null && !savedName.isEmpty() && !"null".equals(savedName)) nameInput.setText(savedName);
+        } catch (Exception ignored) {}
+        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        nlp.topMargin = 12;
+        nameInput.setLayoutParams(nlp);
+        layout.addView(nameInput);
+
         EditText serverInput = new EditText(this);
         serverInput.setHint("Server URL (e.g. https://your-relay.example)");
         serverInput.setTextSize(13);
@@ -1196,6 +1222,7 @@ public class MainActivity extends Activity {
             .setPositiveButton("Join", (d, w) -> {
                 String code = inviteInput.getText().toString().trim().toUpperCase();
                 String server = serverInput.getText().toString().trim();
+                String name = nameInput.getText().toString().trim();
                 if (code.isEmpty()) {
                     statusText.setText("Enter an invite code");
                     return;
@@ -1203,6 +1230,11 @@ public class MainActivity extends Activity {
                 if (server.isEmpty()) {
                     statusText.setText("Enter the server URL");
                     return;
+                }
+                // Persist the bunny's chosen display name so joinMesh/meshSync send it.
+                if (!name.isEmpty()) {
+                    try { Settings.Global.putString(getContentResolver(), "focus_lock_bunny_name", name); }
+                    catch (Exception ignored) {}
                 }
                 // Persist vault toggle before kicking off the join
                 writeVaultModeFlag(vaultCheckFinal.isChecked());
@@ -1212,8 +1244,19 @@ public class MainActivity extends Activity {
                 executor.execute(() -> joinMesh(code, fServer));
             })
             .setNeutralButton("Save", (d, w) -> {
-                // Persist vault toggle without re-joining the mesh
+                // Persist vault toggle AND the typed display name without re-joining
+                // (previously the name was silently discarded here — the "Save"
+                // button reported success while dropping the edit).
                 writeVaultModeFlag(vaultCheckFinal.isChecked());
+                String nm = nameInput.getText().toString().trim();
+                if (nm.length() > 40) nm = nm.substring(0, 40);
+                try { Settings.Global.putString(getContentResolver(), "focus_lock_bunny_name", nm); }
+                catch (Exception ignored) {}
+                // If already paired, push it to the relay so the Lion sees it now.
+                if (PairingManager.isPaired(getContentResolver())) {
+                    final String fnm = nm;
+                    executor.execute(() -> setDisplayName(fnm));
+                }
                 statusText.setText("Saved" + (vaultCheckFinal.isChecked() ? " (vault on)" : ""));
             })
             .setNegativeButton("Cancel", null)
@@ -1237,12 +1280,21 @@ public class MainActivity extends Activity {
             // Get device node_id
             String nodeId = android.os.Build.MODEL.toLowerCase().replace(" ", "-");
 
+            // The bunny's self-chosen display name (Issue 4) — shown to the Lion
+            // instead of the raw device model.
+            String displayName = "";
+            try {
+                String dn = Settings.Global.getString(getContentResolver(), "focus_lock_bunny_name");
+                if (dn != null && !"null".equals(dn)) displayName = dn.trim();
+            } catch (Exception ignored) {}
+
             // Build join request
             JSONObject body = new JSONObject();
             body.put("invite_code", inviteCode);
             body.put("node_id", nodeId);
             body.put("node_type", "phone");
             body.put("bunny_pubkey", bunnyPubKey != null ? bunnyPubKey : "");
+            body.put("display_name", displayName);
 
             // POST /api/mesh/join
             URL url = new URL(serverUrl + "/api/mesh/join");
@@ -1891,6 +1943,83 @@ public class MainActivity extends Activity {
             })
             .setNegativeButton("Cancel", null)
             .show();
+    }
+
+    /** Post-pairing editor for the bunny's display name (how they appear to the
+     *  Lion). Fixes the write-once/undeletable name: reachable any time via a
+     *  long-press on the paired fingerprint, and pushes the change to the relay. */
+    private void showEditNameDialog() {
+        final EditText input = new EditText(this);
+        input.setHint("Your name (how your Lion sees you)");
+        try {
+            String cur = Settings.Global.getString(getContentResolver(), "focus_lock_bunny_name");
+            if (cur != null && !"null".equals(cur)) input.setText(cur.trim());
+        } catch (Exception ignored) {}
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Display name")
+            .setMessage("How you appear to your Lion. Leave blank to show your device model.")
+            .setView(input)
+            .setPositiveButton("Save", (d, w) -> {
+                String nm = input.getText().toString().trim();
+                if (nm.length() > 40) nm = nm.substring(0, 40);
+                try { Settings.Global.putString(getContentResolver(), "focus_lock_bunny_name", nm); }
+                catch (Exception ignored) {}
+                final String fnm = nm;
+                executor.execute(() -> setDisplayName(fnm));
+                statusText.setText("Name updated");
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    /** Sign + POST a display-name change (bunny-authed). Wire format matches the
+     *  server set-display-name handler:
+     *    payload = mesh|node|set-display-name|ts|sha256(display_name). */
+    private void setDisplayName(String name) {
+        String meshId = gstr("focus_lock_mesh_id");
+        String meshUrl = gstr("focus_lock_mesh_url");
+        String nodeId = gstr("focus_lock_mesh_node_id");
+        if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty()) return;
+        if (name == null) name = "";
+        if (name.length() > 40) name = name.substring(0, 40);
+        long ts = System.currentTimeMillis();
+        String contentHash;
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] dig = md.digest(name.getBytes("UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : dig) sb.append(String.format("%02x", b));
+            contentHash = sb.toString();
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "display-name hash failed", e);
+            return;
+        }
+        String payload = meshId + "|" + nodeId + "|set-display-name|" + ts + "|" + contentHash;
+        String signature = PairingManager.sign(getContentResolver(), payload);
+        if (signature == null || signature.isEmpty()) {
+            handler.post(() -> statusText.setText("Sign failed — pairing key missing"));
+            return;
+        }
+        try {
+            JSONObject body = new JSONObject();
+            body.put("node_id", nodeId);
+            body.put("ts", ts);
+            body.put("display_name", name);
+            body.put("signature", signature);
+            URL url = new URL(meshUrl + "/api/mesh/" + meshId + "/set-display-name");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(10000);
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.getOutputStream().write(body.toString().getBytes("UTF-8"));
+            int code = conn.getResponseCode();
+            conn.disconnect();
+            android.util.Log.i("BunnyTasker", "set-display-name -> " + code);
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "set-display-name failed: " + e.getMessage());
+        }
     }
 
     /** Sign + POST the payer-allow list. Matches the wire format the server
