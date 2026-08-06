@@ -2407,7 +2407,7 @@ class MeshAccountStore:
             self._save(mesh_id)
             return account
 
-    def join(self, invite_code, node_id, node_type, bunny_pubkey=""):
+    def join(self, invite_code, node_id, node_type, bunny_pubkey="", display_name=""):
         with self.lock:
             account = self._find_by_invite(invite_code)
             if not account:
@@ -2423,10 +2423,18 @@ class MeshAccountStore:
             # Track reuse count for operator diagnostics + future rate-limit
             # hooks. Not enforced as a cap today.
             account["invite_uses"] = int(account.get("invite_uses", 0)) + 1
+            # Preserve prior values this join omits (e.g. a re-sync after the bunny
+            # already named themselves). CRUCIALLY this now also preserves the
+            # bunny_pubkey: Bunny Tasker sends "" when PairingManager.getPublicKey()
+            # transiently returns null, and blanking the stored key would silently
+            # 403 every bunny-signed endpoint (subscribe, deadline-task-clear,
+            # message send/ack) with no way for the bunny to notice or recover.
+            prior = account["nodes"].get(node_id, {})
             account["nodes"][node_id] = {
                 "type": node_type,
                 "joined_at": int(time.time()),
-                "bunny_pubkey": bunny_pubkey,
+                "bunny_pubkey": bunny_pubkey or prior.get("bunny_pubkey", ""),
+                "display_name": display_name or prior.get("display_name", ""),
             }
             self._save(account["mesh_id"])
             return account, None
@@ -3317,6 +3325,13 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if not _is_valid_admin_auth(data.get("admin_token", ""), mesh_id=mesh_id):
                 self.respond(403, {"error": "invalid admin_token"})
                 return
+            # vault_only meshes (other than the operator's own) must not receive
+            # plaintext order writes on the relay — mirror the /admin/order guard.
+            # The amount is only an integer, but the "relay holds no plaintext
+            # order content" property vault_only is sold on still forbids it.
+            if mesh_id and mesh_id != OPERATOR_MESH_ID and _mesh_accounts.is_vault_only(mesh_id):
+                self.respond(403, {"error": "vault_only mesh — desktop penalty refused"})
+                return
             # Clamp caller-supplied amount as defense-in-depth even with auth.
             DESKTOP_PENALTY_MAX = 500
             try:
@@ -3348,8 +3363,110 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 adb.put_str("focus_lock_message", f"{reason}. ${amount} added.")
             else:
                 pw = applied.get("paywall", 0)
-            send_evidence(f"{reason}: ${amount} penalty applied. New paywall: ${pw}", "desktop penalty")
+            send_evidence(f"{reason}: ${amount} penalty applied. New paywall: ${pw}", "desktop penalty", mesh_id=mesh_id)
             self.respond(200, {"ok": True, "new_paywall": pw, "mesh_id": mesh_id})
+
+        elif self.path == "/webhook/desktop-task":
+            # Same auth shape as /webhook/desktop-penalty (mesh-scoped
+            # admin_token, never the caller's choice of mesh) but arms a
+            # deadline task instead of a flat penalty -- lets a
+            # detected-circumvention response force something other than
+            # money. Reuses the existing set-deadline-task order (the same
+            # do-or-lock mechanism Lion uses manually) rather than a new
+            # enforcement path. Bunny Tasker shows it; on_miss defaults to
+            # "paywall" rather than "lock" since this can fire unattended
+            # with no Lion review in the loop -- an unreviewed autonomous
+            # full lock is a bigger blast radius than an unreviewed charge.
+            if not ADMIN_TOKEN:
+                self.respond(503, {"error": "admin_token not configured"})
+                return
+            mesh_id = data.get("mesh_id", "") or OPERATOR_MESH_ID or ""
+            if not _is_valid_admin_auth(data.get("admin_token", ""), mesh_id=mesh_id):
+                self.respond(403, {"error": "invalid admin_token"})
+                return
+            if not mesh_id:
+                self.respond(400, {"error": "mesh_id required"})
+                return
+            # Delivery guarantee: an armed deadline task reaches the phone ONLY via
+            # the operator mesh's full-state gossip (the deadline_task_* keys are in
+            # the Collar's MESH_ORDER_KEYS, applied by applyOrdersFromMesh). The
+            # Collar's vault-RPC dispatch (handleMeshOrder) has NO set-deadline-task
+            # case, so on any non-operator mesh the task would never appear on the
+            # phone YET the miss penalty would still fire — charging/locking the
+            # bunny for a task they were never shown. Refuse rather than do that.
+            # (This also closes the vault_only plaintext bypass for this route.)
+            if mesh_id != OPERATOR_MESH_ID:
+                self.respond(409, {
+                    "error": "desktop-task is operator-mesh only — a non-operator mesh "
+                             "cannot deliver the task to the phone; set it from the Lion app instead"
+                })
+                return
+            text = (data.get("text", "") or "").strip()
+            if not text:
+                self.respond(400, {"error": "text required"})
+                return
+            DESKTOP_TASK_TEXT_MAX = 500  # bound like other free-text; it is persisted,
+            if len(text) > DESKTOP_TASK_TEXT_MAX:  # vault-encrypted per node, pinned, emailed
+                text = text[:DESKTOP_TASK_TEXT_MAX]
+            # Don't clobber a task the Lion armed manually (destroying a recurring
+            # task's interval, #27) or a miss-lock in progress (which would strand
+            # the bunny in an unclearable lock, #12). Refuse if one is live.
+            try:
+                _armed_orders = _resolve_orders(mesh_id)
+                _armed_ms = int(_armed_orders.get("deadline_task_deadline_ms", 0) or 0)
+                _locked_by_miss = str(_armed_orders.get("deadline_task_locked_by_miss", 0)) in ("1", "true", "True")
+            except Exception:
+                _armed_ms, _locked_by_miss = 0, False
+            if _armed_ms > int(time.time() * 1000) or _locked_by_miss:
+                self.respond(409, {"error": "a deadline task is already armed — refusing to overwrite it"})
+                return
+            DESKTOP_TASK_MAX_MINUTES = 7 * 24 * 60  # 1 week ceiling
+            try:
+                deadline_minutes = int(data.get("deadline_minutes", 1440))
+            except (TypeError, ValueError):
+                self.respond(400, {"error": "deadline_minutes must be an integer"})
+                return
+            if deadline_minutes < 1 or deadline_minutes > DESKTOP_TASK_MAX_MINUTES:
+                self.respond(400, {"error": f"deadline_minutes must be 1-{DESKTOP_TASK_MAX_MINUTES}"})
+                return
+            proof_type = (data.get("proof_type", "typed") or "typed").lower()
+            if proof_type not in ("none", "typed", "photo"):
+                self.respond(400, {"error": "invalid proof_type"})
+                return
+            on_miss = (data.get("on_miss", "paywall") or "paywall").lower()
+            if on_miss not in ("lock", "paywall"):
+                self.respond(400, {"error": "invalid on_miss"})
+                return
+            DESKTOP_TASK_MISS_MAX = 500  # matches DESKTOP_PENALTY_MAX
+            try:
+                miss_amount = max(0, min(DESKTOP_TASK_MISS_MAX, int(data.get("miss_amount", 25))))
+            except (TypeError, ValueError):
+                miss_amount = 25
+            reason = data.get("reason", "Desktop-assigned task")
+            applied = _server_apply_order(
+                mesh_id,
+                "set-deadline-task",
+                {
+                    "text": text,
+                    "deadline_minutes": deadline_minutes,
+                    "proof_type": proof_type,
+                    "on_miss": on_miss,
+                    "miss_amount": miss_amount,
+                },
+            )
+            if applied is None or applied.get("error"):
+                self.respond(500, {"error": (applied or {}).get("error", "failed to arm task")})
+                return
+            logger.warning(
+                "DESKTOP TASK: mesh=%s %r (deadline %sm, on_miss=%s) — %s",
+                mesh_id,
+                _sanitize_log(text[:80]),
+                deadline_minutes,
+                on_miss,
+                _sanitize_log(reason),
+            )
+            send_evidence(f"{reason}: task assigned — {text}", "desktop task", mesh_id=mesh_id)
+            self.respond(200, {"ok": True, "mesh_id": mesh_id, **applied})
 
         # ── Admin API (enforcement infrastructure) ──
         # Without mesh_id: operates on operator's mesh (backwards compat).
@@ -3658,13 +3775,16 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             node_id = data.get("node_id", "")
             node_type = data.get("node_type", "phone")
             bunny_pubkey = data.get("bunny_pubkey", "")
+            display_name = str(data.get("display_name", "") or "").strip()[:40]
             if not invite_code:
                 self.respond(400, {"error": "invite_code required"})
                 return
             if not node_id:
                 self.respond(400, {"error": "node_id required"})
                 return
-            account, err = _mesh_accounts.join(invite_code, node_id, node_type, bunny_pubkey)
+            account, err = _mesh_accounts.join(
+                invite_code, node_id, node_type, bunny_pubkey, display_name
+            )
             if err:
                 self.respond(404, {"error": err})
                 return
@@ -4660,6 +4780,74 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             # Response includes count only — never the actual strings, so a
             # future Lion-side bug that fetches this can't extract them.
             self.respond(200, {"ok": True, **summary})
+
+        # ── Bunny-authed display-name update ──
+        # Path: /api/mesh/{mesh_id}/set-display-name
+        # Body: {node_id, ts, display_name, signature}
+        # signature = SHA256withRSA over "mesh_id|node_id|set-display-name|ts|sha256(display_name)".
+        # Lets the bunny set/change how they appear to the Lion AFTER pairing
+        # (the join-time name was otherwise write-once, and already-provisioned
+        # devices had no way to set one at all). Signed with the same node key as
+        # the other bunny-authed endpoints so only the wearer can rename themselves.
+        elif self.path.startswith("/api/mesh/") and self.path.endswith("/set-display-name"):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 4 or parts[3] != "set-display-name":
+                self.respond(400, {"error": "bad path — expected /api/mesh/{mesh_id}/set-display-name"})
+                return
+            mesh_id = parts[2]
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            account = _mesh_accounts.get(mesh_id)
+            if not account:
+                self.respond(404, {"error": "mesh not found"})
+                return
+            node_id = data.get("node_id", "")
+            signature = data.get("signature", "")
+            display_name = str(data.get("display_name", "") or "").strip()[:40]
+            if not node_id or not signature:
+                self.respond(400, {"error": "node_id and signature required"})
+                return
+            try:
+                ts_i = int(data.get("ts", 0) or 0)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            if abs(int(time.time() * 1000) - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+            vault_node = None
+            for vnode in _vault_store.get_nodes(mesh_id):
+                if vnode.get("node_id") == node_id and vnode.get("node_pubkey"):
+                    vault_node = vnode
+                    break
+            if not vault_node:
+                self.respond(403, {"error": "node not registered in vault"})
+                return
+            import base64 as _b64_dn
+            import hashlib as _h_dn
+
+            from cryptography.hazmat.primitives import hashes as _hh_dn
+            from cryptography.hazmat.primitives import serialization as _ser_dn
+            from cryptography.hazmat.primitives.asymmetric import padding as _pad_dn
+
+            body_hash = _h_dn.sha256(display_name.encode("utf-8")).hexdigest()
+            payload = f"{mesh_id}|{node_id}|set-display-name|{ts_i}|{body_hash}"
+            try:
+                pub = _ser_dn.load_der_public_key(_b64_dn.b64decode(vault_node["node_pubkey"]))
+                pub.verify(_b64_dn.b64decode(signature), payload.encode("utf-8"), _pad_dn.PKCS1v15(), _hh_dn.SHA256())
+            except Exception as e:
+                logger.warning(
+                    "set-display-name sig verify failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id), _sanitize_log(node_id), e,
+                )
+                self.respond(403, {"error": "invalid signature"})
+                return
+            _mesh_accounts.update_node(mesh_id, node_id, display_name=display_name)
+            logger.info(
+                "set-display-name: mesh=%s node=%s", _sanitize_log(mesh_id), _sanitize_log(node_id)
+            )
+            self.respond(200, {"ok": True})
 
         # ── Bunny-authed deadline-task completion ──
         # Path: /api/mesh/{mesh_id}/deadline-task/clear
@@ -5884,7 +6072,54 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 )
 
             elif action == "nodes":
-                self.respond(200, {"nodes": _vault_store.get_nodes(mesh_id)})
+                nodes = _vault_store.get_nodes(mesh_id)
+                resp = {"nodes": nodes}
+                # The base node list (opaque ids/types/pubkeys, needed for E2EE
+                # bootstrap) stays readable, but the enrichment below is Lion-only:
+                # the bunny's self-chosen human display name is PII, and the
+                # auto-accept flag is a reconnaissance aid (it tells a prober which
+                # meshes will auto-approve a rogue register-node-request). So this
+                # GET now authenticates the caller the same way nodes-pending does
+                # before adding any of it. (Anonymously-readable enrichment was the
+                # regression; the Lion's meshGet already sends the Bearer token.)
+                qparams = urllib.parse.parse_qs(parsed.query)
+                auth_token = qparams.get("auth_token", [""])[0]
+                if not auth_token:
+                    auth_header = self.headers.get("Authorization", "")
+                    if auth_header.startswith("Bearer "):
+                        auth_token = auth_header[7:]
+                authed = _mesh_accounts.validate_auth(mesh_id, auth_token)
+                # Enrich from the mesh account store, which holds data the vault
+                # node store doesn't: the bunny's display name (#4), their E2EE
+                # pubkey (#6), and the auto-accept flag (#5) — Lion-authenticated only.
+                acct = _mesh_accounts.get(mesh_id)
+                if acct and authed:
+                    anodes = acct.get("nodes", {}) or {}
+                    # Per-node display_name, matched by node_id where it aligns.
+                    for n in nodes:
+                        a = anodes.get(n.get("node_id", ""))
+                        if a and a.get("display_name"):
+                            n["display_name"] = a["display_name"]
+                    # Per-mesh bunny E2EE pubkey (#6): the phone and the Collar
+                    # register under different node_id schemes, so expose the
+                    # bunny's key at the mesh level — there is one bunny E2EE key
+                    # per mesh. Pick the most-recently-joined node that has one.
+                    best = None
+                    for a in anodes.values():
+                        if a.get("bunny_pubkey"):
+                            if best is None or a.get("joined_at", 0) >= best.get("joined_at", 0):
+                                best = a
+                    if best:
+                        resp["bunny_pubkey"] = best["bunny_pubkey"]
+                        if best.get("display_name"):
+                            resp["bunny_display_name"] = best["display_name"]
+                    # Real auto-accept state (#5) so the Lion's toggle reflects
+                    # truth instead of a hardcoded "(off)". Default MUST match the
+                    # enforcement gate (register-node-request, which defaults False
+                    # for accounts persisted before the field existed) — otherwise
+                    # the toggle shows "on" for a mesh the relay treats as manual.
+                    resp["auto_accept"] = bool(acct.get("auto_accept_nodes", False))
+                self.respond(200, resp)
 
             elif action == "nodes-pending":
                 # Lion polls for pending registrations. Requires auth_token.

@@ -151,6 +151,42 @@ class TestMeshAccountStoreCreate:
         assert len(ids) == 5
 
 
+class TestMeshAccountStoreJoinPreservation:
+    """2026-08-07 fix-forward: re-joining under an existing node_id must not blank
+    a stored bunny_pubkey (Bunny Tasker sends "" on a transient keypair miss) or
+    drop a previously-set display_name."""
+
+    def test_join_preserves_bunny_pubkey_on_empty_rejoin(self, fresh_account_store):
+        acc = fresh_account_store.create("LION")
+        code = acc["invite_code"]
+        fresh_account_store.join(code, "node-a", "phone", bunny_pubkey="GOODKEY")
+        # Re-join with an empty pubkey (the transient-null case) must NOT wipe it.
+        acc2, err = fresh_account_store.join(code, "node-a", "phone", bunny_pubkey="")
+        assert err is None
+        assert acc2["nodes"]["node-a"]["bunny_pubkey"] == "GOODKEY"
+
+    def test_join_rotates_bunny_pubkey_when_new_key_provided(self, fresh_account_store):
+        acc = fresh_account_store.create("LION")
+        code = acc["invite_code"]
+        fresh_account_store.join(code, "node-a", "phone", bunny_pubkey="OLDKEY")
+        acc2, _ = fresh_account_store.join(code, "node-a", "phone", bunny_pubkey="NEWKEY")
+        assert acc2["nodes"]["node-a"]["bunny_pubkey"] == "NEWKEY"
+
+    def test_join_preserves_display_name_on_omit(self, fresh_account_store):
+        acc = fresh_account_store.create("LION")
+        code = acc["invite_code"]
+        fresh_account_store.join(code, "node-a", "phone", display_name="Bunny")
+        acc2, _ = fresh_account_store.join(code, "node-a", "phone", display_name="")
+        assert acc2["nodes"]["node-a"]["display_name"] == "Bunny"
+
+    def test_update_node_sets_display_name(self, fresh_account_store):
+        acc = fresh_account_store.create("LION")
+        code = acc["invite_code"]
+        fresh_account_store.join(code, "node-a", "phone")
+        fresh_account_store.update_node(acc["mesh_id"], "node-a", display_name="Renamed")
+        assert fresh_account_store.get(acc["mesh_id"])["nodes"]["node-a"]["display_name"] == "Renamed"
+
+
 class TestMeshAccountStoreRateLimit:
     def test_under_limit_returns_true(self, fresh_account_store):
         assert fresh_account_store.check_rate_limit("ip1") is True
