@@ -136,6 +136,26 @@ public class MainActivity extends Activity {
     private int lastEscapes = 0;
     private int lastPaywall = 0;
 
+    // ── Optimistic order reflection ──
+    // After the Lion issues an order, the Bunny's runtime snapshot still reports
+    // the PRE-order state until the Collar executes it and re-publishes (~1-5s,
+    // longer if the phone is asleep). Without this the status bar and balance
+    // snap back to UNLOCKED/$0 in that gap and the order looks like it failed.
+    // We remember what we just commanded and keep rendering it until the snapshot
+    // confirms it (or the window lapses, in which case reality wins — the order
+    // genuinely didn't land). See updateLiveStatus() for the reconciliation.
+    private static final long OPTIMISTIC_WINDOW_MS = 45000;
+    private long optimisticUntilMs = 0;       // 0 = no pending optimistic state
+    private boolean optimisticHasLock = false; // did this order change lock state?
+    private boolean optimisticLocked = false;  // expected lock state
+    private long optimisticTimerEndMs = 0;     // expected timer end (0 = none/indefinite)
+    private int optimisticPaywall = -1;        // expected balance (-1 = no expectation)
+    private boolean optimisticPaywallRaise = false; // expect balance to rise (vs. drop)
+    private int optimisticGen = 0;             // bumped each beginOptimistic; a stale
+                                               // cancelOptimistic(gen) is ignored so a
+                                               // late-failing order can't cancel a newer one
+    private volatile String lastSnapshotJson = null; // last real runtime snapshot rendered
+
     // Tab views
     private View pageSimple, pageAdvanced, pageInbox;
     private Button tabSimple, tabAdvanced, tabInbox;
@@ -318,13 +338,11 @@ public class MainActivity extends Activity {
             final int amount = pair[1];
             findViewById(pair[0]).setOnClickListener(v -> {
                 int newVal = lastPaywall + amount;
-                if (balanceDisplay != null) {
-                    balanceDisplay.setText("$" + newVal);
-                    balanceDisplay.setTextColor(0xFFFFD700);
-                }
+                final int og = beginOptimistic(false, false, 0, newVal);
                 executor.execute(() -> {
                     String r = api("/api/add-paywall", "{\"amount\":\"" + amount + "\"}");
                     if (r != null && r.contains("ok")) handler.post(() -> setStatus("Added $" + amount));
+                    else cancelOptimistic(og);
                 });
             });
         }
@@ -359,7 +377,7 @@ public class MainActivity extends Activity {
                 i == index ? 0xFF2a2510 : 0xFF111118));
             tabs[i].setTextColor(i == index ? 0xFFDAA520 : 0xFF555555);
         }
-        if (index == 2) { refreshInbox(); markLionRead(); updateE2eeWarning(); }
+        if (index == 2) { refreshInbox(); markLionRead(); updateE2eeWarning(); fetchBunnyPubkey(); }
     }
 
     /** Show the inbox "not encrypted" banner when there's no bunny pubkey to
@@ -370,6 +388,54 @@ public class MainActivity extends Activity {
         if (warn != null) {
             warn.setVisibility(E2EEHelper.canEncrypt(bunnyPubkeyB64) ? View.GONE : View.VISIBLE);
         }
+    }
+
+    /** Extract the bunny's E2EE pubkey from a /vault/{id}/nodes response and, ONLY
+     *  if we don't already have one for this slot, adopt it (Issue 6, trust-on-
+     *  first-use for mesh-invite pairing, which — unlike direct pairing — never
+     *  carried the bunny pubkey to the Lion).
+     *
+     *  SECURITY: this NEVER overwrites an already-stored key. The relay is
+     *  untrusted (zero-knowledge by design) and anyone holding the reusable invite
+     *  code can register an arbitrary bunny_pubkey, so overwriting would silently
+     *  defeat the pairing fingerprint check and let Lion→Bunny messages be
+     *  encrypted to an attacker's key (and break direct-status verification). Key
+     *  rotation is deliberate: it goes through re-pairing, not a relay poll. The
+     *  target slot is captured at call time so a bunny switch mid-fetch can't write
+     *  this key into a different bunny's slot. */
+    private void persistBunnyPubkey(String nodesJson) {
+        if (nodesJson == null) return;
+        final String forBunnyId = activeBunnyId;   // slot this fetch belongs to
+        String bp;
+        try { bp = new org.json.JSONObject(nodesJson).optString("bunny_pubkey", ""); }
+        catch (Exception e) { return; }
+        if (bp == null || bp.isEmpty()) return;
+        final String fbp = bp;
+        handler.post(() -> {
+            String existing = prefs.getString(bunnyKey(forBunnyId, "bunny_pubkey_b64"), "");
+            if (existing != null && !existing.isEmpty()) {
+                if (!existing.equals(fbp)) {
+                    android.util.Log.w("FocusCtl",
+                        "Ignoring relay-advertised bunny pubkey that differs from the stored key — re-pair to rotate");
+                }
+                return;  // never overwrite a stored key
+            }
+            prefs.edit().putString(bunnyKey(forBunnyId, "bunny_pubkey_b64"), fbp).apply();
+            // Only touch the in-memory field/banner if that slot is still active.
+            if (forBunnyId.equals(activeBunnyId)) {
+                bunnyPubkeyB64 = fbp;
+                updateE2eeWarning();
+            }
+        });
+    }
+
+    /** Fetch /vault/nodes once to pick up the bunny's E2EE key if we don't have
+     *  it yet — called when the Inbox opens so the "not encrypted" banner clears
+     *  after a mesh-invite pairing (which, unlike direct pairing, never carried
+     *  the bunny pubkey to the Lion until now). */
+    private void fetchBunnyPubkey() {
+        if (meshId.isEmpty() || !bunnyPubkeyB64.isEmpty()) return;
+        executor.execute(() -> persistBunnyPubkey(meshGet("/vault/" + meshId + "/nodes")));
     }
 
     // ── Status Polling ──
@@ -447,7 +513,51 @@ public class MainActivity extends Activity {
         return rest.startsWith("true");
     }
 
+    /** Record what the Lion just commanded so the UI keeps showing it until the
+     *  Bunny's runtime snapshot confirms (see the optimistic fields). Call on the
+     *  UI thread before firing the network request. paywallTarget = -1 means "no
+     *  balance expectation"; hasLock = false means "don't force a lock state". */
+    private int beginOptimistic(boolean hasLock, boolean locked, long timerEndMsExpected, int paywallTarget) {
+        optimisticHasLock = hasLock;
+        optimisticLocked = locked;
+        optimisticTimerEndMs = timerEndMsExpected;
+        optimisticPaywall = paywallTarget;
+        optimisticPaywallRaise = paywallTarget < 0 || paywallTarget >= lastPaywall;
+        optimisticUntilMs = System.currentTimeMillis() + OPTIMISTIC_WINDOW_MS;
+        int gen = ++optimisticGen;
+        renderOptimisticNow();
+        return gen;
+    }
+
+    /** Drop the pending optimistic state and repaint from the real snapshot — used
+     *  when the order POST failed, so the UI doesn't keep lying for 45s. Ignored if
+     *  a newer beginOptimistic has since superseded this one (gen mismatch), so a
+     *  late-failing order can't cancel an unrelated command issued after it. */
+    private void cancelOptimistic(int gen) {
+        handler.post(() -> {
+            if (gen != optimisticGen) return;
+            optimisticUntilMs = 0;
+            renderOptimisticNow();
+        });
+    }
+
+    /** Re-render the status bar / balance immediately using the last real
+     *  snapshot (optimistic overrides apply inside updateLiveStatus). No-op when
+     *  no real snapshot exists yet (cold start / just-switched bunny): rendering a
+     *  synthetic "{}" there would blank escapes/tier/geofence/lovense to their
+     *  all-zero defaults. The optimistic state still applies on the first real poll. */
+    private void renderOptimisticNow() {
+        String snap = lastSnapshotJson;
+        if (snap == null) snap = localSnapshot.currentRuntimeJson;
+        if (snap == null) return;
+        final String s = snap;
+        handler.post(() -> updateLiveStatus(s));
+    }
+
     private void updateLiveStatus(String json) {
+        // Remember the last REAL snapshot so an optimistic re-render (which may
+        // pass a synthetic "{}") can reuse it without clobbering other fields.
+        if (json != null && !json.equals("{}")) lastSnapshotJson = json;
         // Direct mode: the Collar's /mesh/status (verified in meshGet) carries
         // its current reachable addresses. Merge them into the failover list so
         // a DHCP/WiFi address change self-heals without re-pairing.
@@ -463,6 +573,55 @@ public class MainActivity extends Activity {
         boolean lovenseAvail = parseJsonBool(json, "lovense_available");
 
         timerEndMs = timerMs > 0 ? System.currentTimeMillis() + timerMs : 0;
+
+        // Parse the paywall once up front (used by both the status line and the
+        // balance display below), so the optimistic override can adjust a single
+        // value instead of two independent re-parses.
+        int snapPaywall;
+        {
+            String pwRaw = parseJsonStr(json, "paywall");
+            int v;
+            try { v = pwRaw.isEmpty() ? 0 : Integer.parseInt(pwRaw); }
+            catch (NumberFormatException e) { v = 0; }
+            snapPaywall = v;
+        }
+
+        // ── Optimistic reconciliation (see field declarations above) ──
+        // While a just-issued order is still in flight, keep showing the
+        // commanded state. Clear the pending state the moment the snapshot
+        // confirms it; once the window lapses, trust the snapshot again.
+        if (System.currentTimeMillis() < optimisticUntilMs) {
+            // For a lock WITH a new timer, don't self-confirm just because the
+            // device is already locked (a re-lock to extend the timer): also
+            // require the snapshot's timer to have caught up to the commanded end
+            // (within ~90s of round-trip slack). Otherwise the bar keeps counting
+            // the OLD remaining time — exactly the gap this feature closes.
+            boolean lockOk = !optimisticHasLock
+                || (isLocked == optimisticLocked
+                    && (!optimisticLocked || optimisticTimerEndMs <= 0
+                        || Math.abs(timerEndMs - optimisticTimerEndMs) < 90000L));
+            boolean payOk = optimisticPaywall < 0
+                || (optimisticPaywallRaise ? snapPaywall >= optimisticPaywall
+                                           : snapPaywall <= optimisticPaywall);
+            if (lockOk && payOk) {
+                optimisticUntilMs = 0; // confirmed — the snapshot caught up
+            } else {
+                if (optimisticHasLock) {
+                    isLocked = optimisticLocked;
+                    if (optimisticLocked) {
+                        if (optimisticTimerEndMs > 0) {
+                            timerEndMs = optimisticTimerEndMs;
+                            timerMs = timerEndMs - System.currentTimeMillis();
+                            if (timerMs < 0) timerMs = 0;
+                        }
+                    } else {
+                        timerEndMs = 0;
+                        timerMs = 0;
+                    }
+                }
+                if (optimisticPaywall >= 0) snapPaywall = optimisticPaywall;
+            }
+        }
 
         StringBuilder sb = new StringBuilder();
         // Multi-bunny: prepend the active bunny's label so Lion always knows
@@ -480,8 +639,7 @@ public class MainActivity extends Activity {
             int reps = parseJsonInt(json, "task_reps");
             int done = parseJsonInt(json, "task_done");
             if (reps > 0) sb.append(" | Rep ").append(done + 1).append("/").append(reps);
-            String paywall = parseJsonStr(json, "paywall");
-            if (!paywall.isEmpty() && !paywall.equals("0")) sb.append(" | $").append(paywall);
+            if (snapPaywall > 0) sb.append(" | $").append(snapPaywall);
         } else {
             sb.append("UNLOCKED");
             if (!meshId.isEmpty()) sb.append(" | Mesh online");
@@ -515,17 +673,13 @@ public class MainActivity extends Activity {
         // Tier badge
         updateTierBadge(subTier);
 
-        // Bunny balance display
-        String paywall = parseJsonStr(json, "paywall");
-        try {
-            lastPaywall = paywall.isEmpty() ? 0 : Integer.parseInt(paywall);
-        } catch (NumberFormatException e) {
-            lastPaywall = 0;
-        }
+        // Bunny balance display (snapPaywall already reconciled with any
+        // in-flight optimistic order above).
+        lastPaywall = snapPaywall;
         if (balanceDisplay != null) {
-            String bal = (paywall.isEmpty() || paywall.equals("0")) ? "$0" : "$" + paywall;
+            String bal = snapPaywall <= 0 ? "$0" : "$" + snapPaywall;
             balanceDisplay.setText(bal);
-            balanceDisplay.setTextColor(bal.equals("$0") ? 0xFF44aa44 : 0xFFFFD700);
+            balanceDisplay.setTextColor(snapPaywall <= 0 ? 0xFF44aa44 : 0xFFFFD700);
         }
 
         // Lovense section visibility
@@ -925,6 +1079,16 @@ public class MainActivity extends Activity {
         timerEndMs = 0;
         scheduledAtMs = 0;
         lastEscapes = 0;
+        // Also clear the optimistic-reflection + last-snapshot caches, which are
+        // process-wide (not per-bunny). Without this, a just-issued order for the
+        // previous bunny would be reconciled against the new bunny's snapshot (its
+        // lock/timer/balance rendered as the new one's), and the previous bunny's
+        // advertised Collar addresses would be merged into the new bunny's direct
+        // failover list via renderOptimisticNow → mergeDirectCandidates.
+        lastPaywall = 0;
+        lastSnapshotJson = null;
+        optimisticUntilMs = 0;
+        optimisticGen++;   // invalidate any in-flight cancelOptimistic for the old slot
 
         // Force-refresh UI on next tick.
         handler.post(() -> {
@@ -1863,7 +2027,21 @@ public class MainActivity extends Activity {
             executor.execute(() -> {
                 String pendingJson = meshGet("/vault/" + meshId + "/nodes-pending");
                 String nodesJson = meshGet("/vault/" + meshId + "/nodes");
-                handler.post(() -> rebuildVaultNodeList(list, statusLine, nodesJson, pendingJson, refreshAfter(dialog)));
+                persistBunnyPubkey(nodesJson);  // #6 — grab the bunny's E2EE key if present
+                handler.post(() -> {
+                    // #5 — reflect the server's real auto-accept state instead of a
+                    // hardcoded "(off)".
+                    if (nodesJson != null) {
+                        try {
+                            org.json.JSONObject nj = new org.json.JSONObject(nodesJson);
+                            if (nj.has("auto_accept")) {
+                                boolean on = nj.optBoolean("auto_accept", false);
+                                autoAcceptLabel.setText("Auto-accept new nodes (" + (on ? "on" : "off") + ")");
+                            }
+                        } catch (Exception ignored) {}
+                    }
+                    rebuildVaultNodeList(list, statusLine, nodesJson, pendingJson, refreshAfter(dialog));
+                });
             });
         };
 
@@ -1907,7 +2085,8 @@ public class MainActivity extends Activity {
                         org.json.JSONObject n = nodes.getJSONObject(i);
                         list.addView(buildApprovedRow(n.optString("node_id", "?"),
                             n.optString("node_type", "?"),
-                            n.optString("node_pubkey", "")));
+                            n.optString("node_pubkey", ""),
+                            n.optString("display_name", "")));
                         approvedCount++;
                     }
                 }
@@ -1951,19 +2130,22 @@ public class MainActivity extends Activity {
         statusLine.setText("Approved " + approvedCount + " · Pending " + pendingCount);
     }
 
-    private View buildApprovedRow(String nodeId, String nodeType, String nodePubkey) {
+    private View buildApprovedRow(String nodeId, String nodeType, String nodePubkey, String displayName) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.VERTICAL);
         row.setPadding(8, 6, 8, 6);
 
+        boolean hasName = displayName != null && !displayName.isEmpty();
         TextView title = new TextView(this);
-        title.setText(nodeId + "  ·  " + nodeType);
+        // Show the bunny's self-chosen name (Issue 4) when present, falling back
+        // to the raw node id otherwise.
+        title.setText((hasName ? displayName : nodeId) + "  ·  " + nodeType);
         title.setTextColor(0xFFe0e0e0);
         title.setTextSize(13);
         row.addView(title);
 
         TextView fp = new TextView(this);
-        fp.setText("slot " + slotIdHint(nodePubkey));
+        fp.setText((hasName ? nodeId + "  ·  " : "") + "slot " + slotIdHint(nodePubkey));
         fp.setTextColor(0xFF555555);
         fp.setTextSize(10);
         row.addView(fp);
@@ -2372,18 +2554,35 @@ public class MainActivity extends Activity {
         String timer = timerInput.getText().toString();
         long mins = 0; try { mins = Long.parseLong(timer); } catch (Exception e) {}
         final long fm = mins;
+        // Optimistically reflect the lock (and any set-balance) so the status bar
+        // doesn't snap back to UNLOCKED/$0 while the order is in flight. The lock
+        // "paywall" field SETS the balance (ControlService.java:1105), so the
+        // target is the entered amount, not an addition.
+        int lockPaywall = -1;
+        try { int v = Integer.parseInt(paywallInput.getText().toString().trim()); if (v > 0) lockPaywall = v; } catch (Exception e) {}
+        long tEnd = fm > 0 ? System.currentTimeMillis() + fm * 60000L : 0;
+        final int og = beginOptimistic(true, true, tEnd, lockPaywall);
         setStatus("Locking...");
         executor.execute(() -> {
             String r = api("/api/lock", buildLockJson(msg, fm));
-            setStatus(r.contains("ok") ? "LOCKED" + (fm > 0 ? " " + fm + "m" : "") : "Failed");
+            if (r.contains("ok")) setStatus("LOCKED" + (fm > 0 ? " " + fm + "m" : ""));
+            else { cancelOptimistic(og); setStatus("Failed"); }
         });
     }
 
     private void doQuickLock(int minutes) {
+        long tEnd = minutes > 0 ? System.currentTimeMillis() + minutes * 60000L : 0;
+        // buildLockJson ships the paywall input for every lock (the Collar SETS
+        // the balance from it), so reflect that target optimistically here too —
+        // otherwise a typed amount + quick-lock leaves the balance display stale.
+        int lockPaywall = -1;
+        try { int v = Integer.parseInt(paywallInput.getText().toString().trim()); if (v > 0) lockPaywall = v; } catch (Exception e) {}
+        final int og = beginOptimistic(true, true, tEnd, lockPaywall);
         setStatus("Locking " + minutes + "m...");
         executor.execute(() -> {
             String r = api("/api/lock", buildLockJson("", minutes));
-            setStatus(r.contains("ok") ? "LOCKED " + minutes + "m" : "Failed");
+            if (r.contains("ok")) setStatus("LOCKED " + minutes + "m");
+            else { cancelOptimistic(og); setStatus("Failed"); }
         });
     }
 
@@ -2450,81 +2649,79 @@ public class MainActivity extends Activity {
     }
 
     private void doUnlock() {
+        final int og = beginOptimistic(true, false, 0, -1);
         setStatus("Unlocking all...");
         executor.execute(() -> {
             String r = api("/api/unlock", "{}");
             // Also unlock desktops via mesh
             meshOrder("unlock-device", "{\"target\":\"all\"}");
-            setStatus(r.contains("ok") ? "UNLOCKED" : "Failed");
+            if (r.contains("ok")) setStatus("UNLOCKED");
+            else { cancelOptimistic(og); setStatus("Failed"); }
         });
     }
 
     private void doUnlockDevice() {
         setStatus("Loading devices...");
         executor.execute(() -> {
+            // Enumerate the mesh's real nodes from the runtime snapshot's "nodes"
+            // object using a proper JSON parse. The old hand-rolled string scan
+            // walked past the nodes object into sibling keys (surfacing the
+            // "offer" status field as a phantom device) and unconditionally
+            // injected a hardcoded "phone" entry — both removed here.
             ArrayList<String> devices = new ArrayList<>();
+            ArrayList<String> types = new ArrayList<>();
             String meshResp = currentStatusJson();
             if (meshResp != null) {
-                // Simple parsing: find all node_id values in "nodes" object
-                int nodesIdx = meshResp.indexOf("\"nodes\":");
-                if (nodesIdx >= 0) {
-                    String nodesPart = meshResp.substring(nodesIdx);
-                    int searchFrom = 0;
-                    while (true) {
-                        int qi = nodesPart.indexOf("\"node_id\":\"", searchFrom);
-                        if (qi < 0) {
-                            // Try key-based parsing (nodes is an object with keys as node IDs)
-                            break;
-                        }
-                        qi += 11;
-                        int qe = nodesPart.indexOf("\"", qi);
-                        if (qe > qi) devices.add(nodesPart.substring(qi, qe));
-                        searchFrom = qe + 1;
-                    }
-                    // Fallback: parse object keys under "nodes"
-                    if (devices.isEmpty()) {
-                        int braceStart = nodesPart.indexOf("{", 7);
-                        if (braceStart >= 0) {
-                            String inner = nodesPart.substring(braceStart + 1);
-                            int pos = 0;
-                            while (pos < inner.length()) {
-                                int qs = inner.indexOf("\"", pos);
-                                if (qs < 0) break;
-                                int qe2 = inner.indexOf("\"", qs + 1);
-                                if (qe2 < 0) break;
-                                String key = inner.substring(qs + 1, qe2);
-                                if (!key.isEmpty() && !key.equals("type") && !key.equals("online")
-                                    && !key.equals("last_seen") && !key.equals("orders_version")
-                                    && !key.equals("status") && !key.equals("addresses") && !key.equals("port")) {
-                                    devices.add(key);
-                                }
-                                // Skip to next top-level key (after the value object)
-                                int nextBrace = inner.indexOf("}", qe2);
-                                if (nextBrace < 0) break;
-                                pos = nextBrace + 1;
-                            }
+                try {
+                    org.json.JSONObject nodes = new org.json.JSONObject(meshResp).optJSONObject("nodes");
+                    if (nodes != null) {
+                        java.util.Iterator<String> it = nodes.keys();
+                        while (it.hasNext()) {
+                            String id = it.next();
+                            if (id == null || id.isEmpty()) continue;
+                            devices.add(id);
+                            org.json.JSONObject n = nodes.optJSONObject(id);
+                            types.add(n != null ? n.optString("type", "") : "");
                         }
                     }
+                } catch (org.json.JSONException e) {
+                    // Malformed snapshot — show nothing rather than fall back to
+                    // the old scan that surfaced phantom entries.
                 }
             }
-            // Always add phone as option
-            if (!devices.contains("phone")) devices.add(0, "phone");
+            if (devices.isEmpty()) {
+                // No snapshot yet (cold start before the first poll, legacy relay
+                // mode where /mesh/status is 410 Gone, or a momentarily-unreachable
+                // Collar) — still offer the phone via the signed direct /api/unlock
+                // so the Lion is never locked out of releasing. The old hardcoded
+                // "phone" entry was dropped with the JSON-parse rewrite; this brings
+                // back only the safe fallback, without the phantom sibling-key rows.
+                devices.add("phone");
+                types.add("phone");
+            }
             final String[] devArr = devices.toArray(new String[0]);
+            final String[] typeArr = types.toArray(new String[0]);
 
             handler.post(() -> {
                 new AlertDialog.Builder(this)
                     .setTitle("Release Device")
                     .setItems(devArr, (d, which) -> {
                         String target = devArr[which];
+                        String type = typeArr[which];
                         setStatus("Releasing " + target + "...");
                         executor.execute(() -> {
-                            if (target.equals("phone")) {
-                                String r = api("/api/unlock", "{}");
-                                setStatus(r.contains("ok") ? "Phone unlocked" : "Failed");
+                            String r;
+                            if ("phone".equals(type)) {
+                                // Phone nodes accept the signed /api/unlock direct
+                                // call; fall back to a mesh order if that misses.
+                                r = api("/api/unlock", "{}");
+                                if (r == null || !r.contains("ok")) {
+                                    r = meshOrder("unlock-device", "{\"target\":\"" + target + "\"}");
+                                }
                             } else {
-                                String r = meshOrder("unlock-device", "{\"target\":\"" + target + "\"}");
-                                setStatus(r != null && r.contains("ok") ? target + " released" : "Failed");
+                                r = meshOrder("unlock-device", "{\"target\":\"" + target + "\"}");
                             }
+                            setStatus(r != null && r.contains("ok") ? target + " released" : "Failed");
                         });
                     })
                     .setNegativeButton("Cancel", null)
@@ -3157,15 +3354,13 @@ public class MainActivity extends Activity {
     // -- Balance --
 
     private void doClearBalance() {
+        final int og = beginOptimistic(false, false, 0, 0);
         setStatus("Clearing balance...");
         executor.execute(() -> {
             String r = api("/api/clear-paywall", "{}");
             meshOrder("clear-paywall", "{}");
-            if (balanceDisplay != null) handler.post(() -> {
-                balanceDisplay.setText("$0");
-                balanceDisplay.setTextColor(0xFF44aa44);
-            });
-            setStatus(r.contains("ok") ? "Balance cleared" : "Failed");
+            if (r.contains("ok")) setStatus("Balance cleared");
+            else { cancelOptimistic(og); setStatus("Failed"); }
         });
     }
 
@@ -3174,19 +3369,16 @@ public class MainActivity extends Activity {
         if (input == null) return;
         String val = input.getText().toString().trim();
         if (val.isEmpty()) return;
+        int target = -1; try { target = Integer.parseInt(val); } catch (Exception e) {}
+        final int og = (target >= 0) ? beginOptimistic(false, false, 0, target) : 0;
         setStatus("Setting balance...");
         executor.execute(() -> {
             api("/api/clear-paywall", "{}");
             String r = api("/api/add-paywall", "{\"amount\":\"" + val + "\"}");
             meshOrder("add-paywall", "{\"amount\":" + val + "}");
-            handler.post(() -> {
-                if (balanceDisplay != null) {
-                    balanceDisplay.setText("$" + val);
-                    balanceDisplay.setTextColor(0xFFFFD700);
-                }
-                input.setText("");
-            });
-            setStatus(r.contains("ok") ? "Balance set to $" + val : "Failed");
+            handler.post(() -> input.setText(""));
+            if (r.contains("ok")) setStatus("Balance set to $" + val);
+            else { if (og != 0) cancelOptimistic(og); setStatus("Failed"); }
         });
     }
 
@@ -3478,11 +3670,13 @@ public class MainActivity extends Activity {
             .setTitle("Clear Paywall")
             .setMessage("Remove the paywall entirely?")
             .setPositiveButton("CLEAR", (d, w) -> {
+                final int og = beginOptimistic(false, false, 0, 0);
                 setStatus("Clearing paywall...");
                 executor.execute(() -> {
                     String r = api("/api/clear-paywall", "{}");
                     meshOrder("clear-paywall", "{}");
-                    setStatus(r.contains("ok") ? "Paywall cleared" : "Failed");
+                    if (r.contains("ok")) setStatus("Paywall cleared");
+                    else { cancelOptimistic(og); setStatus("Failed"); }
                 });
             })
             .setNegativeButton("Cancel", null)
