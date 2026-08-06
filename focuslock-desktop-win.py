@@ -105,6 +105,7 @@ MESH_NODE_ID = socket.gethostname().lower() + "-win"
 MESH_NODE_TYPE = "desktop"
 POLL_INTERVAL = _cfg.get("poll_interval", 5)
 GOSSIP_INTERVAL = _cfg.get("gossip_interval", 10)
+MEMORY_SYNC_INTERVAL = 300  # 5 minutes — matches the Linux collar's standing-orders re-sync cadence
 
 MESH_URL = _cfg.get("mesh_url", "")
 HOMELAB_URL = _cfg.get("homelab_url", "")
@@ -999,6 +1000,61 @@ def hide_lock():
 # ── Liberation (Permanent Removal) ──
 
 
+def _schedule_install_dir_removal():
+    """Remove scheduled tasks, the firewall rule, and C:\\focuslock after this
+    process exits. That directory is ACL-locked to SYSTEM/Administrators by
+    self_install() and holds the exe that's currently running it, so a
+    detached elevated helper has to outlive this process to take ownership
+    and delete it. Fire-and-forget: doesn't block liberation on UAC consent.
+    """
+    if not get_exe_path():
+        return "script-mode"  # nothing installed under INSTALL_DIR_SYSTEM
+
+    # Note the netsh rule name: the whole `name=<value>` is passed as ONE quoted
+    # token so PowerShell's native-arg quoting doesn't split it on the spaces /
+    # parens and leave the firewall rule behind. Also clears the collar's forced
+    # HKLM lock-screen policy (set_lock_wallpaper), which otherwise lingers as a
+    # visible residual pointing at a deleted PNG.
+    script = f'''
+while (Get-Process -Id {os.getpid()} -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 300 }}
+Unregister-ScheduledTask -TaskName "FocusLockCollar" -Confirm:$false -ErrorAction SilentlyContinue
+Unregister-ScheduledTask -TaskName "FocusLockWatchdog" -Confirm:$false -ErrorAction SilentlyContinue
+netsh advfirewall firewall delete rule "name=FocusLock Mesh (TCP 8435)" | Out-Null
+Remove-ItemProperty -Path "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Personalization" -Name "LockScreenImage" -ErrorAction SilentlyContinue
+takeown /F "{INSTALL_DIR_SYSTEM}" /R /D Y | Out-Null
+icacls "{INSTALL_DIR_SYSTEM}" /reset /T /C /Q | Out-Null
+Remove-Item -Path "{INSTALL_DIR_SYSTEM}" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
+'''
+    script_path = os.path.join(os.environ.get("TEMP", os.path.expanduser("~")), "focuslock-liberate.ps1")
+    try:
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write(script)
+    except Exception:
+        logger.warning("Failed to write liberation helper script")
+        return "failed"
+
+    try:
+        if is_admin():
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", script_path],
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
+            )
+            logger.info("Scheduled tasks/firewall/%s removal after exit (elevated)", INSTALL_DIR_SYSTEM)
+            return "elevated"
+        else:
+            # UAC elevate — same pattern as self_install()'s re-launch. The user
+            # may decline this prompt, so the caller must not claim the durable
+            # teardown is guaranteed done.
+            ps_args = f'-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{script_path}"'
+            ctypes.windll.shell32.ShellExecuteW(None, "runas", "powershell.exe", ps_args, None, 0)
+            logger.info("Requested elevation for scheduled-task/firewall/%s removal", INSTALL_DIR_SYSTEM)
+            return "uac-requested"
+    except Exception:
+        logger.warning("Failed to schedule install dir removal")
+        return "failed"
+
+
 def execute_liberation():
     """Permanent removal — clean up everything and exit."""
     logger.warning("LIBERATION — removing collar permanently")
@@ -1006,6 +1062,20 @@ def execute_liberation():
 
     # Restore wallpaper
     hide_lock()
+
+    # Remove registry Run key (user-writable, no elevation needed)
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE
+        )
+        winreg.DeleteValue(key, "FocusLockCollar")
+        winreg.CloseKey(key)
+        logger.info("Registry Run key removed")
+    except Exception:
+        pass
+
+    # Kill the watchdog so it can't respawn the collar mid-teardown
+    subprocess.run(["taskkill", "/F", "/IM", "FocusLock-Watchdog.exe"], capture_output=True)
 
     # Remove autostart
     try:
@@ -1026,13 +1096,25 @@ def execute_liberation():
     except Exception:
         logger.warning("Failed to remove config directory during liberation")
 
-    # Show farewell
-    ctypes.windll.user32.MessageBoxW(
-        0,
-        "All restrictions lifted.\nThe collar is gone. You are free.",
-        "LIBERATED",
-        0x40,  # MB_ICONINFORMATION
-    )
+    # Scheduled tasks + firewall rule + C:\focuslock — needs an elevated
+    # helper that outlives this process (see _schedule_install_dir_removal)
+    teardown = _schedule_install_dir_removal()
+
+    # Show farewell — but be HONEST when the durable teardown still depends on a
+    # UAC prompt the wearer might decline. Claiming "you are free" while the
+    # FocusLockCollar scheduled task is still registered (and would relaunch the
+    # collar at next logon) is the one message this screen must never get wrong.
+    if teardown == "uac-requested":
+        msg = ("The collar is being removed.\n\n"
+               "A Windows admin (UAC) prompt will appear — you MUST accept it to "
+               "finish removing the collar's autostart and its C:\\focuslock files. "
+               "If you dismiss it, the collar will come back at next sign-in; re-run "
+               "Release Forever (or safeword.exe) and accept the prompt.")
+        icon = 0x30  # MB_ICONWARNING
+    else:
+        msg = "All restrictions lifted.\nThe collar is gone. You are free."
+        icon = 0x40  # MB_ICONINFORMATION
+    ctypes.windll.user32.MessageBoxW(0, msg, "LIBERATED", icon)
     os._exit(0)
 
 
@@ -1614,6 +1696,58 @@ def needs_install():
         return True
 
 
+def sync_standing_orders():
+    """Pull CLAUDE.md + settings.json from the mesh server into ~/.claude.
+
+    Audit 2026-04-27 H-1 (remainder): /standing-orders + /settings both
+    require admin_token; skipped silently when it isn't configured. Called
+    once at install time and again every MEMORY_SYNC_INTERVAL from a
+    background thread (see main()) so operator edits actually propagate —
+    matches the Linux collar's sync_standing_orders() cadence. Only writes
+    when content changed, to avoid needless disk churn / log spam.
+    """
+    if not ADMIN_TOKEN:
+        logger.debug("Standing orders sync skipped: no admin_token configured")
+        return
+    claude_dir = os.path.join(os.environ.get("USERPROFILE", ""), ".claude")
+    os.makedirs(claude_dir, exist_ok=True)
+    for endpoint, filename in [("/standing-orders", "CLAUDE.md"), ("/settings", "settings.json")]:
+        try:
+            req = urllib.request.Request(
+                f"{MESH_URL}{endpoint}",
+                headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
+            )
+            resp = urllib.request.urlopen(req, timeout=10)
+            content = resp.read().decode()
+            if len(content) <= 50:
+                continue
+            # Validate structured payloads before trusting them. A reverse proxy
+            # in front of MESH_URL can answer 200 with a non-JSON maintenance/error
+            # page; writing that over a good settings.json corrupts Claude Code's
+            # config. Only the .json file needs this — CLAUDE.md is free-form.
+            if filename.endswith(".json"):
+                try:
+                    json.loads(content)
+                except Exception:
+                    logger.warning("Standing orders: %s response was not valid JSON — skipping", filename)
+                    continue
+            target = os.path.join(claude_dir, filename)
+            existing = ""
+            if os.path.exists(target):
+                with open(target, "r", encoding="utf-8") as f:
+                    existing = f.read()
+            if content != existing:
+                # Atomic write: temp in the same dir then os.replace, so a process
+                # kill mid-write can't truncate the live file.
+                tmp = target + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    f.write(content)
+                os.replace(tmp, target)
+                logger.info("Standing orders synced: %s (%d bytes)", filename, len(content))
+        except Exception:
+            logger.warning("Failed to fetch standing orders: %s", endpoint)
+
+
 def self_install():
     """Install collar to C:\\focuslock with scheduled tasks, firewall, ACLs."""
     import shutil
@@ -1631,12 +1765,22 @@ def self_install():
     shutil.copy2(exe, installed_exe)
     logger.info("Copied %s", exe_name)
 
-    # Copy watchdog if next to the exe
-    for wd_name in ["FocusLock-Watchdog.exe"]:
+    # Copy watchdog + the bunny's safeword tool if next to the exe. safeword.exe
+    # is the double-click local-uninstall escape hatch — it must actually land on
+    # the collared machine, or the escape path the docs promise isn't deployed.
+    for wd_name in ["FocusLock-Watchdog.exe", "safeword.exe"]:
         wd_src = os.path.join(exe_dir, wd_name)
         if os.path.exists(wd_src):
             shutil.copy2(wd_src, os.path.join(INSTALL_DIR_SYSTEM, wd_name))
             logger.info("Copied %s", wd_name)
+
+    # Copy the tamper-report helper (CLAUDE-stub.md references it at this
+    # stable path so it works whether or not the source repo is on this
+    # machine — see report_tamper.py's docstring).
+    tamper_src = os.path.join(exe_dir, "report_tamper.py")
+    if os.path.exists(tamper_src):
+        shutil.copy2(tamper_src, os.path.join(INSTALL_DIR_SYSTEM, "report_tamper.py"))
+        logger.info("Copied report_tamper.py")
 
     # Copy icons to appdata
     os.makedirs(ICONS_DIR, exist_ok=True)
@@ -1734,31 +1878,8 @@ Register-ScheduledTask -TaskName "FocusLockWatchdog" -Action $a -Trigger $t -Set
     )
     logger.info("ACL lockdown applied")
 
-    # Standing orders sync
-    # Audit 2026-04-27 H-1 (remainder): /standing-orders + /settings
-    # both require admin_token. Skip silently when not configured.
-    if not ADMIN_TOKEN:
-        logger.warning("Standing orders sync skipped: no admin_token configured")
-    else:
-        try:
-            claude_dir = os.path.join(os.environ.get("USERPROFILE", ""), ".claude")
-            os.makedirs(claude_dir, exist_ok=True)
-            for endpoint, filename in [("/standing-orders", "CLAUDE.md"), ("/settings", "settings.json")]:
-                try:
-                    req = urllib.request.Request(
-                        f"{MESH_URL}{endpoint}",
-                        headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
-                    )
-                    resp = urllib.request.urlopen(req, timeout=10)
-                    content = resp.read().decode()
-                    if len(content) > 50:
-                        with open(os.path.join(claude_dir, filename), "w", encoding="utf-8") as f:
-                            f.write(content)
-                        logger.info("Standing orders: %s", filename)
-                except Exception:
-                    logger.warning("Failed to fetch standing orders: %s", endpoint)
-        except Exception:
-            logger.warning("Failed to set up standing orders sync")
+    # Standing orders sync (re-synced every MEMORY_SYNC_INTERVAL — see main())
+    sync_standing_orders()
 
     # Remove old startup entries (from legacy installers)
     startup = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs\Startup")
@@ -2002,6 +2123,20 @@ def main():
             time.sleep(POLL_INTERVAL)
 
     threading.Thread(target=_poll_loop, daemon=True).start()
+
+    # Standing orders periodic re-sync — self_install() only does this once,
+    # at install time, so operator-side edits to CLAUDE-stub.md/settings.json
+    # would otherwise never reach an already-installed machine.
+    def _standing_orders_loop():
+        while True:
+            time.sleep(MEMORY_SYNC_INTERVAL)
+            try:
+                sync_standing_orders()
+            except Exception:
+                logger.exception("Standing orders sync loop error")
+
+    threading.Thread(target=_standing_orders_loop, daemon=True).start()
+    logger.info("Standing orders re-sync started (%ss interval)", MEMORY_SYNC_INTERVAL)
 
     # Create and run tray icon (blocks on main thread)
     icon = create_tray_icon()
