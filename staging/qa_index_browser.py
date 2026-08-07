@@ -18,13 +18,15 @@ Pre-requisites:
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
 from playwright.sync_api import Request, sync_playwright
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-RELAY = "http://127.0.0.1:18435"
+# `make qa` passes FOCUSLOCK_QA_RELAY so the walkthrough follows RELAY_PORT.
+RELAY = os.environ.get("FOCUSLOCK_QA_RELAY", "http://127.0.0.1:18435")
 SCREENS = REPO_ROOT / "staging" / "qa-screens-index"
 
 # Read the staging admin token (which serves as PIN in relay mode)

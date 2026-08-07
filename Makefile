@@ -14,7 +14,7 @@ else
 PY ?= python3
 endif
 STAGING_DIR := staging
-RELAY_PORT ?= 8435
+RELAY_PORT ?= 18435
 RELAY_URL ?= http://127.0.0.1:$(RELAY_PORT)
 RELAY_PIDFILE := $(STAGING_DIR)/.relay.pid
 STATE_DIR ?= /tmp/focuslock-staging
@@ -51,6 +51,7 @@ qa-staging-up:
 		echo "Booting staging relay on $(RELAY_URL)..."; \
 		FOCUSLOCK_CONFIG=$(STAGING_DIR)/config.json \
 		FOCUSLOCK_STATE_DIR=$(STATE_DIR) \
+		FOCUSLOCK_WEB_DIR="$(CURDIR)/web" \
 			$(PY) focuslock-mail.py >$(STAGING_DIR)/.relay.log 2>&1 & \
 		echo $$! > $(RELAY_PIDFILE); \
 		for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
@@ -115,10 +116,10 @@ qa-runner:
 	$(PY) $(STAGING_DIR)/qa_runner.py --relay $(RELAY_URL) --config $(STAGING_DIR)/config.json
 
 qa-wizard:
-	$(PY) $(STAGING_DIR)/qa_wizard_browser.py
+	FOCUSLOCK_QA_RELAY=$(RELAY_URL) $(PY) $(STAGING_DIR)/qa_wizard_browser.py
 
 qa-index:
-	$(PY) $(STAGING_DIR)/qa_index_browser.py
+	FOCUSLOCK_QA_RELAY=$(RELAY_URL) $(PY) $(STAGING_DIR)/qa_index_browser.py
 
 qa-perf:
 	PERF_TESTS=1 $(PY) -m pytest tests/test_perf_smoke.py -v

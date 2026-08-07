@@ -16,8 +16,13 @@ waking it with the existing zero-knowledge ntfy `{"v":N}` push.
 > all Tor classes dexed, signed). The `.onion`/keyblob crypto is unit-verified
 > against a Python reference (OnionKeysTest, 6/6). The default-off build is
 > proven byte-clean (no libtor.so, no Tor classes; only the inert TorHook stub).
-> Requires build-tools >= 36.0.0 (`FOCUSLOCK_BUILD_TOOLS=36.0.0`) — the AAR ships
-> Java-24 bytecode. **REMAINING (C3, device/waydroid only):** runtime validation
+> Requires build-tools >= 36.0.0 (`FOCUSLOCK_BUILD_TOOLS=36.0.0`) AND a JDK-24
+> `javac` — the AAR ships Java-24 bytecode; `scripts/setup-qa-env-garuda.sh --tor`
+> fetches both plus the deps and writes `~/.config/focuslock-tor.env.sh`.
+> **Re-verified 2026-08-07** on charizard-garuda against the current tree (slave 81 /
+> controller 73): Tor-ON builds are 32 MB with `lib/{arm64-v8a,armeabi-v7a,x86,x86_64}/
+> libtor.so` and the Tor classes dexed, `apksigner` VERIFIED; the default-off builds
+> are byte-clean (240K / 232K / 304K, zero `libtor.so`, zero Tor classes). **REMAINING (C3, device/waydroid only):** runtime validation
 > of the control port (ADD_ONION + ClientAuthV3 acceptance, ONION_CLIENT_AUTH_ADD,
 > bootstrap latency, the foregroundServiceType question, client-auth rejection,
 > end-to-end onion round-trip + relay fallback). Keep `FOCUSLOCK_TOR_AAR` unset
