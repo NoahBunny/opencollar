@@ -8,6 +8,66 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-07 (second pass) deferred follow-ups from the ecosystem-review fix-forward ───────── -->
+
+Cleared all three follow-ups the 2026-08-07 pass deferred. Versions: slave
+**81 / 8.38**, companion **60 / 2.27** (controller unchanged at 73 / 73.0);
+`installers/re-enslave-lib.sh` targets synced.
+
+### Security
+- **The tamper-escalation ratchet is now server-authoritative**
+  (`focuslock-mail.py`, `report_tamper.py`, `shared/focuslock_penalties.py`).
+  `report_tamper.py` kept its lifetime attempt counter in
+  `~/.config/focuslock/tamper-attempts.json` — on the collared desktop, a machine
+  the bunny has root on. `rm` on that file walked every future tamper penalty back
+  to the $5 tier-1 floor, which is precisely the circumvention the ratchet prices.
+  The authoritative counter now lives on the relay, per mesh
+  (`_TAMPER_TIERS_DIR/{mesh_id}.json`, atomic write under a lock). The client tags
+  the report `tamper: true` and sends its local count as `attempt`; the server takes
+  `max(its own + 1, the claim)`, so the claim can only ever *fast-forward* the
+  ratchet — healing a relay whose state was lost — and never lower it. A caller-
+  supplied `amount` became a **floor** rather than a price: `--amount` can still
+  bill a known incident higher than the reached tier, but can no longer undercut it.
+  A hostile/corrupt claim can jump the counter by at most 100 (logged when clamped).
+  Penalty reports that aren't tagged `tamper` — notably the desktop collar's flat
+  $30 consent-decline — neither escalate nor advance the counter. New
+  `tamper_penalty()` in `shared/focuslock_penalties.py` replaces the duplicated tier
+  literal. The response now echoes `amount` + `tamper_attempt`; the client prefers
+  the server's numbers and syncs its local hint upward (never down).
+
+### Fixed — Collar (slave)
+- **The `"pixel"` `node_id` fallback no longer forks the device's identity mid-join**
+  (`android/slave/src/com/focuslock/ControlService.java`,
+  `android/companion/src/com/bunnytasker/MainActivity.java`). The mesh-gossip
+  handler *persisted* `focus_lock_mesh_node_id = "pixel"` whenever it answered a
+  gossip tick before Bunny Tasker had assigned the real id. That flipped the vault
+  registrar out of its "not joined yet, skip" branch, so it posted a
+  register-node-request under `pixel` — a phantom row on the relay that the real
+  node_id (written moments later) never reclaimed. All seven fallback sites now go
+  through a new `selfNodeId()` which returns the stored id or, pre-join, derives one
+  with the *exact* expression Bunny Tasker uses at join time
+  (`Build.MODEL.toLowerCase().replace(" ", "-")`) — so the pre-join and post-join
+  labels agree — and **never persists**. Bunny Tasker's `joinMesh()` now writes
+  `focus_lock_mesh_node_id` *before* `focus_lock_mesh_id` / `focus_lock_mesh_url`,
+  closing the window in which the Collar can see a mesh it has no identity for, and
+  reuses the node_id it already sent in the join body instead of re-deriving it.
+
+### Tests
+- `tests/test_tamper_ratchet.py` (21) — tier formula vs. `escape_penalty`, the
+  per-mesh counter store (isolation, fast-forward, monotonicity, unsafe-mesh_id
+  path traversal), the end-to-end escalation with the client counter wiped before
+  every attempt, amount-as-floor, the $500 ceiling, the untagged-penalty carve-out,
+  and the client payload/commit contract (incl. no advance on a failed report).
+- `tests/test_display_name_desktop_task_guards.py` (20) — the endpoint-level
+  coverage the last pass deferred: `set-display-name` (happy path, forged signature,
+  name-swap-after-signing, stale ts, unregistered node, unknown/unsafe mesh_id,
+  40-char bound), the `GET /vault/{id}/nodes` enrichment auth gate (anonymous and
+  wrong-token callers get the bootstrap list with no display name / bunny_pubkey /
+  auto_accept), and the `desktop-task` guards (operator-mesh-only 409, armed-task
+  409, miss-lock 409, bad token, input validation). Both guard sets were
+  mutation-checked — reverting either guard fails the tests.
+- Python suite `1177 → 1218`.
+
 <!-- ───────── 2026-08-07 ecosystem-review fix-forward (cage tiers, safeword, optimistic UI, display name) ───────── -->
 
 Landed the previously-uncommitted feature stack (cage tiers, optimistic order
@@ -112,12 +172,10 @@ shipping. Versions: slave **80 / 8.37**, controller **73 / 73.0**, companion
   over-prices the next one).
 
 ### Known follow-ups (tracked, not in this pass)
-- `report_tamper.py`'s escalation counter is still local (a rooted bunny can reset
-  it to the $5 floor); a server-authoritative per-mesh tamper tier would make it
-  tamper-proof.
-- The Collar's `"pixel"` `node_id` fallback can still register a phantom vault row
-  under a mismatched id (a narrow join-time race); needs reordering the Collar's
-  `joinMesh` Settings writes.
+- ~~`report_tamper.py`'s escalation counter is still local~~ — closed in the second pass, above.
+- ~~The Collar's `"pixel"` `node_id` fallback…~~ — closed in the second pass, above.
+- ~~Endpoint-level regression tests for `set-display-name` / `desktop-task`~~ —
+  closed in the second pass, above.
 
 <!-- ───────── 2026-07-26 on-device QA fixes ───────── -->
 
