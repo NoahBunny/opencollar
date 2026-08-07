@@ -160,10 +160,13 @@ def _run_preflight() -> tuple[str, str]:
     if p.returncode != 0:
         return "fail", f"pytest --collect-only failed:\n{p.stdout[-500:]}\n{p.stderr[-500:]}"
 
-    # 0.7 — ruff check.
+    # 0.7 — ruff check. Run it through the same interpreter as the rest of
+    # this walker: ruff is a venv dependency (pyproject's dev extra), so a bare
+    # `ruff` on PATH is absent on a normal checkout and the lint gate silently
+    # skipped — reporting "0 fail" for a section that never ran.
     try:
         p = subprocess.run(
-            ["ruff", "check", "."],
+            [PY, "-m", "ruff", "check", "."],
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
@@ -172,7 +175,7 @@ def _run_preflight() -> tuple[str, str]:
         if p.returncode != 0:
             return "fail", f"ruff check failed:\n{p.stdout[-500:]}"
     except FileNotFoundError:
-        return "skip", "ruff not installed — install with `pip install ruff`"
+        return "skip", f"ruff not available under {PY} — install the dev extra"
 
     return "pass", "pytest --collect-only + ruff check both clean"
 
