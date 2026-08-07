@@ -1339,12 +1339,16 @@ public class MainActivity extends Activity {
 
             // Store mesh config in Settings.Global (survives app data clears)
             ContentResolver cr = getContentResolver();
+            // node_id FIRST, and it must be the same one we just sent in the join
+            // body. The Collar's ControlService starts talking to the relay the
+            // moment mesh_id + mesh_url are readable; if node_id were still empty
+            // in that window it would label itself with its own fallback and could
+            // leave a phantom node row behind under the wrong identity. Writing it
+            // ahead of mesh_id closes the window.
+            Settings.Global.putString(cr, "focus_lock_mesh_node_id", nodeId);
             Settings.Global.putString(cr, "focus_lock_mesh_id", meshId);
             Settings.Global.putString(cr, "focus_lock_mesh_url", serverUrl);
             Settings.Global.putString(cr, "focus_lock_pin", pin);
-            // Store node_id so ControlService identifies this device in mesh gossip
-            String deviceNodeId = android.os.Build.MODEL.toLowerCase().replace(" ", "-");
-            Settings.Global.putString(cr, "focus_lock_mesh_node_id", deviceNodeId);
 
             // Store Lion's public key — this makes PairingManager.isPaired() return true
             if (!lionPubKey.isEmpty()) {

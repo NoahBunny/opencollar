@@ -2536,6 +2536,35 @@ public class ControlService extends Service {
         String v = Settings.Global.getString(getContentResolver(), key);
         return (v == null || v.equals("null")) ? "" : v;
     }
+
+    /** This device's mesh node_id, or the id Bunny Tasker WILL assign at join
+     *  time if we haven't joined yet.
+     *
+     *  Bunny Tasker owns `focus_lock_mesh_node_id` — it writes it during
+     *  joinMesh(). Until then the Collar still has to label itself in gossip /
+     *  ping / status responses, and the old fallback was a hardcoded "pixel"
+     *  that the gossip handler also PERSISTED. That was two bugs in one: every
+     *  un-joined phone answered to the same identity, and once "pixel" was
+     *  persisted the vault registrar stopped treating the node as un-joined and
+     *  posted a register-node-request under it — a phantom row on the relay that
+     *  the real node_id (written moments later by Bunny Tasker) never reclaimed.
+     *
+     *  Deriving it from Build.MODEL with the exact expression Bunny Tasker uses
+     *  means the pre-join label and the post-join one agree, so a gossip tick
+     *  that lands mid-join can't fork our identity. Never persists — the store
+     *  stays Bunny Tasker's to write, and vaultRegisterIfNeeded keeps using the
+     *  raw setting so it still waits for a real join. */
+    private String selfNodeId() {
+        String stored = gstr("focus_lock_mesh_node_id");
+        if (!stored.isEmpty()) return stored;
+        try {
+            // Must stay character-for-character identical to Bunny Tasker's
+            // joinMesh(): android.os.Build.MODEL.toLowerCase().replace(" ", "-")
+            String derived = android.os.Build.MODEL.toLowerCase().replace(" ", "-");
+            if (!derived.trim().isEmpty()) return derived;
+        } catch (Exception e) {}
+        return "pixel";
+    }
     private static int safeInt(String s, int def) {
         if (s == null) return def;
         try { return Integer.parseInt(s.trim()); } catch (NumberFormatException e) { return def; }
@@ -3012,8 +3041,9 @@ public class ControlService extends Service {
 
         // Build response
         StringBuilder resp = new StringBuilder();
-        String nodeId = gstr("focus_lock_mesh_node_id");
-        if (nodeId.isEmpty()) { nodeId = "pixel"; Settings.Global.putString(getContentResolver(), "focus_lock_mesh_node_id", nodeId); }
+        // Label-only: never persist this. Writing the fallback here is what
+        // used to leave a phantom vault row behind (see selfNodeId()).
+        String nodeId = selfNodeId();
         resp.append("{\"node_id\":\"").append(esc(nodeId)).append("\"");
         resp.append(",\"type\":\"phone\"");
         resp.append(",\"addresses\":").append(getLocalAddressesJson());
@@ -3165,8 +3195,7 @@ public class ControlService extends Service {
                     String paramsJson = jval(body, "params");
                     if (paramsJson != null) target = jval("{" + paramsJson + "}", "target");
                 }
-                String nodeId = gstr("focus_lock_mesh_node_id");
-                if (nodeId.isEmpty()) nodeId = "pixel";
+                String nodeId = selfNodeId();
                 if ("all".equals(target) || nodeId.equals(target)) {
                     result = doReleaseForever();
                 } else {
@@ -3476,8 +3505,7 @@ public class ControlService extends Service {
     }
 
     private String handleMeshStatus() {
-        String nodeId = gstr("focus_lock_mesh_node_id");
-        if (nodeId.isEmpty()) nodeId = "pixel";
+        String nodeId = selfNodeId();
         // Convenience fields for direct (serverless) Lion's Share polling — match the
         // shape of the relay server's handle_mesh_status() so the same parser works.
         boolean isLocked = Settings.Global.getInt(getContentResolver(), "focus_lock_active", 0) == 1;
@@ -3547,8 +3575,7 @@ public class ControlService extends Service {
     }
 
     private String handleMeshPing() {
-        String nodeId = gstr("focus_lock_mesh_node_id");
-        if (nodeId.isEmpty()) nodeId = "pixel";
+        String nodeId = selfNodeId();
         return "{\"ok\":true,\"node_id\":\"" + esc(nodeId) + "\",\"orders_version\":" + meshVersion.get()
             + ",\"timestamp\":" + System.currentTimeMillis() + "}";
     }
@@ -4166,8 +4193,7 @@ public class ControlService extends Service {
         body.put("orders_version", meshVersion.get());
         // Nodes registry — controller's doUnlockDevice() and refreshInbox() consume this.
         java.util.TreeMap<String, Object> nodes = new java.util.TreeMap<>();
-        String selfId = gstr("focus_lock_mesh_node_id");
-        if (selfId.isEmpty()) selfId = "pixel";
+        String selfId = selfNodeId();
         java.util.TreeMap<String, Object> selfEntry = new java.util.TreeMap<>();
         selfEntry.put("type", "phone");
         selfEntry.put("online", true);
@@ -4499,8 +4525,7 @@ public class ControlService extends Service {
         // We still gossip to phone↔desktop peers because those use /mesh/sync
         // (peer-to-peer, never the relay) and stay legacy by design.
         // The flag clears itself if a future tick sees a 200 from a server peer.
-        String nodeId = gstr("focus_lock_mesh_node_id");
-        if (nodeId.isEmpty()) nodeId = "pixel";
+        String nodeId = selfNodeId();
         String meshPin = gstr("focus_lock_pin");
         // Multi-tenant mesh: when joined to an account-based mesh via /api/mesh/join,
         // BunnyTasker writes focus_lock_mesh_id. Server peers must then be addressed at
@@ -4775,8 +4800,7 @@ public class ControlService extends Service {
     }
 
     private void meshPushToPeers() {
-        String nodeId = gstr("focus_lock_mesh_node_id");
-        if (nodeId.isEmpty()) nodeId = "pixel";
+        String nodeId = selfNodeId();
         String meshPin = gstr("focus_lock_pin");
         // See meshGossip(): server peers in a multi-tenant mesh use /api/mesh/{mesh_id}/sync.
         String meshId = gstr("focus_lock_mesh_id");
