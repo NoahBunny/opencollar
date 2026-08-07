@@ -15,14 +15,23 @@ make things more expensive or more demanding, never less.
 
 Two independent consequences, either or both per invocation:
 
-  Penalty (default on)  -- POSTs to /webhook/desktop-penalty. Amount
-    escalates with a local, persisted, lifetime attempt counter using the
-    same $5-per-tier-of-3 formula as escape_penalty() in
+  Penalty (default on)  -- POSTs to /webhook/desktop-penalty with
+    `tamper: true`. Amount escalates with a lifetime attempt counter using
+    the same $5-per-tier-of-3 formula as escape_penalty() in
     shared/focuslock_penalties.py (kept as a local literal here rather
     than an import so this stays a single dependency-free file) --
     attempts 1-3 cost $5 each, 4-6 cost $10 each, and so on. Never resets.
-    Pass --amount to override for a specific known incident. Pass
-    --no-penalty to skip it (e.g. when --task alone is the point).
+
+    The AUTHORITATIVE counter is the server's, per mesh. This machine is
+    the bunny's, root and all, so the local counter here is only a hint:
+    it rides along as `attempt` (fast-forwarding a relay whose state was
+    lost) and the locally-computed amount rides along as `amount` (which
+    an older relay uses verbatim, and a current one treats as a floor).
+    Deleting the local counter file therefore buys nothing -- the server
+    keeps charging at the tier it has recorded. Pass --amount to price a
+    specific known incident HIGHER; it cannot undercut the reached tier.
+    Every accepted report advances the ratchet, including --amount ones.
+    Pass --no-penalty to skip it (e.g. when --task alone is the point).
 
   Task (opt-in via --task)  -- POSTs to /webhook/desktop-task, which arms
     the same do-or-lock deadline task Lion can set manually (shows up in
@@ -103,7 +112,11 @@ def _peek_escalating_amount():
 
 def _commit_escalation(attempt_number):
     """Persist the advanced lifetime counter. Best-effort — escalation still
-    reported at this tier even if the write fails. Never resets."""
+    reported at this tier even if the write fails. Never resets: if the
+    server's authoritative count is ahead of ours (this file was deleted, or
+    another collared desktop on the mesh reported), we take the higher of the
+    two so the local hint stops trailing."""
+    attempt_number = max(int(attempt_number or 0), _read_attempt_count())
     path = _counter_path()
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -122,9 +135,9 @@ def report_tamper(amount, reason):
         print("[x] no mesh_url configured locally -- can't report tamper", file=sys.stderr)
         return 1
 
-    attempt_number = None
+    escalating_amount, attempt_number = _peek_escalating_amount()
     if amount is None:
-        amount, attempt_number = _peek_escalating_amount()
+        amount = escalating_amount
 
     # Clamp keeps this one-directional even if called with amount <= 0.
     amount = max(PENALTY_MIN, min(PENALTY_MAX, int(amount)))
@@ -134,6 +147,10 @@ def report_tamper(amount, reason):
             "mesh_id": cfg["mesh_id"],
             "amount": amount,
             "reason": reason,
+            # Ask the server to price this off its own per-mesh ratchet.
+            # `attempt` only ever fast-forwards it; `amount` is a floor.
+            "tamper": True,
+            "attempt": attempt_number,
         }
     ).encode("utf-8")
 
@@ -152,13 +169,18 @@ def report_tamper(amount, reason):
         print(f"[x] failed to reach mesh server: {e}", file=sys.stderr)
         return 1
 
+    # The server is authoritative on both numbers; fall back to ours when
+    # talking to an older relay that doesn't echo them.
+    applied = result.get("amount") or amount
+    attempt_number = result.get("tamper_attempt") or attempt_number
+
     # Only now, after the server accepted the penalty (2xx), commit the counter —
     # so a failed report can't over-price the next legitimate one.
     if attempt_number is not None:
         _commit_escalation(attempt_number)
 
     suffix = f" (lifetime attempt #{attempt_number})" if attempt_number else ""
-    print(f"[+] tamper reported: ${amount} penalty applied{suffix} -- {reason}")
+    print(f"[+] tamper reported: ${applied} penalty applied{suffix} -- {reason}")
     print(f"[+] new paywall: ${result.get('new_paywall', '?')}")
     return 0
 

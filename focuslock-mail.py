@@ -237,6 +237,7 @@ from focuslock_penalties import (
     UNSUBSCRIBE_FEES,
     compound_interest_rate,
     escape_penalty,
+    tamper_penalty,
 )
 
 adb = ADBBridge(
@@ -1396,6 +1397,65 @@ def _iter_desktop_registries():
         if OPERATOR_MESH_ID and mid == OPERATOR_MESH_ID:
             continue  # already yielded
         yield mid, reg
+
+
+# ── Per-mesh tamper ratchet (server-authoritative) ──
+# report_tamper.py used to keep its lifetime attempt counter in a local file
+# next to the desktop collar's config — on a machine the bunny has root on.
+# Deleting `tamper-attempts.json` walked the escalating penalty back down to
+# the $5 tier-1 floor, which is exactly the circumvention the ratchet exists
+# to price. The authoritative counter now lives here, on the relay, keyed by
+# mesh. The client still sends its local count as a hint (`attempt`) and the
+# server takes the max of the two, so the ratchet is monotone across BOTH
+# stores: wiping the local file can't lower it, and a relay reinstall that
+# loses this directory is healed by the next report from a client that
+# remembers a higher number.
+_TAMPER_TIERS_DIR = os.path.join(os.path.dirname(MESH_ORDERS_FILE), "tamper_tiers")
+_tamper_tiers_lock = threading.Lock()
+
+
+def _tamper_counter_path(mesh_id: str):
+    """Per-mesh counter file, or None if mesh_id isn't path-safe."""
+    if not _safe_mesh_id_static(mesh_id):
+        return None
+    return os.path.join(_TAMPER_TIERS_DIR, f"{mesh_id}.json")
+
+
+def _read_tamper_attempts(mesh_id: str) -> int:
+    """Lifetime tamper attempts recorded for this mesh (0 if none/unreadable)."""
+    path = _tamper_counter_path(mesh_id)
+    if not path or not os.path.exists(path):
+        return 0
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return max(0, int(json.load(f).get("lifetime_attempts", 0)))
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        return 0
+
+
+def _bump_tamper_attempts(mesh_id: str, at_least: int = 0) -> int:
+    """Record one more tamper attempt for this mesh and return its number.
+
+    `at_least` is the client's own lifetime count — the returned number is
+    ``max(stored + 1, at_least)`` so a client that remembers more attempts
+    than the relay does fast-forwards the server rather than being reset by
+    it. Never decreases. Best-effort persistence: if the write fails the
+    caller still gets a correctly-tiered number for THIS report (the relay
+    just may not remember it), which is the fail-toward-enforcement side."""
+    with _tamper_tiers_lock:
+        current = _read_tamper_attempts(mesh_id)
+        attempt = max(current + 1, int(at_least or 0))
+        path = _tamper_counter_path(mesh_id)
+        if path:
+            try:
+                os.makedirs(_TAMPER_TIERS_DIR, exist_ok=True)
+                tmp = path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump({"lifetime_attempts": attempt}, f)
+                os.replace(tmp, path)
+            except OSError as e:
+                logger.warning("Failed to persist tamper counter for %s: %s", _sanitize_log(mesh_id), e)
+        return attempt
 
 
 # ── Per-mesh payment ledger ──
@@ -3334,16 +3394,50 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 return
             # Clamp caller-supplied amount as defense-in-depth even with auth.
             DESKTOP_PENALTY_MAX = 500
+            raw_amount = data.get("amount", None)
             try:
-                amount = int(data.get("amount", 30))
+                amount = 30 if raw_amount is None else int(raw_amount)
             except (TypeError, ValueError):
                 self.respond(400, {"error": "amount must be an integer"})
                 return
             if amount < 0 or amount > DESKTOP_PENALTY_MAX:
                 self.respond(400, {"error": f"amount must be 0-{DESKTOP_PENALTY_MAX}"})
                 return
+            # `tamper: true` (report_tamper.py) prices the report off the
+            # SERVER's per-mesh lifetime attempt counter instead of trusting
+            # the collared desktop's local one, which the bunny has root over.
+            # The caller's own count comes along as a hint and only ever
+            # fast-forwards the server; a caller-supplied `amount` becomes a
+            # floor, never a discount, so `--amount` can still price a known
+            # incident higher but can't undercut the tier the ratchet reached.
+            tamper_attempt = None
+            if data.get("tamper"):
+                TAMPER_CLAIM_JUMP_MAX = 100  # bound a bogus/corrupt client claim
+                try:
+                    claimed = max(0, int(data.get("attempt", 0) or 0))
+                except (TypeError, ValueError):
+                    claimed = 0
+                counter_key = mesh_id or OPERATOR_MESH_ID or ""
+                ceiling = _read_tamper_attempts(counter_key) + TAMPER_CLAIM_JUMP_MAX
+                if claimed > ceiling:
+                    logger.warning(
+                        "Tamper attempt claim %s from mesh=%s exceeds +%s of the recorded count — clamping",
+                        claimed,
+                        _sanitize_log(counter_key),
+                        TAMPER_CLAIM_JUMP_MAX,
+                    )
+                    claimed = ceiling
+                tamper_attempt = _bump_tamper_attempts(counter_key, at_least=claimed)
+                floor = 0 if raw_amount is None else amount
+                amount = min(DESKTOP_PENALTY_MAX, max(floor, tamper_penalty(tamper_attempt)))
             reason = data.get("reason", "Desktop penalty")
-            logger.warning("DESKTOP PENALTY: mesh=%s $%s — %s", mesh_id, amount, _sanitize_log(reason))
+            logger.warning(
+                "DESKTOP PENALTY: mesh=%s $%s%s — %s",
+                mesh_id,
+                amount,
+                f" (tamper attempt #{tamper_attempt})" if tamper_attempt else "",
+                _sanitize_log(reason),
+            )
             # Route through _server_apply_order so the paywall write lands
             # on the mesh's orders doc + propagates via vault blob to any
             # vault-mode slaves. For the operator mesh this also keeps the
@@ -3363,8 +3457,22 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 adb.put_str("focus_lock_message", f"{reason}. ${amount} added.")
             else:
                 pw = applied.get("paywall", 0)
-            send_evidence(f"{reason}: ${amount} penalty applied. New paywall: ${pw}", "desktop penalty", mesh_id=mesh_id)
-            self.respond(200, {"ok": True, "new_paywall": pw, "mesh_id": mesh_id})
+            _attempt_note = f" (lifetime tamper attempt #{tamper_attempt})" if tamper_attempt else ""
+            send_evidence(
+                f"{reason}: ${amount} penalty applied{_attempt_note}. New paywall: ${pw}",
+                "desktop penalty",
+                mesh_id=mesh_id,
+            )
+            self.respond(
+                200,
+                {
+                    "ok": True,
+                    "new_paywall": pw,
+                    "mesh_id": mesh_id,
+                    "amount": amount,
+                    "tamper_attempt": tamper_attempt,
+                },
+            )
 
         elif self.path == "/webhook/desktop-task":
             # Same auth shape as /webhook/desktop-penalty (mesh-scoped

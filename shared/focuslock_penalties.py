@@ -28,6 +28,15 @@ APP_LAUNCH_PENALTY = 50
 APP_LAUNCH_DEDUP_WINDOW_MS = 10_000
 """In-memory window on (mesh_id, node_id). Soaks up retries without double-charging."""
 
+TAMPER_PENALTY_STEP = 5
+"""Per-tier step for the desktop tamper ratchet (report_tamper.py). Attempts
+1-3 cost $5 each, 4-6 cost $10 each, … Deliberately the same shape as
+ESCAPE_PENALTY_STEP: a circumvention attempt on the desktop is priced like an
+escape on the phone."""
+
+TAMPER_ATTEMPTS_PER_TIER = 3
+"""Attempts 1-3 are tier 1, 4-6 tier 2, … Mirrors ESCAPES_PER_TIER."""
+
 TAMPER_ATTEMPT_PENALTY = 500
 """Admin deactivation prompt dismissed (onDisableRequested)."""
 
@@ -79,6 +88,18 @@ def escape_penalty(escape_number: int) -> int:
         return 0
     tier = ((escape_number - 1) // ESCAPES_PER_TIER) + 1
     return ESCAPE_PENALTY_STEP * tier
+
+
+def tamper_penalty(attempt_number: int) -> int:
+    """Penalty for the Nth lifetime desktop tamper attempt. 1-3 -> $5 each,
+    4-6 -> $10 each, … The counter this indexes is server-side and per-mesh
+    (see `_bump_tamper_attempts` in focuslock-mail.py) precisely so a bunny
+    with root on the collared desktop can't delete a local file to walk the
+    price back down to the $5 floor."""
+    if attempt_number < 1:
+        return 0
+    tier = ((attempt_number - 1) // TAMPER_ATTEMPTS_PER_TIER) + 1
+    return TAMPER_PENALTY_STEP * tier
 
 
 def compound_interest_rate(sub_tier: str) -> float:
