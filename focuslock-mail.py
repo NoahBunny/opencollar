@@ -1859,7 +1859,7 @@ def _apply_initial_mesh_config(mesh_id, cfg):
     body so the wizard can confirm what stuck).
 
     Recognized keys:
-      imap_host + imap_user + imap_pass  → set-payment-email
+      imap_host + imap_user + imap_pass  → set-payee-identity
       tribute_amount (>0)                 → set-tribute
       sub_tier ('bronze'|'silver'|'gold') → subscribe (default due now+7d)
       bedtime_lock_hour + bedtime_unlock_hour → set-bedtime
