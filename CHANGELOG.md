@@ -8,6 +8,61 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-08 device-QA follow-ups: status shadowing, A16 release, Tor wait ───────── -->
+
+Cleared three follow-ups the device-QA session left open — two latent-correctness
+traps and one UX gap — all found by inspection while reading the code the
+hardware pass touched, none needing the phones re-provisioned. Versions:
+controller **78 / 78.0**, collar **82 / 8.39**, companion **61 / 2.28**;
+`installers/re-enslave-lib.sh` targets synced.
+
+### Fixed — Lion's Share (controller)
+
+- **The status line still read six signed fields off the whole body with
+  first-match helpers** (`android/controller/src/com/focusctl/MainActivity.java`,
+  `updateLiveStatus`). The signature *verification* path was scoped to the
+  top-level object (the fix-#5 `StatusCore`), but the *display* path was not, so
+  in direct mode it rendered the `orders`-document copies of `paywall` /
+  `task_reps` / `task_done` / `offer` / `offer_status` / `sub_tier` — the exact
+  shadowing hazard, one schema change from mattering. Routed the nine core
+  display fields through `StatusCore.fromWire` (the same scoped reader the
+  signature check uses), with a fail-safe fallback to first-match if the body
+  isn't a parseable object. Non-core fields (`lovense` / `geofence` / `fine` /
+  `body_check`) keep first-match: in direct mode they live *only* inside
+  `orders`, so scoping them to the top level would blank them. No visible change
+  today (the copies tie); the class of bug is now closed on both paths.
+  Regression: `StatusCoreTest.rebuiltCoreUsesTheSignersNativeTypes` now also pins
+  the native types of the fields the display path casts.
+
+### Added — Lion's Share (controller)
+
+- **A live "Waking Collar over Tor…" indicator during a cold-onion wake**
+  (`MainActivity.java`, `beginWakeIndicator` / `endWakeIndicator`). The first
+  cold order blocks up to 120 s in `wakeAndAuthorize` while both Tor daemons
+  boot; the old one-shot `setStatus("Waking Collar…")` was overwritten by the
+  next 1 s timer tick, so the UI read as hung. Now a depth-counted ticker owns
+  the status line with a counting-up elapsed timer (the order path and the read
+  poll can each trigger a wake), and the per-second timer + `updateLiveStatus`
+  yield the line while it's up. Inert in default (Tor-OFF) builds.
+
+### Fixed — The Collar + Bunny Tasker (Release Forever teardown on Android 16/17)
+
+- **Release Forever couldn't remove its own device admin on Android 16/17**
+  (`android/slave/src/com/focuslock/ControlService.java`, `doReleaseForever`).
+  The self-destruct shelled `dpm remove-active-admin`, which A16/17 refuse for a
+  non-test admin, and the follow-on `pm uninstall` refuses while an admin is
+  active — so teardown stalled on a manual Settings → Security deactivation both
+  QA sessions. A same-package caller can always remove its own admin, so the
+  Collar now calls `DevicePolicyManager.removeActiveAdmin(adminComponent())`
+  directly (release_authorized=1 makes `AdminReceiver.onDisabled` a no-op, so no
+  tamper penalty fires); the shell calls stay as a best-effort fallback.
+- **Bunny Tasker's admin blocked its own uninstall the same way.** One package
+  can't remove another's admin programmatically, so the companion now removes
+  *its own* admin via the API from `BunnyService`'s watcher when it sees
+  `focus_lock_release_authorized==1`, then stops the watcher (which also dodges a
+  false tamper read if the Collar clears the flag before the app is uninstalled).
+  Still needs on-device verification with device admin actually enabled.
+
 <!-- ───────── 2026-08-07 (third pass) on-device QA against two real phones ───────── -->
 
 Worked the device-QA runbook against real hardware — a Samsung **SM-S908W** as
