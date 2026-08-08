@@ -171,6 +171,16 @@ public class StatusCoreTest {
         assertTrue(rebuilt.get("orders_version") instanceof Long);
         assertTrue(rebuilt.get("timer_remaining_ms") instanceof Long);
         assertTrue(rebuilt.get("paywall") instanceof String);
+        // MainActivity.updateLiveStatus now reads the DISPLAY values straight out
+        // of this map (task_reps/task_done as (Long).intValue(), offer/
+        // offer_status/sub_tier as (String)). Pin those native types too, so a
+        // future StatusCore edit that changes one can't slip past verification
+        // AND silently ClassCastException the status line at render time.
+        assertTrue(rebuilt.get("task_reps") instanceof Long);
+        assertTrue(rebuilt.get("task_done") instanceof Long);
+        assertTrue(rebuilt.get("offer") instanceof String);
+        assertTrue(rebuilt.get("offer_status") instanceof String);
+        assertTrue(rebuilt.get("sub_tier") instanceof String);
     }
 
     // ── still fails closed ──

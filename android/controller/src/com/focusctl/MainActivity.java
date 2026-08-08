@@ -496,6 +496,9 @@ public class MainActivity extends Activity {
         startNtfySubscriber();
 
         timerTicker = () -> {
+            // A cold-onion wake owns the status line (beginWakeIndicator); don't
+            // fight its countdown with the per-second timer repaint.
+            if (wakeDepth.get() > 0) { handler.postDelayed(timerTicker, 1000); return; }
             if (isLocked && timerEndMs > 0) {
                 long rem = timerEndMs - System.currentTimeMillis();
                 if (rem > 0) {
@@ -575,12 +578,35 @@ public class MainActivity extends Activity {
         if ("direct".equals(pairMode) && json != null) {
             mergeDirectCandidates(candidatesFromAdvertisement(json));
         }
-        isLocked = parseJsonBool(json, "locked");
-        lastEscapes = parseJsonInt(json, "escapes");
-        long timerMs = parseJsonLong(json, "timer_remaining_ms");
-        String offer = parseJsonStr(json, "offer");
-        String offerStatus = parseJsonStr(json, "offer_status");
-        String subTier = parseJsonStr(json, "sub_tier");
+        // Read the signed status-core fields (locked / escapes / paywall /
+        // timer_remaining_ms / task_reps / task_done / offer / offer_status /
+        // sub_tier) through StatusCore, which is scoped to the TOP-LEVEL JSON
+        // object — the same reader verifyStatusSignature uses. In direct mode
+        // /mesh/status embeds the whole orders document and six of these names
+        // repeat inside it EARLIER in the byte stream, so the first-match
+        // parseJson* helpers would render the shadowing orders copies instead of
+        // the values the signature actually covers (the fix-#5 hazard, here on
+        // the display path). Non-core fields (lovense / geofence / fine /
+        // body_check) live ONLY inside `orders` in direct mode, so they must
+        // keep first-match below. If the body isn't a parseable object, fall
+        // back to first-match for the core fields too (fail-safe — never worse
+        // than before). See StatusCore for the full write-up.
+        java.util.TreeMap<String, Object> core;
+        try { core = StatusCore.fromWire(json); }
+        catch (org.json.JSONException e) { core = null; }
+
+        isLocked = core != null ? (Boolean) core.get("locked")
+                                : parseJsonBool(json, "locked");
+        lastEscapes = core != null ? ((Long) core.get("escapes")).intValue()
+                                   : parseJsonInt(json, "escapes");
+        long timerMs = core != null ? (Long) core.get("timer_remaining_ms")
+                                    : parseJsonLong(json, "timer_remaining_ms");
+        String offer = core != null ? (String) core.get("offer")
+                                    : parseJsonStr(json, "offer");
+        String offerStatus = core != null ? (String) core.get("offer_status")
+                                          : parseJsonStr(json, "offer_status");
+        String subTier = core != null ? (String) core.get("sub_tier")
+                                      : parseJsonStr(json, "sub_tier");
         boolean lovenseAvail = parseJsonBool(json, "lovense_available");
 
         timerEndMs = timerMs > 0 ? System.currentTimeMillis() + timerMs : 0;
@@ -590,7 +616,8 @@ public class MainActivity extends Activity {
         // value instead of two independent re-parses.
         int snapPaywall;
         {
-            String pwRaw = parseJsonStr(json, "paywall");
+            String pwRaw = core != null ? (String) core.get("paywall")
+                                        : parseJsonStr(json, "paywall");
             int v;
             try { v = pwRaw.isEmpty() ? 0 : Integer.parseInt(pwRaw); }
             catch (NumberFormatException e) { v = 0; }
@@ -647,8 +674,10 @@ public class MainActivity extends Activity {
                 sb.append(" | ").append(m).append("m ").append(s).append("s left");
             }
             if (lastEscapes > 0) sb.append(" | ").append(lastEscapes).append(" esc");
-            int reps = parseJsonInt(json, "task_reps");
-            int done = parseJsonInt(json, "task_done");
+            int reps = core != null ? ((Long) core.get("task_reps")).intValue()
+                                     : parseJsonInt(json, "task_reps");
+            int done = core != null ? ((Long) core.get("task_done")).intValue()
+                                     : parseJsonInt(json, "task_done");
             if (reps > 0) sb.append(" | Rep ").append(done + 1).append("/").append(reps);
             if (snapPaywall > 0) sb.append(" | $").append(snapPaywall);
         } else {
@@ -674,7 +703,11 @@ public class MainActivity extends Activity {
                 sb.append("Confined");
             }
         }
-        statusView.setText(sb.toString());
+        // While a cold-onion wake is in flight it owns the status line and bar
+        // (beginWakeIndicator's countdown); don't clobber it. Everything else
+        // below — balance, tier badge, offer, geofence button — still updates.
+        boolean waking = wakeDepth.get() > 0;
+        if (!waking) statusView.setText(sb.toString());
 
         // Toggle the Confine button label based on whether a geofence is set.
         lastGeofenceActive = geofenceActive;
@@ -683,7 +716,7 @@ public class MainActivity extends Activity {
         }
 
         View statusBar = findViewById(getId("status_bar"));
-        if (statusBar != null) statusBar.setBackgroundColor(isLocked ? 0xFFcc8800 : 0xFFDAA520);
+        if (statusBar != null && !waking) statusBar.setBackgroundColor(isLocked ? 0xFFcc8800 : 0xFFDAA520);
 
         // Tier badge
         updateTierBadge(subTier);
@@ -1032,6 +1065,21 @@ public class MainActivity extends Activity {
     private volatile long lastOnionWakeMs = 0L;
     private static final long ONION_WAKE_MIN_INTERVAL_MS = 180_000L;
 
+    // ── Cold-onion wake progress (A3) ──
+    // maybeWakeBunny blocks up to 120s while it boots the Collar's Tor and ours.
+    // Without a live indicator the status line just froze (the old one-shot
+    // "Waking Collar…" was overwritten by the next 1s timer tick) and the whole
+    // UI read as hung — the follow-up this closes. While a wake is in flight the
+    // status line shows a counting-up "Waking Collar over Tor… Ns" so the
+    // operator can see it working. Depth-counted because the order path and the
+    // read poll can each trigger a wake concurrently; the indicator is up while
+    // wakeDepth > 0. Inert in default (non-Tor) builds — maybeWakeBunny returns
+    // before beginWakeIndicator when TorHook is unavailable.
+    private final java.util.concurrent.atomic.AtomicInteger wakeDepth =
+        new java.util.concurrent.atomic.AtomicInteger(0);
+    private volatile long wakeStartMs = 0L;
+    private Runnable wakeTicker = null;
+
     private String getDirectWithFailover(String pathOnCollar) {
         for (String base : orderedDirectCandidates()) {
             // Bring Tor up before dialing an .onion, exactly as the order path
@@ -1267,11 +1315,53 @@ public class MainActivity extends Activity {
             String onionNoSuffix = host.endsWith(".onion")
                 ? host.substring(0, host.length() - ".onion".length()) : host;
             postNtfyWake(torWakeTopic(host));                        // zero-knowledge {"v":ts}
-            handler.post(() -> setStatus("Waking Collar…"));
-            TorHook.wakeAndAuthorize(this, onionNoSuffix, 120_000);
+            beginWakeIndicator();
+            try {
+                TorHook.wakeAndAuthorize(this, onionNoSuffix, 120_000);
+            } finally {
+                endWakeIndicator();
+            }
         } catch (Exception e) {
             android.util.Log.w("focusctl", "maybeWakeBunny", e);
         }
+    }
+
+    /** Start (or join) the cold-onion wake indicator: a 1s ticker that repaints
+     *  the status line with the elapsed wait so a 120s Tor cold-start reads as
+     *  progress, not a hang. Runs on the UI handler; updateLiveStatus and the
+     *  timer tick yield the status line while wakeDepth > 0. Idempotent across
+     *  concurrent wakes — only the first raises the indicator. */
+    private void beginWakeIndicator() {
+        if (wakeDepth.incrementAndGet() != 1) return;   // a wake is already showing
+        wakeStartMs = System.currentTimeMillis();
+        handler.post(() -> {
+            if (wakeDepth.get() <= 0) return;            // finished before we started
+            wakeTicker = new Runnable() {
+                @Override public void run() {
+                    if (wakeDepth.get() <= 0) return;
+                    long s = (System.currentTimeMillis() - wakeStartMs) / 1000;
+                    if (s < 0) s = 0;
+                    String label = activeBunnyLabel.isEmpty() ? "" : activeBunnyLabel + " | ";
+                    statusView.setText(label + "🧅 Waking Collar over Tor… " + s + "s");
+                    View bar = findViewById(getId("status_bar"));
+                    if (bar != null) bar.setBackgroundColor(0xFF6a4a9a);  // onion-purple: distinct from lock/unlock
+                    handler.postDelayed(this, 1000);
+                }
+            };
+            wakeTicker.run();
+        });
+    }
+
+    /** End one wake; when the last concurrent wake finishes, stop the ticker and
+     *  repaint the real status straight away (rather than waiting out the 5s
+     *  poll). No-op while another wake is still in flight. */
+    private void endWakeIndicator() {
+        if (wakeDepth.decrementAndGet() > 0) return;     // another wake still running
+        handler.post(() -> {
+            if (wakeDepth.get() > 0) return;             // a new wake started in the gap
+            if (wakeTicker != null) { handler.removeCallbacks(wakeTicker); wakeTicker = null; }
+            renderOptimisticNow();                       // no-op if no snapshot yet; next poll fills in
+        });
     }
 
     /** Onion-derived ntfy wake topic, byte-for-byte matching the Collar's
