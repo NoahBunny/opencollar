@@ -135,6 +135,197 @@ class TestMessagePayloadSpec:
         pub.verify(base64.b64decode(sig), payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
 
 
+# ──────────────────────── direct-mode /mesh/status wire format ────────────────────────
+
+# The ten fields ControlService.handleMeshStatus signs with the bunny key.
+STATUS_CORE_KEYS = (
+    "locked", "escapes", "paywall", "timer_remaining_ms", "task_reps",
+    "task_done", "offer", "offer_status", "sub_tier", "orders_version",
+)
+
+# Core names that the embedded orders document ALSO carries — earlier in the
+# byte stream, because handleMeshStatus emits "orders" before the status fields.
+SHADOWED_CORE_KEYS = ("paywall", "task_reps", "task_done", "offer", "offer_status", "sub_tier")
+
+
+def _status_core(locked=True, escapes=0, paywall="0", timer_remaining_ms=900_000,
+                 task_reps=0, task_done=0, offer="", offer_status="", sub_tier="",
+                 orders_version=3):
+    """Exactly what handleMeshStatus signs — native bool/int/str types."""
+    return {
+        "locked": locked,
+        "escapes": escapes,
+        "paywall": paywall,
+        "timer_remaining_ms": timer_remaining_ms,
+        "task_reps": task_reps,
+        "task_done": task_done,
+        "offer": offer,
+        "offer_status": offer_status,
+        "sub_tier": sub_tier,
+        "orders_version": orders_version,
+    }
+
+
+def _status_wire(core, signature="SIG", orders_paywall=""):
+    """Mirror of the /mesh/status body: orders_version, the embedded orders
+    document, the signature, then the signed status fields, then nodes.
+
+    orders_paywall defaults to "" — the real divergence. buildOrdersJson emits
+    the raw Settings.Global row, while handleMeshStatus defaults an unset
+    paywall to "0", so on a freshly paired Collar the two copies differ.
+    """
+    orders = (
+        '{"lock_active":' + ("1" if core["locked"] else "0")
+        + ',"message":"","task_text":""'
+        + ',"task_reps":' + str(core["task_reps"])
+        + ',"task_done":' + str(core["task_done"])
+        + ',"mode":"basic"'
+        + ',"paywall":"' + orders_paywall + '","paywall_original":""'
+        + ',"unlock_at":0,"locked_at":0'
+        + ',"offer":"' + core["offer"] + '"'
+        + ',"offer_status":"' + core["offer_status"] + '"'
+        + ',"sub_tier":"' + core["sub_tier"] + '"'
+        + ',"released":""}'
+    )
+    nodes = (
+        ',"nodes":{"sm-s908w":{"type":"phone","online":true,"orders_version":'
+        + str(core["orders_version"])
+        + ',"status":{"escapes":' + str(core["escapes"]) + "}}}}"
+    )
+    return (
+        '{"orders_version":' + str(core["orders_version"])
+        + ',"orders":' + orders
+        + ',"signature":"' + signature + '"'
+        + ',"locked":' + ("true" if core["locked"] else "false")
+        + ',"escapes":' + str(core["escapes"])
+        + ',"paywall":"' + core["paywall"] + '"'
+        + ',"timer_remaining_ms":' + str(core["timer_remaining_ms"])
+        + ',"task_reps":' + str(core["task_reps"])
+        + ',"task_done":' + str(core["task_done"])
+        + ',"offer":"' + core["offer"] + '"'
+        + ',"offer_status":"' + core["offer_status"] + '"'
+        + ',"sub_tier":"' + core["sub_tier"] + '"'
+        + ',"addresses":["192.168.199.42"],"port":8435'
+        + nodes
+    )
+
+
+def _first_match_core(body):
+    """The rebuild Lion's Share shipped before StatusCore: MainActivity's
+    indexOf-based parseJson* helpers, which take the FIRST match anywhere in
+    the body. Kept as an executable record of the bug this format now guards."""
+
+    def _str(key):
+        i = body.find(f'"{key}":"')
+        if i < 0:
+            return ""
+        i += len(f'"{key}":"')
+        return body[i:body.find('"', i)]
+
+    def _num(key):
+        i = body.find(f'"{key}":')
+        if i < 0:
+            return 0
+        i = body.find(":", i) + 1
+        e = i
+        while e < len(body) and body[e] not in ",}":
+            e += 1
+        return int(body[i:e].strip())
+
+    def _bool(key):
+        i = body.find(f'"{key}":')
+        return i >= 0 and body[i + len(f'"{key}":'):].lstrip().startswith("true")
+
+    return {
+        "locked": _bool("locked"), "escapes": _num("escapes"), "paywall": _str("paywall"),
+        "timer_remaining_ms": _num("timer_remaining_ms"), "task_reps": _num("task_reps"),
+        "task_done": _num("task_done"), "offer": _str("offer"),
+        "offer_status": _str("offer_status"), "sub_tier": _str("sub_tier"),
+        "orders_version": _num("orders_version"),
+    }
+
+
+class TestStatusWireSpec:
+    """The direct-mode /mesh/status contract: the signed core must be rebuilt
+    from the TOP-LEVEL object only.
+
+    The body embeds the whole orders document, which repeats six of the ten core
+    key names before the signed ones appear. Reading the first match picked up
+    the orders copies; five agreed by luck (same Settings.Global row) but
+    "paywall" did not, so every status from a Collar with no balance charged was
+    rejected as forged and Lion's Share froze on its last-good snapshot. This is
+    the executable contract StatusCore.fromWire is held to.
+    """
+
+    def test_orders_document_still_repeats_core_key_names(self):
+        """If this ever stops being true the hazard is gone — but until then,
+        scoping is load-bearing, not defensive tidiness."""
+        body = _status_wire(_status_core())
+        orders = json.loads(body)["orders"]
+        assert set(SHADOWED_CORE_KEYS) <= set(orders), "orders no longer shadows the core"
+        for key in SHADOWED_CORE_KEYS:
+            assert body.index(f'"{key}"') < body.index('"signature"'), f"{key} shadow is not first"
+
+    def test_top_level_scope_rebuilds_the_signed_core(self):
+        core = _status_core(paywall="0")
+        parsed = json.loads(_status_wire(core))
+        assert {k: parsed[k] for k in STATUS_CORE_KEYS} == core
+
+    def test_first_match_rebuild_reads_the_orders_copy(self):
+        """The shipped bug, pinned: unset paywall signs as "0" but scans as ""."""
+        core = _status_core(paywall="0")
+        assert _first_match_core(_status_wire(core, orders_paywall=""))["paywall"] == ""
+        assert core["paywall"] == "0"
+
+    def test_first_match_rebuild_breaks_the_signature(self, slave_keypair):
+        from focuslock_mesh import sign_orders, verify_signature
+
+        core = _status_core(paywall="0")
+        sig = sign_orders(core, slave_keypair["priv_pem"])
+        body = _status_wire(core, signature=sig, orders_paywall="")
+        assert verify_signature(_first_match_core(body), sig, slave_keypair["pub_pem"]) is False
+        parsed = json.loads(body)
+        scoped = {k: parsed[k] for k in STATUS_CORE_KEYS}
+        assert verify_signature(scoped, sig, slave_keypair["pub_pem"]) is True
+
+    def test_scoped_rebuild_verifies_across_collar_states(self, slave_keypair):
+        from focuslock_mesh import sign_orders, verify_signature
+
+        for core in (
+            _status_core(),                                             # fresh pair, no balance
+            _status_core(paywall="25", escapes=2),                      # after a charge
+            _status_core(paywall="25", task_reps=3, task_done=1,
+                         offer="unlock", offer_status="pending", sub_tier="silver"),
+            _status_core(locked=False, timer_remaining_ms=0),           # released
+        ):
+            sig = sign_orders(core, slave_keypair["priv_pem"])
+            parsed = json.loads(_status_wire(core, signature=sig, orders_paywall=core["paywall"]))
+            scoped = {k: parsed[k] for k in STATUS_CORE_KEYS}
+            assert verify_signature(scoped, sig, slave_keypair["pub_pem"]) is True, core
+
+    def test_rewriting_only_the_orders_copies_cannot_move_the_core(self, slave_keypair):
+        """The inverse attack: a LAN MITM edits the shadow copies hoping the
+        controller reads those. Scoped parsing leaves the signed core intact."""
+        from focuslock_mesh import sign_orders, verify_signature
+
+        core = _status_core(paywall="25", escapes=2)
+        sig = sign_orders(core, slave_keypair["priv_pem"])
+        body = _status_wire(core, signature=sig, orders_paywall="0")  # attacker clears the fee
+        parsed = json.loads(body)
+        scoped = {k: parsed[k] for k in STATUS_CORE_KEYS}
+        assert scoped["paywall"] == "25"
+        assert verify_signature(scoped, sig, slave_keypair["pub_pem"]) is True
+
+    def test_tampered_top_level_field_still_rejected(self, slave_keypair):
+        from focuslock_mesh import sign_orders, verify_signature
+
+        signed = _status_core(locked=True, paywall="25", escapes=2)
+        sig = sign_orders(signed, slave_keypair["priv_pem"])
+        forged = json.loads(_status_wire(_status_core(locked=False, paywall="0"), signature=sig))
+        scoped = {k: forged[k] for k in STATUS_CORE_KEYS}
+        assert verify_signature(scoped, sig, slave_keypair["pub_pem"]) is False
+
+
 # ──────────────────────── Java half (CI only) ────────────────────────
 
 # shlex.split so the command can carry a quoted classpath with spaces (the repo
@@ -157,6 +348,8 @@ class TestJavaConformance:
     Contract: subcommand on argv, input on stdin, result on stdout.
         canonical                 stdin=JSON object  -> canonical_json string
         sign-string <privKeyPem>  stdin=payload      -> base64 RSA-SHA256 signature
+        status-core               stdin=/mesh/status body -> canonical_json of the
+                                                       rebuilt status core
     See QA Layer 2/3 plan + docs/ANDROID-CONFORMANCE.md for how to build it."""
 
     def _run(self, *args, stdin=""):
@@ -184,6 +377,38 @@ class TestJavaConformance:
             padding.PKCS1v15(),
             hashes.SHA256(),
         )
+
+    def test_java_status_core_is_scoped_to_top_level(self):
+        """StatusCore.fromWire (what MainActivity feeds to verifySignature) must
+        canonicalize to the bytes the Collar signed — i.e. it reads the signed
+        top-level fields, not the same-named copies inside the embedded orders
+        document. The unset-paywall case is the one that shipped broken."""
+        from focuslock_mesh import canonical_json
+
+        core = _status_core(paywall="0")
+        out = self._run("status-core", stdin=_status_wire(core, orders_paywall=""))
+        assert out == canonical_json(core).decode("utf-8")
+
+    def test_java_status_core_ignores_rewritten_orders_copies(self):
+        from focuslock_mesh import canonical_json
+
+        core = _status_core(paywall="25", escapes=2, task_reps=3, task_done=1,
+                            offer="unlock", offer_status="pending", sub_tier="silver")
+        out = self._run("status-core", stdin=_status_wire(core, orders_paywall="999"))
+        assert out == canonical_json(core).decode("utf-8")
+
+    def test_java_signed_status_verifies_end_to_end(self, slave_keypair):
+        """Python stands in for the Collar's signer: sign the core, ship it in a
+        real wire body, and let the REAL Java rebuild reproduce the signing
+        bytes. Any drift in fields, types or scoping shows up here."""
+        from focuslock_mesh import canonical_json, sign_orders, verify_signature
+
+        core = _status_core()
+        sig = sign_orders(core, slave_keypair["priv_pem"])
+        body = _status_wire(core, signature=sig, orders_paywall="")
+        rebuilt_canonical = self._run("status-core", stdin=body)
+        assert rebuilt_canonical == canonical_json(core).decode("utf-8")
+        assert verify_signature(core, sig, slave_keypair["pub_pem"]) is True
 
     def test_java_order_signature_accepted_by_mesh_verify(self, lion_keypair):
         """The Phase-2 Collar /mesh/sync fix gate: a Java-signed orders document

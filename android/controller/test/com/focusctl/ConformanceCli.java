@@ -14,6 +14,15 @@ import org.json.JSONObject;
  * Contract (subcommand on argv, input on stdin, result on stdout):
  *   canonical                 stdin=JSON object  -> canonical_json string
  *   sign-string <privKeyB64>  stdin=payload      -> base64 RSA-SHA256 signature
+ *   status-core               stdin=/mesh/status body -> canonical_json of the
+ *                                                  rebuilt status core
+ *
+ * status-core exposes StatusCore.fromWire — the rebuild MainActivity feeds to
+ * VaultCrypto.verifySignature — so the Python side can assert it picks the
+ * signed TOP-LEVEL fields and never the same-named copies inside the embedded
+ * orders document. The emitted canonical bytes are literally the signing input,
+ * so any drift from the Collar's signer shows up as a byte diff, not as a
+ * mysterious rejected status on a device.
  *
  * Run as: java -cp <classes>:<json.jar> com.focusctl.ConformanceCli <cmd> [args]
  */
@@ -36,6 +45,16 @@ public final class ConformanceCli {
                     System.exit(2);
                 }
                 System.out.print(VaultCrypto.signString(stdin, args[1]));
+                System.out.flush();
+                break;
+            }
+            case "status-core": {
+                // Emit the SIGNING INPUT: the rebuilt core minus "signature",
+                // canonicalized — byte-identical to what the Collar signed if
+                // the two sides agree on fields, types and scoping.
+                java.util.TreeMap<String, Object> core = StatusCore.fromWire(stdin);
+                core.remove("signature");
+                System.out.write(VaultCrypto.canonicalJson(core));
                 System.out.flush();
                 break;
             }
