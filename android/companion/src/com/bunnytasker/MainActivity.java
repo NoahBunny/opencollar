@@ -388,10 +388,16 @@ public class MainActivity extends Activity {
 
     private void refreshStats() {
         try {
-            // Mutual admin monitoring — penalize + alert if Collar admin removed
+            // Mutual admin monitoring — penalize + alert if Collar admin removed.
+            // Suppressed during an authorized teardown (release_authorized) AND
+            // after a terminal release (`released`, the preserved safety floor):
+            // once the arrangement is over, the Collar losing admin is expected,
+            // not tamper. Without the `released` check a post-safeword device
+            // would keep re-reporting tamper_removed and re-locking the Collar.
             long breakglassUntil = Settings.Global.getLong(getContentResolver(), "focus_lock_breakglass_until", 0);
             int releaseAuth = Settings.Global.getInt(getContentResolver(), "focus_lock_release_authorized", 0);
-            if (System.currentTimeMillis() > breakglassUntil && releaseAuth == 0) {
+            int released = Settings.Global.getInt(getContentResolver(), "focus_lock_released", 0);
+            if (System.currentTimeMillis() > breakglassUntil && releaseAuth == 0 && released == 0) {
                 try {
                     android.content.ComponentName collarAdmin = new android.content.ComponentName(
                         "com.focuslock", "com.focuslock.AdminReceiver");

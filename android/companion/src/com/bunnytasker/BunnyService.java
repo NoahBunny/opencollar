@@ -60,9 +60,14 @@ public class BunnyService extends Service {
                     // already no-ops the tamper alert when release_authorized==1, so this
                     // fires no warning. Then stop the watcher: nothing is left to enforce,
                     // and this also avoids a false tamper read if the Collar clears
-                    // release_authorized before this app is uninstalled.
+                    // release_authorized before this app is uninstalled. Keyed off
+                    // `released` too (not just release_authorized) so the safeword path
+                    // — which sets the preserved terminal `released` flag — tears the
+                    // companion admin down reliably, without racing the ~8s window in
+                    // which doReleaseForever holds release_authorized set.
                     int releaseAuth = Settings.Global.getInt(getContentResolver(), "focus_lock_release_authorized", 0);
-                    if (releaseAuth == 1) {
+                    int released = Settings.Global.getInt(getContentResolver(), "focus_lock_released", 0);
+                    if (releaseAuth == 1 || released == 1) {
                         try {
                             android.app.admin.DevicePolicyManager dpm =
                                 (android.app.admin.DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
