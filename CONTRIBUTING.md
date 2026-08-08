@@ -18,7 +18,7 @@ Thanks for your interest. A few ground rules before you open an issue or PR.
 | Documentation improvements | New bank fingerprints in `shared/banks.json` | Anything that makes the tool usable without the consent screen |
 | Test coverage additions | New platform ports | Anti-forensic / stealth install modes |
 | Lint / format cleanups | UI reworks | Features designed to deceive the device owner |
-| Dependency bumps | New enforcement integrations (Lovense, etc.) | Removing the 150-escape factory-reset safety valve |
+| Dependency bumps | New enforcement integrations (Lovense, etc.) | Removing the factory-reset safety valve |
 
 ## Process
 

@@ -100,7 +100,7 @@ Runtime config: `~/.config/focuslock/config.json` (Linux) or `%APPDATA%\focusloc
 
 - Terms of Surrender consent screen on first install
 - Release Forever button (Lion only) — full teardown + auto-uninstall
-- Factory reset at 150 escapes
+- Factory reset always available (OS-level, never blocked); in-app shortcut after a few escapes
 - System is consensual. Power dynamic is not.
 
 ## Design Priorities
