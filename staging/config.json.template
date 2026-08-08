@@ -2,14 +2,14 @@
   "_comment": "Staging config template — copy to staging/config.json and fill in secrets. NEVER commit staging/config.json. NEVER reuse production secrets.",
 
   "mesh_id": "REPLACE_WITH_RANDOM_BASE64URL_12_BYTES",
-  "mesh_url": "http://127.0.0.1:8435",
-  "mesh_port": 8435,
+  "mesh_url": "http://127.0.0.1:18435",
+  "mesh_port": 18435,
 
   "admin_token": "REPLACE_WITH_RANDOM_TOKEN_32_BYTES",
   "operator_mesh_id": "REPLACE_WITH_SAME_MESH_ID_AS_ABOVE",
 
-  "homelab_url": "http://127.0.0.1:8435",
-  "homelab_port": 8435,
+  "homelab_url": "http://127.0.0.1:18435",
+  "homelab_port": 18435,
 
   "phone_addresses": [],
   "phone_port": 8432,

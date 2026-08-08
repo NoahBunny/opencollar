@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Start a staging FocusLock relay on 127.0.0.1:8435 against isolated state.
+# Start a staging FocusLock relay on 127.0.0.1:18435 against isolated state.
+# (Port comes from staging/config.json's mesh_port; 18435 keeps staging clear of
+#  a production relay on the default 8435.)
 #
 # Prerequisites:
 #   1. staging/config.json exists (copy from staging/config.json.template and fill in).
@@ -32,6 +34,7 @@ fi
 # Guard against prod secret reuse — staging mesh_id must not match any prod-like value.
 # Pass the path via env so apostrophes in $SCRIPT_DIR (e.g. "Lion's Share") don't break the inline Python.
 mesh_id=$(FL_CFG="$SCRIPT_DIR/config.json" python3 -c 'import os,json; print(json.load(open(os.environ["FL_CFG"])).get("mesh_id",""))')
+mesh_port=$(FL_CFG="$SCRIPT_DIR/config.json" python3 -c 'import os,json; print(json.load(open(os.environ["FL_CFG"])).get("mesh_port",18435))')
 if [ -z "$mesh_id" ] || [ "$mesh_id" = "REPLACE_WITH_RANDOM_BASE64URL_12_BYTES" ]; then
     echo "ERROR: mesh_id in $SCRIPT_DIR/config.json is the template placeholder."
     echo "       Generate a fresh one (see docs/STAGING.md step 2)."
@@ -72,5 +75,5 @@ fi
 # ── Launch ────────────────────────────────────────────────────
 
 cd "$REPO_ROOT"
-echo "Starting staging relay on 127.0.0.1:8435 (Ctrl-C to stop)..."
+echo "Starting staging relay on 127.0.0.1:${mesh_port:-18435} (from config.json mesh_port; Ctrl-C to stop)..."
 exec python3 focuslock-mail.py
