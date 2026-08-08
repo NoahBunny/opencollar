@@ -723,9 +723,11 @@ public class FocusActivity extends Activity {
         }
 
         // Factory reset button — the guaranteed ultimate exit. Gated behind a
-        // few escape attempts (not 150) so it isn't the first thing you see, but
-        // is reachable the moment you're actually trying to leave. The OS factory
+        // few escape attempts so it isn't the first thing you see, but is
+        // reachable the moment you're actually trying to leave. The OS factory
         // reset is always available regardless; this is just the in-app shortcut.
+        // The Terms of Surrender (buildConsentDialog) describe this accurately —
+        // keep the two in sync if this threshold changes.
         // See docs/THREAT-MODEL.md (safety floor).
         int escapes = Settings.Global.getInt(getContentResolver(), "focus_lock_escapes", 0);
         factoryResetBtn.setVisibility(escapes >= 3 ? View.VISIBLE : View.GONE);
@@ -1346,8 +1348,10 @@ public class FocusActivity extends Activity {
                 "public shame notifications, and compound interest on any outstanding balance.\n\n" +
                 "4. The paywall is denominated in real money. Interest accrues. Penalties stack. " +
                 "This is not a drill.\n\n" +
-                "5. You may revoke consent at any time by performing a factory reset (available after 150 escape attempts) " +
-                "or by contacting your partner directly. The system is consensual. The power dynamic is not.\n\n" +
+                "5. You may revoke consent at any time. A device factory reset ends the arrangement immediately and is " +
+                "ALWAYS available through Android's own recovery/settings, no matter what this app shows; the app also " +
+                "surfaces a factory-reset shortcut after a few escape attempts. You may also contact your partner " +
+                "directly. The system is consensual. The power dynamic is not.\n\n" +
                 "6. You asked for this. Probably more than once.\n\n" +
                 "This consent is recorded with a timestamp and cannot be un-given through the app.")
             .setPositiveButton("I CONSENT", (d, w) -> {

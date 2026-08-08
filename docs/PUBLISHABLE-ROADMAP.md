@@ -350,7 +350,7 @@ QA is first-class, not an afterthought. Every subsequent phase ends with a regre
   - Mesh gossip convergence (3+ peers)
   - ntfy push latency
   - Release Forever teardown + auto-uninstall
-  - Factory reset @ 150 escapes
+  - Factory reset always available; in-app shortcut after a few escapes
   - Consent screen first-run
 - **Gaps Waydroid can't cover** — real SMS, real Lovense BT, real camera — documented as "manual on-device regression" with a short on-phone checklist
 - **QA as gate** — CI runs the scriptable subset; manual checklist gates release tags

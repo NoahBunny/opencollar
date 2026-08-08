@@ -80,6 +80,21 @@ controller **78 / 78.0**, collar **82 / 8.39**, companion **61 / 2.28**;
   then stops the watcher. Still needs on-device verification with device admin
   actually enabled.
 
+### Fixed — consent accuracy: "Terms of Surrender" overstated the factory-reset barrier
+
+- **The consent dialog told the wearer factory reset was "available after 150
+  escape attempts"** (`android/slave/src/com/focuslock/FocusActivity.java`), but
+  the in-app shortcut actually appears at `escapes >= 3` and the OS factory reset
+  is *always* available (the code comment says so, and
+  `applyDeviceOwnerRestrictions` never sets `DISALLOW_FACTORY_RESET`). The
+  2026-04 change that lowered the threshold updated the code and the CHANGELOG but
+  missed the dialog text itself, so the binding consent screen understated a
+  safety-floor exit by 50×. Reworded to state the exit accurately: the OS factory
+  reset is always available, with an in-app shortcut after a few escapes. The same
+  stale "150 escapes" claim was corrected across the user-facing docs
+  (`DISCLAIMER.md`, `SECURITY.md`, `docs/MANUAL-BUNNY.md`, `docs/README.md`,
+  `CLAUDE.md`, the QA checklists, roadmap, `CONTRIBUTING.md`, PR template).
+
 ### Fixed — safety floor: admin-tamper handlers now honor the terminal `released` state
 
 The terminal `released` flag (set by the panic safeword, preserved for good) is

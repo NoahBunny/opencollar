@@ -240,7 +240,7 @@ Basic, Negotiation, Task, Compliment, Gratitude Journal, Exercise, Love Letter, 
 ### Safety
 - Terms of Surrender consent screen on first install
 - Release Forever button (Lion only) -- full teardown + auto-uninstall
-- Factory reset at 150 escapes
+- Factory reset always available (OS-level); in-app shortcut after a few escapes
 - System is consensual. Power dynamic is not.
 
 ## Files

@@ -68,7 +68,7 @@ This is a **consensual** device-restriction tool. The following are intended beh
 - Screen lock persistence
 - Payment detection via email scanning (with user's own Gmail credentials)
 - Compound-interest paywall accrual
-- Factory reset at 150 escape attempts
+- Factory reset always available (OS-level); in-app shortcut appears after a few escape attempts
 - SMS trigger commands
 - Geofence-based auto-lock
 
