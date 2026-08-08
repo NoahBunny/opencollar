@@ -65,6 +65,8 @@ JDK24_DIR="${JDK24_DIR:-$HOME/.jdks}"
 TOR_AAR_VER="${TOR_AAR_VER:-0.4.9.9.1}"
 JTORCTL_VER="${JTORCTL_VER:-0.4.5.7}"
 BCPROV_VER="${BCPROV_VER:-1.78.1}"
+# Hard runtime dep of the tor-android AAR's TorService — see setup_tor().
+LBM_VER="${LBM_VER:-1.1.0}"
 JDK24_URL="${JDK24_URL:-https://api.adoptium.net/v3/binary/latest/24/ga/linux/x64/jdk/hotspot/normal/eclipse}"
 
 # ---- flags ----------------------------------------------------------------
@@ -398,6 +400,27 @@ setup_tor() {
     fetch "$GP/jtorctl/$JTORCTL_VER/jtorctl-$JTORCTL_VER.jar" "$jtc" || return 1
     fetch "$MC/org/bouncycastle/bcprov-jdk18on/$BCPROV_VER/bcprov-jdk18on-$BCPROV_VER.jar" "$bcp" || return 1
 
+    # androidx.localbroadcastmanager: org.torproject.jni.TorService.onCreate()
+    # calls broadcastStatus(), which needs LocalBroadcastManager. Without it the
+    # first Tor start dies with NoClassDefFoundError and takes the whole app
+    # down (verified on-device 2026-08-07). Ships as an AAR on Google's maven,
+    # so pull classes.jar out of it — the build wants a plain jar.
+    local lbm="$ANDROID_LIBS/localbroadcastmanager-$LBM_VER.jar"
+    if [ -f "$lbm" ] && unzip -tq "$lbm" >/dev/null 2>&1; then
+        ok "localbroadcastmanager-$LBM_VER.jar cached"
+    elif [ "$CHECK_ONLY" = 1 ]; then
+        warn "localbroadcastmanager-$LBM_VER.jar missing (Tor would crash on first start)"
+    else
+        local lbmtmp; lbmtmp="$(mktemp -d)"
+        if curl -fL --retry 3 -o "$lbmtmp/lbm.aar" \
+              "https://dl.google.com/dl/android/maven2/androidx/localbroadcastmanager/localbroadcastmanager/$LBM_VER/localbroadcastmanager-$LBM_VER.aar" \
+           && unzip -o -q "$lbmtmp/lbm.aar" -d "$lbmtmp" && cp "$lbmtmp/classes.jar" "$lbm"; then
+            rm -rf "$lbmtmp"; ok "localbroadcastmanager-$LBM_VER.jar"
+        else
+            rm -rf "$lbmtmp"; err "localbroadcastmanager fetch failed"; return 1
+        fi
+    fi
+
     say "JDK 24 (javac must read the AAR's Java-24 bytecode)"
     local jdk24; jdk24="$(ls -d "$JDK24_DIR"/jdk-24* 2>/dev/null | head -1)"
     if [ -n "$jdk24" ] && [ -x "$jdk24/bin/javac" ]; then
@@ -428,6 +451,7 @@ export FOCUSLOCK_BUILD_TOOLS=36.0.0
 export FOCUSLOCK_TOR_AAR="$aar"
 export FOCUSLOCK_JTORCTL_JAR="$jtc"
 export FOCUSLOCK_BCPROV_JAR="$bcp"
+export FOCUSLOCK_LBM_JAR="$lbm"
 # Then: bash android/slave/build.sh && bash android/controller/build.sh
 EOF
         ok "Tor build env: $tenv (source it, then run the Tor build)"

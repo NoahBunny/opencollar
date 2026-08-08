@@ -100,6 +100,17 @@ if [ -n "${FOCUSLOCK_TOR_AAR:-}" ]; then
         TOR_CP="$TOR_CP:$FOCUSLOCK_BCPROV_JAR"
         TOR_DEX_INPUTS="$TOR_DEX_INPUTS $FOCUSLOCK_BCPROV_JAR"
     fi
+    # androidx.localbroadcastmanager — a HARD runtime dependency of the AAR's
+    # org.torproject.jni.TorService (onCreate → broadcastStatus). Without it the
+    # first Tor start throws NoClassDefFoundError and kills the process. Gradle
+    # would resolve this transitively; this build has no resolver, so list it.
+    # See android/slave/build.sh for the on-device write-up.
+    if [ -n "${FOCUSLOCK_LBM_JAR:-}" ]; then
+        TOR_CP="$TOR_CP:$FOCUSLOCK_LBM_JAR"
+        TOR_DEX_INPUTS="$TOR_DEX_INPUTS $FOCUSLOCK_LBM_JAR"
+    else
+        echo "WARNING: FOCUSLOCK_LBM_JAR unset — Tor will crash on first start." >&2
+    fi
     TOR_LIB_DIR="$TOR_WORK/jni"
 fi
 

@@ -104,6 +104,22 @@ if [ -n "${FOCUSLOCK_TOR_AAR:-}" ]; then
         TOR_CP="$TOR_CP:$FOCUSLOCK_BCPROV_JAR"
         TOR_DEX_INPUTS="$TOR_DEX_INPUTS $FOCUSLOCK_BCPROV_JAR"
     fi
+    # androidx.localbroadcastmanager — a HARD runtime dependency of the AAR's
+    # org.torproject.jni.TorService. It is not optional: TorService.onCreate()
+    # calls broadcastStatus() immediately, which touches LocalBroadcastManager,
+    # so without this jar the very first Tor start dies with
+    # NoClassDefFoundError and takes the whole Collar process down with it —
+    # then crash-loops, because the ntfy wake that triggered it is redelivered.
+    # (Found on-device 2026-08-07; the Collar is the enforcement app, so a
+    # crash-loop reachable from a publicly-writable ntfy topic is an escape
+    # vector, not just a bug.) Gradle would have resolved this transitively;
+    # this build has no dependency resolver, so it must be listed.
+    if [ -n "${FOCUSLOCK_LBM_JAR:-}" ]; then
+        TOR_CP="$TOR_CP:$FOCUSLOCK_LBM_JAR"
+        TOR_DEX_INPUTS="$TOR_DEX_INPUTS $FOCUSLOCK_LBM_JAR"
+    else
+        echo "WARNING: FOCUSLOCK_LBM_JAR unset — Tor will crash on first start." >&2
+    fi
     TOR_LIB_DIR="$TOR_WORK/jni"
 fi
 

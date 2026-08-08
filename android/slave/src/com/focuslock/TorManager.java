@@ -190,18 +190,26 @@ public final class TorManager {
 
             if (serviceId != null) return;  // already published this session
 
-            StringBuilder cmd = new StringBuilder("ADD_ONION ED25519-V3:")
-                .append(OnionKeys.addOnionKeyblob(seed))
-                .append(" Flags=Detach Port=").append(ONION_PORT)
-                .append(",127.0.0.1:").append(ONION_PORT);
+            // Resolve the client-auth keys FIRST: with none we must not publish
+            // at all (an unauthed onion is reachable by anyone who learns the
+            // address), and the V3Auth flag below only makes sense with them.
             String[] pubs = lionAuthPubs();
-            for (String pub : pubs) {
-                pub = pub.trim();
-                if (!pub.isEmpty()) cmd.append(" ClientAuthV3=").append(pub);
-            }
             if (pubs.length == 0) {
                 Log.w(TAG, "no Lion auth pubkey stored — onion would be unauthed; skipping publish");
                 return;
+            }
+            // Flags MUST include V3Auth alongside Detach. Tor refuses a
+            // ClientAuthV3= clause when the matching auth flag is absent —
+            // it replies "No auth type specified" and the whole ADD_ONION
+            // fails, so the onion never goes up. (Found on-device 2026-08-08:
+            // publish failed every wake with exactly that control error.)
+            StringBuilder cmd = new StringBuilder("ADD_ONION ED25519-V3:")
+                .append(OnionKeys.addOnionKeyblob(seed))
+                .append(" Flags=Detach,V3Auth Port=").append(ONION_PORT)
+                .append(",127.0.0.1:").append(ONION_PORT);
+            for (String pub : pubs) {
+                pub = pub.trim();
+                if (!pub.isEmpty()) cmd.append(" ClientAuthV3=").append(pub);
             }
             String id = OnionControl.addOnion(cc, cmd.toString());
             if (id != null && !id.equals(onionNoSuffix)) {
