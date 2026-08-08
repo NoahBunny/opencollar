@@ -440,9 +440,20 @@ public class MainActivity extends Activity {
 
     // ── Status Polling ──
 
+    /** True when this Lion can reach the bunny with no relay in the loop — a
+     *  serverless Direct (LAN / Tailscale / .onion) pairing. Mirrors meshGet's
+     *  own direct-mode gate so the two can't disagree about what "reachable"
+     *  means. */
+    private boolean hasDirectTarget() {
+        return "direct".equals(pairMode) && !bunnyDirectUrls.isEmpty();
+    }
+
     private void startStatusPolling() {
         statusPoller = () -> {
-            if (!meshId.isEmpty()) {
+            // See PollGate: a Direct (LAN) pairing has no mesh at all, so
+            // gating this on a mesh_id left direct-paired Lions with a status
+            // line that never updated.
+            if (PollGate.shouldPollStatus(meshId, pairMode, !bunnyDirectUrls.isEmpty())) {
                 executor.execute(() -> {
                     // Phase D: in vault mode the LocalSnapshot is the source of
                     // truth — vaultPollLoop() does its own decrypted fetch on
@@ -642,7 +653,11 @@ public class MainActivity extends Activity {
             if (snapPaywall > 0) sb.append(" | $").append(snapPaywall);
         } else {
             sb.append("UNLOCKED");
+            // Liveness marker. Without one, a direct-paired Lion can't tell a
+            // freshly-polled "UNLOCKED" from a status line that stopped
+            // updating an hour ago.
             if (!meshId.isEmpty()) sb.append(" | Mesh online");
+            else if (hasDirectTarget()) sb.append(" | Direct");
         }
         // Surface geofence_active so the user sees a persistent indicator
         // that confine-home / set-geofence took effect (previously only the
@@ -1008,12 +1023,45 @@ public class MainActivity extends Activity {
      *  NOT set the sticky preferred — the caller promotes the address only after
      *  the bunny signature on the status verifies, so a tampered/forged address
      *  can never become the preferred endpoint. */
+    /** Guards the read path's onion wake: at most one in flight, and not more
+     *  than once a cold-start window. The status poller ticks every 5s while
+     *  maybeWakeBunny blocks for up to 120s, so without this a single
+     *  unreachable bunny would pile up executor tasks. */
+    private final java.util.concurrent.atomic.AtomicBoolean onionWakeInFlight =
+        new java.util.concurrent.atomic.AtomicBoolean(false);
+    private volatile long lastOnionWakeMs = 0L;
+    private static final long ONION_WAKE_MIN_INTERVAL_MS = 180_000L;
+
     private String getDirectWithFailover(String pathOnCollar) {
         for (String base : orderedDirectCandidates()) {
+            // Bring Tor up before dialing an .onion, exactly as the order path
+            // does. This used to be wired into postDirectWithFailover ONLY, so
+            // a Lion whose LAN had gone away could still *send* orders (the
+            // POST woke Tor) but could never *read* status — the poller dialed
+            // an .onion with no SOCKS proxy running and failed silently, and
+            // the UI sat on its last-good snapshot until the operator happened
+            // to issue an order. Same "orders flow, Lion goes blind" shape as
+            // the direct-mode status bugs. Candidates are ordered LAN-first, so
+            // this still costs nothing while the LAN works.
+            if (base.contains(".onion")) maybeWakeBunnyForRead(base);
             String r = directGet(base + pathOnCollar);
             if (r != null) { lastDirectGetBase = base; return r; }
         }
         return null;
+    }
+
+    /** Rate-limited, non-overlapping wrapper around maybeWakeBunny for the poll
+     *  path. Cheap no-op once Tor is warm and the onion is answering. */
+    private void maybeWakeBunnyForRead(String onionBase) {
+        long now = System.currentTimeMillis();
+        if (now - lastOnionWakeMs < ONION_WAKE_MIN_INTERVAL_MS) return;
+        if (!onionWakeInFlight.compareAndSet(false, true)) return;
+        try {
+            lastOnionWakeMs = now;
+            maybeWakeBunny(onionBase);
+        } finally {
+            onionWakeInFlight.set(false);
+        }
     }
 
     /** Parse a Collar address advertisement (from a pair response or a signed
@@ -1092,7 +1140,24 @@ public class MainActivity extends Activity {
 
         // Force-refresh UI on next tick.
         handler.post(() -> {
-            setStatus("Switched to " + activeBunnyLabel);
+            setStatus("Switched to " + activeBunnyLabel + " — waiting for status…");
+            // The backing fields above are reset, but the *rendered* balance is
+            // only ever written by updateLiveStatus(), which runs solely on a
+            // VERIFIED snapshot. If the new bunny is unreachable, or its status
+            // can't be verified (rotated key, MITM, offline), nothing overwrites
+            // the previous bunny's figure — so the Lion sits there reading one
+            // bunny's balance under another bunny's name. Observed on hardware
+            // 2026-08-07: switching from a bunny at $40 to one at $7 held $40
+            // indefinitely while the new slot's status was being rejected.
+            //
+            // Show "unknown" until this bunny's own status lands. Deliberately
+            // NOT "$0" — that is a positive claim that the bunny owes nothing,
+            // which we cannot back and which resolves an ambiguity in the
+            // bunny's favour.
+            if (balanceDisplay != null) {
+                balanceDisplay.setText("$—");
+                balanceDisplay.setTextColor(0xFF888888);
+            }
             refreshInbox();
             applyHomelabGating();  // re-evaluate homelab-only controls for this slot
         });
@@ -3041,23 +3106,20 @@ public class MainActivity extends Activity {
      * byte. Re-attaches the wire signature and verifies with the paired bunny
      * pubkey. Fail-closed: any parse/verify error (or a tampered field) returns
      * false. Mirrors the Collar's verifyMeshOrdersSignature symmetry.
+     *
+     * The rebuild lives in StatusCore.fromWire and is scoped to the TOP-LEVEL
+     * JSON object. It used to use the indexOf-based parseJson* helpers, which
+     * take the first match anywhere in the body — and the status body embeds
+     * the whole orders document, which carries six of the same key names
+     * earlier in the stream. See StatusCore for the full write-up; the short
+     * version is that an unset paywall reads "" from the orders copy but was
+     * signed as "0", so every status from a freshly paired Collar was dropped
+     * as forged and the Lion's UI froze on its last-good snapshot.
      */
     private boolean verifyStatusSignature(String statusJson, String bunnyPubB64) {
         if (statusJson == null || bunnyPubB64 == null || bunnyPubB64.isEmpty()) return false;
         try {
-            java.util.TreeMap<String, Object> core = new java.util.TreeMap<>();
-            core.put("locked", parseJsonBool(statusJson, "locked"));
-            core.put("escapes", parseJsonLong(statusJson, "escapes"));
-            core.put("paywall", parseJsonStr(statusJson, "paywall"));
-            core.put("timer_remaining_ms", parseJsonLong(statusJson, "timer_remaining_ms"));
-            core.put("task_reps", parseJsonLong(statusJson, "task_reps"));
-            core.put("task_done", parseJsonLong(statusJson, "task_done"));
-            core.put("offer", parseJsonStr(statusJson, "offer"));
-            core.put("offer_status", parseJsonStr(statusJson, "offer_status"));
-            core.put("sub_tier", parseJsonStr(statusJson, "sub_tier"));
-            core.put("orders_version", parseJsonLong(statusJson, "orders_version"));
-            core.put("signature", parseJsonStr(statusJson, "signature"));
-            return VaultCrypto.verifySignature(core, bunnyPubB64);
+            return VaultCrypto.verifySignature(StatusCore.fromWire(statusJson), bunnyPubB64);
         } catch (Exception e) {
             android.util.Log.w("focusctl", "verifyStatusSignature failed: " + e.getMessage());
             return false;
@@ -3066,8 +3128,15 @@ public class MainActivity extends Activity {
 
     private void pairDirect(String bunnyUrl, String altUrl, String expectedFingerprint) {
         try {
-            // Generate Lion's keypair if missing
-            String lionPubB64 = prefs.getString("lion_pubkey_b64", "");
+            // Generate Lion's keypair if missing. NOTE: the Lion identity is
+            // GLOBAL and every signer/reader (createMesh, buildDirectSigHeaders,
+            // the ~17 signed-op call sites) uses the canonical keys
+            // "lion_pubkey"/"lion_privkey". This path previously stored them under
+            // "lion_pubkey_b64"/"lion_privkey_b64", so after a Direct (LAN) pair
+            // the key was invisible to every reader → buildDirectSigHeaders got ""
+            // → every order failed "missing lion_privkey" and the bunny, though
+            // paired, was uncontrollable. Use the canonical names.
+            String lionPubB64 = prefs.getString("lion_pubkey", "");
             if (lionPubB64.isEmpty()) {
                 KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
                 kpg.initialize(2048);
@@ -3077,8 +3146,8 @@ public class MainActivity extends Activity {
                 String lionPrivB64 = android.util.Base64.encodeToString(
                     kp.getPrivate().getEncoded(), android.util.Base64.NO_WRAP);
                 prefs.edit()
-                    .putString("lion_pubkey_b64", lionPubB64)
-                    .putString("lion_privkey_b64", lionPrivB64)
+                    .putString("lion_pubkey", lionPubB64)
+                    .putString("lion_privkey", lionPrivB64)
                     .apply();
             }
 
