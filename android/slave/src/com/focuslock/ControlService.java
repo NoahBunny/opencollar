@@ -891,6 +891,28 @@ public class ControlService extends Service {
                 }
             }
 
+            // Safety floor: once released (safeword / Release Forever), refuse every
+            // state-mutating DIRECT order too — mirrors handleMeshOrder's isReleased()
+            // gate on the mesh path. Without this, a validly-signed /api/lock (or
+            // /api/task, /api/entrap, /api/photo-task, /api/lock-device, /api/set-
+            // geofence, /api/add-paywall …) over direct LAN would set
+            // focus_lock_active=1 on a freed device: launchFocus() no-ops via its own
+            // guard, but the lock STATE still mutates and propagates to the desktops,
+            // /mesh/status, and the vault. Same condition as the C1 gate, so the
+            // read-only endpoints and the exempt bootstrap (/api/pair — the documented
+            // way to resume after release) stay callable. See THREAT-MODEL.
+            if (method.equals("POST") && path.startsWith("/api/")
+                    && !SIG_EXEMPT_PATHS.contains(path) && isReleased()) {
+                Log.i(TAG, "Released — refusing state-mutating " + path);
+                String respR = "{\"error\":\"released\",\"released\":true}";
+                byte[] rbR = respR.getBytes("UTF-8");
+                out.write(("HTTP/1.1 403 Forbidden\r\nContent-Type: application/json; charset=utf-8\r\n"
+                    + "Content-Length: " + rbR.length
+                    + "\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n").getBytes());
+                out.write(rbR);
+                out.flush(); c.close(); return;
+            }
+
             String ct = "application/json";
             String resp;
             int code = 200;

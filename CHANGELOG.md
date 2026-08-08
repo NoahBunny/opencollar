@@ -109,6 +109,19 @@ action may re-lock" — `docs/THREAT-MODEL.md`). All three now also honor
   `isReleased()` guard at the top of that loop `continue`s past all enforcement,
   mutual-admin included; only a clarifying comment was added there.)
 
+- **The Collar's direct HTTP order path didn't honor `released`**
+  (`android/slave/src/com/focuslock/ControlService.java`, `handler`). The mesh
+  path (`handleMeshOrder`) and the legacy apply path (`applyOrdersFromMesh`) both
+  refuse orders when released, but the direct `/api/*` HTTP dispatch — used by
+  Direct (LAN) pairings — did not. A validly-signed `/api/lock` (or `/api/task`,
+  `/api/entrap`, `/api/photo-task`, `/api/lock-device`, `/api/add-paywall` …) to a
+  freed device would set `focus_lock_active=1`: `launchFocus()` no-ops via its own
+  guard, but the lock STATE still mutated and propagated to the desktops,
+  `/mesh/status`, and the vault. Now a blanket `isReleased()` gate (mirroring
+  `handleMeshOrder`) refuses every state-mutating `/api/*` POST when released;
+  read-only endpoints and the exempt bootstrap (`/api/pair` — the documented
+  resume-after-release path) stay callable.
+
 - **Desktop collars kept enforcing after a release that arrived via gossip/vault**
   (`focuslock-desktop.py` + `focuslock-desktop-win.py`, `poll_status`). Only the
   direct `release-device` *action* fired liberation; a release delivered as order
