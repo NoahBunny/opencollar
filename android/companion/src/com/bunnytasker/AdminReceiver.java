@@ -14,10 +14,15 @@ public class AdminReceiver extends DeviceAdminReceiver {
 
     @Override
     public void onDisabled(Context context, Intent intent) {
-        // Authorized release — no alert
+        // Authorized release OR terminally released (safety floor) — no alert.
+        // release_authorized covers the in-progress teardown; `released` covers
+        // the state after doReleaseForever clears that flag, so a post-safeword
+        // device doesn't fire a false "admin was removed" tamper warning.
         try {
             if (android.provider.Settings.Global.getInt(context.getContentResolver(),
-                    "focus_lock_release_authorized", 0) == 1) return;
+                        "focus_lock_released", 0) == 1
+                    || android.provider.Settings.Global.getInt(context.getContentResolver(),
+                        "focus_lock_release_authorized", 0) == 1) return;
         } catch (Exception e) {}
         // Alert if admin is removed — this is a tamper event
         try {

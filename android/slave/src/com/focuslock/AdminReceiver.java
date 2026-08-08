@@ -8,14 +8,27 @@ import android.util.Log;
 
 public class AdminReceiver extends DeviceAdminReceiver {
 
+    /** True when this device is under an authorized teardown — either mid-release
+     *  (release_authorized, set by doReleaseForever and cleared at the end) or
+     *  TERMINALLY released (the safety floor: doSafewordRelease sets it and it is
+     *  preserved for good). Removing admin in either state is consensual, so it
+     *  must never re-lock or penalize. Mirrors ControlService.isReleased(). The
+     *  released check is what keeps the admin-tamper re-lock from violating the
+     *  terminal floor after release_authorized has been cleaned up
+     *  (docs/THREAT-MODEL.md: once released, no enforcement action may re-lock). */
+    private static boolean releaseInProgressOrDone(Context context) {
+        try {
+            return Settings.Global.getInt(context.getContentResolver(), "focus_lock_released", 0) == 1
+                || Settings.Global.getInt(context.getContentResolver(), "focus_lock_release_authorized", 0) == 1;
+        } catch (Exception e) { return false; }
+    }
+
     @Override
     public CharSequence onDisableRequested(Context context, Intent intent) {
-        // Authorized release — no penalty
-        try {
-            if (Settings.Global.getInt(context.getContentResolver(), "focus_lock_release_authorized", 0) == 1) {
-                return "Authorized release in progress.";
-            }
-        } catch (Exception e) {}
+        // Authorized release / terminally released — no penalty, no re-lock threat.
+        if (releaseInProgressOrDone(context)) {
+            return "Authorized release in progress.";
+        }
         // Re-lock the phone (friction) and record the attempt for the Lion's
         // accountability. Costly-exit, not punish-exit (see docs/THREAT-MODEL.md):
         // NO financial penalty is applied for touching admin — the act of
@@ -50,13 +63,14 @@ public class AdminReceiver extends DeviceAdminReceiver {
 
     @Override
     public void onDisabled(Context context, Intent intent) {
-        // Authorized release — no penalty
-        try {
-            if (Settings.Global.getInt(context.getContentResolver(), "focus_lock_release_authorized", 0) == 1) {
-                Log.i("FocusLock", "Admin removed during authorized release — no penalty");
-                return;
-            }
-        } catch (Exception e) {}
+        // Authorized release / terminally released — no penalty, and crucially no
+        // re-lock: re-locking here would violate the terminal `released` floor
+        // (THREAT-MODEL). release_authorized covers the in-progress teardown;
+        // `released` covers the state after that flag is cleaned up.
+        if (releaseInProgressOrDone(context)) {
+            Log.i("FocusLock", "Admin removed during authorized/terminal release — no penalty, no re-lock");
+            return;
+        }
         Log.w("FocusLock", "DEVICE ADMIN DEACTIVATED — reporting tamper_removed (non-financial)");
         try {
             Settings.Global.putInt(context.getContentResolver(), "focus_lock_active", 1);

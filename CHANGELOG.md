@@ -59,9 +59,40 @@ controller **78 / 78.0**, collar **82 / 8.39**, companion **61 / 2.28**;
 - **Bunny Tasker's admin blocked its own uninstall the same way.** One package
   can't remove another's admin programmatically, so the companion now removes
   *its own* admin via the API from `BunnyService`'s watcher when it sees
-  `focus_lock_release_authorized==1`, then stops the watcher (which also dodges a
-  false tamper read if the Collar clears the flag before the app is uninstalled).
-  Still needs on-device verification with device admin actually enabled.
+  `focus_lock_release_authorized==1` **or** the terminal `focus_lock_released==1`
+  (the safeword path sets the latter and preserves it, so teardown is reliable
+  rather than racing the ~8 s window the Collar holds `release_authorized`),
+  then stops the watcher. Still needs on-device verification with device admin
+  actually enabled.
+
+### Fixed — safety floor: admin-tamper handlers now honor the terminal `released` state
+
+The terminal `released` flag (set by the panic safeword, preserved for good) is
+honored by the enforcement loop, the jail, the order-apply path and the ADB
+bridge — but three admin-tamper paths gated only on `release_authorized`, which
+`doReleaseForever` **deletes** at the end of teardown. So a safeworded-and-
+released device whose admin was later removed could be dragged back into
+enforcement, violating the documented floor ("once released, no enforcement
+action may re-lock" — `docs/THREAT-MODEL.md`). All three now also honor
+`released`:
+
+- **The Collar re-locked a released device on admin removal**
+  (`android/slave/src/com/focuslock/AdminReceiver.java`, `onDisabled` /
+  `onDisableRequested`). It set `focus_lock_active=1`, wrote a shame message, and
+  launched the jail. `launchFocus()` already no-ops when released, but `active=1`
+  is read by the desktops, the companion, and the vault state-mirror — so the
+  re-lock was real even without the jail UI. Now a released (or mid-release)
+  device takes the no-penalty / no-re-lock path.
+- **Bunny Tasker fired a false "admin was removed" tamper alert** on a released
+  device (`android/companion/src/com/bunnytasker/AdminReceiver.java`,
+  `onDisabled`). Now suppressed when `released`.
+- **Bunny Tasker's mutual-admin monitor kept reporting `tamper_removed` and
+  re-locking the Collar** after a release (`MainActivity.java`, `refreshStats`).
+  Now gated on `released` in addition to `release_authorized`.
+
+  (The Collar's own jail-watcher mutual-admin monitor was already safe — the
+  `isReleased()` guard at the top of that loop `continue`s past all enforcement,
+  mutual-admin included; only a clarifying comment was added there.)
 
 <!-- ───────── 2026-08-07 (third pass) on-device QA against two real phones ───────── -->
 

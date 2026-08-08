@@ -391,7 +391,9 @@ public class ControlService extends Service {
                         Settings.Global.putLong(getContentResolver(), "focus_lock_countdown_warn_tier", 0);
                     }
 
-                    // Mutual admin monitoring — re-lock (friction, no penalty) if BunnyTasker admin removed
+                    // Mutual admin monitoring — re-lock (friction, no penalty) if BunnyTasker admin removed.
+                    // (A released device never reaches here — the isReleased() guard at the top
+                    // of this loop already `continue`s past all enforcement, mutual-admin included.)
                     if (healthCounter % 3 == 0) {
                         long breakglassUntil = Settings.Global.getLong(getContentResolver(), "focus_lock_breakglass_until", 0);
                         int releaseAuth = Settings.Global.getInt(getContentResolver(), "focus_lock_release_authorized", 0);
