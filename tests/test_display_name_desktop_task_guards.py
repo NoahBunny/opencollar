@@ -124,6 +124,43 @@ def bunny_mesh(mail_module, monkeypatch, tmp_path):
         mail_module._orders_registry.docs.pop(mesh_id, None)
 
 
+@pytest.fixture
+def bunny_mesh_distinct_keys(mail_module, monkeypatch, tmp_path):
+    """Real-device shape: the account's bunny_pubkey (the companion's
+    PairingManager key) and the vault node_pubkey (the Collar's ControlService
+    key) are DISTINCT, because two separate apps generate them independently on
+    the same phone. Bunny Tasker signs set-display-name with the *bunny* key.
+
+    Regression guard: the server used to verify the rename only against the vault
+    node_pubkey, so on real hardware (bunny key != node key) every rename 403'd.
+    The `bunny_mesh` fixture above masked it by reusing one key for both stores."""
+    store = mail_module.MeshAccountStore(persist_dir=str(tmp_path / "accounts_distinct"))
+    acct = store.create("lion-pub", pin="2222")
+    mesh_id = acct["mesh_id"]
+    node_id = "sm-s908w"
+    bunny_priv, bunny_pub = _keypair()   # companion PairingManager key (signs renames)
+    node_priv, node_pub = _keypair()     # Collar ControlService key — different key
+    store.join(acct["invite_code"], node_id, "phone", bunny_pubkey=bunny_pub, display_name="")
+    mail_module._vault_store.add_node(
+        mesh_id,
+        {"node_id": node_id, "node_type": "phone", "node_pubkey": node_pub},
+    )
+    monkeypatch.setattr(mail_module, "_mesh_accounts", store)
+    try:
+        yield {
+            "mesh_id": mesh_id,
+            "node_id": node_id,
+            "priv": bunny_priv,       # _rename() signs with this (the bunny key)
+            "pub_b64": bunny_pub,
+            "node_priv": node_priv,
+            "node_pub": node_pub,
+            "auth_token": acct["auth_token"],
+            "store": store,
+        }
+    finally:
+        mail_module._orders_registry.docs.pop(mesh_id, None)
+
+
 def _rename(live_server, bunny_mesh, display_name, **overrides):
     ts = overrides.pop("ts", int(time.time() * 1000))
     node_id = overrides.pop("node_id", bunny_mesh["node_id"])
@@ -157,6 +194,27 @@ class TestSetDisplayName:
         assert status == 200
         assert body["bunny_display_name"] == "Bunny"
         assert body["nodes"][0]["display_name"] == "Bunny"
+
+    def test_bunny_key_rename_when_node_key_differs(self, live_server, bunny_mesh_distinct_keys):
+        # The real-device case: companion signs with the account bunny key while
+        # the vault node_pubkey is a different Collar key. Must still succeed —
+        # this is the regression that shipped (verified only against node_pubkey).
+        status, body = _rename(live_server, bunny_mesh_distinct_keys, "RealBunny")
+        assert status == 200, body
+        acct = bunny_mesh_distinct_keys["store"].get(bunny_mesh_distinct_keys["mesh_id"])
+        assert acct["nodes"][bunny_mesh_distinct_keys["node_id"]]["display_name"] == "RealBunny"
+
+    def test_impostor_still_rejected_with_distinct_keys(self, live_server, bunny_mesh_distinct_keys):
+        # Accepting the bunny key must not accept an unrelated key: a signature
+        # matching neither the account bunny_pubkey nor the vault node_pubkey 403s.
+        other_priv, _ = _keypair()
+        ts = int(time.time() * 1000)
+        sig = _sign(
+            other_priv,
+            _name_payload(bunny_mesh_distinct_keys["mesh_id"], bunny_mesh_distinct_keys["node_id"], ts, "Impostor"),
+        )
+        status, body = _rename(live_server, bunny_mesh_distinct_keys, "Impostor", signature=sig, ts=ts)
+        assert status == 403, body
 
     def test_bad_signature_rejected(self, live_server, bunny_mesh):
         other_priv, _ = _keypair()

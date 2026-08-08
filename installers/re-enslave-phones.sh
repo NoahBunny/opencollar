@@ -123,6 +123,14 @@ recage_focuslock() {
     for p in "${pm_perms[@]}"; do
         adb_cmd -s "$dev" shell "pm grant com.focuslock android.permission.$p" >/dev/null 2>&1 || true
     done
+    # Bunny Tasker also writes Settings.Global — the mesh-join config
+    # (node_id/mesh_id/mesh_url/pin) and the vault-mode flag — which requires
+    # WRITE_SECURE_SETTINGS. It's declared in the companion manifest but, unlike
+    # the Collar, was never granted here. Without it the in-app "Join Mesh" flow
+    # dies with a permission denial *after* the server already registered the
+    # node, leaving a half-joined state: the Lion sees a new node while the
+    # phone shows "Join failed" and holds no local mesh config.
+    adb_cmd -s "$dev" shell "pm grant com.bunnytasker android.permission.WRITE_SECURE_SETTINGS" >/dev/null 2>&1 || true
     adb_cmd -s "$dev" shell "dpm set-active-admin --user 0 com.focuslock/.AdminReceiver" >/dev/null 2>&1 || true
     adb_cmd -s "$dev" shell "settings put global focus_lock_consented 1" >/dev/null 2>&1 || true
     # Enable the notification-shade guard (ShadeGuardService accessibility service).
