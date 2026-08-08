@@ -95,6 +95,20 @@ controller **78 / 78.0**, collar **82 / 8.39**, companion **61 / 2.28**;
   (`DISCLAIMER.md`, `SECURITY.md`, `docs/MANUAL-BUNNY.md`, `docs/README.md`,
   `CLAUDE.md`, the QA checklists, roadmap, `CONTRIBUTING.md`, PR template).
 
+- **Docs asserted phantom "+$500 attempt / +$1000 removal" admin-tamper charges.**
+  The code applies neither: the Android admin-tamper path (`AdminReceiver` →
+  server `tamper-recorded`) only bumps `lifetime_tamper`, and the flat
+  `TAMPER_ATTEMPT_PENALTY=500` / `TAMPER_REMOVED_PENALTY=1000` constants in
+  `shared/focuslock_penalties.py` are dead (zero call sites — the real desktop
+  tamper penalty is the `$5/tier` ratchet, capped $500). A wearer reading
+  `PRICE-LIST.md` / `README.md` / `CLAUDE.md` would believe leaving costs
+  $500–$1000 — the "punish-exit" the design explicitly removed. Corrected those
+  plus the QA checklists to state actual behavior (Android admin tamper: friction
+  re-lock + notification, no charge; desktop tamper: `$5/tier` ratchet), and
+  refreshed a stale `ControlService.doReleaseForever` comment that still named the
+  removed penalties. (The dead constants themselves are left for a separate
+  cleanup.)
+
 ### Fixed — safety floor: admin-tamper handlers now honor the terminal `released` state
 
 The terminal `released` flag (set by the panic safeword, preserved for good) is

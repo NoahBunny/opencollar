@@ -65,7 +65,7 @@ python build-win.py --skip-sign  # Skip code signing
 - 9 lock modes: Basic, Negotiation, Task, Compliment, Gratitude Journal, Exercise, Love Letter, Photo Task, Random
 - Paywall with compound interest (10%/hr, reduced by subscription)
 - Tiered escape penalties ($5/$10/$15+ stacking)
-- Admin tamper: +$500 attempt, +$1000 removal (stacking)
+- Admin tamper (Android device admin): friction re-lock + Lion notification, no financial penalty — costly-exit, not punish-exit (server bumps `lifetime_tamper` only). Desktop-collar tamper is separate: a server-authoritative $5/tier ratchet capped at $500 (`shared/focuslock_penalties.py`)
 - Lovense integration, max volume enforcement, geofence auto-lock
 - SMS trigger: "sit-boy [mins] [$amount]"
 - Photo tasks verified by Ollama (minicpm-v)
