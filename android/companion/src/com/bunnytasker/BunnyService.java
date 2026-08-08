@@ -49,6 +49,36 @@ public class BunnyService extends Service {
                 try {
                     Thread.sleep(10000); // Check every 10 seconds
 
+                    // Authorized release (Lion's Release Forever / panic safeword) —
+                    // remove OUR OWN device admin via the API so the phone can actually
+                    // be freed. The Collar's self-destruct cannot remove another package's
+                    // admin programmatically, and on Android 16/17 the shell
+                    // `dpm remove-active-admin` / `pm uninstall com.bunnytasker` it runs
+                    // refuse a non-test admin — so Bunny Tasker's admin used to block its
+                    // own uninstall until a manual Settings deactivation. A same-package
+                    // caller can always remove its own admin. AdminReceiver.onDisabled
+                    // already no-ops the tamper alert when release_authorized==1, so this
+                    // fires no warning. Then stop the watcher: nothing is left to enforce,
+                    // and this also avoids a false tamper read if the Collar clears
+                    // release_authorized before this app is uninstalled.
+                    int releaseAuth = Settings.Global.getInt(getContentResolver(), "focus_lock_release_authorized", 0);
+                    if (releaseAuth == 1) {
+                        try {
+                            android.app.admin.DevicePolicyManager dpm =
+                                (android.app.admin.DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
+                            android.content.ComponentName selfAdmin =
+                                new android.content.ComponentName(this, AdminReceiver.class);
+                            if (dpm != null && dpm.isAdminActive(selfAdmin)) {
+                                dpm.removeActiveAdmin(selfAdmin);
+                                Log.w(TAG, "Authorized release — removed own device admin via API");
+                            }
+                        } catch (Exception e) {
+                            Log.w(TAG, "release self-admin removal failed: " + e.getMessage());
+                        }
+                        running = false;
+                        continue;
+                    }
+
                     int active = Settings.Global.getInt(getContentResolver(), "focus_lock_active", 0);
                     if (active == 1) {
                         // Jail reinforcement: try to launch FocusActivity

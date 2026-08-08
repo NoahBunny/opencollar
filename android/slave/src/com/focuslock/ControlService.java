@@ -1919,6 +1919,26 @@ public class ControlService extends Service {
                 Log.e(TAG, "Failed to clear device owner", e);
             }
         }
+
+        // Remove OUR OWN device admin via the DevicePolicyManager API. This is
+        // the reliable teardown on Android 16/17: the shell
+        // `dpm remove-active-admin com.focuslock/.AdminReceiver` in the
+        // self-destruct thread below refuses a non-test admin there, and the
+        // subsequent `pm uninstall com.focuslock` refuses while an admin is
+        // active — so on A16/17 Release Forever used to stall on a manual
+        // Settings → Security → Device admin deactivation. A same-package caller
+        // can always remove its own admin programmatically, on every API level.
+        // release_authorized=1 (set at the top of this method) makes
+        // AdminReceiver.onDisabled a no-op, so this fires no tamper penalty.
+        try {
+            if (dpm().isAdminActive(adminComponent())) {
+                dpm().removeActiveAdmin(adminComponent());
+                Log.w(TAG, "Own device admin removed via API for release");
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "removeActiveAdmin(self) failed: " + e.getMessage());
+        }
+
         // Restore UI (best-effort — bridge handles this reliably via ADB)
         try {
             Runtime.getRuntime().exec(new String[]{"cmd", "statusbar", "disable-for-setup", "false"});
@@ -1964,7 +1984,13 @@ public class ControlService extends Service {
             // Wait for liberation notice to be visible
             try { Thread.sleep(5000); } catch (Exception e) {}
 
-            // Self-destruct: remove admins + uninstall (release_authorized flag prevents penalties)
+            // Self-destruct: remove admins + uninstall (release_authorized flag prevents penalties).
+            // Our own admin is already gone via the removeActiveAdmin() API above; these
+            // shell `dpm` calls stay as a belt-and-braces fallback (a no-op for us, and a
+            // best-effort attempt at Bunny Tasker's admin — which the companion's own
+            // BunnyService also removes via API on seeing release_authorized=1, since one
+            // package cannot remove another's admin programmatically). On A16/17 the shell
+            // form no-ops for non-test admins; the API paths are what actually free them.
             try {
                 Runtime.getRuntime().exec(new String[]{"dpm", "remove-active-admin", "com.bunnytasker/.AdminReceiver"});
                 Thread.sleep(1000);
