@@ -34,6 +34,21 @@ controller **78 / 78.0**, collar **82 / 8.39**, companion **61 / 2.28**;
   Regression: `StatusCoreTest.rebuiltCoreUsesTheSignersNativeTypes` now also pins
   the native types of the fields the display path casts.
 
+### Fixed — Lion's Share (controller, multi-bunny usability)
+
+- **Every bunny slot defaulted to the literal label "bunny"** (`MainActivity.java`,
+  `pairDirect` / `createMesh`). The status line shows only the label, so with more
+  than one bunny the Lion couldn't tell whose lock state and whose balance they
+  were looking at — the exact ambiguity that made the fix-#7 balance leak invisible
+  (a wrong number under an identical name reads as the right number). New slots now
+  default to a short, stable, per-slot tag — `bunny-<fp>` from the bunny-key
+  fingerprint for a direct pair, `bunny-<mesh>` from the mesh id for a relay mesh —
+  so they're distinguishable out of the box; the existing Advanced → Bunnies rename
+  still applies.
+- **The Bunnies dialog didn't redraw after a rename or removal** — the slot was
+  gone from prefs but stayed on screen until you closed and reopened the dialog.
+  It now dismisses and re-opens itself in place after either action.
+
 ### Added — Lion's Share (controller)
 
 - **A live "Waking Collar over Tor…" indicator during a cold-onion wake**

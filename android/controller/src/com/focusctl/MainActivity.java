@@ -891,6 +891,21 @@ public class MainActivity extends Activity {
         return "b" + System.currentTimeMillis();  // fallback, should never happen
     }
 
+    /** A distinguishable default label for a freshly paired slot. Every slot
+     *  used to default to the literal "bunny", so with more than one bunny the
+     *  status line ("bunny | LOCKED | $40") couldn't tell you WHOSE lock or
+     *  balance you were looking at — which is exactly what hid the multi-bunny
+     *  balance leak (device-QA fix #7). Derive a short, stable suffix from a
+     *  per-slot identity (the bunny-key fingerprint for a direct pair, the mesh
+     *  id for a relay mesh) so slots differ out of the box; the user can still
+     *  rename from Advanced → Bunnies. Stable across address/DHCP changes, unlike
+     *  a host-based label. */
+    private static String defaultBunnyLabel(String seed) {
+        String s = seed == null ? "" : seed.replaceAll("[^A-Za-z0-9]", "");
+        if (s.isEmpty()) return "bunny";
+        return "bunny-" + s.substring(0, Math.min(4, s.length())).toLowerCase();
+    }
+
     /** Append a new slot with the given label. Returns the new id. */
     private String addBunnySlot(String label) {
         String id = newBunnyId();
@@ -2036,11 +2051,26 @@ public class MainActivity extends Activity {
         addLp.bottomMargin = (int)(8*density);
         root.addView(add, addLp);
 
-        new AlertDialog.Builder(this)
+        bunniesDialog = new AlertDialog.Builder(this)
             .setTitle("\uD83D\uDC07 Bunnies")
             .setView(root)
             .setNegativeButton("Close", null)
             .show();
+    }
+
+    /** The open Bunnies dialog, if any \u2014 held so a rename/remove can redraw the
+     *  list in place instead of leaving a stale slot on screen (the dialog is
+     *  built from a snapshot of listBunnies() and never rebuilds itself). */
+    private AlertDialog bunniesDialog;
+
+    /** Dismiss and re-open the Bunnies dialog so it reflects the current list.
+     *  Called after a rename or removal. */
+    private void reopenBunnies() {
+        if (bunniesDialog != null) {
+            try { bunniesDialog.dismiss(); } catch (Exception ignore) {}
+            bunniesDialog = null;
+        }
+        doBunnies();
     }
 
     /** Rename the given bunny slot (long-press handler). */
@@ -2064,6 +2094,7 @@ public class MainActivity extends Activity {
                 saveBunnyList(list);
                 if (target.id.equals(activeBunnyId)) activeBunnyLabel = newLabel;
                 setStatus("Renamed to " + newLabel);
+                reopenBunnies();  // redraw the list with the new label
             })
             .setNegativeButton("Cancel", null)
             .show();
@@ -2078,6 +2109,7 @@ public class MainActivity extends Activity {
             .setPositiveButton("Remove", (d, w) -> {
                 removeBunnySlot(target.id);
                 setStatus("Removed " + target.label);
+                reopenBunnies();  // redraw so the removed slot disappears immediately
             })
             .setNegativeButton("Cancel", null)
             .show();
@@ -3319,9 +3351,10 @@ public class MainActivity extends Activity {
 
             // Store pairing — direct mode uses bunnyDirectUrl instead of mesh.
             // Multi-bunny: create a new slot for this direct pairing and set it
-            // active. The slot gets a default label "bunny" which the user can
-            // rename from Advanced → Bunnies.
-            final String newId = addBunnySlot("bunny");
+            // active. Default the label to a fingerprint-derived tag (e.g.
+            // "bunny-3f9c") so multiple slots are distinguishable on the status
+            // line out of the box; the user can rename from Advanced → Bunnies.
+            final String newId = addBunnySlot(defaultBunnyLabel(receivedFp));
             final String fBunnyUrl = pairedVia;
             final String fBunnyPubB64 = bunnyPubB64;
             final String fSmsToken = smsTokenResp;
@@ -3450,8 +3483,10 @@ public class MainActivity extends Activity {
             // Lion's RSA keypair (lion_privkey/lion_pubkey) is GLOBAL — one Lion
             // identity shared across bunnies — so those live in the top-level
             // prefs, not under the slot. The vault_mode toggle IS per-bunny
-            // (each bunny can independently run vault or legacy).
-            final String newId = addBunnySlot("bunny");
+            // (each bunny can independently run vault or legacy). Default the
+            // label to a mesh-id-derived tag so slots are distinguishable before
+            // the bunny even joins; the user can rename from Advanced → Bunnies.
+            final String newId = addBunnySlot(defaultBunnyLabel(newMeshId));
             final String fMeshId = newMeshId;
             final String fAuthToken = newAuthToken;
             final String fInvite = inviteCode;
