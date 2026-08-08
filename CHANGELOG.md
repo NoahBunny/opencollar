@@ -8,6 +8,265 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-07 (third pass) on-device QA against two real phones ───────── -->
+
+Worked the device-QA runbook against real hardware — a Samsung **SM-S908W** as
+the bunny (Android 16 / API 36) and a **Pixel 10** as the Lion (Android 17 / API
+37) — and fixed the six bugs it surfaced. Five of them were invisible to the
+off-device suite because every one of them lived in a place the tests were
+modelling instead of exercising: two distinct keypairs collapsed into one
+fixture, a prefs key read through the same constant that wrote it, a signed
+payload rebuilt from a hand-written dict rather than the wire, a poll gate no
+test ever evaluated. Versions: controller **77 / 77.0** (slave/companion
+unchanged at 81 / 8.38 and 60 / 2.27); `installers/re-enslave-lib.sh` targets
+synced.
+
+The last two are worth reading together: a Direct (LAN) pairing — the path the
+UI recommends as "Fastest" — could not show the Lion anything. Orders flowed and
+applied, but the status line was frozen twice over, once by a signature rebuild
+that read the wrong bytes and once by a poll that never ran.
+
+### Fixed — Lion's Share (controller)
+
+- **A Direct (LAN) pair produced a paired but completely uncontrollable bunny**
+  (`android/controller/src/com/focusctl/MainActivity.java`). `pairDirect` saved
+  the generated Lion keypair under `lion_privkey_b64` / `lion_pubkey_b64`, but
+  `createMesh` and all ~17 signed-op call sites read the canonical
+  `lion_privkey` / `lion_pubkey`. Nothing ever read what pairing wrote, so
+  `buildDirectSigHeaders` got `""` and returned null — every order failed
+  "missing lion_privkey" *before* opening a socket, on the path the UI
+  recommends as "Fastest". Fixed to the canonical names. Verified end-to-end on
+  hardware: `/api/lock` → collar `locked=True` with a 15-minute timer, `+$25` →
+  collar `paywall=25`.
+- **Every direct-mode `/mesh/status` was rejected as forged, so the Lion's UI
+  froze on its last-good snapshot** (`MainActivity.verifyStatusSignature`, new
+  `android/controller/src/com/focusctl/StatusCore.java`). The Collar signs a flat
+  ten-field status core and ships those fields at the top level of the status
+  body — a body that also embeds the entire orders document, which repeats six
+  of the ten key names *earlier in the byte stream*. The controller rebuilt the
+  core with its `indexOf`-based `parseJson*` helpers, which take the first match
+  anywhere, so it read the orders copies. Five agreed by luck (both sides read
+  the same `Settings.Global` row); `paywall` did not, because `handleMeshStatus`
+  defaults an unset paywall to `"0"` while `buildOrdersJson` emits `""`. On any
+  freshly paired Collar — no balance charged yet — the rebuilt core differed
+  from the signed one by exactly one field, so orders were delivered and applied
+  while the Lion's screen kept showing `$0` and no lock. The rebuild now lives in
+  `StatusCore.fromWire` and is scoped to the **top-level JSON object**, which
+  closes the class rather than the instance: no embedded document can shadow a
+  signed field again, whatever keys the orders schema grows next. The wire format
+  is unchanged, so an updated controller still verifies Collars already in the
+  field.
+- **A serverless Direct (LAN) pairing never polled status at all**
+  (`MainActivity.startStatusPolling`, new
+  `android/controller/src/com/focusctl/PollGate.java`). The poller was gated on
+  `!meshId.isEmpty()`. A direct pairing has no mesh — that is the entire selling
+  point of the mode ("no account, no server") — so the whole poll body was dead
+  code for it. The Lion's UI held whatever it last rendered ("Switched to
+  bunny", `$0`, no lock) indefinitely while the Collar accepted, applied and
+  reported orders normally. `meshGet` already served `/mesh/status` straight off
+  the Collar in that mode; only this gate stopped it from ever being asked. The
+  decision moved to `PollGate.shouldPollStatus`, which polls when there is a
+  mesh **or** a reachable direct target, using the identical direct-mode
+  condition as `meshGet` so the two cannot drift. Also gave the unlocked status
+  line a `| Direct` liveness marker, so a direct-paired Lion can tell a
+  freshly-polled `UNLOCKED` from a line that stopped updating an hour ago.
+  Found on hardware — it is invisible in relay-mode testing, which is why the
+  status-signature bug above had masked it.
+- **Switching bunnies left the previous bunny's balance on screen**
+  (`MainActivity.setActiveBunny`). `setActiveBunny` already resets the backing
+  runtime fields (`isLocked`, `timerEndMs`, `lastEscapes`, `lastPaywall`, the
+  optimistic caches) — but the *rendered* balance is only ever written by
+  `updateLiveStatus`, which runs solely on a **verified** snapshot. When the
+  newly-selected bunny is unreachable or its status can't be verified, nothing
+  overwrites the figure and the Lion reads one bunny's balance under another
+  bunny's name, indefinitely and with no indication. Observed on hardware:
+  switching from a bunny at `$40` to one at `$7` held `$40` for the whole
+  observation window while the new slot's status was being (correctly) rejected.
+  The slot switch now renders `$—` in grey until that bunny's own status lands.
+  Deliberately **not** `$0`: that is a positive claim the bunny owes nothing,
+  which we cannot back and which resolves an ambiguity in the bunny's favour.
+  The default slot label is `"bunny"` for every slot, so the Lion has no second
+  cue that the number belongs to someone else — see the follow-up note in the
+  device-QA handoff.
+
+### Fixed — Tor build (A3)
+
+- **A Tor-ON build killed the whole Collar the first time Tor started, then
+  crash-looped** (`android/slave/build.sh`, `android/controller/build.sh`,
+  `scripts/setup-qa-env-garuda.sh`). `org.torproject.jni.TorService.onCreate()`
+  calls `broadcastStatus()`, which needs `androidx.localbroadcastmanager` — a
+  class the APK never contained, because this project has no Gradle and so no
+  dependency resolver, and the build dexed only the AAR's `classes.jar` plus
+  jtorctl and bcprov. The first onion wake therefore produced
+  `NoClassDefFoundError` → `FATAL EXCEPTION: main` → process death, repeatedly,
+  since the triggering ntfy wake is redelivered to the restarted app.
+  The Collar is the enforcement app and the onion wake topic is a plain ntfy.sh
+  topic anyone can publish to, so a Tor-ON build in the field would have handed
+  out a remote way to crash-loop the leash. It stayed hidden because Tor ships
+  default-OFF and runbook section F had never run on hardware. Now bundled as
+  `FOCUSLOCK_LBM_JAR` in both build scripts, fetched + exported by
+  `setup-qa-env-garuda.sh --tor`, with a loud warning when unset instead of a
+  silently fatal APK. **Verified on-device**: the same wake is now handled
+  cleanly, the process survives, and Tor comes up (SOCKS on `127.0.0.1:9050`,
+  `TorService` bound).
+
+- **The onion was never published — Tor rejected every `ADD_ONION`**
+  (`android/slave/src/com/focuslock/TorManager.java`). The command carried a
+  `ClientAuthV3=` clause without the matching `V3Auth` flag, so Tor replied
+  `No auth type specified`; the exception was swallowed as "relay fallback" and
+  the hidden service silently never came up, on every wake. Now
+  `Flags=Detach,V3Auth`, with the client-auth keys resolved *before* the command
+  is built (with none we must not publish at all). Verified on-device:
+  `onion published: 7bmvii…orad.onion (1 client key(s))`.
+- **The Lion could send orders over Tor but never read status**
+  (`MainActivity.getDirectWithFailover`). `maybeWakeBunny` — which bumps the
+  Collar's wake topic, starts the Lion's own Tor and authorizes the onion — was
+  wired into the POST path only, so the status poller dialed `.onion` candidates
+  with no SOCKS proxy running and failed silently. Third instance of the
+  "orders flow, Lion goes blind" family this session. The read path now performs
+  the same wake behind a rate limit and an in-flight guard (the poller ticks
+  every 5 s while the wake blocks up to 120 s). Candidates stay LAN-first, so it
+  costs nothing while the LAN works. Verified: from a cold start with Tor down,
+  Wi-Fi off and no order ever sent, the Lion brought Tor up within 20 s and
+  rendered `bunny | LOCKED | 22m 35s left`.
+
+### Fixed — Server (relay)
+
+- **`set-display-name` was verified against the wrong key, so every rename
+  403'd** (`focuslock-mail.py`). The companion signs the rename with the account
+  `bunny_pubkey` (its `PairingManager` key), exactly as every other bunny-signed
+  endpoint does, but the server verified only against the vault `node_pubkey` —
+  the Collar's `ControlService` key. On real hardware those are two different
+  keypairs. The unit test reused one key for both stores, which is precisely why
+  it passed. Now verifies against the account `bunny_pubkey` with a `node_pubkey`
+  fallback, and the regression test in
+  `tests/test_display_name_desktop_task_guards.py` provisions **distinct** keys.
+- **The Lion was never told when the bunny killed the enforcement watchdog**
+  (`focuslock-mail.py`). The Collar detects ShadeGuard being disabled mid-lock
+  and POSTs `event_type=shadeguard_disabled`, but the relay's event allowlist
+  didn't include it, so the report came back HTTP 400 and the tamper vanished.
+  Added to the allowlist and to `kind_map` (→ `watchdog_off`). No financial
+  penalty attaches, matching the costly-exit-not-punish-exit tamper model.
+
+### Fixed — Installers
+
+- **Bunny Tasker was never granted `WRITE_SECURE_SETTINGS`, leaving joins
+  half-finished** (`installers/re-enslave-phones.sh`). The companion's in-app
+  "Join Mesh" writes the join config to `Settings.Global`; without WSS the join
+  POST succeeded server-side while the local write threw. The Lion saw the node
+  appear and the bunny saw "Join failed". `recage_focuslock` now grants the
+  companion WSS alongside the Collar.
+
+### Testing
+
+- **The `/mesh/status` wire format is now a spec, not an assumption**
+  (`tests/test_android_conformance.py`, `android/controller/test/com/focusctl/StatusCoreTest.java`,
+  `android/controller/test/com/focusctl/ConformanceCli.java`, `android/build-conformance.sh`).
+  The old test built the status core as a dict on both sides and never rendered
+  a wire body, so the shadowing was structurally unreachable. The Python half
+  (always runs) builds the real body, asserts a top-level-scoped rebuild
+  reproduces the signed core across four Collar states, and keeps a port of the
+  first-match parser as an executable record of the bug it can no longer hide.
+  The JVM half runs the **actual** Collar signer against the **actual**
+  controller verifier over that body, and a new `status-core` conformance
+  subcommand emits `StatusCore.fromWire`'s canonical bytes for byte-comparison
+  against Python. Reverting `StatusCore` to the first-match parse fails four of
+  the nine new JUnit tests, including the freshly-paired-Collar case.
+- **The status-poll gate is now a tested predicate** (`PollGateTest.java`).
+  It was an inline condition in a lambda, which is why nothing caught that it
+  excluded the serverless pairing mode. `PollGate.shouldPollStatus` is extracted
+  for the same reason `MeshOrderApply` lives outside `ControlService`.
+
+### Verified on hardware (2026-08-07, SM-S908W + Pixel 10, Direct LAN pairing)
+
+- The live Collar's `/mesh/status` body, checked against the device's real
+  `focus_lock_bunny_pubkey`: the old first-match rebuild **fails** verification,
+  the scoped rebuild **passes**, and the single drifting field is
+  `paywall` `'0'` vs `''` — the diagnosis reproduced exactly on real hardware.
+- Direct (LAN) pair → `bunny | UNLOCKED | Direct`, zero
+  `REJECTED direct /mesh/status` log lines, **with the paywall never charged**
+  (the precise state that was broken).
+- 15-minute lock → Collar `focus_lock_active=1`, Lion shows
+  `bunny | LOCKED | 14m 49s left`, still at `paywall=null`.
+- `+$25` → Collar `focus_lock_paywall=25`, Lion balance `$25`.
+- **B-9 no-snap-back**: after unlock, six consecutive poll cycles over 36s held
+  `collar_active=0` / `UNLOCKED` with no reversion. Re-lock extends correctly:
+  15M → `14m 50s`, re-lock 30M → `29m 50s` (Collar `unlock_at` +29 min).
+- **B-11 key substitution — PASSED against a live hostile endpoint.** A stand-in
+  Collar (`staging/qa_fake_collar.py`) was paired normally, then flipped
+  dishonest on demand. Signing with a **foreign key** while claiming
+  `locked=true, paywall=999, timer=1h`: rejected every poll, UI held its
+  last-good `UNLOCKED` / `$7`. **No signature at all**, same claims: same result.
+  Then honest again with a genuinely changed `$12`: adopted within one cycle,
+  zero rejections — so the refusal is discernment, not paralysis. A slot whose
+  stored key had been rotated out from under it behaved identically (75
+  consecutive rejections, no adoption). On-device counterpart to
+  `StatusCoreTest.lanMitmClearingTheLockIsRejected` / `unsignedStatusIsRejected`.
+- **B-10 multi-bunny isolation — FAILED, fixed, re-verified.** Lock state and
+  timer *were* correctly isolated across slots; the balance was not. After the
+  fix, switching to an unverifiable slot holds `$—` across 5 poll cycles and 10
+  rejections, while a trusted slot still fills in within one cycle.
+- Closing loop through the real apps: UNLOCK ALL + CLEAR on the Lion → Collar
+  `focus_lock_active=0`, `focus_lock_paywall=0`, Lion's line settles to
+  `bunny | UNLOCKED | Direct` / `$0`.
+- New QA harnesses, all used above: `staging/qa_fake_collar.py` (a controllable
+  second Collar — the thing that made key-substitution testable on hardware),
+  `staging/qa_device_ui.py` (uiautomator tap/type driver, so device QA no longer
+  needs an instrumented build or hand-tapping), `staging/qa_collar_driver.py`
+  (signs Audit-C1 direct POSTs with the bunny key read off the device, so the
+  whole `/api/*` surface is drivable without the Lion's private key),
+  `staging/qa_collar_sweep.py` and `staging/qa_messaging.py`.
+
+### Full-surface empirical sweep
+
+- **Collar control surface: 34 pass · 0 fail · 6 blocked.** All 9 lock modes,
+  task reps, photo-task, the five modifiers, paywall add/stack/clear (incl. the
+  "quick lock must not clobber the ledger" regression), subscribe, messages,
+  pinned messages, offers, geofence, check-in, notification prefs, volume,
+  lock/unlock — each asserted against the Collar's own `Settings.Global` after
+  the order, not against a mock. Refusals are asserted too: local unsubscribe is
+  server-authoritative, check-in rejects an out-of-range hour, and free unlock is
+  refused below Gold / granted at Gold / refused again as already-used.
+- **Messaging: 11 pass · 0 fail** against a real relay signed with the device's
+  real bunny key. Beyond send + thread round-trip: the bunny cannot forge a
+  message from the Lion, cannot edit or delete history, a body tampered in flight
+  fails the signature, a stale timestamp falls outside the replay window, and an
+  unregistered node is refused.
+- **E2EE messaging is zero-knowledge in practice, not just by design.** A message
+  composed on the bunny's phone stored on the relay as `text: "[e2ee]"` plus
+  `ciphertext`/`encrypted_key`/`iv`, with the plaintext appearing nowhere in the
+  stored record.
+- **Relay path end to end**: mesh create → real `/api/mesh/join` → vault appends
+  (`slots=2`, ~1.7 KB ciphertext per tick) → `state-mirror` verifying with
+  `signer=bunny` over the paywall/subscription/lock fields that compound interest
+  and payment crediting depend on.
+- **Daily check-in auto-lock verified autonomously** — the Collar locked itself
+  ~50 minutes after the deadline hour with "Missed daily check-in", no order
+  involved.
+- **A3 Tor / onion — runbook section F fully verified on hardware for the first
+  time** (items 20–25), after the three Tor fixes above. Tor-ON builds are 32 MB
+  with `libtor.so` for all four ABIs, Tor classes dexed, `apksigner VERIFIED`;
+  default-off builds unchanged at 238 KB with zero `libtor.so`.
+  - **20/21**: Collar runs, Tor comes up (SOCKS `127.0.0.1:9050`), a v3 onion is
+    provisioned (derived offline ~0.1 s after service start), and the Lion's
+    `onion_auth_pub` is carried in the pair body and stored.
+  - **22**: `ADD_ONION` accepted with `ClientAuthV3` — *"onion published … (1
+    client key(s))"*. The client half is proven by the Lion's Tor fetching the
+    auth-gated descriptor.
+  - **23**: with Wi-Fi off on the Lion (LTE only) and the bunny's LAN IP
+    confirmed unreachable, the Lion **read** `bunny | LOCKED | 28m 7s left` and
+    **landed an UNLOCK order in under 15 s**, both over the onion.
+  - **24**: republishing the onion authorized to a *different* key turned the
+    identical probe from `HTTP 200` into `HTTP 000` twice; restoring the real key
+    returned `HTTP 200 in 6.7 s`. Client auth is load-bearing, and the Collar
+    refuses to publish at all without a Lion key — enforced at publish time, not
+    merely at connect time.
+  - **25**: ntfy publish → wake received **1.07 / 1.24 / 1.75 s**; wake → onion
+    published **6.09 s**; Tor round-trip **5.7 / 6.7 s**; warm order **< 15 s**;
+    cold Lion → Tor up **≤ 20 s**.
+  - Behaviour worth remembering: Tor starts **on demand via the wake**, not at
+    boot — `focus_lock_tor_warm` only suppresses teardown.
+
 <!-- ───────── 2026-08-07 (second pass) deferred follow-ups from the ecosystem-review fix-forward ───────── -->
 
 Cleared all three follow-ups the 2026-08-07 pass deferred. Versions: slave
