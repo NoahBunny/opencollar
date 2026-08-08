@@ -30,7 +30,7 @@ silence.
 - Staging: local relay `focuslock-mail.py` on `18435` (via `.venv`); both phones
   reached it. Direct LAN worked (same Wi-Fi `192.168.199.0/24`, no AP isolation).
 
-## Bugs found → fixed → verified (all uncommitted, on branch `feat/ecosystem-review-2026-05-25`)
+## Bugs found → fixed → verified (committed on `feat/ecosystem-review-2026-05-25`)
 
 1. **Companion never granted `WRITE_SECURE_SETTINGS`.** Bunny Tasker's in-app
    "Join Mesh" writes join config to `Settings.Global`; without WSS the join POST
@@ -367,7 +367,7 @@ Honest list. Nothing here should be read as working.
 | Cage bounce / escape counter / SEALED dialer | earlier session | verified 2026-08-07 (section A, 7/8) — not re-run here |
 
 ## Open follow-ups (resume here next session)
-1. **Tor/onion is now verified end-to-end — keep it default-OFF until the fixes ship.** Section F items 20–25 all passed on hardware, but only after three fixes (LocalBroadcastManager crash-loop, the `V3Auth` flag, and the read-path Tor wake). Those are uncommitted. `FOCUSLOCK_TOR_AAR` should stay unset in production until they land, since a Tor-ON build without fix 8 is remotely crash-loopable. Remaining Tor nice-to-have: the first cold onion order blocks in `wakeAndAuthorize` for up to 120s before the POST goes out — worth surfacing that wait in the UI rather than looking dead.
+1. **Tor/onion is now verified end-to-end — keep it default-OFF until the fixes ship.** Section F items 20–25 all passed on hardware, but only after three fixes (LocalBroadcastManager crash-loop, the `V3Auth` flag, and the read-path Tor wake). `FOCUSLOCK_TOR_AAR` should stay unset in production until this branch merges, since a Tor-ON build without fix 8 is remotely crash-loopable. Remaining Tor nice-to-have: the first cold onion order blocks in `wakeAndAuthorize` for up to 120s before the POST goes out — worth surfacing that wait in the UI rather than looking dead.
 2. **Give bunny slots distinguishable names.** Every slot is labelled `"bunny"`
    by default and the status line shows only that label, so with more than one
    bunny the Lion cannot tell whose lock state and whose balance they're looking
@@ -464,23 +464,35 @@ restore: `adb -s R5CT339K1ZL shell settings get global focus_lock_mesh_id`
 should read `qOZ8W6mGo2ZB`.
 
 ## To resume
-- All 6 fixes + the regression tests + the version bump + the CHANGELOG entry +
-  the earlier staging-port doc fixes are **uncommitted** on
-  `feat/ecosystem-review-2026-05-25`. Both suites are green as of this session:
-  `pytest tests/` → **1227 passed, 21 skipped** (1241/7 with the Java CLI wired;
-  was 1220 before the new specs), and `bash android/build-conformance.sh` →
-  **80 JVM tests, 0 failed**. Run the Java half of the conformance pytest too —
-  it only runs with the CLI wired up:
-  ```
-  bash android/build-conformance.sh
-  ANDROID_CONFORMANCE_CLI="$(cat build-conformance/cli-cmd.txt)" \
-  ANDROID_CONFORMANCE_CLI_SLAVE="$(cat build-conformance/cli-cmd-slave.txt)" \
-    .venv/bin/python3 -m pytest tests/test_android_conformance.py -q     # 30 passed
-  ```
+
+Everything below is **committed** on `feat/ecosystem-review-2026-05-25`
+(5 commits on top of `a25ecc9`):
+
+```
+c351a06 chore(release): controller 77/77.0 + device-QA handoff + CHANGELOG
+961fd70 test(qa): device-QA harnesses, so on-device work stops being hand-tapping
+3f34c31 fix(tor): a Tor-ON build was remotely crash-loopable and never published
+126b52f fix(controller): the Lion could command the bunny but never see her
+d03011d fix(server)+fix(installers): three bugs only real hardware exposed
+```
+
+Nothing is pushed and no PR is open — that call is the operator's.
+
+Green at handoff: `pytest tests/` → **1227 passed, 21 skipped**;
+`bash android/build-conformance.sh` → **80 JVM tests, 0 failed**. The Java half
+of the conformance pytest only runs with the CLI wired up, so run it explicitly:
+
+```
+bash android/build-conformance.sh
+ANDROID_CONFORMANCE_CLI="$(cat build-conformance/cli-cmd.txt)" \
+ANDROID_CONFORMANCE_CLI_SLAVE="$(cat build-conformance/cli-cmd-slave.txt)" \
+  .venv/bin/python3 -m pytest tests/test_android_conformance.py -q     # 30 passed
+```
+
 - The clean (fix-only, non-debuggable) controller APK is rebuilt at
-  `android/controller/focusctl-signed.apk` and staged as `apks/focusctl-v75.apk`
-  where `find_apk` will pick it up. (v74 existed only mid-session, before fix #6;
-  it was deleted rather than left as a second build under the same version code.)
+  `android/controller/focusctl-signed.apk` and staged as `apks/focusctl-v77.apk`
+  where `find_apk` will pick it up. (74/75/76 existed only mid-session; each was deleted rather than
+  left as a second build sharing a version code.)
 - Driving the phone UI from the laptop worked well and is worth keeping: a small
   `uiautomator dump` + `input tap/text` helper (tap-by-text, type-by-field-id)
   made the whole onboarding → Direct Pair → lock → charge → unlock sequence
