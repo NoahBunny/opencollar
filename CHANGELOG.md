@@ -109,6 +109,13 @@ action may re-lock" — `docs/THREAT-MODEL.md`). All three now also honor
   `isReleased()` guard at the top of that loop `continue`s past all enforcement,
   mutual-admin included; only a clarifying comment was added there.)
 
+- **The SMS `sit-boy` trigger didn't honor `released`**
+  (`android/slave/src/com/focuslock/SmsReceiver.java`). A `sit-boy` text from the
+  controller number re-locked the phone (and desktops) with no `released` check —
+  and this receiver bypasses the jail-watcher / order-dispatch guards entirely, so
+  a released device could be re-locked by SMS. Now ignores the command when
+  released.
+
 - **The Collar's direct HTTP order path didn't honor `released`**
   (`android/slave/src/com/focuslock/ControlService.java`, `handler`). The mesh
   path (`handleMeshOrder`) and the legacy apply path (`applyOrdersFromMesh`) both
