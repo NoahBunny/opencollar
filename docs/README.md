@@ -213,7 +213,7 @@ Basic, Negotiation, Task, Compliment, Gratitude Journal, Exercise, Love Letter, 
 ### Enforcement
 - Paywall with compound interest (10%/hr, reduced by subscription tier)
 - Tiered escape penalties ($5/$10/$15+ per attempt, stacking)
-- Admin tamper: +$500 attempt, +$1000 removal (stacking)
+- Admin tamper (Android): friction re-lock + Lion notification, no charge (costly-exit, not punish-exit). Desktop-collar tamper: server-side $5/tier ratchet (capped $500)
 - Public shame notification after 5 escapes
 - Lovense integration (escape buzz, lock pulse, task reward)
 - Geofence auto-lock ($100 paywall on breach)

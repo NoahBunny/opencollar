@@ -1917,7 +1917,10 @@ public class ControlService extends Service {
     private String doReleaseForever() {
         Log.w(TAG, "RELEASE FOREVER — tearing down cage permanently");
 
-        // SET AUTHORIZATION FLAG FIRST — prevents AdminReceiver $500/$1000 penalties
+        // SET AUTHORIZATION FLAG FIRST — makes AdminReceiver.onDisabled take the
+        // no-penalty/no-re-lock release path when we remove our own admin below
+        // (there are no financial tamper penalties anymore — costly-exit, not
+        // punish-exit — but this still suppresses the re-lock + tamper report).
         Settings.Global.putInt(getContentResolver(), "focus_lock_release_authorized", 1);
 
         // Clear core lock state immediately

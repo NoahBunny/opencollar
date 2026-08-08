@@ -16,8 +16,8 @@ Compound interest applies while locked (10%/hr Bronze/none, 5%/hr Silver, 0% Gol
 | Offense | Penalty | Trigger |
 |---------|---------|---------|
 | Escape attempt | +5 min per escape | Each time bunny leaves FocusActivity |
-| Admin removal attempt | +$500 | Requesting device admin removal |
-| Admin actually removed | +$1,000 | Completing device admin removal |
+| Admin removal (attempt or actual) | No charge — friction re-lock + Lion notified | Costly-exit, not punish-exit: leaving is never financially penalized |
+| Desktop-collar tamper | $5/tier ratchet (capped $500) | Killing the desktop collar / watchdog (server-authoritative) |
 | Geofence breach | +$100 + auto-lock | Leaving the geofence zone |
 | Subscription overdue (48hr) | Auto-lock + shame | Missing weekly subscription payment |
 | Missed daily check-in | Auto-lock | Not messaging Lion before deadline |

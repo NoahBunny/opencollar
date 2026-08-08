@@ -203,8 +203,8 @@ Mock bank emails for each supported region — fixtures in `tests/fixtures/bank_
 | 12.2 | 2nd escape: $10 |
 | 12.3 | 3rd+: $15 each |
 | 12.4 | 3+ escapes: factory-reset shortcut appears |
-| 12.5 | Admin tamper attempt: +$500 |
-| 12.6 | Admin removal: +$1000 (stacking) |
+| 12.5 | Admin tamper attempt: friction re-lock + Lion notified, NO charge |
+| 12.6 | Admin removal: re-lock + `tamper_removed` reported, NO charge |
 | 12.7 | Release Forever (Lion only): full teardown + auto-uninstall |
 | 12.8 | Lion offline — Release Forever UNAVAILABLE (safety) |
 
