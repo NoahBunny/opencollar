@@ -4348,6 +4348,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 "tamper_attempt",
                 "tamper_detected",
                 "tamper_removed",
+                "shadeguard_disabled",
                 "geofence_breach",
                 "app_launch_penalty",
                 "sit_boy",
@@ -4449,11 +4450,16 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     (result or {}).get("paywall"),
                 )
             else:
-                # tamper_attempt, tamper_detected, tamper_removed
+                # tamper_attempt, tamper_detected, tamper_removed, shadeguard_disabled
                 kind_map = {
                     "tamper_attempt": "attempt",
                     "tamper_detected": "detected",
                     "tamper_removed": "removed",
+                    # The bunny turned off the enforcement watchdog (accessibility
+                    # service) mid-lock. Detected by ControlService and reported so
+                    # the Lion is notified. Like the other tamper kinds this is
+                    # costly-exit not punish-exit — recorded, no financial penalty.
+                    "shadeguard_disabled": "watchdog_off",
                 }
                 kind = kind_map.get(event_type, "detected")
                 result = _server_apply_order(mesh_id, "tamper-recorded", {"kind": kind})
@@ -4941,13 +4947,34 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
 
             body_hash = _h_dn.sha256(display_name.encode("utf-8")).hexdigest()
             payload = f"{mesh_id}|{node_id}|set-display-name|{ts_i}|{body_hash}"
-            try:
-                pub = _ser_dn.load_der_public_key(_b64_dn.b64decode(vault_node["node_pubkey"]))
-                pub.verify(_b64_dn.b64decode(signature), payload.encode("utf-8"), _pad_dn.PKCS1v15(), _hh_dn.SHA256())
-            except Exception as e:
+            # Rename is a bunny-authored op: Bunny Tasker signs with the account
+            # bunny_pubkey (PairingManager key) — the same key every other
+            # bunny-signed endpoint verifies against (subscribe, deadline-task-
+            # clear, message send/ack). On a real device that key differs from the
+            # Collar's vault node_pubkey (generated independently by ControlService),
+            # so verifying against node_pubkey alone always 403'd the rename — a
+            # regression the unit test masked by reusing one key for both stores.
+            # Accept either legitimate authority for this node.
+            candidate_pubkeys = []
+            _acct_node = (account.get("nodes") or {}).get(node_id) or {}
+            if _acct_node.get("bunny_pubkey"):
+                candidate_pubkeys.append(_acct_node["bunny_pubkey"])
+            if vault_node.get("node_pubkey"):
+                candidate_pubkeys.append(vault_node["node_pubkey"])
+            verified = False
+            last_err = "no pubkey on file"
+            for _pk_b64 in candidate_pubkeys:
+                try:
+                    pub = _ser_dn.load_der_public_key(_b64_dn.b64decode(_pk_b64))
+                    pub.verify(_b64_dn.b64decode(signature), payload.encode("utf-8"), _pad_dn.PKCS1v15(), _hh_dn.SHA256())
+                    verified = True
+                    break
+                except Exception as e:
+                    last_err = str(e)
+            if not verified:
                 logger.warning(
                     "set-display-name sig verify failed: mesh=%s node=%s err=%s",
-                    _sanitize_log(mesh_id), _sanitize_log(node_id), e,
+                    _sanitize_log(mesh_id), _sanitize_log(node_id), last_err,
                 )
                 self.respond(403, {"error": "invalid signature"})
                 return
