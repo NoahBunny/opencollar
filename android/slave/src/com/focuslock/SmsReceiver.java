@@ -87,6 +87,16 @@ public class SmsReceiver extends BroadcastReceiver {
 
             Log.w(TAG, "sit-boy command from " + sender + ": " + body);
 
+            // Safety floor: a released device (safeword / Release Forever) must
+            // ignore the sit-boy trigger. An SMS re-lock is exactly the "no order
+            // may re-lock a released device" that the terminal floor forbids —
+            // and the SMS path bypasses the jail-watcher / order-dispatch guards
+            // entirely, so it needs its own check. See docs/THREAT-MODEL.md.
+            if (Settings.Global.getInt(context.getContentResolver(), "focus_lock_released", 0) == 1) {
+                Log.i(TAG, "sit-boy ignored — device released");
+                continue;
+            }
+
             String targetStr = m.group(1);
             String minsStr = m.group(2);
             String amountStr = m.group(3);
