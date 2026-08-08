@@ -109,6 +109,20 @@ action may re-lock" — `docs/THREAT-MODEL.md`). All three now also honor
   `isReleased()` guard at the top of that loop `continue`s past all enforcement,
   mutual-admin included; only a clarifying comment was added there.)
 
+- **Desktop collars kept enforcing after a release that arrived via gossip/vault**
+  (`focuslock-desktop.py` + `focuslock-desktop-win.py`, `poll_status`). Only the
+  direct `release-device` *action* fired liberation; a release delivered as order
+  *state* — gossip `apply_remote`, or a vault order snapshot — just copied the
+  `released` key into orders (it's in `ORDER_KEYS`), and the steady-state poll
+  loop never checked it. So a released desktop kept enforcing (bedtime / countdown
+  / desktop_active / timer) until its next restart, which the `__main__` startup
+  check only catches then. The **safeword-from-phone** case propagates exactly
+  this way (as state, not as an action), so a safeworded bunny's desktop stayed
+  locked. `poll_status` now honors `released` at runtime on every delivery path —
+  fires liberation once (guarded by `state.liberating`) and stops enforcing.
+  (The Windows collar's tray `.exe` must be rebuilt via `build-win.py` to ship
+  this — cannot be built from this environment.)
+
 <!-- ───────── 2026-08-07 (third pass) on-device QA against two real phones ───────── -->
 
 Worked the device-QA runbook against real hardware — a Samsung **SM-S908W** as

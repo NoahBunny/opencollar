@@ -418,6 +418,7 @@ class CollarState:
     countdown_lock_at = 0  # epoch ms — 0 means no countdown
     countdown_message = ""
     countdown_last_warn = 0  # epoch ms of last warning beep
+    liberating = False  # runtime release in progress — fire execute_liberation once
     _bedtime_locked = False
 
 
@@ -1147,6 +1148,21 @@ def poll_status():
         "bedtime_unlock_hour",
     ]:
         snap[k] = mesh_orders.get(k, "")
+
+    # Safety floor: honor a release that arrived as ORDER STATE. Only the direct
+    # `release-device` action fires liberation; a release delivered via gossip
+    # (apply_remote) or a vault order snapshot just copies the `released` key
+    # into orders, so without this the desktop keeps enforcing until its next
+    # restart. The safeword-from-phone case propagates exactly this way. Fire
+    # liberation once, then never enforce again while released. See THREAT-MODEL:
+    # the mesh/vault order-apply path honors `released`.
+    released = str(mesh_orders.get("released", "") or "")
+    if released == "all" or released == MESH_NODE_ID:
+        if not state.liberating:
+            state.liberating = True
+            logger.warning("Release received at runtime (via mesh) — liberating")
+            execute_liberation()
+        return
 
     hostname = MESH_NODE_ID
     desktop_active = str(snap.get("desktop_active") or 0)
