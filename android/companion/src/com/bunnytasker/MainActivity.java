@@ -389,15 +389,17 @@ public class MainActivity extends Activity {
     private void refreshStats() {
         try {
             // Mutual admin monitoring — penalize + alert if Collar admin removed.
-            // Suppressed during an authorized teardown (release_authorized) AND
-            // after a terminal release (`released`, the preserved safety floor):
-            // once the arrangement is over, the Collar losing admin is expected,
-            // not tamper. Without the `released` check a post-safeword device
-            // would keep re-reporting tamper_removed and re-locking the Collar.
+            // Suppressed during an authorized teardown (release_authorized), after a
+            // terminal release (`released`), and — crucially — when NOT yet paired:
+            // an unpaired device has no Lion, so the Collar's admin being absent (or
+            // being provisioned before the Lion pairs) is not tamper, and re-locking
+            // it would trap the wearer with active=1 and no unlock path.
+            String lionPub = Settings.Global.getString(getContentResolver(), "focus_lock_lion_pubkey");
+            boolean paired = lionPub != null && !lionPub.isEmpty() && !"null".equals(lionPub);
             long breakglassUntil = Settings.Global.getLong(getContentResolver(), "focus_lock_breakglass_until", 0);
             int releaseAuth = Settings.Global.getInt(getContentResolver(), "focus_lock_release_authorized", 0);
             int released = Settings.Global.getInt(getContentResolver(), "focus_lock_released", 0);
-            if (System.currentTimeMillis() > breakglassUntil && releaseAuth == 0 && released == 0) {
+            if (paired && System.currentTimeMillis() > breakglassUntil && releaseAuth == 0 && released == 0) {
                 try {
                     android.content.ComponentName collarAdmin = new android.content.ComponentName(
                         "com.focuslock", "com.focuslock.AdminReceiver");

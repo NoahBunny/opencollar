@@ -394,7 +394,10 @@ public class ControlService extends Service {
                     // Mutual admin monitoring — re-lock (friction, no penalty) if BunnyTasker admin removed.
                     // (A released device never reaches here — the isReleased() guard at the top
                     // of this loop already `continue`s past all enforcement, mutual-admin included.)
-                    if (healthCounter % 3 == 0) {
+                    // Gated on isPaired(): an UNPAIRED device has no Lion, so tamper-locking it
+                    // (e.g. while device admin is being provisioned before the Lion pairs) would
+                    // only trap the wearer with active=1 and no unlock path.
+                    if (healthCounter % 3 == 0 && isPaired()) {
                         long breakglassUntil = Settings.Global.getLong(getContentResolver(), "focus_lock_breakglass_until", 0);
                         int releaseAuth = Settings.Global.getInt(getContentResolver(), "focus_lock_release_authorized", 0);
                         if (System.currentTimeMillis() > breakglassUntil && releaseAuth == 0) {
@@ -2042,6 +2045,18 @@ public class ControlService extends Service {
      *  device. Guards launchFocus() and applyOrdersFromMesh(). See THREAT-MODEL. */
     boolean isReleased() {
         return Settings.Global.getInt(getContentResolver(), "focus_lock_released", 0) == 1;
+    }
+
+    /** Paired = a Lion has completed pairing and their pubkey is on file. Admin-
+     *  tamper enforcement (the mutual-admin re-lock, AdminReceiver's re-lock on
+     *  admin removal) is meaningless before that: there is no Lion to be
+     *  accountable to, and firing it would trap an UNPAIRED device with
+     *  focus_lock_active=1 and no unlock path (no Lion order, no timer). So the
+     *  tamper monitors gate on this. Provisioning device admin BEFORE the Lion
+     *  pairs must not lock the wearer out of their own phone. */
+    boolean isPaired() {
+        String lp = Settings.Global.getString(getContentResolver(), "focus_lock_lion_pubkey");
+        return lp != null && !lp.isEmpty() && !"null".equals(lp);
     }
 
     /** Panic safeword — the wearer's always-available exit. Needs neither the
