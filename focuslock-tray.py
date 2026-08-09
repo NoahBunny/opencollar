@@ -311,6 +311,10 @@ class FocusLockTray:
         item_log.connect("activate", self._on_open_log)
         self.menu.append(item_log)
 
+        item_mesh = Gtk.MenuItem(label="Join / Configure Mesh…")
+        item_mesh.connect("activate", self._on_configure_mesh)
+        self.menu.append(item_mesh)
+
         self.menu.append(Gtk.SeparatorMenuItem())
         item_quit = Gtk.MenuItem(label="Quit Tray")
         item_quit.connect("activate", self._on_quit)
@@ -430,6 +434,84 @@ class FocusLockTray:
             subprocess.Popen(["xdg-open", log_path], close_fds=True)
         except Exception:
             logger.exception("xdg-open log failed")
+
+    def _on_configure_mesh(self, _item):
+        """Let the wearer enter the mesh their Lion created (mesh id + relay URL),
+        write it to config.json, and restart the collar so it re-registers. This
+        is the desktop counterpart to Bunny Tasker's 'Join Mesh' — without it the
+        only way to set/change the mesh was re-running the installer."""
+        cfg = load_config()
+        dialog = Gtk.Dialog(title="Join / Configure Mesh")
+        dialog.set_modal(True)
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Save & Connect", Gtk.ResponseType.OK)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+        box = dialog.get_content_area()
+        box.set_spacing(10)
+        box.set_property("margin", 14)
+
+        intro = Gtk.Label(
+            label="Enter the mesh your Lion created.\nThey give you the Mesh ID; "
+            "the Relay URL is usually already filled in."
+        )
+        intro.set_xalign(0.0)
+        box.add(intro)
+
+        grid = Gtk.Grid(column_spacing=10, row_spacing=8)
+        lbl_id = Gtk.Label(label="Mesh ID:")
+        lbl_id.set_xalign(0.0)
+        grid.attach(lbl_id, 0, 0, 1, 1)
+        mesh_entry = Gtk.Entry()
+        mesh_entry.set_text(cfg.get("mesh_id", "") or "")
+        mesh_entry.set_placeholder_text("e.g. qOZ8W6mGo2ZB")
+        mesh_entry.set_hexpand(True)
+        mesh_entry.set_activates_default(True)
+        grid.attach(mesh_entry, 1, 0, 1, 1)
+
+        lbl_url = Gtk.Label(label="Relay URL:")
+        lbl_url.set_xalign(0.0)
+        grid.attach(lbl_url, 0, 1, 1, 1)
+        url_entry = Gtk.Entry()
+        url_entry.set_text(cfg.get("mesh_url", "") or "https://collar.nunyabiznu.com")
+        url_entry.set_hexpand(True)
+        url_entry.set_activates_default(True)
+        grid.attach(url_entry, 1, 1, 1, 1)
+        box.add(grid)
+
+        dialog.show_all()
+        resp = dialog.run()
+        mesh_id = mesh_entry.get_text().strip()
+        mesh_url = url_entry.get_text().strip().rstrip("/")
+        dialog.destroy()
+        if resp == Gtk.ResponseType.OK and mesh_id and mesh_url:
+            self._save_mesh_config(mesh_id, mesh_url)
+
+    def _save_mesh_config(self, mesh_id, mesh_url):
+        """Merge mesh id/url into config.json (preserving other keys) and restart
+        the collar daemon so it re-registers against the new mesh."""
+        cfg = load_config()
+        cfg["mesh_id"] = mesh_id
+        cfg["mesh_url"] = mesh_url
+        cfg["vault_mode"] = True
+        try:
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = CONFIG_PATH.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(cfg, indent=2))
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, CONFIG_PATH)
+            logger.info("Mesh config updated: %s @ %s", mesh_id, mesh_url)
+        except Exception:
+            logger.exception("Could not write config.json")
+            return
+        # Restart the collar daemon (not the tray) so it reloads config + re-registers.
+        try:
+            subprocess.Popen(
+                ["systemctl", "--user", "restart", "focuslock-desktop.service"],
+                close_fds=True,
+            )
+            self.menu_status.set_label(f"Reconnecting to {mesh_id}…")
+        except Exception:
+            logger.exception("Could not restart collar service")
 
     def _on_quit(self, _item):
         self.poller.stop()
