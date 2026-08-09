@@ -117,6 +117,13 @@ except OSError:
 MESH_URL = _cfg.get("mesh_url", "") or os.environ.get("FOCUSLOCK_MESH_URL", "")
 HOMELAB_URL = _cfg.get("homelab_url", "") or os.environ.get("FOCUSLOCK_HOMELAB", "")
 ADMIN_TOKEN = _cfg.get("admin_token", "") or os.environ.get("FOCUSLOCK_ADMIN_TOKEN", "")
+# When set, the Lion's standing orders (~/.claude/CLAUDE.md) are an OVERLAY that
+# exists only while this PC can reach the mesh/Lion: applied on a successful sync,
+# and reverted after the connection stays down (see sync_standing_orders). So a
+# disconnected bunny stops following directives the Lion can no longer update or
+# revoke — consistent with feedback_offline_no_lock. Default off = legacy behavior
+# (orders persist once synced).
+STANDING_ORDERS_REQUIRE_CONNECTION = _cfg.get("standing_orders_require_connection", False)
 PHONE_ADDRESSES = _cfg.get("phone_addresses", [])
 PHONE_PORT = _cfg.get("phone_port", 8432)
 POLL_INTERVAL = _cfg.get("poll_interval", 5)
@@ -1428,15 +1435,97 @@ def send_heartbeat():
         logger.debug("Heartbeat failed: %s", e)
 
 
-def sync_standing_orders():
-    """Pull CLAUDE.md from homelab and install locally.
+# Standing-orders overlay files (see STANDING_ORDERS_REQUIRE_CONNECTION).
+_SO_TARGET = os.path.expanduser("~/.claude/CLAUDE.md")
+_SO_BACKUP = os.path.expanduser("~/.config/focuslock/claude-md.preuser")  # user's own file, if any
+_SO_APPLIED = os.path.expanduser("~/.config/focuslock/standing-orders.applied")  # sha256 of what WE wrote
+_so_fail_streak = 0
+_SO_REVOKE_AFTER = 3  # consecutive failed syncs (~POLL_INTERVAL each) before revoking
 
-    Audit 2026-04-27 H-1 (remainder): /standing-orders now requires
-    admin_token. Send the locally-loaded ADMIN_TOKEN via
-    Authorization: Bearer. Without ADMIN_TOKEN configured the sync
-    is skipped silently (the collar can run without it; only the
-    standing-orders sync path needs it).
+
+def _so_sha(s):
+    import hashlib
+
+    return hashlib.sha256(s.encode()).hexdigest()
+
+
+def _apply_standing_orders(content):
+    """Install the Lion's standing orders as ~/.claude/CLAUDE.md. The first time,
+    back up any pre-existing user CLAUDE.md so _revoke_standing_orders can restore
+    it. Records a hash of what we wrote so revoke never clobbers a file the user
+    edited out from under us."""
+    os.makedirs(os.path.dirname(_SO_TARGET), exist_ok=True)
+    existing = ""
+    if os.path.exists(_SO_TARGET):
+        with open(_SO_TARGET) as f:
+            existing = f.read()
+    already_ours = os.path.exists(_SO_APPLIED)
+    # First application only: preserve the user's own CLAUDE.md (if any, and not ours).
+    if not already_ours and existing and _so_sha(existing) != _so_sha(content):
+        try:
+            with open(_SO_BACKUP, "w") as f:
+                f.write(existing)
+        except Exception as e:
+            logger.warning("Could not back up existing CLAUDE.md: %s", e)
+    if existing != content:
+        with open(_SO_TARGET, "w") as f:
+            f.write(content)
+        logger.info("Standing orders applied (%d bytes)", len(content))
+    with open(_SO_APPLIED, "w") as f:
+        f.write(_so_sha(content))
+
+
+def _revoke_standing_orders():
+    """Remove the standing-orders overlay while disconnected from the Lion:
+    restore the user's pre-existing CLAUDE.md, or delete ours if there was none.
+    No-op if we never applied anything, or if the current file isn't the one we
+    wrote (user replaced it — leave it alone)."""
+    if not os.path.exists(_SO_APPLIED):
+        return  # nothing of ours to revoke
+    with open(_SO_APPLIED) as f:
+        applied_hash = f.read().strip()
+    cur = ""
+    if os.path.exists(_SO_TARGET):
+        with open(_SO_TARGET) as f:
+            cur = f.read()
+    if cur and _so_sha(cur) != applied_hash:
+        # User replaced it since we applied — don't clobber; just drop our markers.
+        for p in (_SO_APPLIED, _SO_BACKUP):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        return
+    try:
+        if os.path.exists(_SO_BACKUP):
+            with open(_SO_BACKUP) as f:
+                prev = f.read()
+            with open(_SO_TARGET, "w") as f:
+                f.write(prev)
+            os.remove(_SO_BACKUP)
+        elif os.path.exists(_SO_TARGET):
+            os.remove(_SO_TARGET)
+        os.remove(_SO_APPLIED)
+        logger.warning("Standing orders revoked — disconnected from the mesh/Lion")
+    except Exception as e:
+        logger.warning("Standing orders revoke failed: %s", e)
+
+
+def sync_standing_orders():
+    """Pull CLAUDE.md from the mesh/homelab and install it as the Lion's standing
+    orders for Claude Code sessions on this machine.
+
+    Audit 2026-04-27 H-1 (remainder): /standing-orders now requires admin_token.
+    Send the locally-loaded ADMIN_TOKEN via Authorization: Bearer. Without
+    ADMIN_TOKEN configured the sync is skipped silently (the collar runs fine
+    without it; only this path needs it).
+
+    When STANDING_ORDERS_REQUIRE_CONNECTION is set, the orders are an overlay
+    that only exists while connected: applied on a successful sync, and reverted
+    after _SO_REVOKE_AFTER consecutive failures so a disconnected bunny stops
+    following directives the Lion can no longer reach to change.
     """
+    global _so_fail_streak
     if not ADMIN_TOKEN:
         logger.debug("Standing orders sync skipped: no admin_token configured")
         return
@@ -1447,22 +1536,16 @@ def sync_standing_orders():
             headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
         )
         resp = urllib.request.urlopen(req, timeout=10)
+        _so_fail_streak = 0  # reachable — we're connected to the mesh/Lion
         content = resp.read().decode()
         if content and len(content) > 50:  # sanity check
-            claude_dir = os.path.expanduser("~/.claude")
-            os.makedirs(claude_dir, exist_ok=True)
-            target = os.path.join(claude_dir, "CLAUDE.md")
-            # Only write if different
-            existing = ""
-            if os.path.exists(target):
-                with open(target, "r") as f:
-                    existing = f.read()
-            if content != existing:
-                with open(target, "w") as f:
-                    f.write(content)
-                logger.info("Standing orders synced (%d bytes)", len(content))
+            _apply_standing_orders(content)
     except Exception as e:
         logger.debug("Standing orders sync failed: %s", e)
+        if STANDING_ORDERS_REQUIRE_CONNECTION:
+            _so_fail_streak += 1
+            if _so_fail_streak >= _SO_REVOKE_AFTER:
+                _revoke_standing_orders()
 
 
 # ── Wallpaper Persistence ──
