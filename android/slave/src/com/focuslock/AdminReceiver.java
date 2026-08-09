@@ -23,11 +23,23 @@ public class AdminReceiver extends DeviceAdminReceiver {
         } catch (Exception e) { return false; }
     }
 
+    /** Paired = a Lion's pubkey is on file (mirrors ControlService.isPaired). Admin
+     *  removal on an UNPAIRED device must not re-lock: there is no Lion to be
+     *  accountable to, and the re-lock would trap the wearer with active=1 and no
+     *  unlock path — e.g. while provisioning device admin BEFORE the Lion pairs. */
+    private static boolean isPaired(Context context) {
+        try {
+            String lp = Settings.Global.getString(context.getContentResolver(), "focus_lock_lion_pubkey");
+            return lp != null && !lp.isEmpty() && !"null".equals(lp);
+        } catch (Exception e) { return false; }
+    }
+
     @Override
     public CharSequence onDisableRequested(Context context, Intent intent) {
-        // Authorized release / terminally released — no penalty, no re-lock threat.
-        if (releaseInProgressOrDone(context)) {
-            return "Authorized release in progress.";
+        // Authorized release / terminally released, OR simply not yet paired — no
+        // penalty, no re-lock threat. An unpaired device has no Lion to enforce for.
+        if (releaseInProgressOrDone(context) || !isPaired(context)) {
+            return "Device admin can be disabled.";
         }
         // Re-lock the phone (friction) and record the attempt for the Lion's
         // accountability. Costly-exit, not punish-exit (see docs/THREAT-MODEL.md):
@@ -63,12 +75,13 @@ public class AdminReceiver extends DeviceAdminReceiver {
 
     @Override
     public void onDisabled(Context context, Intent intent) {
-        // Authorized release / terminally released — no penalty, and crucially no
-        // re-lock: re-locking here would violate the terminal `released` floor
-        // (THREAT-MODEL). release_authorized covers the in-progress teardown;
-        // `released` covers the state after that flag is cleaned up.
-        if (releaseInProgressOrDone(context)) {
-            Log.i("FocusLock", "Admin removed during authorized/terminal release — no penalty, no re-lock");
+        // Authorized release / terminally released, OR not yet paired — no penalty
+        // and crucially no re-lock. Re-locking a released device violates the
+        // terminal floor (THREAT-MODEL); re-locking an UNPAIRED device traps the
+        // wearer with active=1 and no Lion to unlock. release_authorized covers the
+        // in-progress teardown; `released` the state after it's cleaned up.
+        if (releaseInProgressOrDone(context) || !isPaired(context)) {
+            Log.i("FocusLock", "Admin removed during authorized/terminal release or while unpaired — no penalty, no re-lock");
             return;
         }
         Log.w("FocusLock", "DEVICE ADMIN DEACTIVATED — reporting tamper_removed (non-financial)");

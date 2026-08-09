@@ -8,6 +8,37 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-09 unpaired-tamper trap + desktop standing-orders gate ───────── -->
+
+### Fixed — safety floor: admin-tamper enforcement no longer traps an UNPAIRED device
+
+- **An unpaired phone could tamper-lock itself with no way out** (collar
+  **83/8.40**, companion **62/2.29**). The mutual-admin monitor
+  (`ControlService`), the `AdminReceiver` re-lock on admin removal (Collar +
+  companion), and the companion's `refreshStats` monitor all fired **regardless
+  of pairing**. Provisioning device admin *before* the Lion pairs — enabling one
+  app's admin while the other's is momentarily absent — tripped "admin removed",
+  set `focus_lock_active=1`, and re-locked every 6 s. With no Lion (`lion_pubkey`
+  unset) there was no order/timer to clear it, so the wearer was locked out of
+  their own phone; re-adding admin cleared the flag but not the lock. Now every
+  tamper path gates on a new `isPaired()` (a Lion pubkey is on file): an unpaired
+  device has no Lion to be accountable to, so admin changes are never treated as
+  tamper. **Found and fixed on hardware** — both test phones were trapped this
+  way, unlocked via break-glass, then confirmed to stay unlocked on the fixed
+  build with break-glass cleared.
+
+### Added — Linux desktop collar: standing orders only apply while connected
+
+- **The Lion's standing orders (`~/.claude/CLAUDE.md`) now honor connectivity**
+  (`focuslock-desktop.py`, opt-in via `standing_orders_require_connection`).
+  Previously they persisted once synced, so a bunny disconnected from the
+  mesh/Lion kept following directives the Lion could no longer update or revoke.
+  With the flag set, the orders are an overlay: applied on a successful sync,
+  and reverted after `_SO_REVOKE_AFTER` consecutive failed syncs — restoring the
+  machine's own prior `CLAUDE.md`, or removing ours if there was none. A hash
+  guard ensures revoke never clobbers a `CLAUDE.md` the user edited themselves.
+  Consistent with `feedback_offline_no_lock`.
+
 <!-- ───────── 2026-08-08 device-QA follow-ups: status shadowing, A16 release, Tor wait ───────── -->
 
 Cleared three follow-ups the device-QA session left open — two latent-correctness
