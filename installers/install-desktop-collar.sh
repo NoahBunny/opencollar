@@ -50,30 +50,37 @@ echo "Detected: $NAME ($DISTRO)"
 echo ""
 echo "=== Installing dependencies ==="
 
+# NOTE: python-cryptography is REQUIRED, not optional. VAULT_MODE gates on it
+# (focuslock-desktop.py: `and VAULT_CRYPTO_OK`); without it the collar silently
+# falls back to the retired plaintext-sync endpoint and gets HTTP 410 Gone on
+# every poll — it can never register or pair. It used to be omitted here, which
+# is exactly how a collar came up crippled.
 if echo "$DISTRO $DISTRO_LIKE" | grep -qi "arch"; then
-    sudo pacman -S --needed --noconfirm python-gobject python-cairo gtk4 webkitgtk-6.0 2>/dev/null || true
+    sudo pacman -S --needed --noconfirm python-gobject python-cairo python-cryptography gtk4 webkitgtk-6.0 2>/dev/null || true
 elif echo "$DISTRO $DISTRO_LIKE" | grep -qi "fedora"; then
     if command -v rpm-ostree &>/dev/null; then
         echo "Immutable OS detected. Checking deps..."
         /usr/bin/python3 -c "import gi; gi.require_version('Gtk', '4.0')" 2>/dev/null && \
-        /usr/bin/python3 -c "import cairo" 2>/dev/null || {
-            echo "Missing deps. Run: rpm-ostree install python3-gobject python3-cairo gtk4"
+        /usr/bin/python3 -c "import cairo" 2>/dev/null && \
+        /usr/bin/python3 -c "import cryptography" 2>/dev/null || {
+            echo "Missing deps. Run: rpm-ostree install python3-gobject python3-cairo python3-cryptography gtk4"
             echo "Then reboot and re-run this installer."
             exit 1
         }
     else
-        sudo dnf install -y python3-gobject python3-cairo gtk4 webkitgtk6.0 2>/dev/null || true
+        sudo dnf install -y python3-gobject python3-cairo python3-cryptography gtk4 webkitgtk6.0 2>/dev/null || true
     fi
 elif echo "$DISTRO $DISTRO_LIKE" | grep -qi "ubuntu\|debian"; then
     sudo apt-get update -qq
-    sudo apt-get install -y python3-gi python3-cairo gir1.2-gtk-4.0 gir1.2-webkit-6.0 2>/dev/null || true
+    sudo apt-get install -y python3-gi python3-cairo python3-cryptography gir1.2-gtk-4.0 gir1.2-webkit-6.0 2>/dev/null || true
 else
     echo "Unknown distro: $DISTRO. Trying to proceed..."
 fi
 
-# Verify deps
-/usr/bin/python3 -c "import gi; gi.require_version('Gtk', '4.0'); import cairo; print('Deps OK')" || {
-    echo "FATAL: Python GTK4 or cairo bindings not working."
+# Verify deps — cryptography included: a collar without it can't do vault mode.
+/usr/bin/python3 -c "import gi; gi.require_version('Gtk', '4.0'); import cairo; import cryptography; print('Deps OK')" || {
+    echo "FATAL: Python GTK4 / cairo / cryptography bindings not working."
+    echo "       (cryptography is required for vault mode — the collar cannot pair without it.)"
     exit 1
 }
 
