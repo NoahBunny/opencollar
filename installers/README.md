@@ -4,18 +4,41 @@ Scripts that put the desktop collar on a target machine and wire it into a
 mesh, plus operator-side scripts that bring up a homelab and redeploy code
 to existing devices.
 
-## Who runs what
+## Every script, grouped by role
 
-| Audience | Goal | Script |
-|---|---|---|
-| **Bunny / consumer** | Pair a fresh Linux PC to an existing mesh | [`install-mesh.sh`](#consumer-quick-start) |
-| **Bunny / consumer** | Pair a fresh Windows PC to an existing mesh | [`install-mesh.ps1`](#consumer-quick-start) |
-| **Bunny / consumer** | Tear down the collar | [`uninstall-desktop-collar.sh`](#uninstall) / [`.ps1`](#uninstall) |
-| **Operator / Lion** | Stand up the homelab (mail relay + ADB bridge) | [`homelab-setup.sh`](#operator-homelab) |
-| **Operator / Lion** | Push code updates to all collared machines | [`re-enslave-all.sh`](#operator-re-enslave) |
-| **Operator / Lion** | Push code to one tier only (desktops / phones / server) | [`re-enslave-{desktops,phones,server}.sh`](#operator-re-enslave) |
-| **Operator / Lion** | Auto-redeploy on git push | [`re-enslave-watcher.{py,service,timer}`](#operator-re-enslave) |
-| **Operator / Lion** | Sync Claude Code standing orders | [`install-standing-orders.sh`](#operator-homelab) |
+There are a lot of files here, but a given person only touches one group.
+**If you're a bunny setting up your own machine, you need the first group and
+nothing else.**
+
+### 🐇 Bunny / consumer — set up & remove your own collar
+| Script | What it does |
+|---|---|
+| [`install-mesh.sh`](#consumer-quick-start) | **Linux: the one you run.** Pre-configures `config.json` for your mesh, then installs the collar. |
+| [`install-mesh.ps1`](#consumer-quick-start) | Windows equivalent of the above. |
+| [`install-desktop-collar.sh`](#linux-platform-installer) | Linux platform installer that `install-mesh.sh` hands off to (deps, systemd units, daemon + tray). Run directly only if you want to walk the prompts by hand. |
+| [`uninstall-desktop-collar.sh`](#uninstall) / [`.ps1`](#uninstall) | Tear the collar back off (Linux / Windows). |
+
+### 👑 Operator / Lion — run the server side
+| Script | What it does |
+|---|---|
+| [`homelab-setup.sh`](#operator-homelab) | Deploy the mail relay + ADB bridge on a homelab box you already own. |
+| [`homelab-install.sh`](#operator-homelab) | Same, but a self-contained installer for a fresh Debian/Ubuntu **VPS**. |
+| [`install-standing-orders.sh`](#operator-homelab) | Sync the Claude Code standing orders (`~/.claude/CLAUDE.md`) from the homelab. |
+
+### 👑 Operator / Lion — push code to devices you already collared
+| Script | What it does |
+|---|---|
+| [`re-enslave-all.sh`](#operator-re-enslave) | Orchestrator: server → desktops → phones. |
+| [`re-enslave-{server,desktops,phones}.sh`](#operator-re-enslave) | Push one tier only. |
+| [`re-enslave-lib.sh`](#operator-re-enslave) | Shared helpers + the version constants; **sourced by the others, not run directly.** |
+| [`re-enslave-watcher.{py,service,timer}`](#operator-re-enslave) | systemd timer that auto-redeploys on a git push. |
+| [`re-enslave.config.example`](#operator-re-enslave) | Template → `~/.config/focuslock/re-enslave.config`. |
+
+### 🔧 Presets & local convenience (safe to ignore)
+| Script | What it does |
+|---|---|
+| [`install-mesh-jace.sh`](#presets--local-convenience) | A **personal preset** that hard-codes one specific mesh so a sideload needs no flags. An example to copy, not something you run. |
+| [`retrofit-local.sh`](#presets--local-convenience) | Self-update *this* machine's collar from the local source tree (operator/dev shortcut; a bunny normally re-runs the installer instead). |
 
 ## Consumer quick start
 
@@ -104,7 +127,10 @@ Bunny installs.**
 
 - `homelab-setup.sh` — installs `focuslock-mail.py` (vault relay + IMAP
   payment scanner + LLM eval), the ADB bridge, and the systemd units that
-  keep them running.
+  keep them running. Use on a homelab box you already own.
+- `homelab-install.sh` — a self-contained, idempotent installer for a **fresh
+  Debian/Ubuntu VPS** acting as the relay. Same end state as `homelab-setup.sh`
+  but bootstraps the whole box from scratch.
 - `install-standing-orders.sh` — pulls the Claude Code config from the
   operator's homelab and installs the systemd timer that keeps it in sync.
   Called automatically by `install-desktop-collar.sh` when a homelab URL is
@@ -129,6 +155,19 @@ cycle.
   `re-enslave-*.sh` when a relevant path changes.
 - `re-enslave.config.example` — copy to `~/.config/focuslock/re-enslave.config`,
   fill in the operator's host/device list.
+
+## Presets & local convenience
+
+Not part of a normal setup — safe to ignore.
+
+- `install-mesh-jace.sh` — a **personal preset**: a thin wrapper that hard-codes
+  one specific `mesh_id` + `mesh_url` and calls `install-mesh.sh`, so that owner's
+  sideload needs no flags. It's an example of how to bake a preset for your own
+  mesh, not a script anyone else runs.
+- `retrofit-local.sh` — self-update the collar on *this* machine: pulls the
+  latest tray / daemon / mesh / shared modules from the local source tree, copies
+  them into `/opt/focuslock` + `~/.config/focuslock`, and restarts the daemons. A
+  dev/operator shortcut; a bunny normally just re-runs `install-mesh.sh`.
 
 ## What's NOT here
 
