@@ -86,6 +86,10 @@ CONFIG_DIR = Path.home() / ".config" / "focuslock"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 ORDERS_FILE = CONFIG_DIR / "orders.json"
 HEARTBEAT_FILE = CONFIG_DIR / "last_sync_ms"
+# The Lion's pubkey lands here once They approve/pair this node — the collar reads
+# it (get_lion_pubkey). Its presence is the "paired" signal: no Lion key = the
+# device isn't actually under a Lion yet, so the crown stays gray.
+LION_PUBKEY_FILE = CONFIG_DIR / "lion_pubkey.pem"
 ICONS_DIR = CONFIG_DIR / "icons"
 # Crown asset paths used for the startup existence sanity check; runtime
 # icon swapping uses bare names + IconThemePath (KDE/SNI requirement).
@@ -111,9 +115,20 @@ def load_config():
         return {}
 
 
+def _is_paired():
+    """True once the Lion has paired/approved this node — i.e. Their pubkey is on
+    file. Until then the device is registered-but-unclaimed and the crown must
+    stay gray no matter how reachable the relay is."""
+    try:
+        return LION_PUBKEY_FILE.exists() and LION_PUBKEY_FILE.stat().st_size > 0
+    except Exception:
+        return False
+
+
 def _is_mesh_connected():
     """True if focuslock-desktop.py heartbeated a successful mesh poll
-    within CONNECTED_THRESHOLD_MS. Drives the gold/gray crown."""
+    within CONNECTED_THRESHOLD_MS. Combined with _is_paired() to drive the
+    gold/gray crown (gold requires BOTH)."""
     try:
         if HEARTBEAT_FILE.exists():
             mtime_ms = HEARTBEAT_FILE.stat().st_mtime * 1000
@@ -378,17 +393,27 @@ class FocusLockTray:
     def _on_state(self, state):
         """Called on the GTK thread by GLib.idle_add.
 
-        Icon = crown (gold=connected, gray=disconnected) with a red paywall
-        badge composited over it when an amount is owed. Label/menu carry
-        full lock state + tier — matches Windows tray + Bunny Tasker.
+        Icon = crown, GOLD only when the device is BOTH paired (the Lion's pubkey
+        is on file) AND connected (recent mesh heartbeat); GRAY otherwise — so an
+        unpaired-but-reachable node reads gray, not gold. A red paywall badge is
+        composited over gold when an amount is owed.
         """
+        paired = _is_paired()
         connected = _is_mesh_connected()
+        gold = paired and connected
+        # Shared status suffix for the accessibility/hover text.
+        astext = "under-lion" if gold else ("unpaired" if not paired else "disconnected")
 
         if state is None or "error" in (state or {}):
             err = (state or {}).get("error", "no-data")
-            icon_name = self._select_icon(connected, 0)
-            self.indicator.set_icon_full(icon_name, "connected" if connected else "disconnected")
-            label = "Disconnected" if not connected else f"Connected · reading state ({err})"
+            icon_name = self._select_icon(gold, 0)
+            self.indicator.set_icon_full(icon_name, astext)
+            if not paired:
+                label = "Not paired — waiting for your Lion"
+            elif not connected:
+                label = "Paired · disconnected"
+            else:
+                label = f"Connected · reading state ({err})"
             self.menu_status.set_label(label)
             return False  # don't reschedule (we're polling on a thread)
 
@@ -401,15 +426,19 @@ class FocusLockTray:
             paywall_f = 0.0
         tier = orders.get("sub_tier") or ""
 
-        icon_name = self._select_icon(connected, paywall_f)
-        self.indicator.set_icon_full(icon_name, "connected" if connected else "disconnected")
+        icon_name = self._select_icon(gold, paywall_f)
+        self.indicator.set_icon_full(icon_name, astext)
 
-        prefix = "Locked" if locked else "Unlocked"
-        if not connected:
-            prefix = f"{prefix} · disconnected"
-        label = f"{prefix}  ·  ${paywall_f:.2f}"
-        if tier:
-            label += f"  ·  {tier.title()}"
+        if not paired:
+            # Registered but not yet claimed by a Lion — nothing enforces yet.
+            label = "Not paired — waiting for your Lion"
+        else:
+            prefix = "Locked" if locked else "Unlocked"
+            if not connected:
+                prefix = f"{prefix} · disconnected"
+            label = f"{prefix}  ·  ${paywall_f:.2f}"
+            if tier:
+                label += f"  ·  {tier.title()}"
         self.menu_status.set_label(label)
         return False
 
