@@ -1661,7 +1661,14 @@ class CollarApp(Gtk.Application):
     def do_activate(self):
         self.hold()
 
-        if not self.consented:
+        # Terms of Surrender is only meaningful once the device is set to join a
+        # Lion's mesh — don't demand surrender on a bare, mesh-less install. When
+        # the wearer joins a mesh (installer prompt, or the tray's "Join /
+        # Configure Mesh"), MESH_ID gets set and the collar restarts into this
+        # path, prompting consent BEFORE it does any enforcement. A mesh-less
+        # collar just idles in the tray (nothing to enforce without a mesh), so
+        # running start_collar without consent there is safe.
+        if MESH_ID and not self.consented:
             self.show_consent()
             return
 
