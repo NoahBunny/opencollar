@@ -86,3 +86,6 @@ staging/qa-matrix-result.json
 # install-mesh.sh wrapper is whitelisted back in.
 installers/install-mesh-*.sh
 !installers/install-mesh.sh
+
+# Local archive of superseded builds / session docs (tidy-up, not for distribution)
+archive/
