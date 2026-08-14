@@ -4534,8 +4534,15 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if bunny_pubkey:
                 candidate_pubkeys.append(("bunny", bunny_pubkey))
             for vnode in _vault_store.get_nodes(mesh_id):
-                if vnode.get("node_id") == node_id and vnode.get("node_pubkey"):
-                    candidate_pubkeys.append(("vault-node", vnode["node_pubkey"]))
+                if vnode.get("node_id") == node_id:
+                    # Real-mesh-bunnies: a Collar that registered via register-node now
+                    # carries its E2EE bunny_pubkey on the vault node row — that's the
+                    # key it signs state-mirror with. Prefer it, then fall back to the
+                    # node_pubkey (desktop collars sign with the vault node key).
+                    if vnode.get("bunny_pubkey"):
+                        candidate_pubkeys.append(("vault-bunny", vnode["bunny_pubkey"]))
+                    if vnode.get("node_pubkey"):
+                        candidate_pubkeys.append(("vault-node", vnode["node_pubkey"]))
                     break
             if not candidate_pubkeys:
                 self.respond(403, {"error": "no signing pubkey on file for node"})
@@ -5144,10 +5151,16 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             # Resolve verifier pubkey: bunny = node.bunny_pubkey, lion = account.lion_pubkey
             if from_who == "bunny":
                 node = account.get("nodes", {}).get(node_id)
-                if not node:
-                    self.respond(403, {"error": "node not registered in mesh"})
-                    return
-                verifier_pub = node.get("bunny_pubkey", "")
+                verifier_pub = (node or {}).get("bunny_pubkey", "")
+                if not verifier_pub:
+                    # Real-mesh-bunnies: a Collar that became a member via register-node
+                    # (not the invite /api/mesh/join) carries its bunny_pubkey on the
+                    # vault node row rather than the account nodes dict. Fall back to it
+                    # so messaging verifies for full mesh members registered either way.
+                    for _vn in _vault_store.get_nodes(mesh_id):
+                        if _vn.get("node_id") == node_id and _vn.get("bunny_pubkey"):
+                            verifier_pub = _vn["bunny_pubkey"]
+                            break
                 if not verifier_pub:
                     self.respond(403, {"error": "no bunny_pubkey on file for node"})
                     return
@@ -5465,12 +5478,23 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 if not node_id or not node_pubkey:
                     self.respond(400, {"error": "node_id and node_pubkey required"})
                     return
+                # Real-mesh-bunnies: preserve the E2EE bunny_pubkey the Collar sent in
+                # its register-node-request (kept on the pending row) so an approved
+                # node stays a full, verifiable member. The Lion's approval payload
+                # may also carry it directly.
+                approved_bunny_pubkey = data.get("bunny_pubkey", "")
+                if not approved_bunny_pubkey:
+                    for _p in _vault_store.get_pending_nodes(mesh_id):
+                        if _p.get("node_id") == node_id:
+                            approved_bunny_pubkey = _p.get("bunny_pubkey", "")
+                            break
                 _vault_store.add_node(
                     mesh_id,
                     {
                         "node_id": node_id,
                         "node_type": node_type,
                         "node_pubkey": node_pubkey,
+                        "bunny_pubkey": approved_bunny_pubkey,
                         "registered_at": int(time.time()),
                     },
                 )
@@ -5519,6 +5543,11 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 node_id = data.get("node_id", "")
                 node_type = data.get("node_type", "unknown")
                 node_pubkey = data.get("node_pubkey", "")
+                # Real-mesh-bunnies: the Collar now also sends its E2EE bunny_pubkey
+                # so an auto-accepted / approved node becomes a full member the relay
+                # can verify for state-mirror + messaging (previously only the
+                # separate /api/mesh/join carried it). Optional — blank = vault-only.
+                node_bunny_pubkey = data.get("bunny_pubkey", "")
                 # Short hash of the pubkey for structured logs — lets an operator
                 # grep the access log and confirm which key made the request
                 # without logging the full key. Matches the hash shape used by
@@ -5594,6 +5623,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                             "node_id": node_id,
                             "node_type": node_type,
                             "node_pubkey": node_pubkey,
+                            "bunny_pubkey": node_bunny_pubkey,
                             "registered_at": int(time.time()),
                             "auto_accepted": True,
                         },
@@ -5614,6 +5644,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         "node_id": node_id,
                         "node_type": node_type,
                         "node_pubkey": node_pubkey,
+                        "bunny_pubkey": node_bunny_pubkey,
                         "requested_at": int(time.time()),
                     },
                 )
