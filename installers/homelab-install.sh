@@ -65,9 +65,15 @@ else
     echo "[2/6] python3 cryptography OK"
 fi
 
-# ── 3. Directories + volatile state dir ─────────────────────────────────────
-echo "[3/6] Creating $DEST and /run/focuslock ..."
+# ── 3. Directories + state dirs ─────────────────────────────────────────────
+echo "[3/6] Creating $DEST + state dirs ..."
 mkdir -p "$DEST"
+# DURABLE relay state — mesh accounts + vault node lists are the only record of
+# who is on a mesh; they MUST survive reboots. (The old /run/focuslock tmpfs
+# default silently wiped every mesh on boot.) Relay runs as root → 700.
+mkdir -p /var/lib/focuslock/meshes /var/lib/focuslock/vaults /var/lib/focuslock/mesh-orders && chmod 700 /var/lib/focuslock
+# VOLATILE bridge coordination only (devices.json / controller.json are
+# re-written by the ADB bridge each run) — fine to keep on tmpfs.
 mkdir -p /run/focuslock && chmod 777 /run/focuslock
 echo "d /run/focuslock 0777 root root -" > /etc/tmpfiles.d/focuslock.conf
 

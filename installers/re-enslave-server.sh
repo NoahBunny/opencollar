@@ -149,10 +149,12 @@ if [ "${#PUSH_LIST[@]}" -gt 0 ]; then
     ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" "rm -rf $TMPDIR_REMOTE"
 fi
 
-# Ensure runtime dirs exist (vault store + meshes + per-mesh orders)
+# Ensure the DURABLE state dirs exist (vault store + mesh accounts + per-mesh
+# orders). These hold the only server-side record of mesh membership, so they
+# live on persistent disk — NOT /run (tmpfs), which wiped every mesh on reboot.
 ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
-    'sudo mkdir -p /run/focuslock/meshes /run/focuslock/vaults /run/focuslock/mesh-orders && sudo chmod 755 /run/focuslock/meshes /run/focuslock/vaults /run/focuslock/mesh-orders' || \
-    warn "Could not create /run/focuslock dirs"
+    'sudo mkdir -p /var/lib/focuslock/meshes /var/lib/focuslock/vaults /var/lib/focuslock/mesh-orders && sudo chmod 700 /var/lib/focuslock' || \
+    warn "Could not create /var/lib/focuslock dirs"
 
 # Write git commit hash for /version transparency (P3)
 GIT_COMMIT=$(git -C "$LS" rev-parse HEAD 2>/dev/null || echo "")
