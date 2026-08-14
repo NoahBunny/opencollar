@@ -211,10 +211,13 @@ WEBHOOK_PORT = _cfg.get("homelab_port", 8434)
 # discovered local address (LAN/Tailscale-only deployments). No trailing slash.
 PUBLIC_URL = (_cfg.get("public_url", "") or os.environ.get("FOCUSLOCK_PUBLIC_URL", "")).rstrip("/")
 
-# Runtime state directory — hosts orders, peers, device registry, and per-mesh
-# vaults. Overridable via FOCUSLOCK_STATE_DIR for staging / tests / non-root
-# environments (systemd prod uses /run/focuslock via a tmpfiles.d unit).
-_STATE_DIR = os.environ.get("FOCUSLOCK_STATE_DIR", "/run/focuslock")
+# State directory — hosts orders, peers, device registry, mesh ACCOUNTS, and
+# per-mesh vaults. This is DURABLE data: mesh accounts + vault node lists are the
+# only server-side record of who's on a mesh. It MUST live on persistent disk.
+# (It used to default to /run/focuslock — tmpfs — which silently erased every
+# mesh on reboot; recovered 2026-08-15.) Overridable via FOCUSLOCK_STATE_DIR for
+# staging / tests / non-root environments.
+_STATE_DIR = os.environ.get("FOCUSLOCK_STATE_DIR", "/var/lib/focuslock")
 
 IP_REGISTRY_FILE = os.path.join(_STATE_DIR, "phone-ips.json")
 

@@ -41,9 +41,13 @@ fi
 
 # Create directories
 mkdir -p /opt/focuslock
-mkdir -p /run/focuslock
-chmod 777 /run/focuslock
-echo "d /run/focuslock 0777 root root -" > /etc/tmpfiles.d/focuslock.conf
+# DURABLE state dir. Mesh accounts + vault node lists are the ONLY server-side
+# record of who is on a mesh — they must survive reboots. The old default of
+# /run/focuslock (tmpfs, RAM) silently erased every mesh on boot. Runs as root,
+# so 700 is enough. If an old ephemeral unit exists, drop it.
+mkdir -p /var/lib/focuslock/meshes /var/lib/focuslock/vaults /var/lib/focuslock/mesh-orders
+chmod 700 /var/lib/focuslock
+rm -f /etc/tmpfiles.d/focuslock.conf
 
 # Copy project files (from parent dir where scripts/python live)
 echo "Copying files..."
