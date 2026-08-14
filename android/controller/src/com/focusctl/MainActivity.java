@@ -117,6 +117,13 @@ public class MainActivity extends Activity {
     private volatile String bunnyDirectPreferred = "";
     private volatile String lastDirectGetBase = "";
     private String bunnyPubkeyB64 = "";
+    // Real-mesh-bunnies: the specific mesh member this slot controls. On a shared
+    // mesh with several bunnies (many-bunnies-per-mesh), each slot targets ONE
+    // node_id — used to pick the right per-node bunny_pubkey out of /vault/nodes,
+    // to target orders (target_node) and to route this slot's chat messages.
+    // Empty = legacy one-bunny-per-mesh (falls back to the single top-level key,
+    // and orders broadcast to the whole mesh).
+    private String bunnyNodeId = "";
     private String smsToken = "";
     // Optional homelab (self-hosted server) attached to the active bunny. When
     // unset, homelab-only controls hide and direct-mode fallbacks take over.
@@ -406,8 +413,28 @@ public class MainActivity extends Activity {
     private void persistBunnyPubkey(String nodesJson) {
         if (nodesJson == null) return;
         final String forBunnyId = activeBunnyId;   // slot this fetch belongs to
-        String bp;
-        try { bp = new org.json.JSONObject(nodesJson).optString("bunny_pubkey", ""); }
+        final String forNodeId = bunnyNodeId;      // member this slot targets (may be empty)
+        String bp = "";
+        try {
+            org.json.JSONObject root = new org.json.JSONObject(nodesJson);
+            // Real-mesh-bunnies: on a shared mesh each slot targets one node_id, so
+            // pull THAT member's bunny_pubkey out of the nodes[] array. Falls back to
+            // the legacy single top-level bunny_pubkey when the slot has no node_id
+            // (classic one-bunny-per-mesh) or no per-node key is present.
+            if (!forNodeId.isEmpty()) {
+                org.json.JSONArray arr = root.optJSONArray("nodes");
+                if (arr != null) {
+                    for (int i = 0; i < arr.length(); i++) {
+                        org.json.JSONObject n = arr.getJSONObject(i);
+                        if (forNodeId.equals(n.optString("node_id", ""))) {
+                            bp = n.optString("bunny_pubkey", "");
+                            break;
+                        }
+                    }
+                }
+            }
+            if (bp.isEmpty()) bp = root.optString("bunny_pubkey", "");
+        }
         catch (Exception e) { return; }
         if (bp == null || bp.isEmpty()) return;
         final String fbp = bp;
@@ -932,7 +959,7 @@ public class MainActivity extends Activity {
         String[] fields = {
             "mesh_url", "mesh_id", "auth_token", "invite_code", "pin",
             "vault_mode", "pair_mode", "bunny_direct_url", "bunny_direct_urls",
-            "bunny_pubkey_b64", "sms_token", "homelab_url", "homelab_caps"
+            "bunny_pubkey_b64", "node_id", "sms_token", "homelab_url", "homelab_caps"
         };
         for (String f : fields) ed.remove(bunnyKey(id, f));
         ed.apply();
@@ -953,6 +980,7 @@ public class MainActivity extends Activity {
             bunnyDirectUrls = new java.util.concurrent.CopyOnWriteArrayList<>();
             bunnyDirectPreferred = "";
             bunnyPubkeyB64 = "";
+            bunnyNodeId = "";
             smsToken = "";
             homelabUrl = "";
             homelabCaps = false;
@@ -972,6 +1000,7 @@ public class MainActivity extends Activity {
         bunnyDirectUrls = new java.util.concurrent.CopyOnWriteArrayList<>(loadDirectUrls(activeBunnyId));
         bunnyDirectPreferred = "";
         bunnyPubkeyB64 = prefs.getString(bunnyKey(activeBunnyId, "bunny_pubkey_b64"), "");
+        bunnyNodeId    = prefs.getString(bunnyKey(activeBunnyId, "node_id"), "");
         smsToken       = prefs.getString(bunnyKey(activeBunnyId, "sms_token"), "");
         homelabUrl     = prefs.getString(bunnyKey(activeBunnyId, "homelab_url"), "");
         homelabCaps    = prefs.getBoolean(bunnyKey(activeBunnyId, "homelab_caps"), false);
@@ -2273,6 +2302,7 @@ public class MainActivity extends Activity {
                         list.addView(buildApprovedRow(n.optString("node_id", "?"),
                             n.optString("node_type", "?"),
                             n.optString("node_pubkey", ""),
+                            n.optString("bunny_pubkey", ""),
                             n.optString("display_name", "")));
                         approvedCount++;
                     }
@@ -2317,7 +2347,8 @@ public class MainActivity extends Activity {
         statusLine.setText("Approved " + approvedCount + " · Pending " + pendingCount);
     }
 
-    private View buildApprovedRow(String nodeId, String nodeType, String nodePubkey, String displayName) {
+    private View buildApprovedRow(String nodeId, String nodeType, String nodePubkey,
+                                  String bunnyPubkey, String displayName) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.VERTICAL);
         row.setPadding(8, 6, 8, 6);
@@ -2337,7 +2368,75 @@ public class MainActivity extends Activity {
         fp.setTextSize(10);
         row.addView(fp);
 
+        // Real-mesh-bunnies: let the Lion adopt an approved phone member of THIS
+        // mesh as its own controllable/messageable bunny slot (node_id-keyed). A
+        // Direct slot already holding the same bunny key is upgraded in place
+        // rather than duplicated. The "controller" node is the Lion itself — skip.
+        if ("phone".equals(nodeType) && !"controller".equals(nodeId)) {
+            final String label = hasName ? displayName : nodeId;
+            String existing = findSlotForMember(nodeId, bunnyPubkey);
+            if (existing.isEmpty()) {
+                Button adopt = new Button(this);
+                adopt.setText("Add as bunny");
+                adopt.setTextColor(0xFFDAA520);
+                adopt.setTextSize(11);
+                final String fPub = bunnyPubkey;
+                adopt.setOnClickListener(v -> {
+                    String id = adoptMeshBunny(nodeId, fPub, label);
+                    setStatus(id.isEmpty() ? "Adopt failed — open Vault Nodes from a mesh bunny"
+                                           : ("Added mesh bunny " + label));
+                });
+                row.addView(adopt);
+            } else {
+                TextView adopted = new TextView(this);
+                adopted.setText("✓ bunny slot");
+                adopted.setTextColor(0xFF66aa66);
+                adopted.setTextSize(10);
+                row.addView(adopted);
+            }
+        }
+
         return row;
+    }
+
+    /** Existing bunny slot targeting this mesh member — matched by node_id, or by
+     *  the member's bunny key (so a pre-existing Direct slot for the same physical
+     *  phone is upgraded in place rather than duplicated). "" if none. */
+    private String findSlotForMember(String nodeId, String bunnyPubkey) {
+        for (BunnyEntry b : listBunnies()) {
+            String slotNode = prefs.getString(bunnyKey(b.id, "node_id"), "");
+            String slotBp = prefs.getString(bunnyKey(b.id, "bunny_pubkey_b64"), "");
+            if ((!nodeId.isEmpty() && nodeId.equals(slotNode))
+                    || (bunnyPubkey != null && !bunnyPubkey.isEmpty() && bunnyPubkey.equals(slotBp))) {
+                return b.id;
+            }
+        }
+        return "";
+    }
+
+    /** Adopt an approved mesh member as a node_id-keyed mesh bunny on the CURRENT
+     *  mesh (meshId/meshUrl of whichever slot the Vault Nodes screen was opened
+     *  from). Upgrades a matching Direct slot in place (so control switches from
+     *  the single-IP direct path to the vault broadcast), else creates a new slot.
+     *  Returns the slot id, or "" when there is no mesh context. */
+    private String adoptMeshBunny(String nodeId, String bunnyPubkey, String label) {
+        if (meshId.isEmpty() || meshUrl.isEmpty()) return "";
+        String slotId = findSlotForMember(nodeId, bunnyPubkey);
+        if (slotId.isEmpty()) slotId = addBunnySlot(label);
+        SharedPreferences.Editor ed = prefs.edit();
+        ed.putString(bunnyKey(slotId, "mesh_url"), meshUrl);
+        ed.putString(bunnyKey(slotId, "mesh_id"), meshId);
+        ed.putString(bunnyKey(slotId, "node_id"), nodeId);
+        ed.putBoolean(bunnyKey(slotId, "vault_mode"), true);
+        // Not "direct": route orders through apiVault so they reach the member via
+        // the relay/vault even off-LAN. Direct URLs (if any) stay as a fast-path
+        // fallback the vault layer can still use.
+        ed.putString(bunnyKey(slotId, "pair_mode"), "mesh");
+        if (bunnyPubkey != null && !bunnyPubkey.isEmpty()) {
+            ed.putString(bunnyKey(slotId, "bunny_pubkey_b64"), bunnyPubkey);
+        }
+        ed.apply();
+        return slotId;
     }
 
     private View buildPendingRow(final String nodeId, final String nodeType,

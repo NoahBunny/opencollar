@@ -4066,9 +4066,17 @@ public class ControlService extends Service {
             }
 
             String pubB64 = android.util.Base64.encodeToString(myPubDer, android.util.Base64.NO_WRAP);
+            // Real-mesh-bunnies: carry the E2EE bunny pubkey in the registration so
+            // the relay records a FULL account member (bunny_pubkey), not just a
+            // vault node_pubkey. Without this, state-mirror + Lion↔Bunny messaging
+            // can't verify the bunny and a separate Bunny-Tasker /api/mesh/join was
+            // the only way to become a real member. Empty is fine (relay treats a
+            // blank bunny_pubkey as "vault-only node", the pre-existing behaviour).
+            String bunnyPub = gstr("focus_lock_bunny_pubkey");
             String body = "{\"node_id\":\"" + esc(nodeId)
                 + "\",\"node_type\":\"phone\""
-                + ",\"node_pubkey\":\"" + pubB64 + "\"}";
+                + ",\"node_pubkey\":\"" + pubB64 + "\""
+                + ",\"bunny_pubkey\":\"" + esc(bunnyPub) + "\"}";
             String resp = vaultHttpPost(meshUrl + "/vault/" + meshId + "/register-node-request", body);
             if (resp != null) {
                 Log.w(TAG, "vault: posted register-node-request (slot=" + mySlotId
