@@ -20,7 +20,11 @@ amt="$(python3 - "$ORDERS" <<'PY' 2>/dev/null
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
-    v = d.get("paywall")
+    # The collar writes {"version":..,"orders":{"paywall":..}}. Read the nested
+    # value, with a top-level fallback for any flatter/legacy shape.
+    v = d.get("orders", {}).get("paywall")
+    if v in (None, "", 0, "0"):
+        v = d.get("paywall")
     if v in (None, "", 0, "0"):
         print(0)
     else:
