@@ -2034,10 +2034,14 @@ public class MainActivity extends Activity {
             label.setPadding((int)(8*density), 0, (int)(8*density), 0);
             row.addView(label, labelLp);
 
-            // Tap the row → switch active
+            // Tap the row → switch active. Rebuild the dialog so the ● moves to
+            // the new slot: without this the switch DOES happen (setActiveBunny
+            // fires) but the frozen dialog hides it, so it looks like nothing
+            // happened and the user can't tell which bunny is active.
             row.setOnClickListener(v -> {
                 if (bb.id.equals(activeBunnyId)) return;
                 setActiveBunny(bb.id);
+                reopenBunnies();
             });
             // Long-press the row → rename
             row.setOnLongClickListener(v -> {
