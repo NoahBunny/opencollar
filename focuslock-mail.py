@@ -823,17 +823,15 @@ def mesh_apply_order(action, params, orders):
         orders.set("sub_due", due)
         amounts = {"bronze": 25, "silver": 35, "gold": 50}
         amount = amounts[tier]
-        # No-grace-period subscribe: bump paywall by the tier amount the moment
-        # the user subscribes. Previously the first charge waited until sub_due
-        # (7 days), which felt like a 1-week free trial. The weekly cadence is
-        # preserved — subscribe-charge still fires at sub_due to charge week 2.
-        try:
-            cur_pw = int(orders.get("paywall", "0") or "0")
-        except (ValueError, TypeError):
-            cur_pw = 0
-        new_pw = cur_pw + amount
-        orders.set("paywall", str(new_pw))
-        return {"applied": action, "tier": tier, "due": due, "amount": amount, "paywall": new_pw}
+        # Enrollment ONLY — sets tier + due, no paywall bump here. The immediate
+        # first charge is a separate `subscribe-charge` fired by the caller (see
+        # the /subscribe endpoint + signup wizard). This keeps the first charge
+        # identical to every weekly charge and — crucially — propagates to
+        # vault-mode meshes: the old inline bump landed only in the server orders
+        # registry, which vault-mode devices never read, so "subscribed but
+        # not charged" (the eMv8 bug). subscribe-charge rides a vault blob that
+        # the Collar's tested subscribe-charge handler applies on-device.
+        return {"applied": action, "tier": tier, "due": due, "amount": amount}
     elif action == "set-sub-due":
         import time as t_sd
 
@@ -1915,6 +1913,9 @@ def _apply_initial_mesh_config(mesh_id, cfg):
     if sub_tier in ("bronze", "silver", "gold"):
         try:
             _server_apply_order(mesh_id, "subscribe", {"tier": sub_tier})
+            # Immediate first charge (no grace period) — same order the weekly
+            # scheduler and the /subscribe endpoint use.
+            _server_apply_order(mesh_id, "subscribe-charge", {"tier": sub_tier})
             applied.append("subscribe")
         except Exception:
             logger.exception("initial_config: subscribe failed")
@@ -4052,13 +4053,26 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if not result:
                 self.respond(500, {"error": "apply failed"})
                 return
+            # Immediate first charge — no grace period. Fires the same
+            # subscribe-charge order the weekly scheduler uses, so it charges the
+            # paywall on-device (via a vault blob) as well as in the registry.
+            charge = _server_apply_order(mesh_id, "subscribe-charge", {"tier": tier})
             logger.info(
-                "Bunny subscribe: mesh=%s node=%s tier=%s",
+                "Bunny subscribe: mesh=%s node=%s tier=%s charged=%s",
                 mesh_id,
                 _sanitize_log(node_id),
                 tier,
+                bool(charge),
             )
-            self.respond(200, {"ok": True, "tier": tier, "due": result.get("due")})
+            self.respond(
+                200,
+                {
+                    "ok": True,
+                    "tier": tier,
+                    "due": result.get("due"),
+                    "charged": (charge or {}).get("amount", 0),
+                },
+            )
 
         # ── Bunny-authed unsubscribe (P2 paywall hardening follow-up) ──
         # Path: /api/mesh/{mesh_id}/unsubscribe

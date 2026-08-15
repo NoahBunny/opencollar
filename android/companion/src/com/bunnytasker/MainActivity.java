@@ -1399,7 +1399,7 @@ public class MainActivity extends Activity {
                 (tier.equals("bronze") ? "Perks: Stats + messaging" :
                  tier.equals("silver") ? "Perks: Reduced compound interest (5% instead of 10%)" :
                  "Perks: No compound interest + 1 free unlock/month") +
-                "\n\nCancel fee: $" + (amount * 2) + "\n\nFirst charge in 7 days. Overdue = warnings then auto-lock.")
+                "\n\nCancel fee: $" + (amount * 2) + "\n\nFirst charge now, then weekly. Overdue = warnings then auto-lock.")
             .setPositiveButton("SUBSCRIBE", (d, w) -> {
                 executor.execute(() -> postSubscribeToMesh(tier, amount));
             })
