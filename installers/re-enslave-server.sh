@@ -205,9 +205,17 @@ REMOTE_SCRIPT=$(mktemp)
     # persistent disk — NOT /run (tmpfs), which wiped every mesh on reboot.
     # install-server-sudoers.sh pre-creates them, so a prepared relay skips this
     # rather than escalating for a no-op.
-    echo 'if [ ! -d /var/lib/focuslock/meshes ]; then'
-    echo '    $SUDO mkdir -p /var/lib/focuslock/meshes /var/lib/focuslock/vaults /var/lib/focuslock/mesh-orders'
-    echo '    $SUDO chmod 700 /var/lib/focuslock'
+    # The dir is root-owned 0700, so an unprivileged deploy user cannot even
+    # stat inside it — `[ -d .../meshes ]` reads false whether or not it exists.
+    # Try, and treat failure as information rather than an error: on a prepared
+    # relay install-server-sudoers.sh already made these, and on an unprepared
+    # one $SUDO covers it. Never fatal — a deploy that only touched code files
+    # must not die because it couldn't confirm a directory it doesn't need to
+    # create.
+    echo 'if ! $SUDO mkdir -p /var/lib/focuslock/meshes /var/lib/focuslock/vaults /var/lib/focuslock/mesh-orders 2>/dev/null; then'
+    echo '    echo "  note: /var/lib/focuslock is root-only from here — assuming the installer made it"'
+    echo 'else'
+    echo '    $SUDO chmod 700 /var/lib/focuslock 2>/dev/null || true'
     echo 'fi'
     # Git commit hash for /version transparency (P3)
     if [ -n "$GIT_COMMIT" ]; then
