@@ -62,6 +62,16 @@ MERGE_BASE="$(git merge-base "$BASE" HEAD)"
 mapfile -t COMMITS < <(git rev-list "$MERGE_BASE..HEAD")
 [ "${#COMMITS[@]}" -gt 0 ] || die "no commits between $BASE and $BRANCH — nothing to do"
 
+# Verification needs a trust list even in report mode. Without one, git cannot
+# check an SSH signature and reports N — so a branch that is already correctly
+# signed would be reported as entirely unsigned, which is the specific lie this
+# script exists to stop telling. Fall back to the in-repo list when the user has
+# not configured one globally; CI does exactly the same thing.
+VERIFY=(git)
+if [ -z "$(git config --get gpg.ssh.allowedSignersFile || true)" ] && [ -f .github/allowed_signers ]; then
+    VERIFY=(git -c gpg.ssh.allowedSignersFile=.github/allowed_signers)
+fi
+
 classify() {  # -> sets SENSITIVE_OK / SENSITIVE_BAD / SKIPPED arrays
     SENSITIVE_OK=(); SENSITIVE_BAD=(); SKIPPED=()
     local sha touched status
@@ -70,7 +80,7 @@ classify() {  # -> sets SENSITIVE_OK / SENSITIVE_BAD / SKIPPED arrays
         if [ -z "$touched" ] || ! printf '%s\n' "$touched" | grep -qE "$SENSITIVE_REGEX"; then
             SKIPPED+=("$sha"); continue
         fi
-        status="$(git log -1 --format='%G?' "$sha")"
+        status="$("${VERIFY[@]}" log -1 --format='%G?' "$sha" 2>/dev/null)"
         case "$status" in
             G|U) SENSITIVE_OK+=("$sha") ;;
             *)   SENSITIVE_BAD+=("$sha|$status") ;;
