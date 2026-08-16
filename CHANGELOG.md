@@ -8,6 +8,46 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-17 the signing gate could not be passed by signing ───────── -->
+
+### Fixed — `signed-commits` CI rejected correctly-signed commits
+
+- **Nothing configured `gpg.ssh.allowedSignersFile`, so the runner could not verify an SSH
+  signature at all.** Git reports `%G?=N` in that state — byte-identical to the status it
+  reports for a wholly unsigned commit — and the workflow accepts only `G`/`U`. A
+  contributor who followed `CONTRIBUTING.md` to the letter would have signed every commit
+  and still watched the gate fail, with an error message instructing them to sign.
+  Confirmed directly: the same SSH-signed commit reads `N` with no allowed-signers file and
+  `G` with one. New `.github/allowed_signers` carries the trusted keys and the workflow
+  points git at it before checking.
+- **The trust list is itself an enforcement-sensitive path.** Added to `SENSITIVE_REGEX` in
+  the same change — a list that an unsigned commit can append to is not a trust list, so
+  adding a key now requires a signature from a key already on it.
+- **CI can verify SSH signatures only.** A GPG-signed commit still reads `E` (missing key),
+  because nothing imports a keyring into the runner. `CONTRIBUTING.md` now says so and
+  points contributors at SSH signing rather than leaving the choice open.
+
+### Added — `scripts/sign-branch.sh`, retroactive signing that reports before it rewrites
+
+- **The documented one-liner was not sufficient on its own.**
+  `git rebase --exec 'git commit --amend --no-edit -S' <upstream>..HEAD` signs nothing
+  unless signing is already configured, and this machine had no `commit.gpgsign`, no
+  `user.signingkey`, no `gpg.format` — the rebase would have rewritten the whole branch and
+  changed no signature status. The script configures signing first, then rewrites.
+- Reports by default and changes nothing; `--apply` rewrites. Refuses a dirty tree, refuses
+  merge commits, and refuses a detached HEAD **before** taking a backup or touching history.
+  Never generates a signing key — a signing key is an identity, and a script does not get to
+  mint one. Takes a `backup/pre-signing/…` branch, re-verifies afterward with the workflow's
+  regex copied byte-for-byte, asserts the tree is unchanged against that backup, and never
+  pushes: it prints the force-push and the one-line undo instead.
+- Report mode reads `%G?` through the in-repo allowed-signers list when none is configured,
+  so an already-signed branch is not reported as unsigned — the exact failure the script
+  exists to diagnose, which it briefly reproduced.
+- **Run on `feat/real-mesh-bunnies`:** all 91 commits verify `G` (the gate requires it of
+  73), tree byte-identical to the backup. Verified against a fresh clone with no local
+  config — the runner's condition — using the workflow's own logic.
+
+
 <!-- ───────── 2026-08-17 the read side of the address gate ───────── -->
 
 ### Fixed — `GET /controller` served the Lion's address to anyone who asked
