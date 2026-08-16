@@ -8,6 +8,42 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-17 node-signed standing orders ───────── -->
+
+### Added — a collar can read its orders without holding the Lion's admin token
+
+- **Being told what to do required the keys to the relay** (`focuslock-mail.py`,
+  `focuslock-desktop.py`, `focuslock-desktop-win.py`). `GET /standing-orders` is
+  admin-gated (audit 2026-04-27 H-1), so the only way a desktop collar could pull the
+  Lion's orders was to keep `ADMIN_TOKEN` — a credential for the whole admin API, across
+  every mesh the relay serves — in the config of the machine the collar exists to
+  constrain. Found on a live mesh where the sync had been dead for a day and the
+  remedy on offer was to hand the bunny that token. New **`POST
+  /vault/{mesh_id}/standing-orders`** — body `{node_id, ts, signature}`, signature over
+  `"{mesh_id}|{node_id}|standing-orders|{ts}"` with the node's own registered key
+  (vault `node_pubkey` or the `bunny_pubkey` on its row), ±5 min replay window —
+  returns `{content, sha256}`. Membership is the right proof: a node that already holds
+  a registered key has demonstrated it is on this mesh, and that is all reading the
+  orders should require. Both collars try it first and fall back to the Bearer path, so
+  a separate homelab box or a token-configured operator keeps working.
+- **Serves the stub only.** `_read_standing_orders()` is shared with the admin GET:
+  `CLAUDE-stub.md` if present, else `CLAUDE.md`, with `ADMIN_TOKEN` redacted.
+  `/enforcement-orders` — tactical orders, penalty amounts, the token itself — has no
+  node-signed route and stays admin-gated, where a node key is not enough.
+- **Not gated on `lion_confirmed`**, same reasoning as `lion-pubkey`: a machine that
+  starts obeying the Lion's standing orders becomes more governed, never less.
+- **One verifier for every node-signed route.** `_verify_node_signature()` +
+  `_node_signing_keys()` now back both this route and `lion-pubkey`, which previously
+  carried its own thirty-line copy. A route that quietly accepted a wider set of keys
+  than its siblings is the kind of drift that is easier to notice in one function than
+  in three copies.
+- 13 new tests (`tests/test_standing_orders_node_fetch.py`): registered node served and
+  the sha matches; **the safeword clause survives the trip**; the admin token is
+  redacted; an unconfirmed auto-accepted node is served; stranger, rogue key, the
+  Lion's own key, stale ts, and a signature bound to another mesh all refused; missing
+  fields 400; no orders on file 404; the admin gate on the GET is untouched and
+  `/enforcement-orders` has no node-signed door. Mutation-checked. Suite `1277 → 1290`.
+
 <!-- ───────── 2026-08-17 restart re-registration ───────── -->
 
 ### Fixed — a collar restart looked like a stranger knocking

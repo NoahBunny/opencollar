@@ -1845,6 +1845,63 @@ def apply_unpaired_orders():
         logger.warning("Interim (unpaired) standing orders failed: %s", e)
 
 
+def _fetch_standing_orders_signed():
+    """Pull the Lion's standing orders by proving membership with our own vault
+    node key, instead of by holding Their admin token.
+
+    Mirrors the Linux collar's _fetch_standing_orders_signed(). GET
+    /standing-orders is admin-gated, so reading its own orders used to require
+    this machine to keep ADMIN_TOKEN — a credential for the whole admin API —
+    in the collar's config, which is the wrong way round. Returns the orders
+    text or None; quiet on failure, the caller falls back to the Bearer path."""
+    if not MESH_URL or not MESH_ID or not _vault_privkey_pem:
+        return None
+    try:
+        import base64 as _b64
+
+        from cryptography.hazmat.primitives import hashes as _hh
+        from cryptography.hazmat.primitives import serialization as _ser
+        from cryptography.hazmat.primitives.asymmetric import padding as _pad
+
+        ts_ms = int(time.time() * 1000)
+        payload = f"{MESH_ID}|{MESH_NODE_ID}|standing-orders|{ts_ms}"
+        priv = _ser.load_pem_private_key(_vault_privkey_pem.encode(), password=None)
+        sig = _b64.b64encode(priv.sign(payload.encode("utf-8"), _pad.PKCS1v15(), _hh.SHA256())).decode()
+        body = json.dumps({"node_id": MESH_NODE_ID, "ts": ts_ms, "signature": sig}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{MESH_URL}/vault/{MESH_ID}/standing-orders",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        content = data.get("content") or ""
+        return content if len(content) > 50 else None
+    except urllib.error.HTTPError as e:
+        logger.debug("standing-orders node fetch HTTP %s", e.code)
+    except Exception as e:
+        logger.debug("standing-orders node fetch failed: %s", e)
+    return None
+
+
+def _write_claude_file(claude_dir, filename, content):
+    """Write one synced file, only when it changed. Atomic: temp in the same
+    dir then os.replace, so a kill mid-write cannot truncate the live file."""
+    target = os.path.join(claude_dir, filename)
+    existing = ""
+    if os.path.exists(target):
+        with open(target, "r", encoding="utf-8") as f:
+            existing = f.read()
+    if content == existing:
+        return
+    tmp = target + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(content)
+    os.replace(tmp, target)
+    logger.info("Standing orders synced: %s (%d bytes)", filename, len(content))
+
+
 def sync_standing_orders():
     """Pull CLAUDE.md + settings.json from the mesh server into ~/.claude.
 
@@ -1890,12 +1947,26 @@ def sync_standing_orders():
                     logger.info("Interim (unpaired) orders revoked — this machine has a Lion now")
         except Exception as e:
             logger.warning("Could not revoke interim orders: %s", e)
-    if not ADMIN_TOKEN:
-        logger.debug("Standing orders sync skipped: no admin_token configured")
-        return
     claude_dir = os.path.join(os.environ.get("USERPROFILE", ""), ".claude")
     os.makedirs(claude_dir, exist_ok=True)
-    for endpoint, filename in [("/standing-orders", "CLAUDE.md"), ("/settings", "settings.json")]:
+    # Node-signed first: it needs only the key this collar already has, so the
+    # admin token stops being a prerequisite for a machine to hear its orders.
+    signed = _fetch_standing_orders_signed()
+    if signed:
+        try:
+            _write_claude_file(claude_dir, "CLAUDE.md", signed)
+        except Exception as e:
+            logger.warning("Could not write standing orders: %s", e)
+    if not ADMIN_TOKEN:
+        if not signed:
+            logger.debug("Standing orders sync: node-signed fetch failed and no admin_token configured")
+        return
+    # settings.json has no node-signed route (it is not orders), so it still
+    # needs the token; CLAUDE.md is re-fetched here only if the signed path
+    # came back empty.
+    endpoints = [("/settings", "settings.json")] if signed else [
+        ("/standing-orders", "CLAUDE.md"), ("/settings", "settings.json")]
+    for endpoint, filename in endpoints:
         try:
             req = urllib.request.Request(
                 f"{MESH_URL}{endpoint}",
@@ -1915,19 +1986,7 @@ def sync_standing_orders():
                 except Exception:
                     logger.warning("Standing orders: %s response was not valid JSON — skipping", filename)
                     continue
-            target = os.path.join(claude_dir, filename)
-            existing = ""
-            if os.path.exists(target):
-                with open(target, "r", encoding="utf-8") as f:
-                    existing = f.read()
-            if content != existing:
-                # Atomic write: temp in the same dir then os.replace, so a process
-                # kill mid-write can't truncate the live file.
-                tmp = target + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as f:
-                    f.write(content)
-                os.replace(tmp, target)
-                logger.info("Standing orders synced: %s (%d bytes)", filename, len(content))
+            _write_claude_file(claude_dir, filename, content)
         except Exception:
             logger.warning("Failed to fetch standing orders: %s", endpoint)
 

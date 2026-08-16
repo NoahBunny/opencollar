@@ -1642,6 +1642,53 @@ def _fetch_lion_pubkey():
     return False
 
 
+def _fetch_standing_orders_signed():
+    """Pull the Lion's standing orders by proving membership with our own vault
+    node key, instead of by holding Their admin token.
+
+    GET /standing-orders is admin-gated, so the only way this machine could read
+    its own orders was to keep ADMIN_TOKEN — a credential for the entire admin
+    API, on every mesh the relay serves — in the collar's config. That is the
+    wrong way round: the bunny ended up holding the keys to the relay in order
+    to be told what to do. POST /vault/{mesh}/standing-orders asks for the same
+    text and proves only what actually matters here, that we are a registered
+    node on this mesh.
+
+    Returns the orders text, or None. Quiet on failure — the caller falls back
+    to the admin-token path and then to its own failure accounting."""
+    if not MESH_URL or not MESH_ID or not _vault_privkey_pem:
+        return None
+    try:
+        import base64 as _b64
+
+        from cryptography.hazmat.primitives import hashes as _hh
+        from cryptography.hazmat.primitives import serialization as _ser
+        from cryptography.hazmat.primitives.asymmetric import padding as _pad
+
+        ts_ms = int(time.time() * 1000)
+        payload = f"{MESH_ID}|{MESH_NODE_ID}|standing-orders|{ts_ms}"
+        priv = _ser.load_pem_private_key(_vault_privkey_pem.encode(), password=None)
+        sig = _b64.b64encode(priv.sign(payload.encode("utf-8"), _pad.PKCS1v15(), _hh.SHA256())).decode()
+        body = json.dumps({"node_id": MESH_NODE_ID, "ts": ts_ms, "signature": sig}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{MESH_URL}/vault/{MESH_ID}/standing-orders",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        content = data.get("content") or ""
+        # Same sanity floor the admin path uses: a truncated body or a proxy
+        # error page must never be installed as the Lion's orders.
+        return content if len(content) > 50 else None
+    except urllib.error.HTTPError as e:
+        logger.debug("standing-orders node fetch HTTP %s", e.code)
+    except Exception as e:
+        logger.debug("standing-orders node fetch failed: %s", e)
+    return None
+
+
 def _revoke_unpaired_overlay():
     """Drop the interim orders once a Lion has claimed this machine.
 
@@ -1692,8 +1739,21 @@ def sync_standing_orders():
         return
     _clear_unpaired_marker()
     _revoke_unpaired_overlay()
+    # Node-signed first: it needs nothing but the key this collar already has,
+    # so the admin token stops being a prerequisite for a machine to hear its
+    # own orders. The Bearer path stays as the fallback for a separate homelab
+    # box (HOMELAB_URL != MESH_URL) and for operators who do configure a token.
+    content = _fetch_standing_orders_signed()
+    if content:
+        _so_fail_streak = 0
+        _apply_standing_orders(content)
+        return
     if not ADMIN_TOKEN:
-        logger.debug("Standing orders sync skipped: no admin_token configured")
+        logger.debug("Standing orders sync: node-signed fetch failed and no admin_token configured")
+        if STANDING_ORDERS_REQUIRE_CONNECTION:
+            _so_fail_streak += 1
+            if _so_fail_streak >= _SO_REVOKE_AFTER:
+                _revoke_standing_orders()
         return
     try:
         req = urllib.request.Request(

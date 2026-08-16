@@ -3045,6 +3045,62 @@ def _node_awaiting_confirmation(vault_row):
     return bool(vault_row.get("auto_accepted")) and not vault_row.get("lion_confirmed")
 
 
+def _node_signing_keys(mesh_id, node_id):
+    """Public keys a registered node is allowed to sign with: its vault
+    node_pubkey and the bunny_pubkey on the same row — the same pair
+    state-mirror accepts. Empty list means "not a member"."""
+    for vnode in _vault_store.get_nodes(mesh_id):
+        if vnode.get("node_id") == node_id:
+            return [k for k in (vnode.get("node_pubkey"), vnode.get("bunny_pubkey")) if k]
+    return []
+
+
+def _verify_node_signature(mesh_id, node_id, signature_b64, payload):
+    """True when `signature_b64` over `payload` verifies against one of the
+    node's registered keys.
+
+    Shared by every node-signed vault route so they cannot drift apart on which
+    keys count as the node's — a route that quietly accepted a wider set than
+    its siblings would be the hole, and that is easier to notice in one function
+    than in three copies of thirty lines."""
+    import base64 as _b64
+
+    from cryptography.hazmat.primitives import hashes as _hh
+    from cryptography.hazmat.primitives import serialization as _ser
+    from cryptography.hazmat.primitives.asymmetric import padding as _pad
+
+    try:
+        sig = _b64.b64decode(signature_b64)
+    except Exception:
+        return False
+    for pk_b64 in _node_signing_keys(mesh_id, node_id):
+        try:
+            pub = _ser.load_der_public_key(_b64.b64decode(pk_b64))
+            pub.verify(sig, payload.encode("utf-8"), _pad.PKCS1v15(), _hh.SHA256())
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _read_standing_orders():
+    """The Lion's standing orders as the relay serves them: CLAUDE-stub.md if
+    present, else CLAUDE.md, with ADMIN_TOKEN redacted. None when neither
+    exists. The stub is the framework only — the tactical orders, penalty
+    amounts and the token itself live behind /enforcement-orders, which stays
+    admin-gated."""
+    stub = os.path.expanduser("~/.claude/CLAUDE-stub.md")
+    fallback = os.path.expanduser("~/.claude/CLAUDE.md")
+    target = stub if os.path.exists(stub) else fallback
+    if not os.path.exists(target):
+        return None
+    with open(target, "r") as f:
+        content = f.read()
+    if ADMIN_TOKEN and ADMIN_TOKEN in content:
+        content = content.replace(ADMIN_TOKEN, "<REDACTED>")
+    return content
+
+
 def _grandfather_auto_accepted_nodes():
     """One-shot on the deploy that introduced the confirmation gate: stamp
     every node already on a mesh as lion_confirmed.
@@ -5600,7 +5656,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(
                     400,
                     {
-                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|confirm-node|lion-pubkey|since/{v}|nodes|nodes-pending}"
+                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|confirm-node|lion-pubkey|standing-orders|since/{v}|nodes|nodes-pending}"
                     },
                 )
                 return
@@ -5795,15 +5851,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 if not lion_pubkey:
                     self.respond(404, {"error": "no lion_pubkey on file for this mesh"})
                     return
-                candidates = []
-                for vnode in _vault_store.get_nodes(mesh_id):
-                    if vnode.get("node_id") == node_id:
-                        if vnode.get("node_pubkey"):
-                            candidates.append(vnode["node_pubkey"])
-                        if vnode.get("bunny_pubkey"):
-                            candidates.append(vnode["bunny_pubkey"])
-                        break
-                if not candidates:
+                if not _node_signing_keys(mesh_id, node_id):
                     logger.warning(
                         "Vault lion-pubkey DENIED (node not approved): mesh=%s node=%s",
                         _sanitize_log(mesh_id),
@@ -5812,31 +5860,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     self.respond(403, {"error": "node not registered in vault"})
                     return
                 payload = f"{mesh_id}|{node_id}|lion-pubkey|{ts_i}"
-                verified = False
-                try:
-                    import base64 as _b64_lp
-
-                    from cryptography.hazmat.primitives import hashes as _hh_lp
-                    from cryptography.hazmat.primitives import serialization as _ser_lp
-                    from cryptography.hazmat.primitives.asymmetric import padding as _pad_lp
-
-                    sig_bytes = _b64_lp.b64decode(signature)
-                    for pk_b64 in candidates:
-                        try:
-                            pub = _ser_lp.load_der_public_key(_b64_lp.b64decode(pk_b64))
-                            pub.verify(sig_bytes, payload.encode("utf-8"), _pad_lp.PKCS1v15(), _hh_lp.SHA256())
-                            verified = True
-                            break
-                        except Exception:
-                            continue
-                except Exception as e:
-                    logger.warning(
-                        "lion-pubkey sig decode failed: mesh=%s node=%s err=%s",
-                        _sanitize_log(mesh_id),
-                        _sanitize_log(node_id),
-                        e,
-                    )
-                if not verified:
+                if not _verify_node_signature(mesh_id, node_id, signature, payload):
                     logger.warning(
                         "Vault lion-pubkey DENIED (bad signature): mesh=%s node=%s",
                         _sanitize_log(mesh_id),
@@ -5850,6 +5874,85 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     _sanitize_log(node_id),
                 )
                 self.respond(200, {"ok": True, "lion_pubkey": lion_pubkey, "format": "der-b64"})
+
+            elif action == "standing-orders":
+                # Node-signed fetch of the Lion's standing orders.
+                # Body: {node_id, ts, signature}
+                # signature = SHA256withRSA over "mesh_id|node_id|standing-orders|ts"
+                # with the node's own registered key — same contract as
+                # lion-pubkey above.
+                #
+                # Why it exists: GET /standing-orders is admin-gated, so the only
+                # way a desktop collar could pull the Lion's orders was to hold
+                # ADMIN_TOKEN — a credential for the whole admin API — on the
+                # machine the collar exists to constrain. Bunnies were being
+                # handed the keys to the relay in order to be told what to do.
+                # Membership is the right proof here: a node that already holds a
+                # registered key demonstrates it is on this mesh, and that is all
+                # reading the orders should require.
+                #
+                # Not gated on lion_confirmed, for the same reason lion-pubkey
+                # isn't: receiving the Lion's orders only makes a machine more
+                # governed, never less. An unconfirmed node that starts obeying
+                # is not a breach.
+                #
+                # Deliberately serves the *stub* only (via _read_standing_orders),
+                # never /enforcement-orders — the tactical orders, penalty
+                # amounts and the admin token stay behind the admin gate, where
+                # a node key is not enough.
+                node_id = data.get("node_id", "")
+                signature = data.get("signature", "")
+                if not node_id or not signature:
+                    self.respond(400, {"error": "node_id and signature required"})
+                    return
+                try:
+                    ts_so = int(data.get("ts", 0) or 0)
+                except (ValueError, TypeError):
+                    self.respond(400, {"error": "ts must be int (ms epoch)"})
+                    return
+                if abs(int(time.time() * 1000) - ts_so) > 5 * 60 * 1000:
+                    self.respond(403, {"error": "ts out of window"})
+                    return
+                if not _node_signing_keys(mesh_id, node_id):
+                    logger.warning(
+                        "Vault standing-orders DENIED (node not approved): mesh=%s node=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                    )
+                    self.respond(403, {"error": "node not registered in vault"})
+                    return
+                payload_so = f"{mesh_id}|{node_id}|standing-orders|{ts_so}"
+                if not _verify_node_signature(mesh_id, node_id, signature, payload_so):
+                    logger.warning(
+                        "Vault standing-orders DENIED (bad signature): mesh=%s node=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                    )
+                    self.respond(403, {"error": "invalid signature"})
+                    return
+                import hashlib as _h_so
+
+                content_so = _read_standing_orders()
+                if not content_so:
+                    self.respond(404, {"error": "no standing orders found"})
+                    return
+                logger.info(
+                    "Vault standing-orders served: mesh=%s node=%s bytes=%d",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    len(content_so),
+                )
+                self.respond(
+                    200,
+                    {
+                        "ok": True,
+                        "content": content_so,
+                        # Lets a collar skip re-applying an unchanged file, and
+                        # lets an operator compare what a node received against
+                        # what the relay holds without shipping the text around.
+                        "sha256": _h_so.sha256(content_so.encode("utf-8")).hexdigest(),
+                    },
+                )
 
             elif action == "reject-node-request":
                 # Lion-signed rejection. Drops the pending entry and adds the
@@ -6606,7 +6709,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(
                     400,
                     {
-                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|confirm-node|lion-pubkey|since/{v}|nodes|nodes-pending}"
+                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|confirm-node|lion-pubkey|standing-orders|since/{v}|nodes|nodes-pending}"
                     },
                 )
                 return
@@ -6759,14 +6862,8 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(403, {"error": "invalid admin_token"})
                 return
             try:
-                stub = os.path.expanduser("~/.claude/CLAUDE-stub.md")
-                fallback = os.path.expanduser("~/.claude/CLAUDE.md")
-                target = stub if os.path.exists(stub) else fallback
-                if os.path.exists(target):
-                    with open(target, "r") as f:
-                        content = f.read()
-                    if ADMIN_TOKEN and ADMIN_TOKEN in content:
-                        content = content.replace(ADMIN_TOKEN, "<REDACTED>")
+                content = _read_standing_orders()
+                if content is not None:
                     self.send_response(200)
                     self.send_header("Content-Type", "text/plain")
                     self.end_headers()
