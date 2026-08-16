@@ -8,6 +8,43 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-17 deploy-path defects + the template's missing safeword ───────── -->
+
+### Fixed — `FOCUSLOCK_SRC` was documented, exported, and ignored
+
+- **Every `re-enslave-*` script called `discover_paths` before `load_config`**
+  (`installers/re-enslave-{server,desktops,phones}.sh`), so the source pin that
+  `load_config` exists to export was never set in time for the function that reads it.
+  The pin only worked when the operator exported it by hand; otherwise autodiscovery
+  walked to whichever checkout it found first. On a machine with two checkouts that is a
+  coin flip between branches, and the losing side of it deploys older code over newer —
+  a bare `re-enslave-server.sh` offered exactly that against a live relay. Reordered in
+  all three, so the config file's `FOCUSLOCK_SRC` finally means what it says.
+
+### Fixed — the settings fallback disarmed the collar it was installing
+
+- **`install-standing-orders.sh` installed the homelab account's own
+  `~/.claude/settings.json` over the collared machine's** — and on a relay-only box that
+  file is typically a bare `{"theme": "auto"}`. `settings.json` is not preferences on a
+  collared machine; it is where the enforcement hooks live. Observed on 2026-08-17: a
+  3174-byte settings carrying the paywall gate, tamper hook, pronoun check and bash audit
+  was replaced by 22 bytes of theme preference, disarming all four silently. `efbe1b2`'s
+  backup made it recoverable, but a backup is not a guard. Both fetch paths now go
+  through `settings_is_safe()`: the candidate must parse as JSON, and must not drop a
+  `hooks` key the destination already has.
+
+### Fixed — the public standing-orders template had no safeword in it
+
+- **`docs/CLAUDE-stub.md`** — the template every deployment copies onto its relay — shipped
+  with an emergency override but no safeword tier. The override covers danger; it does not
+  cover *"stop the dynamic, talk to me plainly"*, which is the exit the rest of the document
+  depends on to be enforceable literally. Adds a `## Safewords` section (yellow pauses, red
+  ends it, neither ever logged as tamper, neither revocable by any order, everything else
+  stays in scene) plus a line in the intro naming both exits, since the section otherwise
+  sits two thirds of the way down a long file. Found while tracing why standing orders were
+  not propagating on a live mesh: the relay had no orders on file at all, so what a fresh
+  seed would contain stopped being hypothetical.
+
 <!-- ───────── 2026-08-17 node-signed standing orders ───────── -->
 
 ### Added — a collar can read its orders without holding the Lion's admin token
