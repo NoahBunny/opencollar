@@ -104,8 +104,12 @@ NEEDS_RESTART=0
 # remote command in `bash -c` to keep the path-list parsing portable. We also
 # collapse newlines to spaces so the whole thing is one argv array.
 remote_paths=$(printf '%s\n' "${DEPLOY_PAIRS[@]}" | awk -F'|' '{print $2}' | tr '\n' ' ')
+# No sudo here: /opt/focuslock ships 0644 root-owned, so a plain md5sum reads
+# it fine — and this probe runs without a TTY, where a sudo password prompt
+# would fail silently and make every file look MISSING (a full re-push every
+# run). Anything genuinely unreadable still falls through to MISSING → pushed.
 remote_hashes=$(ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
-    bash -c "'sudo md5sum $remote_paths 2>/dev/null || true'")
+    bash -c "'md5sum $remote_paths 2>/dev/null || true'")
 
 for pair in "${DEPLOY_PAIRS[@]}"; do
     local_path="${pair%%|*}"
@@ -133,47 +137,66 @@ if [ "$DRY_RUN" = 1 ]; then
     exit 0
 fi
 
-# Push files via scp + sudo cp (the homelab paths are root-owned)
+# Stage every changed file, then do all the privileged work in ONE remote sudo
+# session. Previously each file was its own `ssh -t … sudo install`, which on a
+# homelab whose sudo asks for a password meant a prompt per file (sudo's
+# timestamps are per-TTY, and every ssh -t is a new TTY). One session = one
+# prompt, and the install/restart can no longer land half-applied because the
+# operator gave up typing passwords midway.
+GIT_COMMIT=$(git -C "$LS" rev-parse HEAD 2>/dev/null || echo "")
+TMPDIR_REMOTE=$(ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" 'mktemp -d')
+
 if [ "${#PUSH_LIST[@]}" -gt 0 ]; then
-    section "Pushing files"
-    TMPDIR_REMOTE=$(ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" 'mktemp -d')
+    section "Staging files"
+    for pair in "${PUSH_LIST[@]}"; do
+        local_path="${pair%%|*}"
+        bn=$(basename "$local_path")
+        # Staged under a per-target name so two DEPLOY_PAIRS sharing a basename
+        # (shared modules land in both / and /shared) don't collide.
+        scp -o ConnectTimeout=10 -q "$local_path" "$DEPLOY_USER@$HOMELAB_SSH:$TMPDIR_REMOTE/$bn"
+    done
+    log "  staged ${#PUSH_LIST[@]} file(s) in $TMPDIR_REMOTE"
+fi
+
+# Build the privileged half as a script, so the whole deploy is one `sudo bash`.
+REMOTE_SCRIPT=$(mktemp)
+{
+    echo 'set -e'
     for pair in "${PUSH_LIST[@]}"; do
         local_path="${pair%%|*}"
         remote_path="${pair##*|}"
         bn=$(basename "$local_path")
-        scp -o ConnectTimeout=10 -q "$local_path" "$DEPLOY_USER@$HOMELAB_SSH:$TMPDIR_REMOTE/$bn"
-        ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
-            "sudo install -D -m 644 $TMPDIR_REMOTE/$bn '$remote_path'"
-        log "  pushed: $bn → $remote_path"
+        printf 'install -D -m 644 %q %q\n' "$TMPDIR_REMOTE/$bn" "$remote_path"
+        printf 'echo "  installed: %s"\n' "$remote_path"
     done
-    ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" "rm -rf $TMPDIR_REMOTE"
-fi
+    # DURABLE state dirs (vault store + mesh accounts + per-mesh orders). These
+    # hold the only server-side record of mesh membership, so they live on
+    # persistent disk — NOT /run (tmpfs), which wiped every mesh on reboot.
+    echo 'mkdir -p /var/lib/focuslock/meshes /var/lib/focuslock/vaults /var/lib/focuslock/mesh-orders'
+    echo 'chmod 700 /var/lib/focuslock'
+    # Git commit hash for /version transparency (P3)
+    if [ -n "$GIT_COMMIT" ]; then
+        printf 'printf %%s %q > /opt/focuslock/.git_commit\n' "$GIT_COMMIT"
+    fi
+    if [ "$NEEDS_RESTART" = 1 ] || [ "$FORCE_RESTART" = 1 ]; then
+        echo 'echo "  restarting focuslock-mail.service"'
+        echo 'systemctl restart focuslock-mail'
+        echo 'sleep 3'
+        echo 'systemctl is-active focuslock-mail'
+    else
+        echo 'echo "  no service restart needed"'
+    fi
+} > "$REMOTE_SCRIPT"
 
-# Ensure the DURABLE state dirs exist (vault store + mesh accounts + per-mesh
-# orders). These hold the only server-side record of mesh membership, so they
-# live on persistent disk — NOT /run (tmpfs), which wiped every mesh on reboot.
-ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
-    'sudo mkdir -p /var/lib/focuslock/meshes /var/lib/focuslock/vaults /var/lib/focuslock/mesh-orders && sudo chmod 700 /var/lib/focuslock' || \
-    warn "Could not create /var/lib/focuslock dirs"
-
-# Write git commit hash for /version transparency (P3)
-GIT_COMMIT=$(git -C "$LS" rev-parse HEAD 2>/dev/null || echo "")
-if [ -n "$GIT_COMMIT" ]; then
-    echo "$GIT_COMMIT" | ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
-        "sudo tee /opt/focuslock/.git_commit > /dev/null"
-    log "  git commit: $GIT_COMMIT"
+section "Applying (one sudo session — enter the homelab password if prompted)"
+if ! ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" 'sudo bash -s' < "$REMOTE_SCRIPT"; then
+    rm -f "$REMOTE_SCRIPT"
+    ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" "rm -rf $TMPDIR_REMOTE" || true
+    fail "Remote apply failed — check journalctl -u focuslock-mail on $HOMELAB_SSH"
 fi
-
-# Restart service if focuslock-mail.py changed (or --force-restart)
-if [ "$NEEDS_RESTART" = 1 ] || [ "$FORCE_RESTART" = 1 ]; then
-    section "Restarting focuslock-mail.service"
-    ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
-        'sudo systemctl restart focuslock-mail && sleep 3 && sudo systemctl is-active focuslock-mail' \
-        || fail "Service failed to come back up — check journalctl -u focuslock-mail"
-    log "Service restarted clean."
-else
-    log "No service restart needed."
-fi
+rm -f "$REMOTE_SCRIPT"
+ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" "rm -rf $TMPDIR_REMOTE" || true
+[ -n "$GIT_COMMIT" ] && log "  git commit: $GIT_COMMIT"
 
 # Post-deploy verification: standing-orders + vault since 0 + journal sanity
 # Audit 2026-04-27 H-1 (remainder): /standing-orders requires admin_token.

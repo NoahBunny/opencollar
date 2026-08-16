@@ -9,8 +9,8 @@
 # all sub-scripts read from here so there's exactly one place to change.
 TARGET_SLAVE_VERSIONCODE=83
 TARGET_SLAVE_APK="focuslock-v83.apk"
-TARGET_CONTROLLER_VERSIONCODE=78
-TARGET_CONTROLLER_APK="focusctl-v78.apk"
+TARGET_CONTROLLER_VERSIONCODE=81
+TARGET_CONTROLLER_APK="focusctl-v81.apk"
 TARGET_COMPANION_VERSIONCODE=62
 TARGET_COMPANION_APK="bunnytasker-v62.apk"
 
@@ -47,6 +47,28 @@ section() { printf '\n=== %s ===\n' "$*"; }
 #   ICONS       — $LS/icons
 #   APKS        — $LS/apks (preferred) or $FL/apks (legacy fallback)
 discover_paths() {
+    # Explicit source override, from the environment or re-enslave.config.
+    # Autodiscovery picks the *Nextcloud* copy, which on a machine with more
+    # than one checkout is not necessarily the tree the operator has been
+    # working in — and a re-enslave silently sourced from a stale checkout
+    # rolls production back to whatever that copy last held. Set FOCUSLOCK_SRC
+    # to the checkout you actually mean and this stops being a coin flip.
+    if [ -n "${FOCUSLOCK_SRC:-}" ]; then
+        [ -d "$FOCUSLOCK_SRC" ] || fail "FOCUSLOCK_SRC is not a directory: $FOCUSLOCK_SRC"
+        [ -f "$FOCUSLOCK_SRC/focuslock-mail.py" ] || \
+            fail "FOCUSLOCK_SRC does not look like the project (no focuslock-mail.py): $FOCUSLOCK_SRC"
+        LS="$FOCUSLOCK_SRC"
+        NC="$(dirname "$(dirname "$LS")")"
+        FL="$NC/Scripts/FocusLock"
+        ICONS="$LS/icons"
+        if [ -d "$LS/apks" ]; then APKS="$LS/apks"
+        elif [ -d "$FL/apks" ]; then APKS="$FL/apks"
+        else APKS="$_REAL_HOME/Desktop"
+        fi
+        log "Source override: FOCUSLOCK_SRC=$LS"
+        return 0
+    fi
+
     NC=""
     for p in "$_REAL_HOME/Nextcloud" "$_REAL_HOME/rclone_mounts/Nextcloud" /mnt/CargoBay8/NC-BFC; do
         if [ -d "$p/Scripts/FocusLock" ] || [ -d "$p/Scripts/Lion's Share + Bunny Tasker" ]; then
