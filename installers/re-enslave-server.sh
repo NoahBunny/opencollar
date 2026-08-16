@@ -53,6 +53,20 @@ if ! ssh -o ConnectTimeout=10 -o BatchMode=yes "$DEPLOY_USER@$HOMELAB_SSH" 'echo
     fail "SSH to $DEPLOY_USER@$HOMELAB_SSH failed."
 fi
 
+# Can the privileged half actually run? If the homelab's sudo wants a password
+# and this shell has no terminal, ssh won't allocate a PTY, sudo aborts with
+# "a terminal is required to authenticate", and the deploy dies *after* staging
+# files — previously reported as "check journalctl", which sends the operator
+# to look at a service that never restarted. Find out first, and say the useful
+# thing instead.
+if [ "$DRY_RUN" != 1 ] \
+   && ! ssh -o ConnectTimeout=10 -o BatchMode=yes "$DEPLOY_USER@$HOMELAB_SSH" 'sudo -n true' 2>/dev/null \
+   && [ ! -t 0 ]; then
+    fail "sudo on $HOMELAB_SSH needs a password, but this shell has no terminal for it to prompt on.
+       Run this from an interactive terminal window, or grant $DEPLOY_USER passwordless
+       sudo on the homelab. Nothing was changed."
+fi
+
 # Build a list of (local_path, remote_path) tuples for files we deploy.
 declare -a DEPLOY_PAIRS=()
 for f in "${SERVER_FILES[@]}"; do
@@ -200,7 +214,8 @@ rm -f "$REMOTE_SCRIPT"
 section "Applying (one sudo session — enter the homelab password if prompted)"
 if ! ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" "sudo bash '$TMPDIR_REMOTE/_apply.sh'"; then
     ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" "rm -rf $TMPDIR_REMOTE" || true
-    fail "Remote apply failed — check journalctl -u focuslock-mail on $HOMELAB_SSH"
+    fail "Remote apply failed. If sudo could not authenticate, re-run from an interactive
+       terminal; otherwise check journalctl -u focuslock-mail on $HOMELAB_SSH."
 fi
 ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" "rm -rf $TMPDIR_REMOTE" || true
 [ -n "$GIT_COMMIT" ] && log "  git commit: $GIT_COMMIT"
