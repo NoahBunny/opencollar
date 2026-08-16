@@ -1045,7 +1045,16 @@ Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyConti
     try:
         if is_admin():
             subprocess.Popen(
-                ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", script_path],
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    script_path,
+                ],
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
             )
             logger.info("Scheduled tasks/firewall/%s removal after exit (elevated)", INSTALL_DIR_SYSTEM)
@@ -1113,11 +1122,13 @@ def execute_liberation():
     # FocusLockCollar scheduled task is still registered (and would relaunch the
     # collar at next logon) is the one message this screen must never get wrong.
     if teardown == "uac-requested":
-        msg = ("The collar is being removed.\n\n"
-               "A Windows admin (UAC) prompt will appear — you MUST accept it to "
-               "finish removing the collar's autostart and its C:\\focuslock files. "
-               "If you dismiss it, the collar will come back at next sign-in; re-run "
-               "Release Forever (or safeword.exe) and accept the prompt.")
+        msg = (
+            "The collar is being removed.\n\n"
+            "A Windows admin (UAC) prompt will appear — you MUST accept it to "
+            "finish removing the collar's autostart and its C:\\focuslock files. "
+            "If you dismiss it, the collar will come back at next sign-in; re-run "
+            "Release Forever (or safeword.exe) and accept the prompt."
+        )
         icon = 0x30  # MB_ICONWARNING
     else:
         msg = "All restrictions lifted.\nThe collar is gone. You are free."
@@ -1964,8 +1975,11 @@ def sync_standing_orders():
     # settings.json has no node-signed route (it is not orders), so it still
     # needs the token; CLAUDE.md is re-fetched here only if the signed path
     # came back empty.
-    endpoints = [("/settings", "settings.json")] if signed else [
-        ("/standing-orders", "CLAUDE.md"), ("/settings", "settings.json")]
+    endpoints = (
+        [("/settings", "settings.json")]
+        if signed
+        else [("/standing-orders", "CLAUDE.md"), ("/settings", "settings.json")]
+    )
     for endpoint, filename in endpoints:
         try:
             req = urllib.request.Request(

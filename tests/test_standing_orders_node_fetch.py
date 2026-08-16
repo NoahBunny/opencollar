@@ -70,9 +70,7 @@ def _keypair():
 
 def _post(url, body):
     data = json.dumps(body).encode()
-    req = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json"}, method="POST"
-    )
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=5) as r:
             return r.status, json.loads(r.read().decode())
@@ -147,9 +145,7 @@ def node_mesh(mail_module):
 def _fetch(live_server, mesh_id, node_id, priv, ts_ms=None, payload_mesh=None):
     ts_ms = int(time.time() * 1000) if ts_ms is None else ts_ms
     payload = f"{payload_mesh or mesh_id}|{node_id}|standing-orders|{ts_ms}"
-    sig = base64.b64encode(
-        priv.sign(payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
-    ).decode()
+    sig = base64.b64encode(priv.sign(payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())).decode()
     return _post(
         f"{live_server}/vault/{mesh_id}/standing-orders",
         {"node_id": node_id, "ts": ts_ms, "signature": sig},
@@ -179,9 +175,7 @@ class TestNodeSignedFetch:
         assert "s3cret-admin-token" not in body["content"]
         assert "<REDACTED>" in body["content"]
 
-    def test_unconfirmed_auto_accepted_node_is_still_served(
-        self, live_server, node_mesh, orders_on_disk, mail_module
-    ):
+    def test_unconfirmed_auto_accepted_node_is_still_served(self, live_server, node_mesh, orders_on_disk, mail_module):
         """Deliberate, same reasoning as lion-pubkey: a node that starts obeying
         the Lion's orders becomes more governed, not less. Withholding them
         would leave a machine on the mesh with nothing telling it what it is."""
@@ -251,9 +245,7 @@ class TestNodeSignedFetchRefusals:
         assert status == 400
 
     def test_no_orders_on_file_is_a_404(self, live_server, node_mesh, tmp_path, mail_module, monkeypatch):
-        monkeypatch.setattr(
-            mail_module.os.path, "expanduser", lambda p: str(tmp_path / "nothing-here.md")
-        )
+        monkeypatch.setattr(mail_module.os.path, "expanduser", lambda p: str(tmp_path / "nothing-here.md"))
         status, _ = _fetch(live_server, node_mesh["mesh_id"], node_mesh["node_id"], node_mesh["node_priv"])
         assert status == 404
 

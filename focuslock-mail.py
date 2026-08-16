@@ -3136,9 +3136,7 @@ def _grandfather_auto_accepted_nodes():
                     ",".join(_sanitize_log(n) for n in stamped),
                 )
         except Exception as e:
-            logger.warning(
-                "auto-accept grandfather failed for mesh=%s: %s", _sanitize_log(mesh_id), e
-            )
+            logger.warning("auto-accept grandfather failed for mesh=%s: %s", _sanitize_log(mesh_id), e)
 
 
 _grandfather_auto_accepted_nodes()
@@ -3256,9 +3254,7 @@ def _close_expired_auto_accept_windows():
                 _sanitize_log(mesh_id),
             )
         except Exception as e:
-            logger.warning(
-                "auto-accept reconcile failed for mesh=%s: %s", _sanitize_log(mesh_id), e
-            )
+            logger.warning("auto-accept reconcile failed for mesh=%s: %s", _sanitize_log(mesh_id), e)
 
 
 _close_expired_auto_accept_windows()
@@ -3748,10 +3744,13 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             # bunny for a task they were never shown. Refuse rather than do that.
             # (This also closes the vault_only plaintext bypass for this route.)
             if mesh_id != OPERATOR_MESH_ID:
-                self.respond(409, {
-                    "error": "desktop-task is operator-mesh only — a non-operator mesh "
-                             "cannot deliver the task to the phone; set it from the Lion app instead"
-                })
+                self.respond(
+                    409,
+                    {
+                        "error": "desktop-task is operator-mesh only — a non-operator mesh "
+                        "cannot deliver the task to the phone; set it from the Lion app instead"
+                    },
+                )
                 return
             text = (data.get("text", "") or "").strip()
             if not text:
@@ -4134,9 +4133,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if not node_id:
                 self.respond(400, {"error": "node_id required"})
                 return
-            account, err = _mesh_accounts.join(
-                invite_code, node_id, node_type, bunny_pubkey, display_name
-            )
+            account, err = _mesh_accounts.join(invite_code, node_id, node_type, bunny_pubkey, display_name)
             if err:
                 self.respond(404, {"error": err})
                 return
@@ -5270,7 +5267,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             for _role, _pk_b64 in candidate_pubkeys:
                 try:
                     pub = _ser_dn.load_der_public_key(_b64_dn.b64decode(_pk_b64))
-                    pub.verify(_b64_dn.b64decode(signature), payload.encode("utf-8"), _pad_dn.PKCS1v15(), _hh_dn.SHA256())
+                    pub.verify(
+                        _b64_dn.b64decode(signature), payload.encode("utf-8"), _pad_dn.PKCS1v15(), _hh_dn.SHA256()
+                    )
                     verified_with = _role
                     break
                 except Exception as e:
@@ -5278,7 +5277,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if verified_with is None:
                 logger.warning(
                     "set-display-name sig verify failed: mesh=%s node=%s err=%s",
-                    _sanitize_log(mesh_id), _sanitize_log(node_id), last_err,
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    last_err,
                 )
                 self.respond(403, {"error": "invalid signature"})
                 return
@@ -5287,9 +5288,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             ):
                 return
             _mesh_accounts.update_node(mesh_id, node_id, display_name=display_name)
-            logger.info(
-                "set-display-name: mesh=%s node=%s", _sanitize_log(mesh_id), _sanitize_log(node_id)
-            )
+            logger.info("set-display-name: mesh=%s node=%s", _sanitize_log(mesh_id), _sanitize_log(node_id))
             self.respond(200, {"ok": True})
 
         # ── Bunny-authed deadline-task completion ──
@@ -6802,9 +6801,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         auth_token = auth_header[7:]
                 authed = _mesh_accounts.validate_auth(mesh_id, auth_token)
                 if not authed:
-                    resp["nodes"] = [
-                        {k: v for k, v in n.items() if k not in _TRUST_FIELDS} for n in nodes
-                    ]
+                    resp["nodes"] = [{k: v for k, v in n.items() if k not in _TRUST_FIELDS} for n in nodes]
                 # Enrich from the mesh account store, which holds data the vault
                 # node store doesn't: the bunny's display name (#4), their E2EE
                 # pubkey (#6), and the auto-accept flag (#5) — Lion-authenticated only.

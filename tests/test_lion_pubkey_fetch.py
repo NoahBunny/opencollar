@@ -144,10 +144,7 @@ class TestLionPubkeyFetch:
         it only becomes more obedient — it starts enforcing Lion-signed orders
         it would otherwise ignore. Withholding it would leave devices unclaimed,
         which is the failure this endpoint exists to end."""
-        row = next(
-            n for n in mail_module._vault_store.get_nodes(mesh["mesh_id"])
-            if n["node_id"] == mesh["node_id"]
-        )
+        row = next(n for n in mail_module._vault_store.get_nodes(mesh["mesh_id"]) if n["node_id"] == mesh["node_id"])
         assert row.get("auto_accepted") and not row.get("lion_confirmed")
         assert _claim(live_server, mesh)[0] == 200
 
@@ -185,8 +182,6 @@ class TestLionPubkeyFetch:
         assert "lion_pubkey" in resp.get("error", "")
 
     def test_missing_fields_400(self, live_server, mesh):
-        status, resp = _http_post(
-            f"{live_server}/vault/{mesh['mesh_id']}/lion-pubkey", {"node_id": mesh["node_id"]}
-        )
+        status, resp = _http_post(f"{live_server}/vault/{mesh['mesh_id']}/lion-pubkey", {"node_id": mesh["node_id"]})
         assert status == 400
         assert "signature" in resp.get("error", "")

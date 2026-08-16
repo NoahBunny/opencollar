@@ -243,9 +243,7 @@ class TestAutoAcceptWindow:
         finally:
             mail_module._mesh_accounts.meshes.pop(acct["mesh_id"], None)
 
-    def test_key_rotation_still_needs_approval_inside_an_open_window(
-        self, live_server, seeded_mesh, mail_module
-    ):
+    def test_key_rotation_still_needs_approval_inside_an_open_window(self, live_server, seeded_mesh, mail_module):
         assert _toggle(live_server, seeded_mesh, "on")[0] == 200
         _, pub1 = _keypair()
         node_id = "desk-rotate-" + str(int(time.time() * 1000000))
@@ -311,15 +309,10 @@ class TestConfirmNode:
 
     def test_lion_signature_marks_the_node(self, live_server, seeded_mesh, mail_module):
         node_id, _ = self._seed(live_server, seeded_mesh)
-        status, resp = _confirm(
-            live_server, seeded_mesh["mesh_id"], node_id, seeded_mesh["lion_priv"], mail_module
-        )
+        status, resp = _confirm(live_server, seeded_mesh["mesh_id"], node_id, seeded_mesh["lion_priv"], mail_module)
         assert status == 200
         assert resp["lion_confirmed"] is True
-        row = next(
-            n for n in mail_module._vault_store.get_nodes(seeded_mesh["mesh_id"])
-            if n["node_id"] == node_id
-        )
+        row = next(n for n in mail_module._vault_store.get_nodes(seeded_mesh["mesh_id"]) if n["node_id"] == node_id)
         assert row["lion_confirmed"] is True
         assert row["confirmed_at"] > 0
 
@@ -329,10 +322,7 @@ class TestConfirmNode:
         status, resp = _confirm(live_server, seeded_mesh["mesh_id"], node_id, rogue_priv, mail_module)
         assert status == 403
         assert "signature" in resp.get("error", "")
-        row = next(
-            n for n in mail_module._vault_store.get_nodes(seeded_mesh["mesh_id"])
-            if n["node_id"] == node_id
-        )
+        row = next(n for n in mail_module._vault_store.get_nodes(seeded_mesh["mesh_id"]) if n["node_id"] == node_id)
         assert not row.get("lion_confirmed")
 
     def test_unknown_node_returns_404(self, live_server, seeded_mesh, mail_module):
@@ -357,10 +347,7 @@ class TestGrandfatherMigration:
         assert _register(live_server, seeded_mesh["mesh_id"], old_node, pub)[1]["status"] == "approved"
 
         mail_module._grandfather_auto_accepted_nodes()
-        row = next(
-            n for n in mail_module._vault_store.get_nodes(seeded_mesh["mesh_id"])
-            if n["node_id"] == old_node
-        )
+        row = next(n for n in mail_module._vault_store.get_nodes(seeded_mesh["mesh_id"]) if n["node_id"] == old_node)
         assert row["lion_confirmed"] is True
         assert row["confirmed_by"] == "grandfathered"
         assert mail_module._mesh_accounts.meshes[seeded_mesh["mesh_id"]]["auto_accept_grandfathered_at"] > 0
@@ -378,10 +365,7 @@ class TestGrandfatherMigration:
         newcomer = "desk-new-" + str(int(time.time() * 1000000))
         assert _register(live_server, seeded_mesh["mesh_id"], newcomer, newcomer_pub)[1]["status"] == "approved"
         mail_module._grandfather_auto_accepted_nodes()
-        row = next(
-            n for n in mail_module._vault_store.get_nodes(seeded_mesh["mesh_id"])
-            if n["node_id"] == newcomer
-        )
+        row = next(n for n in mail_module._vault_store.get_nodes(seeded_mesh["mesh_id"]) if n["node_id"] == newcomer)
         assert not row.get("lion_confirmed")
 
 
@@ -397,9 +381,7 @@ class TestStateMirrorConfirmationGate:
             {"node_id": node_id, "ts": ts_ms, "state": state, "signature": sig},
         )
 
-    def test_unconfirmed_auto_accepted_node_cannot_write_state(
-        self, live_server, seeded_mesh, mail_module
-    ):
+    def test_unconfirmed_auto_accepted_node_cannot_write_state(self, live_server, seeded_mesh, mail_module):
         """The whole point: holding the mesh_id gets you membership, not the
         ability to zero the Lion's paywall."""
         assert _toggle(live_server, seeded_mesh, "on")[0] == 200
@@ -409,9 +391,7 @@ class TestStateMirrorConfirmationGate:
 
         orders = mail_module._orders_registry.get_or_create(seeded_mesh["mesh_id"])
         orders.set("paywall", "200")
-        status, resp = self._mirror(
-            live_server, seeded_mesh["mesh_id"], node_id, priv, {"paywall": "0"}
-        )
+        status, resp = self._mirror(live_server, seeded_mesh["mesh_id"], node_id, priv, {"paywall": "0"})
         assert status == 403
         assert "confirmation" in resp.get("error", "")
         assert mail_module._orders_registry.get(seeded_mesh["mesh_id"]).get("paywall", "") == "200"
@@ -421,13 +401,8 @@ class TestStateMirrorConfirmationGate:
         priv, pub = _keypair()
         node_id = "desk-unlock-" + str(int(time.time() * 1000000))
         assert _register(live_server, seeded_mesh["mesh_id"], node_id, pub)[1]["status"] == "approved"
-        assert (
-            _confirm(live_server, seeded_mesh["mesh_id"], node_id, seeded_mesh["lion_priv"], mail_module)[0]
-            == 200
-        )
-        status, resp = self._mirror(
-            live_server, seeded_mesh["mesh_id"], node_id, priv, {"paywall": "75"}
-        )
+        assert _confirm(live_server, seeded_mesh["mesh_id"], node_id, seeded_mesh["lion_priv"], mail_module)[0] == 200
+        status, resp = self._mirror(live_server, seeded_mesh["mesh_id"], node_id, priv, {"paywall": "75"})
         assert status == 200
         assert resp["applied"] == ["paywall"]
         assert mail_module._orders_registry.get(seeded_mesh["mesh_id"]).get("paywall", "") == "75"
@@ -453,8 +428,7 @@ class TestStateMirrorConfirmationGate:
         priv, pub = _keypair()
         node_id = "rogue-phone-" + str(int(time.time() * 1000000))
         assert (
-            _register(live_server, seeded_mesh["mesh_id"], node_id, pub, node_type="phone")[1]["status"]
-            == "approved"
+            _register(live_server, seeded_mesh["mesh_id"], node_id, pub, node_type="phone")[1]["status"] == "approved"
         )
         ts_ms = int(time.time() * 1000)
         allow = ["attacker@example.test"]
@@ -467,10 +441,7 @@ class TestStateMirrorConfirmationGate:
         assert status == 403
         assert "confirmation" in resp.get("error", "")
 
-        assert (
-            _confirm(live_server, seeded_mesh["mesh_id"], node_id, seeded_mesh["lion_priv"], mail_module)[0]
-            == 200
-        )
+        assert _confirm(live_server, seeded_mesh["mesh_id"], node_id, seeded_mesh["lion_priv"], mail_module)[0] == 200
         ts_ms = int(time.time() * 1000)
         sig = _sign(priv, f"{seeded_mesh['mesh_id']}|{node_id}|set-payer-identity|{ts_ms}|{body_hash}")
         status, _ = _http_post(
@@ -484,8 +455,7 @@ class TestStateMirrorConfirmationGate:
         priv, pub = _keypair()
         node_id = "rogue-name-" + str(int(time.time() * 1000000))
         assert (
-            _register(live_server, seeded_mesh["mesh_id"], node_id, pub, node_type="phone")[1]["status"]
-            == "approved"
+            _register(live_server, seeded_mesh["mesh_id"], node_id, pub, node_type="phone")[1]["status"] == "approved"
         )
         ts_ms = int(time.time() * 1000)
         name = "Lion's laptop"
@@ -504,13 +474,9 @@ class TestStateMirrorConfirmationGate:
         priv, pub = _keypair()
         node_id = "desk-approved-" + str(int(time.time() * 1000000))
         body = {"node_id": node_id, "node_type": "desktop", "node_pubkey": pub}
-        body["signature"] = _sign_bytes(
-            seeded_mesh["lion_priv"], mail_module.mesh.canonical_json(body)
-        )
+        body["signature"] = _sign_bytes(seeded_mesh["lion_priv"], mail_module.mesh.canonical_json(body))
         assert _http_post(f"{live_server}/vault/{seeded_mesh['mesh_id']}/register-node", body)[0] == 200
-        status, resp = self._mirror(
-            live_server, seeded_mesh["mesh_id"], node_id, priv, {"sub_due": "10"}
-        )
+        status, resp = self._mirror(live_server, seeded_mesh["mesh_id"], node_id, priv, {"sub_due": "10"})
         assert status == 200
         assert resp["applied"] == ["sub_due"]
 
@@ -597,7 +563,9 @@ class TestIdempotentReRegistration:
 
         assert (status, resp["status"]) == (200, "pending")
         assert self._row(mail_module, mesh_id, node_id)["node_pubkey"] == pub
-        assert [p["node_pubkey"] for p in mail_module._vault_store.get_pending_nodes(mesh_id) if p["node_id"] == node_id] == [rotated]
+        assert [
+            p["node_pubkey"] for p in mail_module._vault_store.get_pending_nodes(mesh_id) if p["node_id"] == node_id
+        ] == [rotated]
 
     def test_a_new_bunny_pubkey_is_not_installed_without_the_lion(self, live_server, seeded_mesh, mail_module):
         mesh_id = seeded_mesh["mesh_id"]
@@ -649,9 +617,7 @@ class TestExpiredWindowReconcile:
         assert account["auto_accept_nodes"] is False
         assert account["auto_accept_until"] == 0
 
-    def test_legacy_sticky_flag_with_no_deadline_is_reconciled_off(
-        self, live_server, seeded_mesh, mail_module
-    ):
+    def test_legacy_sticky_flag_with_no_deadline_is_reconciled_off(self, live_server, seeded_mesh, mail_module):
         """The shape the live mesh was actually in: flag true, no deadline at
         all — an account persisted before the window existed."""
         mesh_id = seeded_mesh["mesh_id"]
@@ -678,9 +644,7 @@ class TestExpiredWindowReconcile:
         assert account["auto_accept_until"] == until_before
         assert mail_module._auto_accept_active(account) is True
 
-    def test_reconcile_survives_a_restart_and_stays_put(
-        self, live_server, seeded_mesh, mail_module
-    ):
+    def test_reconcile_survives_a_restart_and_stays_put(self, live_server, seeded_mesh, mail_module):
         """Idempotent, and the reconciled state is what a re-read sees — the
         point of the pass is that the file on disk stops disagreeing."""
         mesh_id = seeded_mesh["mesh_id"]
@@ -692,9 +656,7 @@ class TestExpiredWindowReconcile:
         mail_module._close_expired_auto_accept_windows()
 
         assert account["auto_accept_nodes"] is False
-        persisted = json.loads(
-            (Path(mail_module._mesh_accounts.persist_dir) / f"{mesh_id}.json").read_text()
-        )
+        persisted = json.loads((Path(mail_module._mesh_accounts.persist_dir) / f"{mesh_id}.json").read_text())
         assert persisted["auto_accept_nodes"] is False
         assert persisted["auto_accept_until"] == 0
 

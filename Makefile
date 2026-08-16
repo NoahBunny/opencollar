@@ -137,6 +137,10 @@ qa-perf:
 qa-matrix:
 	$(PY) $(STAGING_DIR)/qa_matrix.py
 
+# Run ruff through the project interpreter, not off PATH. A bare `ruff` here
+# meant `make lint` died with "No such file or directory" on any machine that
+# had ruff only inside .venv — the same off-PATH gate failure as the QA
+# pre-flight in b4010e9, which silently skipped instead of failing.
 lint:
-	ruff check .
-	ruff format --check .
+	$(PY) -m ruff check .
+	$(PY) -m ruff format --check .

@@ -14,6 +14,7 @@ a Pixel 10 + SM-S908W (see docs/HANDOFF-2026-08-07-device-qa.md).
 Matching is case-insensitive; an exact text match wins over a substring hit, so
 'tap PAIR' won't grab 'PAIR DIRECT (LAN)' when both are on screen.
 """
+
 import re
 import subprocess
 import sys
@@ -42,7 +43,10 @@ def nodes(xml):
     for m in re.finditer(r"<node[^>]*>", xml):
         tag = m.group(0)
 
-        def attr(name):
+        def attr(name, tag=tag):
+            # `tag` bound as a default so the closure can't drift to a later
+            # iteration's value. Every call today happens inside the iteration
+            # that made it, so this is correctness-by-construction, not a fix.
             mm = re.search(rf'{name}="([^"]*)"', tag)
             return mm.group(1) if mm else ""
 
@@ -50,11 +54,17 @@ def nodes(xml):
         if not b:
             continue
         x1, y1, x2, y2 = map(int, b.groups())
-        out.append({
-            "text": attr("text"), "id": attr("resource-id"), "desc": attr("content-desc"),
-            "cls": attr("class"), "cx": (x1 + x2) // 2, "cy": (y1 + y2) // 2,
-            "bounds": f"[{x1},{y1}][{x2},{y2}]",
-        })
+        out.append(
+            {
+                "text": attr("text"),
+                "id": attr("resource-id"),
+                "desc": attr("content-desc"),
+                "cls": attr("class"),
+                "cx": (x1 + x2) // 2,
+                "cy": (y1 + y2) // 2,
+                "bounds": f"[{x1},{y1}][{x2},{y2}]",
+            }
+        )
     return out
 
 
@@ -74,14 +84,14 @@ ns = nodes(dump())
 if CMD == "dump":
     for n in ns:
         if n["text"] or n["id"] or n["desc"]:
-            print(f'{n["text"][:60]!r:64} id={n["id"].split("/")[-1]:28} {n["bounds"]}')
+            print(f"{n['text'][:60]!r:64} id={n['id'].split('/')[-1]:28} {n['bounds']}")
 elif CMD == "tap":
     n = find(ns, sys.argv[3])
     if not n:
         print(f"NOT FOUND: {sys.argv[3]}")
         sys.exit(1)
     adb("shell", "input", "tap", str(n["cx"]), str(n["cy"]))
-    print(f'tapped {n["text"] or n["id"]}')
+    print(f"tapped {n['text'] or n['id']}")
 elif CMD == "type":
     n = find(ns, sys.argv[3])
     if not n:
@@ -90,7 +100,7 @@ elif CMD == "type":
     adb("shell", "input", "tap", str(n["cx"]), str(n["cy"]))
     time.sleep(0.5)
     adb("shell", "input", "text", sys.argv[4].replace(" ", "%s"))
-    print(f'typed into {n["id"] or n["text"]}')
+    print(f"typed into {n['id'] or n['text']}")
 elif CMD == "wait":
     deadline = time.time() + (float(sys.argv[4]) if len(sys.argv) > 4 else 20)
     while time.time() < deadline:

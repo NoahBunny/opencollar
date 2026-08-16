@@ -138,8 +138,8 @@ def bunny_mesh_distinct_keys(mail_module, monkeypatch, tmp_path):
     acct = store.create("lion-pub", pin="2222")
     mesh_id = acct["mesh_id"]
     node_id = "sm-s908w"
-    bunny_priv, bunny_pub = _keypair()   # companion PairingManager key (signs renames)
-    node_priv, node_pub = _keypair()     # Collar ControlService key — different key
+    bunny_priv, bunny_pub = _keypair()  # companion PairingManager key (signs renames)
+    node_priv, node_pub = _keypair()  # Collar ControlService key — different key
     store.join(acct["invite_code"], node_id, "phone", bunny_pubkey=bunny_pub, display_name="")
     mail_module._vault_store.add_node(
         mesh_id,
@@ -150,7 +150,7 @@ def bunny_mesh_distinct_keys(mail_module, monkeypatch, tmp_path):
         yield {
             "mesh_id": mesh_id,
             "node_id": node_id,
-            "priv": bunny_priv,       # _rename() signs with this (the bunny key)
+            "priv": bunny_priv,  # _rename() signs with this (the bunny key)
             "pub_b64": bunny_pub,
             "node_priv": node_priv,
             "node_pub": node_pub,

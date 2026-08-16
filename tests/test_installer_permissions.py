@@ -35,9 +35,8 @@ class TestRelayInstallerPermissions:
             for line in relay_installer_text.splitlines()
             if re.search(r"^\s*[^#]*\bchmod\s+(0?777)\b", line)
         ]
-        assert not offenders, (
-            "relay installer grants world-write; both relay units run as root:\n  "
-            + "\n  ".join(offenders)
+        assert not offenders, "relay installer grants world-write; both relay units run as root:\n  " + "\n  ".join(
+            offenders
         )
 
     def test_no_world_writable_tmpfiles_rule(self, relay_installer_text):
@@ -50,11 +49,13 @@ class TestRelayInstallerPermissions:
             assert mode not in ("0777", "777"), f"world-writable tmpfiles rule: {rule}"
 
     def test_run_dir_is_created_0755(self, relay_installer_text):
-        assert re.search(r"chmod\s+0?755\s+/run/focuslock", relay_installer_text), \
+        assert re.search(r"chmod\s+0?755\s+/run/focuslock", relay_installer_text), (
             "expected /run/focuslock to be created 0755 on the relay"
+        )
 
     def test_durable_state_dir_stays_private(self, relay_installer_text):
         """/var/lib/focuslock holds the mesh accounts and vault node lists —
         the only record of who is on a mesh. It was already 700; pin it."""
-        assert re.search(r"chmod\s+0?700\s+/var/lib/focuslock", relay_installer_text), \
+        assert re.search(r"chmod\s+0?700\s+/var/lib/focuslock", relay_installer_text), (
             "expected /var/lib/focuslock to stay 700"
+        )

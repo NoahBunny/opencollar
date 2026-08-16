@@ -126,7 +126,7 @@ def kill_processes():
         "Get-CimInstance Win32_Process -Filter \"Name = 'pythonw.exe' OR Name = 'python.exe'\" | "
         "Where-Object { $_.CommandLine -match 'focuslock-desktop-win\\.py|watchdog-win\\.pyw' } | "
         "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; "
-        "Write-Host \"killed python pid $($_.ProcessId)\" }"
+        'Write-Host "killed python pid $($_.ProcessId)" }'
     )
     for _attempt in range(3):
         killed = False

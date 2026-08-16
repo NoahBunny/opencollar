@@ -139,8 +139,16 @@ class TestMessagePayloadSpec:
 
 # The ten fields ControlService.handleMeshStatus signs with the bunny key.
 STATUS_CORE_KEYS = (
-    "locked", "escapes", "paywall", "timer_remaining_ms", "task_reps",
-    "task_done", "offer", "offer_status", "sub_tier", "orders_version",
+    "locked",
+    "escapes",
+    "paywall",
+    "timer_remaining_ms",
+    "task_reps",
+    "task_done",
+    "offer",
+    "offer_status",
+    "sub_tier",
+    "orders_version",
 )
 
 # Core names that the embedded orders document ALSO carries — earlier in the
@@ -148,9 +156,18 @@ STATUS_CORE_KEYS = (
 SHADOWED_CORE_KEYS = ("paywall", "task_reps", "task_done", "offer", "offer_status", "sub_tier")
 
 
-def _status_core(locked=True, escapes=0, paywall="0", timer_remaining_ms=900_000,
-                 task_reps=0, task_done=0, offer="", offer_status="", sub_tier="",
-                 orders_version=3):
+def _status_core(
+    locked=True,
+    escapes=0,
+    paywall="0",
+    timer_remaining_ms=900_000,
+    task_reps=0,
+    task_done=0,
+    offer="",
+    offer_status="",
+    sub_tier="",
+    orders_version=3,
+):
     """Exactly what handleMeshStatus signs — native bool/int/str types."""
     return {
         "locked": locked,
@@ -175,36 +192,66 @@ def _status_wire(core, signature="SIG", orders_paywall=""):
     paywall to "0", so on a freshly paired Collar the two copies differ.
     """
     orders = (
-        '{"lock_active":' + ("1" if core["locked"] else "0")
+        '{"lock_active":'
+        + ("1" if core["locked"] else "0")
         + ',"message":"","task_text":""'
-        + ',"task_reps":' + str(core["task_reps"])
-        + ',"task_done":' + str(core["task_done"])
+        + ',"task_reps":'
+        + str(core["task_reps"])
+        + ',"task_done":'
+        + str(core["task_done"])
         + ',"mode":"basic"'
-        + ',"paywall":"' + orders_paywall + '","paywall_original":""'
+        + ',"paywall":"'
+        + orders_paywall
+        + '","paywall_original":""'
         + ',"unlock_at":0,"locked_at":0'
-        + ',"offer":"' + core["offer"] + '"'
-        + ',"offer_status":"' + core["offer_status"] + '"'
-        + ',"sub_tier":"' + core["sub_tier"] + '"'
+        + ',"offer":"'
+        + core["offer"]
+        + '"'
+        + ',"offer_status":"'
+        + core["offer_status"]
+        + '"'
+        + ',"sub_tier":"'
+        + core["sub_tier"]
+        + '"'
         + ',"released":""}'
     )
     nodes = (
         ',"nodes":{"sm-s908w":{"type":"phone","online":true,"orders_version":'
         + str(core["orders_version"])
-        + ',"status":{"escapes":' + str(core["escapes"]) + "}}}}"
+        + ',"status":{"escapes":'
+        + str(core["escapes"])
+        + "}}}}"
     )
     return (
-        '{"orders_version":' + str(core["orders_version"])
-        + ',"orders":' + orders
-        + ',"signature":"' + signature + '"'
-        + ',"locked":' + ("true" if core["locked"] else "false")
-        + ',"escapes":' + str(core["escapes"])
-        + ',"paywall":"' + core["paywall"] + '"'
-        + ',"timer_remaining_ms":' + str(core["timer_remaining_ms"])
-        + ',"task_reps":' + str(core["task_reps"])
-        + ',"task_done":' + str(core["task_done"])
-        + ',"offer":"' + core["offer"] + '"'
-        + ',"offer_status":"' + core["offer_status"] + '"'
-        + ',"sub_tier":"' + core["sub_tier"] + '"'
+        '{"orders_version":'
+        + str(core["orders_version"])
+        + ',"orders":'
+        + orders
+        + ',"signature":"'
+        + signature
+        + '"'
+        + ',"locked":'
+        + ("true" if core["locked"] else "false")
+        + ',"escapes":'
+        + str(core["escapes"])
+        + ',"paywall":"'
+        + core["paywall"]
+        + '"'
+        + ',"timer_remaining_ms":'
+        + str(core["timer_remaining_ms"])
+        + ',"task_reps":'
+        + str(core["task_reps"])
+        + ',"task_done":'
+        + str(core["task_done"])
+        + ',"offer":"'
+        + core["offer"]
+        + '"'
+        + ',"offer_status":"'
+        + core["offer_status"]
+        + '"'
+        + ',"sub_tier":"'
+        + core["sub_tier"]
+        + '"'
         + ',"addresses":["192.168.199.42"],"port":8435'
         + nodes
     )
@@ -220,7 +267,7 @@ def _first_match_core(body):
         if i < 0:
             return ""
         i += len(f'"{key}":"')
-        return body[i:body.find('"', i)]
+        return body[i : body.find('"', i)]
 
     def _num(key):
         i = body.find(f'"{key}":')
@@ -234,13 +281,18 @@ def _first_match_core(body):
 
     def _bool(key):
         i = body.find(f'"{key}":')
-        return i >= 0 and body[i + len(f'"{key}":'):].lstrip().startswith("true")
+        return i >= 0 and body[i + len(f'"{key}":') :].lstrip().startswith("true")
 
     return {
-        "locked": _bool("locked"), "escapes": _num("escapes"), "paywall": _str("paywall"),
-        "timer_remaining_ms": _num("timer_remaining_ms"), "task_reps": _num("task_reps"),
-        "task_done": _num("task_done"), "offer": _str("offer"),
-        "offer_status": _str("offer_status"), "sub_tier": _str("sub_tier"),
+        "locked": _bool("locked"),
+        "escapes": _num("escapes"),
+        "paywall": _str("paywall"),
+        "timer_remaining_ms": _num("timer_remaining_ms"),
+        "task_reps": _num("task_reps"),
+        "task_done": _num("task_done"),
+        "offer": _str("offer"),
+        "offer_status": _str("offer_status"),
+        "sub_tier": _str("sub_tier"),
         "orders_version": _num("orders_version"),
     }
 
@@ -292,11 +344,12 @@ class TestStatusWireSpec:
         from focuslock_mesh import sign_orders, verify_signature
 
         for core in (
-            _status_core(),                                             # fresh pair, no balance
-            _status_core(paywall="25", escapes=2),                      # after a charge
-            _status_core(paywall="25", task_reps=3, task_done=1,
-                         offer="unlock", offer_status="pending", sub_tier="silver"),
-            _status_core(locked=False, timer_remaining_ms=0),           # released
+            _status_core(),  # fresh pair, no balance
+            _status_core(paywall="25", escapes=2),  # after a charge
+            _status_core(
+                paywall="25", task_reps=3, task_done=1, offer="unlock", offer_status="pending", sub_tier="silver"
+            ),
+            _status_core(locked=False, timer_remaining_ms=0),  # released
         ):
             sig = sign_orders(core, slave_keypair["priv_pem"])
             parsed = json.loads(_status_wire(core, signature=sig, orders_paywall=core["paywall"]))
@@ -392,8 +445,9 @@ class TestJavaConformance:
     def test_java_status_core_ignores_rewritten_orders_copies(self):
         from focuslock_mesh import canonical_json
 
-        core = _status_core(paywall="25", escapes=2, task_reps=3, task_done=1,
-                            offer="unlock", offer_status="pending", sub_tier="silver")
+        core = _status_core(
+            paywall="25", escapes=2, task_reps=3, task_done=1, offer="unlock", offer_status="pending", sub_tier="silver"
+        )
         out = self._run("status-core", stdin=_status_wire(core, orders_paywall="999"))
         assert out == canonical_json(core).decode("utf-8")
 

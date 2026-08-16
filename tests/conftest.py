@@ -83,8 +83,7 @@ def pytest_collection_modifyitems(session, config, items):
         return
 
     detail = "\n".join(
-        f"    {path}  ({count} test{'s' if count != 1 else ''})"
-        for path, count in sorted(foreign.items())
+        f"    {path}  ({count} test{'s' if count != 1 else ''})" for path, count in sorted(foreign.items())
     )
     message = (
         "test bytecode was compiled in a different checkout than the one under test.\n"

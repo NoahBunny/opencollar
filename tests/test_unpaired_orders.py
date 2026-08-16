@@ -51,8 +51,16 @@ class TestOverlayIdentity:
 class TestEscalation:
     @pytest.mark.parametrize(
         "hours,expected",
-        [(0, "settling-in"), (5.9, "settling-in"), (6, "insistent"), (23, "insistent"),
-         (24, "pointed"), (71, "pointed"), (72, "unignorable"), (24 * 30, "unignorable")],
+        [
+            (0, "settling-in"),
+            (5.9, "settling-in"),
+            (6, "insistent"),
+            (23, "insistent"),
+            (24, "pointed"),
+            (71, "pointed"),
+            (72, "unignorable"),
+            (24 * 30, "unignorable"),
+        ],
     )
     def test_tier_boundaries(self, uo, hours, expected):
         assert uo.nudge_tier(hours) == expected
