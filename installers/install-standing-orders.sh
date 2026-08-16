@@ -64,32 +64,70 @@ if [ -z "$HOMELAB_URL" ]; then
 fi
 
 mkdir -p "$CLAUDE_DIR"
+BACKUP_DIR="$HOME/.config/focuslock/claude-backup"
+FETCHED_ANY=0
+
+# Replace a Claude config file only with content we actually got, and never
+# without keeping a copy of what was there. `curl -o target` truncates the
+# target before it knows the response code, so a 401 from an admin-gated
+# endpoint used to be able to leave a good file empty.
+install_fetched() {
+    local src="$1" dest="$2" label="$3"
+    [ -s "$src" ] || { rm -f "$src"; return 1; }
+    if [ -f "$dest" ] && ! cmp -s "$src" "$dest"; then
+        mkdir -p "$BACKUP_DIR"
+        cp -p "$dest" "$BACKUP_DIR/$(basename "$dest").$(date +%s)"
+        echo "    previous $label backed up to $BACKUP_DIR"
+    fi
+    mv "$src" "$dest"
+    chmod 644 "$dest"
+    FETCHED_ANY=1
+    echo "  $label installed"
+    return 0
+}
 
 # Pull latest from homelab via HTTP
 echo "Pulling standing orders from homelab..."
-if curl -sf "${CURL_AUTH[@]}" -o "$CLAUDE_DIR/CLAUDE.md" --connect-timeout 5 "$HOMELAB_URL/standing-orders"; then
-    chmod 644 "$CLAUDE_DIR/CLAUDE.md"
-    echo "  CLAUDE.md installed"
+_tmp_md="$(mktemp)"
+if curl -sf "${CURL_AUTH[@]}" -o "$_tmp_md" --connect-timeout 5 "$HOMELAB_URL/standing-orders" \
+   && install_fetched "$_tmp_md" "$CLAUDE_DIR/CLAUDE.md" "CLAUDE.md"; then
+    :
 else
+    rm -f "$_tmp_md"
     echo "  CLAUDE.md: HTTP failed, trying SSH..."
     HOMELAB_SSH="${FOCUSLOCK_HOMELAB_SSH:-${HOMELAB_TS:-}}"
     if [ -n "$HOMELAB_SSH" ]; then
-        scp -o ConnectTimeout=5 "$USER@$HOMELAB_SSH:$HOME/.claude/CLAUDE.md" "$CLAUDE_DIR/CLAUDE.md" 2>/dev/null || \
+        _tmp_md="$(mktemp)"
+        if scp -o ConnectTimeout=5 "$USER@$HOMELAB_SSH:$HOME/.claude/CLAUDE.md" "$_tmp_md" 2>/dev/null; then
+            install_fetched "$_tmp_md" "$CLAUDE_DIR/CLAUDE.md" "CLAUDE.md" || rm -f "$_tmp_md"
+        else
+            rm -f "$_tmp_md"
             echo "  ERROR: Could not reach homelab"
+        fi
     else
         echo "  ERROR: No SSH fallback configured (set FOCUSLOCK_HOMELAB_SSH)"
     fi
 fi
 
-if curl -sf "${CURL_AUTH[@]}" -o "$CLAUDE_DIR/settings.json" --connect-timeout 5 "$HOMELAB_URL/settings"; then
-    chmod 644 "$CLAUDE_DIR/settings.json"
-    echo "  settings.json installed"
+_tmp_set="$(mktemp)"
+if curl -sf "${CURL_AUTH[@]}" -o "$_tmp_set" --connect-timeout 5 "$HOMELAB_URL/settings" \
+   && install_fetched "$_tmp_set" "$CLAUDE_DIR/settings.json" "settings.json"; then
+    :
 else
+    rm -f "$_tmp_set"
     echo "  settings.json: HTTP failed, trying SSH..."
     HOMELAB_SSH="${FOCUSLOCK_HOMELAB_SSH:-${HOMELAB_TS:-}}"
     if [ -n "$HOMELAB_SSH" ]; then
-        scp -o ConnectTimeout=5 "$USER@$HOMELAB_SSH:$HOME/.claude/settings.json" "$CLAUDE_DIR/settings.json" 2>/dev/null || \
+        # NB: this pulls the operator's own ~/.claude/settings.json off the
+        # homelab box — whatever they happen to have, not a curated stub. Kept
+        # for continuity, but it now backs up the local file first.
+        _tmp_set="$(mktemp)"
+        if scp -o ConnectTimeout=5 "$USER@$HOMELAB_SSH:$HOME/.claude/settings.json" "$_tmp_set" 2>/dev/null; then
+            install_fetched "$_tmp_set" "$CLAUDE_DIR/settings.json" "settings.json" || rm -f "$_tmp_set"
+        else
+            rm -f "$_tmp_set"
             echo "  settings.json: not available (will use defaults)"
+        fi
     else
         echo "  settings.json: not available (will use defaults)"
     fi
@@ -145,9 +183,21 @@ WantedBy=default.target
 EOF
 
 systemctl --user daemon-reload
-systemctl --user enable --now claude-standing-orders-sync.timer
-systemctl --user enable --now claude-standing-orders-sync.path
-echo "Systemd sync units installed and enabled (timer + path watcher)"
+# Only arm them if the thing they run exists. Enabling units whose ExecStart is
+# missing gives you a timer that fails 203/EXEC every 5 minutes and a .path
+# watcher that fires on every write to CLAUDE.md to fail again — noise that
+# looks like a collar malfunction. If the sync script never arrived, leave the
+# units installed but inert, and disable any armed from an earlier run.
+if [ -x "$CLAUDE_DIR/sync-standing-orders.sh" ]; then
+    systemctl --user enable --now claude-standing-orders-sync.timer
+    systemctl --user enable --now claude-standing-orders-sync.path
+    echo "Systemd sync units installed and enabled (timer + path watcher)"
+else
+    systemctl --user disable --now claude-standing-orders-sync.timer 2>/dev/null || true
+    systemctl --user disable --now claude-standing-orders-sync.path 2>/dev/null || true
+    echo "Systemd sync units installed but NOT enabled — $CLAUDE_DIR/sync-standing-orders.sh is missing."
+    echo "  (Nothing to run on the timer; they would just fail every 5 minutes.)"
+fi
 
 # Install enforcement hooks
 HOOKS_DIR="$CLAUDE_DIR/hooks"
@@ -162,7 +212,21 @@ for hook in scan-pronouns.sh end-of-session.sh; do
 done
 
 # Run initial sync to pull memory files immediately
-echo "Running initial sync (including memory files)..."
-"$CLAUDE_DIR/sync-standing-orders.sh" 2>&1 || true
+if [ -x "$CLAUDE_DIR/sync-standing-orders.sh" ]; then
+    echo "Running initial sync (including memory files)..."
+    "$CLAUDE_DIR/sync-standing-orders.sh" 2>&1 || true
+fi
+
 echo ""
-echo "Standing orders installed. The collar follows you everywhere now."
+# Say what actually happened. Announcing "the collar follows you everywhere now"
+# after every fetch failed sends the operator away believing a machine is under
+# orders that never received any.
+if [ "$FETCHED_ANY" = 1 ]; then
+    echo "Standing orders installed. The collar follows you everywhere now."
+else
+    echo "NOTHING WAS INSTALLED — every fetch failed."
+    echo "  $HOMELAB_URL/standing-orders and /settings are admin-gated: set"
+    echo "  FOCUSLOCK_ADMIN_TOKEN, or FOCUSLOCK_HOMELAB_SSH for the scp fallback."
+    echo "  This machine's Claude config was left exactly as it was."
+    exit 1
+fi
