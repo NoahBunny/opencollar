@@ -86,6 +86,29 @@ install_fetched() {
     return 0
 }
 
+# settings.json is not a preferences file on a collared machine — it is where
+# the collar's enforcement hooks live (paywall gate, tamper scan, pronoun check,
+# bash audit). Both fetch paths below can hand back something that has none:
+# the SSH fallback copies whatever ~/.claude/settings.json the operator happens
+# to have on the homelab box, which on a relay-only box is typically a bare
+# {"theme": "auto"}. Installing that strips every hook from the machine being
+# collared, and a backup does not save it — nothing tells anyone the gate
+# stopped running. Observed live on 2026-08-17: a re-enslave replaced a 3174-byte
+# hooked settings.json with 22 bytes of theme preference.
+settings_is_safe() {
+    local src="$1" dest="$2"
+    if command -v python3 >/dev/null && ! python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$src" 2>/dev/null; then
+        echo "  settings.json: fetched copy is not valid JSON — keeping the local one"
+        return 1
+    fi
+    if [ -f "$dest" ] && grep -q '"hooks"' "$dest" && ! grep -q '"hooks"' "$src"; then
+        echo "  settings.json: fetched copy carries no hooks but this machine's does —"
+        echo "                 refusing to install it (that would disarm the collar)"
+        return 1
+    fi
+    return 0
+}
+
 # Pull latest from homelab via HTTP
 echo "Pulling standing orders from homelab..."
 _tmp_md="$(mktemp)"
@@ -111,6 +134,7 @@ fi
 
 _tmp_set="$(mktemp)"
 if curl -sf "${CURL_AUTH[@]}" -o "$_tmp_set" --connect-timeout 5 "$HOMELAB_URL/settings" \
+   && settings_is_safe "$_tmp_set" "$CLAUDE_DIR/settings.json" \
    && install_fetched "$_tmp_set" "$CLAUDE_DIR/settings.json" "settings.json"; then
     :
 else
@@ -123,7 +147,11 @@ else
         # for continuity, but it now backs up the local file first.
         _tmp_set="$(mktemp)"
         if scp -o ConnectTimeout=5 "$USER@$HOMELAB_SSH:$HOME/.claude/settings.json" "$_tmp_set" 2>/dev/null; then
-            install_fetched "$_tmp_set" "$CLAUDE_DIR/settings.json" "settings.json" || rm -f "$_tmp_set"
+            if settings_is_safe "$_tmp_set" "$CLAUDE_DIR/settings.json"; then
+                install_fetched "$_tmp_set" "$CLAUDE_DIR/settings.json" "settings.json" || rm -f "$_tmp_set"
+            else
+                rm -f "$_tmp_set"
+            fi
         else
             rm -f "$_tmp_set"
             echo "  settings.json: not available (will use defaults)"

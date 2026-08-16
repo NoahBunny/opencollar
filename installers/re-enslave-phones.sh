@@ -56,8 +56,12 @@ if [ "$QUIET" = 1 ]; then
 fi
 
 check_paywall
-discover_paths
+# load_config BEFORE discover_paths: the config file is where FOCUSLOCK_SRC is
+# documented to live, and discover_paths only honours it if it is already set.
+# Reversed, the pin was dead unless exported into the environment by hand, and
+# autodiscovery quietly deployed whichever checkout it walked to first.
 load_config
+discover_paths
 
 if [ -z "${PHONE_TARGETS+x}" ] || [ "${#PHONE_TARGETS[@]}" -eq 0 ]; then
     fail "No PHONE_TARGETS configured. Copy re-enslave.config.example to ~/.config/focuslock/re-enslave.config and edit."
