@@ -343,6 +343,48 @@ class TestConfirmNode:
         assert "node" in resp.get("error", "")
 
 
+# ── one-shot grandfather migration ──
+
+
+class TestGrandfatherMigration:
+    def test_sweeps_pre_existing_nodes_once_and_only_once(self, live_server, seeded_mesh, mail_module):
+        """Devices enrolled under the old rules are swept in on the deploy that
+        introduced the gate. The per-mesh marker is what stops a later restart
+        from silently confirming whatever auto-accepted in the meantime."""
+        assert _toggle(live_server, seeded_mesh, "on")[0] == 200
+        priv, pub = _keypair()
+        old_node = "desk-old-" + str(int(time.time() * 1000000))
+        assert _register(live_server, seeded_mesh["mesh_id"], old_node, pub)[1]["status"] == "approved"
+
+        mail_module._grandfather_auto_accepted_nodes()
+        row = next(
+            n for n in mail_module._vault_store.get_nodes(seeded_mesh["mesh_id"])
+            if n["node_id"] == old_node
+        )
+        assert row["lion_confirmed"] is True
+        assert row["confirmed_by"] == "grandfathered"
+        assert mail_module._mesh_accounts.meshes[seeded_mesh["mesh_id"]]["auto_accept_grandfathered_at"] > 0
+        # The grandfathered node can write state, like any confirmed device.
+        ts_ms = int(time.time() * 1000)
+        sig = _sign(priv, _state_payload(seeded_mesh["mesh_id"], old_node, {"paywall": "30"}, ts_ms))
+        status, _ = _http_post(
+            f"{live_server}/api/mesh/{seeded_mesh['mesh_id']}/state-mirror",
+            {"node_id": old_node, "ts": ts_ms, "state": {"paywall": "30"}, "signature": sig},
+        )
+        assert status == 200
+
+        # A device that shows up AFTER the sweep is not swept in by a re-run.
+        _, newcomer_pub = _keypair()
+        newcomer = "desk-new-" + str(int(time.time() * 1000000))
+        assert _register(live_server, seeded_mesh["mesh_id"], newcomer, newcomer_pub)[1]["status"] == "approved"
+        mail_module._grandfather_auto_accepted_nodes()
+        row = next(
+            n for n in mail_module._vault_store.get_nodes(seeded_mesh["mesh_id"])
+            if n["node_id"] == newcomer
+        )
+        assert not row.get("lion_confirmed")
+
+
 # ── state-mirror confirmation gate ──
 
 

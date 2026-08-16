@@ -2870,11 +2870,17 @@ class VaultStore:
             nodes.append(node_entry)
             return self._write_json(mesh_id, "nodes.json", nodes)
 
-    def confirm_node(self, mesh_id, node_id):
+    def confirm_node(self, mesh_id, node_id, by="lion"):
         """Lion vouches for an auto-accepted node. Membership alone (which the
         auto-accept window grants to anything holding the mesh_id) is read-only
         trust; confirmation is what unlocks the plaintext write channels — see
-        the state-mirror gate. Returns True if a row was found and marked."""
+        the state-mirror gate. Returns True if a row was found and marked.
+
+        `by` records who vouched: "lion" for a signed confirm-node, or
+        "grandfathered" for the one-shot migration that swept in devices
+        enrolled before the gate existed. Keeping them distinguishable means a
+        Lion auditing the roster can tell a deliberate confirmation from an
+        inherited one."""
         with self.lock:
             nodes = self.get_nodes(mesh_id)
             found = False
@@ -2882,6 +2888,7 @@ class VaultStore:
                 if n.get("node_id") == node_id:
                     n["lion_confirmed"] = True
                     n["confirmed_at"] = int(time.time())
+                    n["confirmed_by"] = by
                     found = True
             if found:
                 self._write_json(mesh_id, "nodes.json", nodes)
@@ -3015,6 +3022,70 @@ def _relay_backfill_consumer_meshes():
 
 
 _relay_backfill_consumer_meshes()
+
+
+def _node_awaiting_confirmation(vault_row):
+    """True when a vault node may not make plaintext server-side writes yet.
+
+    A node that walked in through the auto-accept window is a member nobody
+    looked at. Membership earns it vault reads; the endpoints that write
+    plaintext the relay itself acts on — state-mirror (paywall / sub_due /
+    lock_active), the payment identities, the display name — stay shut until
+    the Lion vouches for it via /vault/{mesh_id}/confirm-node. Note that
+    `node_type` is self-asserted at registration, so "controller node
+    required" checks on those routes are not a barrier to a stranger holding
+    the mesh_id; this is.
+
+    Rows that came in any other way — Lion-signed register-node, approval out
+    of the pending queue, invite-code join — never carry the auto_accepted
+    stamp and are never blocked here.
+    """
+    if not vault_row:
+        return False
+    return bool(vault_row.get("auto_accepted")) and not vault_row.get("lion_confirmed")
+
+
+def _grandfather_auto_accepted_nodes():
+    """One-shot on the deploy that introduced the confirmation gate: stamp
+    every node already on a mesh as lion_confirmed.
+
+    Those devices were enrolled under the old rules, when auto-accept was a
+    standing door and nothing asked the Lion to look. Blocking their
+    state-mirror and identity writes retroactively would break working meshes
+    to punish them for the relay's old default, so they are grandfathered in
+    — the gate is for devices that show up from here on.
+
+    Runs at most once per mesh, tracked by `auto_accept_grandfathered_at` on
+    the account. That marker is what keeps this from being a hole: without it,
+    a restart would silently confirm whatever had auto-accepted since, and the
+    gate would mean nothing.
+    """
+    for mesh_id, account in list(_mesh_accounts.meshes.items()):
+        if account.get("auto_accept_grandfathered_at"):
+            continue
+        try:
+            stamped = []
+            for node in _vault_store.get_nodes(mesh_id):
+                node_id = node.get("node_id", "")
+                if node_id and _node_awaiting_confirmation(node):
+                    if _vault_store.confirm_node(mesh_id, node_id, by="grandfathered"):
+                        stamped.append(node_id)
+            account["auto_accept_grandfathered_at"] = int(time.time())
+            _mesh_accounts._save(mesh_id)
+            if stamped:
+                logger.warning(
+                    "Grandfathered %d pre-existing auto-accepted node(s) as lion-confirmed: mesh=%s nodes=%s",
+                    len(stamped),
+                    _sanitize_log(mesh_id),
+                    ",".join(_sanitize_log(n) for n in stamped),
+                )
+        except Exception as e:
+            logger.warning(
+                "auto-accept grandfather failed for mesh=%s: %s", _sanitize_log(mesh_id), e
+            )
+
+
+_grandfather_auto_accepted_nodes()
 
 
 # In-memory daily blob counter per mesh — resets on date change.
@@ -3200,27 +3271,6 @@ def _vault_resolve_mesh(mesh_id):
     if not account:
         return None, None
     return account, account.get("lion_pubkey", "")
-
-
-def _node_awaiting_confirmation(vault_row):
-    """True when a vault node may not make plaintext server-side writes yet.
-
-    A node that walked in through the auto-accept window is a member nobody
-    looked at. Membership earns it vault reads; the endpoints that write
-    plaintext the relay itself acts on — state-mirror (paywall / sub_due /
-    lock_active), the payment identities, the display name — stay shut until
-    the Lion vouches for it via /vault/{mesh_id}/confirm-node. Note that
-    `node_type` is self-asserted at registration, so "controller node
-    required" checks on those routes are not a barrier to a stranger holding
-    the mesh_id; this is.
-
-    Rows that came in any other way — Lion-signed register-node, approval out
-    of the pending queue, invite-code join — never carry the auto_accepted
-    stamp and are never blocked here.
-    """
-    if not vault_row:
-        return False
-    return bool(vault_row.get("auto_accepted")) and not vault_row.get("lion_confirmed")
 
 
 class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
@@ -6453,7 +6503,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 # unconfirmed, i.e. exactly which mesh let a stranger walk in.
                 # Stripped below for unauthenticated callers — the collars'
                 # E2EE bootstrap only needs node_id / node_type / pubkeys.
-                _TRUST_FIELDS = ("auto_accepted", "lion_confirmed", "confirmed_at")
+                _TRUST_FIELDS = ("auto_accepted", "lion_confirmed", "confirmed_at", "confirmed_by")
                 # The base node list (opaque ids/types/pubkeys, needed for E2EE
                 # bootstrap) stays readable, but the enrichment below is Lion-only:
                 # the bunny's self-chosen human display name is PII, and the

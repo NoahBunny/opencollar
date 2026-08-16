@@ -8,6 +8,42 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-16 interim marching orders for an unpaired collar ───────── -->
+
+### Added — a collared-but-unpaired PC is no longer silent
+
+- **The collar was invisible until it paired** (`shared/focuslock_unpaired_orders.py`,
+  `focuslock-desktop.py`, `focuslock-desktop-win.py`). The Lion's standing orders live
+  on Their mesh (`GET /standing-orders`), so a machine with no Lion key on file fetched
+  nothing and every Claude Code session on it behaved as though there were no collar at
+  all — which is exactly the state a bunny stalls in: installed, nothing feels
+  different, pairing slides to "later". Both collars now render an **interim CLAUDE.md
+  overlay** whenever `lion_pubkey.pem` is absent: the Lion/bunny frame plus one standing
+  task — get this machine paired — and nothing else.
+- **The nudge escalates on the collar's own clock.** `unpaired-since` is stamped the
+  first time the collar finds itself unpaired (not when the bunny opens a session) and
+  drives four tiers: *settling-in* (<6 h — one line per session), *insistent* (<24 h —
+  every session plus every ~10 exchanges), *pointed* (<72 h — every response, elapsed
+  time named, ask what's blocking them), *unignorable* (72 h+ — leads every response,
+  states the Lion still has no visibility). The overlay is re-rendered each
+  `MEMORY_SYNC_INTERVAL` tick, so the pressure grows without a restart. The marker file
+  is cleared on pairing, so a later unpairing starts from zero.
+- **It is deliberately not the full marching orders.** The overlay says so in its own
+  text, speaks for the collar and never for the Lion, and carries no enforcement: no
+  punishing, billing, restricting, or withholding work — *"You are pressing, not
+  withholding"* is in every tier. The consent floor is untouched: real enforcement and
+  the **Terms of Surrender** still begin at mesh-join, and the overlay points at that.
+- **A bunny's own `CLAUDE.md` is never clobbered.** Linux reuses `_apply_standing_orders`
+  (first-write backup to `claude-md.preuser`, restored by `_revoke_standing_orders`);
+  Windows gained the equivalent backup, plus a marker check so it only overwrites a file
+  it wrote. Windows also syncs standing orders once at startup instead of five minutes
+  in, so an unpaired machine gets its orders at boot.
+- Registered-but-unclaimed (mesh_id set, Lion hasn't approved the node) gets a different
+  ask than mesh-less: *"tell the Lion to confirm this device in Vault Nodes"* rather than
+  *"join a mesh"*. 17 new tests (`tests/test_unpaired_orders.py`) pin the marker,
+  tier boundaries, escalation ordering, and the no-enforcement/consent-floor contract.
+  Suite `1246 → 1263`.
+
 <!-- ───────── 2026-08-16 auto-accept window + node-join alerts + state-mirror confirmation ───────── -->
 
 ### Changed — auto-accept is a 30-minute onboarding window, not a permanent open door
@@ -28,6 +64,15 @@ starting with v1.0.0.
   **Fails closed on a missing deadline**, so accounts persisted before the field
   existed stop being open-forever the moment this deploys. Key rotation still routes
   to the pending queue regardless of the window (unchanged).
+- **Devices already on a mesh are grandfathered**, once, by
+  `_grandfather_auto_accepted_nodes()` at relay start: every existing `auto_accepted`
+  row is stamped `lion_confirmed` with `confirmed_by: "grandfathered"`, so a Lion
+  auditing the roster can still tell an inherited confirmation from a deliberate one.
+  Those devices were enrolled under the old rules; retroactively blocking their writes
+  would break working meshes to punish them for the relay's old default. The per-mesh
+  `auto_accept_grandfathered_at` marker is what keeps this from being a hole — without
+  it, a restart would sweep in whatever had auto-accepted since and the gate would mean
+  nothing.
 
 ### Added — Lion is told when a device joins the mesh
 
@@ -68,14 +113,15 @@ starting with v1.0.0.
   only the server's view goes stale until the Lion taps once. `auto_accepted` /
   `lion_confirmed` / `confirmed_at` are stripped from `/vault/{id}/nodes` for
   unauthenticated callers, same reconnaissance reasoning as the `auto_accept` flag.
-- 18 new HTTP-level tests (`tests/test_auto_accept_window.py`) pin: window opens with a
+- 19 new HTTP-level tests (`tests/test_auto_accept_window.py`) pin: window opens with a
   deadline; open window auto-accepts; expired window and legacy no-deadline accounts
   queue for approval; `off` closes immediately; a new mesh's window expires; key
   rotation still needs approval inside an open window; `/nodes` reports live window
   state and hides trust fields from anonymous callers; confirm-node accepts the Lion,
   rejects a rogue key, 404s an unknown node; unconfirmed auto-accepted node cannot
   write state, set a payer identity, or rename itself, and confirmation unlocks it;
-  invite-joined and Lion-approved nodes are unaffected. Suite `1227 → 1245`.
+  invite-joined and Lion-approved nodes are unaffected; the grandfather sweep runs once
+  and does not re-sweep. Suite `1227 → 1246`.
 
 <!-- ───────── 2026-08-09 unpaired-tamper trap + desktop standing-orders gate ───────── -->
 
