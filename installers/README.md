@@ -24,6 +24,7 @@ nothing else.**
 | [`homelab-setup.sh`](#operator-homelab) | Deploy the mail relay + ADB bridge on a homelab box you already own. |
 | [`homelab-install.sh`](#operator-homelab) | Same, but a self-contained installer for a fresh Debian/Ubuntu **VPS**. |
 | [`install-standing-orders.sh`](#operator-homelab) | Sync the Claude Code standing orders (`~/.claude/CLAUDE.md`) from the homelab. |
+| [`install-server-sudoers.sh`](#operator-homelab) | Run once **on the relay**: hands `/opt/focuslock` to the deploy user + NOPASSWD service restart, so `re-enslave-server.sh` stops asking for a password. |
 
 ### 👑 Operator / Lion — push code to devices you already collared
 | Script | What it does |
@@ -142,8 +143,16 @@ Bunny installs.**
 code push that the operator wants live without waiting for the next install
 cycle.
 
+- `install-server-sudoers.sh` — one-time relay prep for unattended deploys.
+  Grants the deploy user ownership of `/opt/focuslock` plus a two-command
+  NOPASSWD sudoers rule for restarting `focuslock-mail`. **Read its header
+  first**: the relay service runs as root, so a passwordless path to replace
+  its code is root-equivalent for that account. `--revert` undoes it.
 - `re-enslave-all.sh` — orchestrator: server, then desktops, then phones.
-- `re-enslave-server.sh` — homelab `focuslock-mail.py` + shared modules.
+- `re-enslave-server.sh` — homelab `focuslock-mail.py` + shared modules. Runs
+  unattended on a relay prepared with `install-server-sudoers.sh`; otherwise it
+  asks for one sudo password, and refuses early (changing nothing) when it needs
+  a password but has no terminal to prompt on.
 - `re-enslave-desktops.sh` — `/opt/focuslock/` on Linux desktop collars.
   Two-phase: user-side first (icons, autostart, lion_pubkey) so it always
   makes some progress; system-side requires sudo and soft-fails when

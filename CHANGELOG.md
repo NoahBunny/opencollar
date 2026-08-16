@@ -8,6 +8,36 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-16 unattended relay deploys ───────── -->
+
+### Added — `install-server-sudoers.sh`: the relay stops asking for a password
+
+- **Every relay deploy prompted for sudo, so none could run unattended**
+  (`installers/install-server-sudoers.sh`, `installers/re-enslave-server.sh`).
+  Desktop collars have had narrow NOPASSWD rules since `install-desktop-collar.sh`;
+  the relay had no equivalent, which also meant a deploy could never be driven from a
+  non-interactive shell. Run once on the relay with sudo, the new script hands
+  `/opt/focuslock` to the deploy user and installs a four-line
+  `/etc/sudoers.d/focuslock-server` covering exactly `systemctl restart|is-active
+  focuslock-mail` (exact argument forms, no wildcards — it cannot be widened into
+  "restart anything"), validated with `visudo -cf` before install because a malformed
+  sudoers file locks every user out of sudo. `--revert` gives the directory back to
+  root and removes the rule.
+- **`re-enslave-server.sh` escalates only where it must.** The generated apply script
+  now checks `test -w /opt/focuslock` and uses plain writes when the dir is the deploy
+  user's, leaving `sudo` for the service restart alone; on an unprepared relay it falls
+  back to sudo for everything, exactly as before. Its pre-flight also asks the *real*
+  questions — is the install dir writable, is the specific systemctl command passwordless
+  — because a bare `sudo -n true` answers neither and reports "needs a password" on a
+  correctly prepared relay.
+- **Stated plainly in the script header, not buried:** `focuslock-mail.service` runs as
+  root with no `User=`, so any passwordless path to replace `/opt/focuslock/*.py` is
+  root-equivalent for that account on the next restart. That is inherent to unattended
+  deployment — a root-owned staging helper would be no stronger, since the code it
+  installs is what root then executes. `config.json` and any `*.pem` stay `root:root
+  0600` as defence in depth, with the caveat spelled out that directory ownership still
+  allows replacing them.
+
 <!-- ───────── 2026-08-16 desktops claim their Lion ───────── -->
 
 ### Added — a desktop can obtain its Lion's pubkey instead of waiting for a hand-copied PEM

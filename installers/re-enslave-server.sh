@@ -53,18 +53,28 @@ if ! ssh -o ConnectTimeout=10 -o BatchMode=yes "$DEPLOY_USER@$HOMELAB_SSH" 'echo
     fail "SSH to $DEPLOY_USER@$HOMELAB_SSH failed."
 fi
 
-# Can the privileged half actually run? If the homelab's sudo wants a password
-# and this shell has no terminal, ssh won't allocate a PTY, sudo aborts with
-# "a terminal is required to authenticate", and the deploy dies *after* staging
-# files — previously reported as "check journalctl", which sends the operator
-# to look at a service that never restarted. Find out first, and say the useful
-# thing instead.
-if [ "$DRY_RUN" != 1 ] \
-   && ! ssh -o ConnectTimeout=10 -o BatchMode=yes "$DEPLOY_USER@$HOMELAB_SSH" 'sudo -n true' 2>/dev/null \
-   && [ ! -t 0 ]; then
-    fail "sudo on $HOMELAB_SSH needs a password, but this shell has no terminal for it to prompt on.
-       Run this from an interactive terminal window, or grant $DEPLOY_USER passwordless
-       sudo on the homelab. Nothing was changed."
+# Can this deploy run unattended? Two questions, and the probe has to ask the
+# real ones: whether the install dir is ours to write, and whether the exact
+# service command we need is passwordless. (A bare `sudo -n true` answers
+# neither — on a relay prepared by install-server-sudoers.sh it fails, because
+# only the systemctl forms are NOPASSWD.) When something does need a password
+# and this shell has no terminal, ssh can't allocate a PTY, sudo aborts with "a
+# terminal is required to authenticate", and the deploy would die *after*
+# staging files — reported as "check journalctl", which sends the operator to a
+# service that never restarted. Find out first; say the useful thing instead.
+UNATTENDED=0
+if ssh -o ConnectTimeout=10 -o BatchMode=yes "$DEPLOY_USER@$HOMELAB_SSH" \
+       'test -w /opt/focuslock && { sudo -n systemctl is-active focuslock-mail || sudo -n true; }' \
+       >/dev/null 2>&1; then
+    UNATTENDED=1
+    log "Relay is prepared for unattended deploys (owns /opt/focuslock, NOPASSWD service control)"
+fi
+if [ "$DRY_RUN" != 1 ] && [ "$UNATTENDED" = 0 ] && [ ! -t 0 ]; then
+    fail "This deploy needs a password on $HOMELAB_SSH, but the shell has no terminal to prompt on.
+       Either run it from an interactive terminal window, or prepare the relay once:
+         scp installers/install-server-sudoers.sh $DEPLOY_USER@$HOMELAB_SSH:
+         ssh $DEPLOY_USER@$HOMELAB_SSH 'sudo ./install-server-sudoers.sh'
+       Nothing was changed."
 fi
 
 # Build a list of (local_path, remote_path) tuples for files we deploy.
@@ -172,31 +182,43 @@ if [ "${#PUSH_LIST[@]}" -gt 0 ]; then
     log "  staged ${#PUSH_LIST[@]} file(s) in $TMPDIR_REMOTE"
 fi
 
-# Build the privileged half as a script, so the whole deploy is one `sudo bash`.
+# Build the apply half as a script. It escalates only where it must: on a relay
+# prepared by install-server-sudoers.sh the deploy user owns /opt/focuslock, so
+# every file write is unprivileged and the single sudo left is the service
+# restart (covered by a NOPASSWD rule) — the whole deploy runs unattended. On an
+# unprepared relay the same script falls back to sudo for everything, which is
+# the old behaviour and still needs one password.
 REMOTE_SCRIPT=$(mktemp)
 {
     echo 'set -e'
+    echo '# Escalate only when the install dir is not ours to write.'
+    echo 'if [ -w /opt/focuslock ]; then SUDO=""; else SUDO="sudo"; fi'
     for pair in "${PUSH_LIST[@]}"; do
         local_path="${pair%%|*}"
         remote_path="${pair##*|}"
         bn=$(basename "$local_path")
-        printf 'install -D -m 644 %q %q\n' "$TMPDIR_REMOTE/$bn" "$remote_path"
+        printf '$SUDO install -D -m 644 %q %q\n' "$TMPDIR_REMOTE/$bn" "$remote_path"
         printf 'echo "  installed: %s"\n' "$remote_path"
     done
     # DURABLE state dirs (vault store + mesh accounts + per-mesh orders). These
     # hold the only server-side record of mesh membership, so they live on
     # persistent disk — NOT /run (tmpfs), which wiped every mesh on reboot.
-    echo 'mkdir -p /var/lib/focuslock/meshes /var/lib/focuslock/vaults /var/lib/focuslock/mesh-orders'
-    echo 'chmod 700 /var/lib/focuslock'
+    # install-server-sudoers.sh pre-creates them, so a prepared relay skips this
+    # rather than escalating for a no-op.
+    echo 'if [ ! -d /var/lib/focuslock/meshes ]; then'
+    echo '    $SUDO mkdir -p /var/lib/focuslock/meshes /var/lib/focuslock/vaults /var/lib/focuslock/mesh-orders'
+    echo '    $SUDO chmod 700 /var/lib/focuslock'
+    echo 'fi'
     # Git commit hash for /version transparency (P3)
     if [ -n "$GIT_COMMIT" ]; then
-        printf 'printf %%s %q > /opt/focuslock/.git_commit\n' "$GIT_COMMIT"
+        printf 'printf %%s %q | $SUDO tee /opt/focuslock/.git_commit > /dev/null\n' "$GIT_COMMIT"
     fi
     if [ "$NEEDS_RESTART" = 1 ] || [ "$FORCE_RESTART" = 1 ]; then
         echo 'echo "  restarting focuslock-mail.service"'
-        echo 'systemctl restart focuslock-mail'
+        # Always sudo: the unit is system-level and root-owned either way.
+        echo 'sudo systemctl restart focuslock-mail'
         echo 'sleep 3'
-        echo 'systemctl is-active focuslock-mail'
+        echo 'sudo systemctl is-active focuslock-mail'
     else
         echo 'echo "  no service restart needed"'
     fi
@@ -211,8 +233,14 @@ REMOTE_SCRIPT=$(mktemp)
 scp -o ConnectTimeout=10 -q "$REMOTE_SCRIPT" "$DEPLOY_USER@$HOMELAB_SSH:$TMPDIR_REMOTE/_apply.sh"
 rm -f "$REMOTE_SCRIPT"
 
-section "Applying (one sudo session — enter the homelab password if prompted)"
-if ! ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" "sudo bash '$TMPDIR_REMOTE/_apply.sh'"; then
+if [ "$UNATTENDED" = 1 ]; then
+    section "Applying (unattended — no password needed)"
+else
+    section "Applying (one sudo session — enter the homelab password if prompted)"
+fi
+# The script escalates internally where it must, so it is NOT run under sudo:
+# on a prepared relay that keeps every file write unprivileged.
+if ! ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" "bash '$TMPDIR_REMOTE/_apply.sh'"; then
     ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" "rm -rf $TMPDIR_REMOTE" || true
     fail "Remote apply failed. If sudo could not authenticate, re-run from an interactive
        terminal; otherwise check journalctl -u focuslock-mail on $HOMELAB_SSH."
