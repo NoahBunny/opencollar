@@ -513,3 +513,116 @@ class TestStateMirrorConfirmationGate:
         )
         assert status == 200
         assert resp["applied"] == ["sub_due"]
+
+
+# ── Restart re-registration ──
+
+
+def _register_full(live_server, mesh_id, node_id, node_pubkey, bunny_pubkey=None, node_type="desktop"):
+    body = {"node_id": node_id, "node_type": node_type, "node_pubkey": node_pubkey}
+    if bunny_pubkey is not None:
+        body["bunny_pubkey"] = bunny_pubkey
+    return _http_post(f"{live_server}/vault/{mesh_id}/register-node-request", body)
+
+
+class TestIdempotentReRegistration:
+    """A collar re-posts register-node-request on every restart (the guard in
+    `_vault_register_node` is in-process). With the window shut that queued an
+    established member again and alerted the Lion, burying real requests. An
+    exact-key repost is now answered "you are already in" — without touching the
+    pending queue, because pending is keyed by node_id and node_pubkeys are
+    public, so clearing here would let anyone strand a node mid-rotation."""
+
+    def _admit(self, live_server, seeded_mesh, node_id, pub, bunny=None):
+        assert _toggle(live_server, seeded_mesh, "on")[0] == 200
+        status, resp = _register_full(live_server, seeded_mesh["mesh_id"], node_id, pub, bunny)
+        assert (status, resp.get("status")) == (200, "approved"), resp
+        assert _toggle(live_server, seeded_mesh, "off")[0] == 200
+
+    def _row(self, mail_module, mesh_id, node_id):
+        for n in mail_module._vault_store.get_nodes(mesh_id):
+            if n.get("node_id") == node_id:
+                return n
+        return None
+
+    def test_restart_repost_is_a_noop_not_a_join_request(self, live_server, seeded_mesh, mail_module):
+        mesh_id = seeded_mesh["mesh_id"]
+        node_id = "desk-restart-" + str(int(time.time() * 1000000))
+        _, pub = _keypair()
+        self._admit(live_server, seeded_mesh, node_id, pub)
+        registered_at = self._row(mail_module, mesh_id, node_id)["registered_at"]
+
+        status, resp = _register_full(live_server, mesh_id, node_id, pub)
+
+        assert status == 200
+        assert resp["status"] == "approved"
+        assert resp["already_registered"] is True
+        assert [p for p in mail_module._vault_store.get_pending_nodes(mesh_id) if p["node_id"] == node_id] == []
+        # The membership row is untouched — no churned join time.
+        assert self._row(mail_module, mesh_id, node_id)["registered_at"] == registered_at
+
+    def test_noop_does_not_alert_the_lion(self, live_server, seeded_mesh, mail_module, monkeypatch):
+        mesh_id = seeded_mesh["mesh_id"]
+        node_id = "desk-quiet-" + str(int(time.time() * 1000000))
+        _, pub = _keypair()
+        self._admit(live_server, seeded_mesh, node_id, pub)
+
+        fired = []
+        monkeypatch.setattr(mail_module, "_node_join_ntfy", lambda *a, **k: fired.append(a))
+        assert _register_full(live_server, mesh_id, node_id, pub)[0] == 200
+        assert fired == []
+        # A device that really is new still rings.
+        _, other = _keypair()
+        _register_full(live_server, mesh_id, "desk-stranger-" + str(int(time.time() * 1000000)), other)
+        assert len(fired) == 1
+
+    def test_noop_reports_whether_the_lion_has_confirmed(self, live_server, seeded_mesh, mail_module):
+        mesh_id = seeded_mesh["mesh_id"]
+        node_id = "desk-conf-" + str(int(time.time() * 1000000))
+        _, pub = _keypair()
+        self._admit(live_server, seeded_mesh, node_id, pub)
+
+        assert _register_full(live_server, mesh_id, node_id, pub)[1]["lion_confirmed"] is False
+        assert _confirm(live_server, mesh_id, node_id, seeded_mesh["lion_priv"], mail_module)[0] == 200
+        assert _register_full(live_server, mesh_id, node_id, pub)[1]["lion_confirmed"] is True
+
+    def test_a_different_key_under_the_same_id_still_queues(self, live_server, seeded_mesh, mail_module):
+        mesh_id = seeded_mesh["mesh_id"]
+        node_id = "desk-rot-" + str(int(time.time() * 1000000))
+        _, pub = _keypair()
+        self._admit(live_server, seeded_mesh, node_id, pub)
+
+        _, rotated = _keypair()
+        status, resp = _register_full(live_server, mesh_id, node_id, rotated)
+
+        assert (status, resp["status"]) == (200, "pending")
+        assert self._row(mail_module, mesh_id, node_id)["node_pubkey"] == pub
+        assert [p["node_pubkey"] for p in mail_module._vault_store.get_pending_nodes(mesh_id) if p["node_id"] == node_id] == [rotated]
+
+    def test_a_new_bunny_pubkey_is_not_installed_without_the_lion(self, live_server, seeded_mesh, mail_module):
+        mesh_id = seeded_mesh["mesh_id"]
+        node_id = "desk-bk-" + str(int(time.time() * 1000000))
+        _, pub = _keypair()
+        _, bunny_a = _keypair()
+        self._admit(live_server, seeded_mesh, node_id, pub, bunny=bunny_a)
+
+        _, bunny_b = _keypair()
+        status, resp = _register_full(live_server, mesh_id, node_id, pub, bunny_pubkey=bunny_b)
+
+        assert (status, resp["status"]) == (200, "pending")
+        assert self._row(mail_module, mesh_id, node_id)["bunny_pubkey"] == bunny_a
+
+    def test_replaying_the_current_key_cannot_cancel_a_rotation(self, live_server, seeded_mesh, mail_module):
+        """node_pubkeys are readable anonymously, so the no-op path must not be a
+        way to delete another device's pending rotation and strand it on the old key."""
+        mesh_id = seeded_mesh["mesh_id"]
+        node_id = "desk-strand-" + str(int(time.time() * 1000000))
+        _, pub = _keypair()
+        self._admit(live_server, seeded_mesh, node_id, pub)
+        _, rotated = _keypair()
+        assert _register_full(live_server, mesh_id, node_id, rotated)[1]["status"] == "pending"
+
+        assert _register_full(live_server, mesh_id, node_id, pub)[1]["already_registered"] is True
+
+        pending = [p for p in mail_module._vault_store.get_pending_nodes(mesh_id) if p["node_id"] == node_id]
+        assert [p["node_pubkey"] for p in pending] == [rotated]

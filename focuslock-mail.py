@@ -5915,6 +5915,53 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     )
                     self.respond(403, {"error": "node rejected"})
                     return
+                # Idempotent re-registration: an already-approved node posting the
+                # exact key it is already on file with is a restart, not a join.
+                # `_vault_register_node()` guards on an in-process flag, so every
+                # collar restart re-posts — and once the auto-accept window shuts,
+                # that queued the node again and fired a join alert for a device
+                # that had been a member for a day. The Lion then saw a queue where
+                # approving most rows was a no-op, which is how a real request hides.
+                # Answering "you are already in" costs nothing and keeps the
+                # restart-driven re-post as the self-healing path it is: if relay
+                # state is ever lost, the same POST re-enrolls the collar through
+                # the normal gate.
+                #
+                # Deliberately strict about what counts as the same node: node_pubkey
+                # must match byte-for-byte, and a request carrying a *different*
+                # bunny_pubkey than the row holds falls through to the queue. Both are
+                # verification anchors, so silently accepting a new one here would be
+                # the unauthenticated key-swap this handler routes to the Lion on purpose.
+                #
+                # It also does NOT clear any pending row for this node_id. Pending is
+                # keyed by node_id, node_pubkeys are readable anonymously from
+                # /vault/{id}/nodes, and a stale row is only ever a duplicate — so
+                # clearing here would let anyone replay a node's current key to delete
+                # that node's *rotation* request and strand it on its old key.
+                existing = None
+                for _n in _vault_store.get_nodes(mesh_id):
+                    if _n.get("node_id") == node_id:
+                        existing = _n
+                        break
+                if existing and existing.get("node_pubkey") == node_pubkey:
+                    _stored_bunny = existing.get("bunny_pubkey", "") or ""
+                    if not node_bunny_pubkey or node_bunny_pubkey == _stored_bunny:
+                        logger.info(
+                            "Vault register-node-request ALREADY-REGISTERED (no-op): mesh=%s node=%s pubkey_hash=%s",
+                            _sanitize_log(mesh_id),
+                            _sanitize_log(node_id),
+                            pk_hash,
+                        )
+                        self.respond(
+                            200,
+                            {
+                                "ok": True,
+                                "status": "approved",
+                                "already_registered": True,
+                                "lion_confirmed": bool(existing.get("lion_confirmed")),
+                            },
+                        )
+                        return
                 # Security: key rotation (same node_id, new pubkey) goes to pending
                 # queue like any new node. Lion must approve. The legacy
                 # always-auto-approve was removed because it allowed

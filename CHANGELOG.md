@@ -8,6 +8,38 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-17 restart re-registration ───────── -->
+
+### Fixed — a collar restart looked like a stranger knocking
+
+- **Every already-approved collar re-queued itself on restart** (`focuslock-mail.py`).
+  `_vault_register_node()` guards on an in-process flag, so each start re-posts
+  `register-node-request`; once the auto-accept window shuts, that request was queued
+  unconditionally — there was no "this node_id is already approved with this exact key"
+  short-circuit — and fired `_node_join_ntfy()`. Found on the live mesh: of three
+  pending requests, two (`charizard-garuda`, `vaporeon`) were established members
+  re-posting the **same** key, and only one (`gengar-neon`) was a device that had never
+  been let in. That is how a real request hides: the Lion sees a queue where approving
+  most rows is a no-op, and learns to wave the whole thing through. An exact-key repost
+  now answers `{"status": "approved", "already_registered": true, "lion_confirmed": …}`
+  with no queue write and no alert.
+- **Strict about what counts as the same node.** `node_pubkey` must match byte-for-byte,
+  and a request carrying a *different* `bunny_pubkey` than the row holds falls through to
+  the queue. Both are verification anchors, so silently accepting a new one on an
+  unsigned endpoint would be the key-swap this handler routes to the Lion on purpose.
+- **The no-op deliberately does not clear the node's pending row.** Pending is keyed by
+  `node_id` and `node_pubkey`s are readable anonymously from `/vault/{id}/nodes`, so
+  clearing there would let anyone replay a node's current key to delete that node's
+  *rotation* request and strand it on its old key.
+- **The restart repost stays** rather than being suppressed client-side with a
+  persisted flag: it is the self-healing path that re-enrolls collars through the normal
+  gate if relay state is ever lost (as it was on 2026-08-15).
+- 6 new tests (`tests/test_auto_accept_window.py::TestIdempotentReRegistration`): repost
+  is a no-op that neither churns `registered_at` nor queues; no join alert for a repost
+  but still one for a stranger; the no-op reports live confirmation state; a rotated key
+  and a changed `bunny_pubkey` both still queue with the stored row untouched; replaying
+  the current key cannot cancel a pending rotation. Suite `1271 → 1277`.
+
 <!-- ───────── 2026-08-16 unattended relay deploys ───────── -->
 
 ### Added — `install-server-sudoers.sh`: the relay stops asking for a password
