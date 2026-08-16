@@ -123,6 +123,7 @@ DEFAULT_HIDDEN_IMPORTS = [
     "focuslock_config",
     "focuslock_transport",
     "focuslock_ntfy",
+    "focuslock_unpaired_orders",
 ]
 
 

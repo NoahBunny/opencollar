@@ -37,6 +37,7 @@ Consensual remote device restriction ecosystem. Lion controls, Bunny obeys, Coll
 - `focuslock_vault.py` — Python VaultCrypto (encrypt/decrypt/sign/verify)
 - `focuslock_config.py` — Config loader
 - `focuslock_sync.py` — Mesh sync helpers
+- `focuslock_unpaired_orders.py` — Interim CLAUDE.md overlay for a collared-but-unpaired desktop (tone + escalating pair-now nudge, no enforcement)
 - `banks.json` — Payment detection keywords (145+ banks)
 
 ### Installers

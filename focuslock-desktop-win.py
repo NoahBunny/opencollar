@@ -65,6 +65,13 @@ from focuslock_sync import direct_sync_poll as _shared_direct_sync_poll
 from focuslock_sync import relay_to_phones as _shared_relay_to_phones
 from focuslock_sync import try_sync as _shared_try_sync
 
+# Interim marching orders for a collared-but-unpaired machine. Optional: a
+# collar shipped without the module just skips the overlay.
+try:
+    import focuslock_unpaired_orders as unpaired_orders_mod
+except ImportError:
+    unpaired_orders_mod = None
+
 # Vault crypto for E2E encrypted mesh (Phase D desktop support)
 try:
     from focuslock_vault import (
@@ -1712,6 +1719,78 @@ def needs_install():
         return True
 
 
+_SO_UNPAIRED_SINCE = os.path.join(CONFIG_DIR, "unpaired-since")
+_SO_BACKUP = os.path.join(CONFIG_DIR, "claude-md.preuser")  # bunny's own CLAUDE.md, if any
+
+_JOIN_HINT_WINDOWS = """1. Open `%APPDATA%\\focuslock\\config.json` and set `mesh_id` and `mesh_url` to the values the Lion gave you.
+2. Restart the collar (right-click the tray icon → **Exit tray**, then launch FocusLock again) — it shows the **Terms of Surrender** on the way back up.
+3. Tell the Lion to confirm this device in **Lion's Share → Vault Nodes** — they get a notification when it registers."""
+
+
+def _claude_md_path():
+    return os.path.join(os.environ.get("USERPROFILE", os.path.expanduser("~")), ".claude", "CLAUDE.md")
+
+
+def _unpaired_hours():
+    """Hours since this machine was first seen collared-but-unpaired, stamped on
+    first call so the escalation clock starts with the collar, not with the
+    bunny's first Claude session."""
+    now = time.time()
+    try:
+        if os.path.exists(_SO_UNPAIRED_SINCE):
+            with open(_SO_UNPAIRED_SINCE, "r", encoding="utf-8") as f:
+                since = float(f.read().strip() or now)
+        else:
+            since = now
+            with open(_SO_UNPAIRED_SINCE, "w", encoding="utf-8") as f:
+                f.write(str(int(now)))
+    except Exception:
+        return 0.0
+    return max(0.0, (now - since) / 3600.0)
+
+
+def apply_unpaired_orders():
+    """Install the interim marching orders while no Lion holds this machine.
+
+    The Lion's real orders live on Their mesh; an unpaired PC could not fetch
+    them and so ran with no collar voice at all. This writes the floor — the
+    Lion/bunny frame plus an escalating push to pair — and nothing else. It
+    enforces nothing; Terms of Surrender still gate real enforcement at
+    mesh-join.
+
+    A CLAUDE.md the bunny wrote themselves is backed up before being replaced,
+    mirroring the Linux collar's _apply_standing_orders.
+    """
+    if unpaired_orders_mod is None:
+        return
+    try:
+        target = _claude_md_path()
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        existing = ""
+        if os.path.exists(target):
+            with open(target, "r", encoding="utf-8") as f:
+                existing = f.read()
+        if existing and not unpaired_orders_mod.is_our_overlay(existing) and not os.path.exists(_SO_BACKUP):
+            with open(_SO_BACKUP, "w", encoding="utf-8") as f:
+                f.write(existing)
+            logger.info("Backed up the bunny's own CLAUDE.md before the interim orders")
+        content = unpaired_orders_mod.unpaired_orders(
+            hostname=MESH_NODE_ID,
+            hours_unpaired=_unpaired_hours(),
+            join_hint=_JOIN_HINT_WINDOWS,
+            # mesh_id set but no Lion key = registered, waiting to be claimed.
+            mesh_configured=bool(MESH_ID),
+        )
+        if content != existing:
+            tmp = target + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(content)
+            os.replace(tmp, target)
+            logger.info("Interim (unpaired) standing orders applied (%d bytes)", len(content))
+    except Exception as e:
+        logger.warning("Interim (unpaired) standing orders failed: %s", e)
+
+
 def sync_standing_orders():
     """Pull CLAUDE.md + settings.json from the mesh server into ~/.claude.
 
@@ -1722,6 +1801,16 @@ def sync_standing_orders():
     matches the Linux collar's sync_standing_orders() cadence. Only writes
     when content changed, to avoid needless disk churn / log spam.
     """
+    # Unpaired: no Lion's key on file means there is nothing to fetch and nobody
+    # to fetch it from. Install the interim orders instead of leaving the machine
+    # silent, re-rendered each tick so the nudge escalates with the clock.
+    if not get_lion_pubkey():
+        apply_unpaired_orders()
+        return
+    try:
+        os.remove(_SO_UNPAIRED_SINCE)  # paired — a later unpairing escalates from zero
+    except OSError:
+        pass
     if not ADMIN_TOKEN:
         logger.debug("Standing orders sync skipped: no admin_token configured")
         return
@@ -2143,13 +2232,15 @@ def main():
     # Standing orders periodic re-sync — self_install() only does this once,
     # at install time, so operator-side edits to CLAUDE-stub.md/settings.json
     # would otherwise never reach an already-installed machine.
+    # Syncs once up front, then on the interval: an unpaired machine should get
+    # its interim marching orders at boot, not five minutes into the session.
     def _standing_orders_loop():
         while True:
-            time.sleep(MEMORY_SYNC_INTERVAL)
             try:
                 sync_standing_orders()
             except Exception:
                 logger.exception("Standing orders sync loop error")
+            time.sleep(MEMORY_SYNC_INTERVAL)
 
     threading.Thread(target=_standing_orders_loop, daemon=True).start()
     logger.info("Standing orders re-sync started (%ss interval)", MEMORY_SYNC_INTERVAL)

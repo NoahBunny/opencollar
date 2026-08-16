@@ -202,6 +202,13 @@ The AI assistant on your computers follows standing orders:
 - Syncs enforcement across all machines every 5 minutes
 - Paywall hook can't be removed ($50 tamper penalty + auto-restore)
 
+A machine that's collared but **not yet paired** doesn't get any of that — your
+Lion's orders live on Their mesh, and an unpaired PC can't reach them. What it
+gets instead is an interim set: the same tone, no enforcement, and a standing
+instruction to get you to pair the machine. The longer it stays unpaired, the
+harder it pushes — after three days Claude leads *every* answer with it. Pair
+the machine and it stops; the Lion's real orders take over.
+
 ---
 
 ## Escape Attempts
