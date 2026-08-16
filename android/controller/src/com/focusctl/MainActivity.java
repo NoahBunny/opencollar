@@ -63,6 +63,7 @@ public class MainActivity extends Activity {
     private Runnable statusPoller;
     private Runnable timerTicker;
     private Runnable vaultPoller;
+    private Runnable nodeWatchPoller;
 
     /**
      * Phase D LocalSnapshot — the controller's in-memory mirror of the most
@@ -512,6 +513,19 @@ public class MainActivity extends Activity {
             handler.postDelayed(vaultPoller, 5000);
         };
         handler.postDelayed(vaultPoller, 4000);
+
+        // New-device watch. The relay ntfy-pings on every registration so the
+        // wake path below usually gets there first; this poll is the floor for
+        // a missed push. Before it existed, a device that joined through the
+        // auto-accept window was invisible until the Lion happened to open
+        // Vault Nodes and hit Refresh.
+        nodeWatchPoller = () -> {
+            if (!meshId.isEmpty()) {
+                executor.execute(this::checkForNewNodes);
+            }
+            handler.postDelayed(nodeWatchPoller, 60_000);
+        };
+        handler.postDelayed(nodeWatchPoller, 6000);
 
         // ntfy push subscriber — wakes up immediate refreshInbox + vault poll
         // on Bunny-/server-issued events (new message, edit, delete, lock
@@ -2175,9 +2189,11 @@ public class MainActivity extends Activity {
         container.addView(statusLine);
 
         // Auto-accept toggle row — Lion-signed flag stored on the server.
-        // While ON, register-node-request goes straight to approved. Key
-        // rotation (existing node_id, new pubkey) still requires a manual
-        // approve to close the takeover vector at docs/VAULT-DESIGN.md:266.
+        // Turning it ON opens a time-boxed window (the relay expires it on its
+        // own clock); while the window is open, register-node-request goes
+        // straight to approved. Key rotation (existing node_id, new pubkey)
+        // still requires a manual approve to close the takeover vector at
+        // docs/VAULT-DESIGN.md:266.
         final TextView autoAcceptLabel = new TextView(this);
         autoAcceptLabel.setTextColor(0xFFcccccc);
         autoAcceptLabel.setTextSize(13);
@@ -2187,7 +2203,7 @@ public class MainActivity extends Activity {
         final TextView autoAcceptHint = new TextView(this);
         autoAcceptHint.setTextColor(0xFF888888);
         autoAcceptHint.setTextSize(10);
-        autoAcceptHint.setText("New devices added while ON skip the approval queue. Tap to toggle.");
+        autoAcceptHint.setText("Tap to open a short enrolment window. Devices that register while it's open skip the approval queue.");
         container.addView(autoAcceptHint);
         autoAcceptLabel.setOnClickListener(v -> {
             executor.execute(() -> {
@@ -2213,13 +2229,23 @@ public class MainActivity extends Activity {
                 String resp = meshPost(meshUrl + "/api/mesh/" + meshId + "/auto-accept", body.toString());
                 final boolean okOn = resp != null && resp.contains("\"auto_accept_nodes\":true");
                 final boolean okOff = resp != null && resp.contains("\"auto_accept_nodes\":false");
+                // The relay decides how long the window lasts — read it back
+                // rather than hardcoding a duration that could drift from it.
+                long expiresIn = 0;
+                if (resp != null) {
+                    try { expiresIn = new org.json.JSONObject(resp).optLong("expires_in_s", 0); }
+                    catch (Exception ignored) {}
+                }
+                final long fExpiresIn = expiresIn;
                 handler.post(() -> {
                     if (okOn) {
                         autoAcceptLabel.setText("Auto-accept new nodes (on)");
-                        autoAcceptHint.setText("Auto-accept ENABLED. Disable when done onboarding.");
+                        autoAcceptHint.setText(fExpiresIn > 0
+                            ? ("Window OPEN for " + (fExpiresIn / 60) + " min, then it closes itself. Enrol devices now.")
+                            : "Window OPEN. Enrol devices now.");
                     } else if (okOff) {
                         autoAcceptLabel.setText("Auto-accept new nodes (off)");
-                        autoAcceptHint.setText("Auto-accept disabled. New devices land in the pending queue.");
+                        autoAcceptHint.setText("Window closed. New devices land in the pending queue.");
                     } else {
                         autoAcceptHint.setText("Toggle failed: " + (resp == null ? "no response" : resp));
                     }
@@ -2257,6 +2283,16 @@ public class MainActivity extends Activity {
                             if (nj.has("auto_accept")) {
                                 boolean on = nj.optBoolean("auto_accept", false);
                                 autoAcceptLabel.setText("Auto-accept new nodes (" + (on ? "on" : "off") + ")");
+                                // Show the window burning down so the Lion can see
+                                // this is temporary, not a switch left flipped.
+                                long untilS = nj.optLong("auto_accept_until", 0);
+                                long leftMin = (untilS * 1000L - System.currentTimeMillis()) / 60000L;
+                                if (on && leftMin >= 0) {
+                                    autoAcceptHint.setText("Window OPEN — about " + (leftMin + 1)
+                                        + " min left, then it closes itself.");
+                                } else {
+                                    autoAcceptHint.setText("Window closed. New devices land in the pending queue below. Tap to re-open.");
+                                }
                             }
                         } catch (Exception ignored) {}
                     }
@@ -2307,7 +2343,12 @@ public class MainActivity extends Activity {
                             n.optString("node_type", "?"),
                             n.optString("node_pubkey", ""),
                             n.optString("bunny_pubkey", ""),
-                            n.optString("display_name", "")));
+                            n.optString("display_name", ""),
+                            // Walked in through the auto-accept window and not yet
+                            // vouched for → row offers Confirm (see buildApprovedRow).
+                            n.optBoolean("auto_accepted", false),
+                            n.optBoolean("lion_confirmed", false),
+                            onChanged));
                         approvedCount++;
                     }
                 }
@@ -2351,8 +2392,10 @@ public class MainActivity extends Activity {
         statusLine.setText("Approved " + approvedCount + " · Pending " + pendingCount);
     }
 
-    private View buildApprovedRow(String nodeId, String nodeType, String nodePubkey,
-                                  String bunnyPubkey, String displayName) {
+    private View buildApprovedRow(final String nodeId, String nodeType, String nodePubkey,
+                                  String bunnyPubkey, String displayName,
+                                  boolean autoAccepted, boolean lionConfirmed,
+                                  final Runnable onChanged) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.VERTICAL);
         row.setPadding(8, 6, 8, 6);
@@ -2372,6 +2415,38 @@ public class MainActivity extends Activity {
         fp.setTextSize(10);
         row.addView(fp);
 
+        // A node that walked in through the auto-accept window is a member
+        // nobody looked at. It can read the vault, but the relay refuses its
+        // state-mirror writes (paywall / sub_due / lock_active) until the Lion
+        // vouches for it here — so an unconfirmed row is called out loudly.
+        final boolean needsConfirm = autoAccepted && !lionConfirmed;
+        if (needsConfirm) {
+            TextView warn = new TextView(this);
+            warn.setText("⚠ joined automatically — not confirmed by you");
+            warn.setTextColor(0xFFccaa44);
+            warn.setTextSize(10);
+            row.addView(warn);
+
+            Button confirm = new Button(this);
+            confirm.setText("Confirm this device");
+            confirm.setTextSize(11);
+            confirm.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF0a2a0a));
+            confirm.setTextColor(0xFF88cc66);
+            confirm.setOnClickListener(v -> {
+                confirm.setEnabled(false);
+                v.setAlpha(0.5f);
+                executor.execute(() -> {
+                    boolean ok = confirmMeshNode(nodeId);
+                    handler.post(() -> {
+                        setStatus(ok ? ("Confirmed " + nodeId) : ("Confirm failed: " + nodeId));
+                        if (ok && onChanged != null) onChanged.run();
+                        else { confirm.setEnabled(true); v.setAlpha(1f); }
+                    });
+                });
+            });
+            row.addView(confirm);
+        }
+
         // Real-mesh-bunnies: let the Lion adopt an approved phone member of THIS
         // mesh as its own controllable/messageable bunny slot (node_id-keyed). A
         // Direct slot already holding the same bunny key is upgraded in place
@@ -2389,6 +2464,15 @@ public class MainActivity extends Activity {
                     String id = adoptMeshBunny(nodeId, fPub, label);
                     setStatus(id.isEmpty() ? "Adopt failed — open Vault Nodes from a mesh bunny"
                                            : ("Added mesh bunny " + label));
+                    // Adopting is a stronger statement than confirming ("this is
+                    // my bunny's phone"), so it implies the confirmation that
+                    // unlocks state-mirror. Saves a second tap on the row.
+                    if (!id.isEmpty() && needsConfirm) {
+                        executor.execute(() -> {
+                            boolean ok = confirmMeshNode(nodeId);
+                            if (ok && onChanged != null) handler.post(onChanged);
+                        });
+                    }
                 });
                 row.addView(adopt);
             } else {
@@ -2547,6 +2631,139 @@ public class MainActivity extends Activity {
             return resp != null && resp.contains("\"ok\"");
         } catch (Exception e) {
             android.util.Log.w("vault", action + " failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** Diff the mesh's node roster against the ids we've already shown the Lion
+     *  and raise a heads-up for anything new — approved (walked in through the
+     *  auto-accept window) or queued for approval. Blocking; run off the UI
+     *  thread. The roster is remembered per mesh, so switching bunnies doesn't
+     *  re-announce the other mesh's devices.
+     *
+     *  First sight of a mesh seeds the roster silently: an upgrade shouldn't
+     *  fire a notification for every device that was already there. */
+    private void checkForNewNodes() {
+        if (meshId.isEmpty() || meshUrl.isEmpty()) return;
+        // A Direct (LAN) slot routes meshGet at the phone itself, so a vault
+        // path would resolve against the wrong host — there's no roster to
+        // watch in that mode anyway.
+        if (hasDirectTarget()) return;
+        String nodesJson = meshGet("/vault/" + meshId + "/nodes");
+        String pendingJson = meshGet("/vault/" + meshId + "/nodes-pending");
+        if (nodesJson == null && pendingJson == null) return;  // relay unreachable
+
+        java.util.LinkedHashMap<String, String> roster = new java.util.LinkedHashMap<>();
+        try {
+            if (nodesJson != null) {
+                org.json.JSONArray arr = new org.json.JSONObject(nodesJson).optJSONArray("nodes");
+                for (int i = 0; arr != null && i < arr.length(); i++) {
+                    org.json.JSONObject n = arr.getJSONObject(i);
+                    String id = n.optString("node_id", "");
+                    if (id.isEmpty()) continue;
+                    boolean unconfirmed = n.optBoolean("auto_accepted", false)
+                        && !n.optBoolean("lion_confirmed", false);
+                    roster.put(id, id + " (" + n.optString("node_type", "?") + ")"
+                        + (unconfirmed ? " joined automatically" : " joined"));
+                }
+            }
+            if (pendingJson != null) {
+                org.json.JSONArray arr = new org.json.JSONObject(pendingJson).optJSONArray("pending");
+                for (int i = 0; arr != null && i < arr.length(); i++) {
+                    org.json.JSONObject n = arr.getJSONObject(i);
+                    String id = n.optString("node_id", "");
+                    if (id.isEmpty()) continue;
+                    roster.put(id, id + " (" + n.optString("node_type", "?") + ") wants in");
+                }
+            }
+        } catch (Exception e) {
+            android.util.Log.w("focusctl", "node watch parse failed: " + e);
+            return;
+        }
+        if (roster.isEmpty()) return;
+
+        String key = "known_node_ids_" + meshId;
+        java.util.Set<String> known = prefs.getStringSet(key, null);
+        if (known == null) {
+            prefs.edit().putStringSet(key, new java.util.HashSet<>(roster.keySet())).apply();
+            return;
+        }
+        java.util.ArrayList<String> fresh = new java.util.ArrayList<>();
+        for (java.util.Map.Entry<String, String> e : roster.entrySet()) {
+            if (!known.contains(e.getKey())) fresh.add(e.getValue());
+        }
+        if (fresh.isEmpty()) return;
+        // getStringSet's returned set must not be mutated — copy, then merge.
+        java.util.HashSet<String> merged = new java.util.HashSet<>(known);
+        merged.addAll(roster.keySet());
+        prefs.edit().putStringSet(key, merged).apply();
+
+        StringBuilder sb = new StringBuilder();
+        for (String f : fresh) {
+            if (sb.length() > 0) sb.append("\n");
+            sb.append("• ").append(f);
+        }
+        final String detail = sb.toString();
+        final int count = fresh.size();
+        handler.post(() -> {
+            showNewNodeNotification(count, detail);
+            setStatus(count == 1 ? "New device on your mesh — open Vault Nodes"
+                                 : (count + " new devices on your mesh — open Vault Nodes"));
+        });
+    }
+
+    /** Heads-up for a device that appeared on the mesh. Deliberately loud: a
+     *  join the Lion didn't initiate is the thing they most need to see, and
+     *  the whole point of the watch is that it shouldn't stay quiet. */
+    private void showNewNodeNotification(int count, String detail) {
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (nm == null) return;
+            String channelId = "mesh_node";
+            NotificationChannel ch = new NotificationChannel(
+                channelId, "New devices on the mesh", NotificationManager.IMPORTANCE_HIGH);
+            ch.setLockscreenVisibility(android.app.Notification.VISIBILITY_PRIVATE);
+            nm.createNotificationChannel(ch);
+
+            Intent open = new Intent(this, MainActivity.class);
+            open.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            PendingIntent pi = PendingIntent.getActivity(this, 0, open,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+            android.app.Notification.Builder b = new android.app.Notification.Builder(this, channelId)
+                .setContentTitle(count == 1 ? "New device joined your mesh"
+                                            : (count + " new devices joined your mesh"))
+                .setContentText(detail)
+                .setStyle(new android.app.Notification.BigTextStyle().bigText(detail))
+                .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                .setAutoCancel(true)
+                .setContentIntent(pi)
+                .setVisibility(android.app.Notification.VISIBILITY_PRIVATE);
+
+            nm.notify(421, b.build());
+        } catch (Exception e) {
+            android.util.Log.w("focusctl", "node notif failed: " + e);
+        }
+    }
+
+    /** Lion-signed confirm-node: vouches for an already-approved node so the
+     *  relay will accept its state-mirror writes (paywall / sub_due /
+     *  lock_active). Auto-accepted nodes stay read-only members until this
+     *  lands. Blocking call — run it off the UI thread. */
+    private boolean confirmMeshNode(String nodeId) {
+        String lionPriv = prefs.getString("lion_privkey", "");
+        if (lionPriv.isEmpty() || meshId.isEmpty() || meshUrl.isEmpty()) return false;
+        try {
+            java.util.TreeMap<String, Object> payload = new java.util.TreeMap<>();
+            payload.put("node_id", nodeId);
+            payload.put("ts", System.currentTimeMillis());
+            String signature = VaultCrypto.signBlob(payload, lionPriv);
+            payload.put("signature", signature);
+            String body = new String(VaultCrypto.canonicalJson(payload));
+            String resp = meshPost(meshUrl + "/vault/" + meshId + "/confirm-node", body);
+            return resp != null && resp.contains("\"ok\"");
+        } catch (Exception e) {
+            android.util.Log.w("vault", "confirm-node failed: " + e.getMessage());
             return false;
         }
     }
@@ -5731,6 +5948,10 @@ public class MainActivity extends Activity {
                                         try { vaultPollLoop(); } catch (Exception ignored) {}
                                     }
                                     try { refreshInbox(); } catch (Exception ignored) {}
+                                    // The relay also pings on node registration,
+                                    // so a join surfaces within seconds instead
+                                    // of waiting for the 60s watch tick.
+                                    try { checkForNewNodes(); } catch (Exception ignored) {}
                                 });
                             });
                         }

@@ -469,6 +469,20 @@ def _messages_publish_ntfy(mesh_id: str):
         logger.warning("messages ntfy publish failed: mesh=%s err=%s", _sanitize_log(mesh_id), e)
 
 
+def _node_join_ntfy(mesh_id: str):
+    """Wake-up ping when a device registers against a mesh (auto-accepted or
+    queued). A silent join used to be invisible until the Lion happened to open
+    Vault Nodes and hit Refresh; this wakes Lion's Share so it can diff the node
+    list and surface the new arrival within seconds. Payload stays the standard
+    zero-knowledge {"v": ts} — the relay never says who joined over ntfy."""
+    if not _ntfy_enabled:
+        return
+    try:
+        ntfy_fn(int(time.time() * 1000), mesh_id)
+    except Exception as e:
+        logger.warning("node-join ntfy publish failed: mesh=%s err=%s", _sanitize_log(mesh_id), e)
+
+
 # Lion's public key for signature verification — loaded from phone on first sync
 _lion_pubkey = ""
 
@@ -2386,6 +2400,12 @@ class MeshAccountStore:
     # Per-mesh quotas
     DEFAULT_MAX_BLOBS_PER_DAY = 5000
     DEFAULT_MAX_TOTAL_BYTES_MB = 100
+    # Auto-accept onboarding window (seconds). Auto-accept is a time-boxed
+    # window, never a standing flag: the Lion opens it to enrol devices and it
+    # shuts itself, so "forgot to turn it back off" stops being a permanent
+    # open door for anyone who learns the mesh_id. Re-tapping the toggle
+    # re-opens a fresh window.
+    AUTO_ACCEPT_WINDOW_S = 1800  # 30 minutes
 
     def __init__(self, persist_dir=None):
         if persist_dir is None:
@@ -2457,13 +2477,16 @@ class MeshAccountStore:
                 "created_at": int(time.time()),
                 "nodes": {},
                 "vault_only": False,
-                # Default ON: slaves are dumb zombies w.r.t. WRITE (Lion-signed
-                # orders are unfakeable), so manual approval is unnecessary
-                # friction for normal multi-device onboarding. The READ-leak
-                # tradeoff (anyone who learns mesh_id can register and decrypt
-                # future Lion blobs) is accepted as the consumer-mesh default.
-                # Lion can still toggle off via /auto-accept for stricter meshes.
+                # Open for the first AUTO_ACCEPT_WINDOW_S after signup — long
+                # enough to enrol the devices you're holding while you create
+                # the mesh, then it shuts itself. Previously this was a sticky
+                # boolean, which left every mesh permanently accepting any
+                # device that learned its mesh_id (that device becomes a blob
+                # recipient — a standing READ leak of every future Lion order).
+                # The Lion re-opens a window from Vault Nodes when adding a
+                # device later; expired means new devices queue for approval.
                 "auto_accept_nodes": True,
+                "auto_accept_until": int(time.time()) + self.AUTO_ACCEPT_WINDOW_S,
                 "max_blobs_per_day": self.DEFAULT_MAX_BLOBS_PER_DAY,
                 "max_total_bytes_mb": self.DEFAULT_MAX_TOTAL_BYTES_MB,
             }
@@ -2847,6 +2870,23 @@ class VaultStore:
             nodes.append(node_entry)
             return self._write_json(mesh_id, "nodes.json", nodes)
 
+    def confirm_node(self, mesh_id, node_id):
+        """Lion vouches for an auto-accepted node. Membership alone (which the
+        auto-accept window grants to anything holding the mesh_id) is read-only
+        trust; confirmation is what unlocks the plaintext write channels — see
+        the state-mirror gate. Returns True if a row was found and marked."""
+        with self.lock:
+            nodes = self.get_nodes(mesh_id)
+            found = False
+            for n in nodes:
+                if n.get("node_id") == node_id:
+                    n["lion_confirmed"] = True
+                    n["confirmed_at"] = int(time.time())
+                    found = True
+            if found:
+                self._write_json(mesh_id, "nodes.json", nodes)
+            return found
+
     def get_pending_nodes(self, mesh_id):
         return self._read_json(mesh_id, "nodes_pending.json", [])
 
@@ -3044,6 +3084,25 @@ def _verify_signed_payload(payload, signature_b64, lion_pubkey_str, quiet=False)
         return False
 
 
+def _auto_accept_active(account):
+    """True when this mesh's auto-accept onboarding window is open right now.
+
+    Fails closed on two legacy shapes, both deliberately:
+      * `auto_accept_nodes` true with no `auto_accept_until` — an account
+        persisted before the window existed. Those were sticky-open forever;
+        treating them as expired closes that door on deploy. The Lion re-opens
+        a 30-minute window with one tap when they actually need it.
+      * a window whose deadline has passed.
+    """
+    if not account or not account.get("auto_accept_nodes"):
+        return False
+    try:
+        until = int(account.get("auto_accept_until", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    return until > int(time.time())
+
+
 def _verify_blob_two_writer(blob, lion_pubkey, registered_nodes):
     """Multi-writer verification. Try Lion pubkey first (order blobs from
     controller), then iterate registered node pubkeys (slave runtime pushes,
@@ -3143,8 +3202,49 @@ def _vault_resolve_mesh(mesh_id):
     return account, account.get("lion_pubkey", "")
 
 
+def _node_awaiting_confirmation(vault_row):
+    """True when a vault node may not make plaintext server-side writes yet.
+
+    A node that walked in through the auto-accept window is a member nobody
+    looked at. Membership earns it vault reads; the endpoints that write
+    plaintext the relay itself acts on — state-mirror (paywall / sub_due /
+    lock_active), the payment identities, the display name — stay shut until
+    the Lion vouches for it via /vault/{mesh_id}/confirm-node. Note that
+    `node_type` is self-asserted at registration, so "controller node
+    required" checks on those routes are not a barrier to a stranger holding
+    the mesh_id; this is.
+
+    Rows that came in any other way — Lion-signed register-node, approval out
+    of the pending queue, invite-code join — never carry the auto_accepted
+    stamp and are never blocked here.
+    """
+    if not vault_row:
+        return False
+    return bool(vault_row.get("auto_accepted")) and not vault_row.get("lion_confirmed")
+
+
 class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
     MAX_BODY_BYTES = 1_048_576  # 1 MB
+
+    def _reject_unconfirmed_node(self, route, mesh_id, node_id, vault_row):
+        """Refuse a plaintext write from an auto-accepted node the Lion has not
+        confirmed. Returns True when it responded (caller must return)."""
+        if not _node_awaiting_confirmation(vault_row):
+            return False
+        logger.warning(
+            "%s DENIED (auto-accepted node not confirmed by lion): mesh=%s node=%s",
+            route,
+            _sanitize_log(mesh_id),
+            _sanitize_log(node_id),
+        )
+        self.respond(
+            403,
+            {
+                "error": "node awaiting lion confirmation",
+                "hint": "confirm this device in Lion's Share → Vault Nodes",
+            },
+        )
+        return True
 
     def do_POST(self):
         try:
@@ -3926,10 +4026,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         # Body: {state: "on"|"off", ts, signature}
         # signature = SHA256withRSA over "mesh_id|auto-accept|state|ts" with
         # the Lion's private key (verified against account.lion_pubkey).
-        # When ON, register-node-request goes straight to the approved list
-        # instead of the pending queue — but key rotation (existing node_id,
-        # new pubkey) still requires manual approval to close the takeover
-        # vector documented at docs/VAULT-DESIGN.md:266.
+        # While the window is open, register-node-request goes straight to the
+        # approved list instead of the pending queue — but key rotation
+        # (existing node_id, new pubkey) still requires manual approval to
+        # close the takeover vector documented at docs/VAULT-DESIGN.md:266.
+        # "on" opens a MeshAccountStore.AUTO_ACCEPT_WINDOW_S window that
+        # expires on its own; "off" closes it immediately.
         elif self.path.startswith("/api/mesh/") and self.path.endswith("/auto-accept"):
             parts = self.path.strip("/").split("/")
             if len(parts) != 4 or parts[3] != "auto-accept":
@@ -3976,14 +4078,27 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 logger.warning("auto-accept sig verify failed: mesh=%s err=%s", _sanitize_log(mesh_id), e)
                 self.respond(403, {"error": "invalid signature"})
                 return
+            # ON opens a fresh time-boxed window; OFF slams it shut immediately.
+            # The deadline is what register-node-request actually enforces, so a
+            # Lion who forgets to toggle back off is protected by the clock.
+            window_s = _mesh_accounts.AUTO_ACCEPT_WINDOW_S
             account["auto_accept_nodes"] = state == "on"
+            account["auto_accept_until"] = int(time.time()) + window_s if state == "on" else 0
             _mesh_accounts._save(mesh_id)
             logger.warning(
                 "Auto-accept %s for mesh=%s",
-                "ENABLED" if state == "on" else "disabled",
+                f"ENABLED for {window_s // 60}min" if state == "on" else "disabled",
                 _sanitize_log(mesh_id),
             )
-            self.respond(200, {"ok": True, "auto_accept_nodes": account["auto_accept_nodes"]})
+            self.respond(
+                200,
+                {
+                    "ok": True,
+                    "auto_accept_nodes": account["auto_accept_nodes"],
+                    "auto_accept_until": account["auto_accept_until"],
+                    "expires_in_s": window_s if state == "on" else 0,
+                },
+            )
 
         # ── Bunny-authed subscribe (landmine #20 fix) ──
         # Path: /api/mesh/{mesh_id}/subscribe
@@ -4550,8 +4665,10 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             bunny_pubkey = node.get("bunny_pubkey", "")
             if bunny_pubkey:
                 candidate_pubkeys.append(("bunny", bunny_pubkey))
+            vault_row = {}
             for vnode in _vault_store.get_nodes(mesh_id):
                 if vnode.get("node_id") == node_id:
+                    vault_row = vnode
                     # Real-mesh-bunnies: a Collar that registered via register-node now
                     # carries its E2EE bunny_pubkey on the vault node row — that's the
                     # key it signs state-mirror with. Prefer it, then fall back to the
@@ -4611,6 +4728,20 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     _sanitize_log(node_id),
                 )
                 self.respond(403, {"error": "invalid signature"})
+                return
+
+            # A valid signature proves "this is the node that registered", not
+            # "the Lion wanted this node writing their financial state". This
+            # endpoint writes paywall / sub_due / lock_active straight into the
+            # registry the scanners bill from, so an unconfirmed auto-accepted
+            # node is refused here even though its signature checks out. It
+            # keeps its vault membership; it just can't move money until the
+            # Lion taps Confirm (→ confirm-node). Invite-code members
+            # (verified_with == "bunny") came in through a code the Lion handed
+            # out, so they're already vouched for.
+            if verified_with in ("vault-bunny", "vault-node") and self._reject_unconfirmed_node(
+                "state-mirror", mesh_id, node_id, vault_row
+            ):
                 return
 
             # Whitelist of mirrorable fields — keep narrow. Compound-interest
@@ -4736,6 +4867,8 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 )
                 self.respond(403, {"error": "invalid signature"})
                 return
+            if self._reject_unconfirmed_node("set-payee-identity", mesh_id, node_id, vault_node):
+                return
             ident = _get_payment_identity(mesh_id)
             summary = ident.set_payee(email, imap_host, imap_pass)
             logger.info(
@@ -4813,6 +4946,8 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             except Exception as e:
                 logger.warning("set-evidence-email sig verify failed: mesh=%s err=%s", _sanitize_log(mesh_id), e)
                 self.respond(403, {"error": "invalid signature"})
+                return
+            if self._reject_unconfirmed_node("set-evidence-email", mesh_id, node_id, vault_node):
                 return
             summary = _get_payment_identity(mesh_id).set_evidence_email(evidence_email)
             logger.info(
@@ -4907,6 +5042,8 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 )
                 self.respond(403, {"error": "invalid signature"})
                 return
+            if self._reject_unconfirmed_node("set-payer-identity", mesh_id, node_id, vault_node):
+                return
             ident = _get_payment_identity(mesh_id)
             summary = ident.set_payer_allow(cleaned_allow)
             logger.info(
@@ -4979,28 +5116,35 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             # so verifying against node_pubkey alone always 403'd the rename — a
             # regression the unit test masked by reusing one key for both stores.
             # Accept either legitimate authority for this node.
+            # Tagged so the confirmation gate below can tell the two authorities
+            # apart: an invite-code member is already vouched for, a bare vault
+            # row that auto-accepted itself is not.
             candidate_pubkeys = []
             _acct_node = (account.get("nodes") or {}).get(node_id) or {}
             if _acct_node.get("bunny_pubkey"):
-                candidate_pubkeys.append(_acct_node["bunny_pubkey"])
+                candidate_pubkeys.append(("bunny", _acct_node["bunny_pubkey"]))
             if vault_node.get("node_pubkey"):
-                candidate_pubkeys.append(vault_node["node_pubkey"])
-            verified = False
+                candidate_pubkeys.append(("vault-node", vault_node["node_pubkey"]))
+            verified_with = None
             last_err = "no pubkey on file"
-            for _pk_b64 in candidate_pubkeys:
+            for _role, _pk_b64 in candidate_pubkeys:
                 try:
                     pub = _ser_dn.load_der_public_key(_b64_dn.b64decode(_pk_b64))
                     pub.verify(_b64_dn.b64decode(signature), payload.encode("utf-8"), _pad_dn.PKCS1v15(), _hh_dn.SHA256())
-                    verified = True
+                    verified_with = _role
                     break
                 except Exception as e:
                     last_err = str(e)
-            if not verified:
+            if verified_with is None:
                 logger.warning(
                     "set-display-name sig verify failed: mesh=%s node=%s err=%s",
                     _sanitize_log(mesh_id), _sanitize_log(node_id), last_err,
                 )
                 self.respond(403, {"error": "invalid signature"})
+                return
+            if verified_with == "vault-node" and self._reject_unconfirmed_node(
+                "set-display-name", mesh_id, node_id, vault_node
+            ):
                 return
             _mesh_accounts.update_node(mesh_id, node_id, display_name=display_name)
             logger.info(
@@ -5406,7 +5550,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(
                     400,
                     {
-                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|since/{v}|nodes|nodes-pending}"
+                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|confirm-node|since/{v}|nodes|nodes-pending}"
                     },
                 )
                 return
@@ -5526,6 +5670,39 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 )
                 self.respond(200, {"ok": True})
 
+            elif action == "confirm-node":
+                # Lion-signed confirmation of an already-approved node.
+                # Body: {node_id, ts, signature} — signature over canonical_json
+                # of the body minus "signature", same shape as register-node.
+                #
+                # Why it exists: a node that walked in through the auto-accept
+                # window is a member the Lion never looked at. Membership gets
+                # it vault reads; it must NOT also get the plaintext
+                # state-mirror channel (paywall / sub_due / lock_active), or
+                # anyone holding the mesh_id could zero the paywall without
+                # ever touching the enforced Collar. This is the one tap that
+                # says "yes, that device is mine" — Lion's Share sends it from
+                # the Confirm button and from "Add as bunny".
+                if not lion_pubkey:
+                    self.respond(403, {"error": "no lion_pubkey on file for this mesh"})
+                    return
+                if not _verify_signed_payload(data, data.get("signature", ""), lion_pubkey):
+                    self.respond(403, {"error": "invalid signature"})
+                    return
+                node_id = data.get("node_id", "")
+                if not node_id:
+                    self.respond(400, {"error": "node_id required"})
+                    return
+                if not _vault_store.confirm_node(mesh_id, node_id):
+                    self.respond(404, {"error": "no approved node with that node_id"})
+                    return
+                logger.warning(
+                    "Vault confirm-node: mesh=%s node=%s (lion vouched — state-mirror unlocked)",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                )
+                self.respond(200, {"ok": True, "node_id": node_id, "lion_confirmed": True})
+
             elif action == "reject-node-request":
                 # Lion-signed rejection. Drops the pending entry and adds the
                 # pubkey hash to a deny list so the slave's hourly retry doesn't
@@ -5598,11 +5775,21 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 #
                 # Lion can opt the mesh into auto-acceptance by toggling
                 # account["auto_accept_nodes"] = true via the /auto-accept
-                # endpoint below. While active, register-node-request goes
-                # straight to the approved list. Closes the friction of
+                # endpoint below. That opens a time-boxed window (see
+                # _auto_accept_active); while it is open, register-node-request
+                # goes straight to the approved list. Closes the friction of
                 # approving every consumer-mesh device while keeping the
-                # opt-in explicit + auditable (logged each time).
-                auto_accept = bool(account.get("auto_accept_nodes", False))
+                # opt-in explicit, expiring, and auditable (logged each time).
+                auto_accept = _auto_accept_active(account)
+                if account.get("auto_accept_nodes") and not auto_accept:
+                    # Flag set but the clock ran out (or a legacy sticky-open
+                    # account). Say so explicitly — otherwise a Lion watching
+                    # the log sees a device queue for approval with no reason.
+                    logger.warning(
+                        "Vault register-node-request: auto-accept window CLOSED, queuing for approval: mesh=%s node=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                    )
                 if auto_accept:
                     # Even on auto-accept, refuse a key rotation if a node
                     # with this id already exists with a different pubkey.
@@ -5630,6 +5817,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                             _sanitize_log(node_id),
                             pk_hash,
                         )
+                        _node_join_ntfy(mesh_id)
                         self.respond(
                             200, {"ok": True, "status": "pending", "reason": "key rotation needs lion approval"}
                         )
@@ -5653,6 +5841,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         _sanitize_log(node_type),
                         pk_hash,
                     )
+                    _node_join_ntfy(mesh_id)
                     self.respond(200, {"ok": True, "status": "approved", "auto_accepted": True})
                     return
                 _vault_store.add_pending_node(
@@ -5672,6 +5861,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     _sanitize_log(node_type),
                     pk_hash,
                 )
+                _node_join_ntfy(mesh_id)
                 self.respond(200, {"ok": True, "status": "pending"})
 
             else:
@@ -6221,7 +6411,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(
                     400,
                     {
-                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|since/{v}|nodes|nodes-pending}"
+                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|confirm-node|since/{v}|nodes|nodes-pending}"
                     },
                 )
                 return
@@ -6257,6 +6447,13 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             elif action == "nodes":
                 nodes = _vault_store.get_nodes(mesh_id)
                 resp = {"nodes": nodes}
+                # Trust bookkeeping (how a node got in, whether the Lion has
+                # vouched for it) is Lion-only for the same reason the
+                # auto-accept flag is: it tells a prober which rows are
+                # unconfirmed, i.e. exactly which mesh let a stranger walk in.
+                # Stripped below for unauthenticated callers — the collars'
+                # E2EE bootstrap only needs node_id / node_type / pubkeys.
+                _TRUST_FIELDS = ("auto_accepted", "lion_confirmed", "confirmed_at")
                 # The base node list (opaque ids/types/pubkeys, needed for E2EE
                 # bootstrap) stays readable, but the enrichment below is Lion-only:
                 # the bunny's self-chosen human display name is PII, and the
@@ -6272,6 +6469,10 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     if auth_header.startswith("Bearer "):
                         auth_token = auth_header[7:]
                 authed = _mesh_accounts.validate_auth(mesh_id, auth_token)
+                if not authed:
+                    resp["nodes"] = [
+                        {k: v for k, v in n.items() if k not in _TRUST_FIELDS} for n in nodes
+                    ]
                 # Enrich from the mesh account store, which holds data the vault
                 # node store doesn't: the bunny's display name (#4), their E2EE
                 # pubkey (#6), and the auto-accept flag (#5) — Lion-authenticated only.
@@ -6297,11 +6498,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         if best.get("display_name"):
                             resp["bunny_display_name"] = best["display_name"]
                     # Real auto-accept state (#5) so the Lion's toggle reflects
-                    # truth instead of a hardcoded "(off)". Default MUST match the
-                    # enforcement gate (register-node-request, which defaults False
-                    # for accounts persisted before the field existed) — otherwise
-                    # the toggle shows "on" for a mesh the relay treats as manual.
-                    resp["auto_accept"] = bool(acct.get("auto_accept_nodes", False))
+                    # truth instead of a hardcoded "(off)". Read through the same
+                    # helper register-node-request enforces with, so an expired
+                    # window can never show as "on" — otherwise the toggle would
+                    # claim a door is open that the relay treats as shut.
+                    resp["auto_accept"] = _auto_accept_active(acct)
+                    resp["auto_accept_until"] = int(acct.get("auto_accept_until", 0) or 0)
                 self.respond(200, resp)
 
             elif action == "nodes-pending":

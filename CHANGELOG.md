@@ -8,6 +8,75 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-16 auto-accept window + node-join alerts + state-mirror confirmation ───────── -->
+
+### Changed — auto-accept is a 30-minute onboarding window, not a permanent open door
+
+- **Any device that learned a mesh_id became a permanent member** (`focuslock-mail.py`,
+  Lion's Share **81/81.0**). `auto_accept_nodes` was a sticky boolean, **default ON at
+  mesh creation** since 2026-05-25 — so `register-node-request` approved anything that
+  showed up, forever, and approved nodes are recipients of every future Lion blob
+  (`shared/focuslock_vault.py` encrypts the AES key per approved node). The intended
+  workflow ("switch it on to onboard, switch it off after") depended on the Lion
+  remembering, and nothing ever reminded them. Now the flag is paired with
+  `auto_accept_until`: `/api/mesh/{id}/auto-accept` `on` opens a
+  `MeshAccountStore.AUTO_ACCEPT_WINDOW_S` (30 min) window and returns `expires_in_s`;
+  `off` closes it immediately; mesh creation opens one from signup so first-device
+  onboarding stays frictionless. `_auto_accept_active()` is the single gate that
+  `register-node-request` enforces and that `/vault/{id}/nodes` reports to the Lion's
+  toggle, so the UI can never claim a door is open that the relay treats as shut.
+  **Fails closed on a missing deadline**, so accounts persisted before the field
+  existed stop being open-forever the moment this deploys. Key rotation still routes
+  to the pending queue regardless of the window (unchanged).
+
+### Added — Lion is told when a device joins the mesh
+
+- **A silent join was invisible until the Lion happened to open Vault Nodes and hit
+  Refresh** (`focuslock-mail.py`, `MainActivity.java`). Every `register-node-request`
+  outcome — auto-accepted, queued for approval, or rotation-blocked — now fires
+  `_node_join_ntfy()`, the standard zero-knowledge `{"v": ts}` wake (the relay never
+  says *who* joined over ntfy). Lion's Share diffs the node roster on that wake and on
+  a 60 s floor poll, remembers which ids it has already shown **per mesh** (so bunny
+  switching doesn't re-announce), and raises a heads-up notification naming the new
+  device and how it got in ("joined automatically" / "wants in"). First sight of a mesh
+  seeds the roster silently — upgrading doesn't fire a notification for devices that
+  were already there.
+
+### Fixed — an unconfirmed auto-accepted node could write the Lion's financial state
+
+- **Holding the mesh_id was enough to zero the paywall** (`focuslock-mail.py`,
+  `MainActivity.java`). `fbbf468` made `register-node-request` carry `bunny_pubkey` so
+  a registered node became a *verifiable member* — which also handed it
+  `/api/mesh/{id}/state-mirror`, whose whitelist writes `paywall`, `paywall_original`,
+  `sub_tier`, `sub_due`, `lock_active`, `locked_at`, `unlock_at`, `free_unlocks`
+  straight into the `_orders_registry` doc the compound-interest and payment scanners
+  bill from. Previously that channel required tampering with the enforced Collar; via
+  auto-accept it required only the mesh_id. A signature now proves *identity*, not
+  *authority*: a node stamped `auto_accepted` without `lion_confirmed` gets 403
+  *"node awaiting lion confirmation"* from state-mirror **and from the sibling
+  plaintext writes that trust a vault row the same way** — `set-payee-identity`,
+  `set-evidence-email` (the Lion's payment email + IMAP password),
+  `set-payer-identity`, and `set-display-name`. Those routes gate on `node_type`
+  ("controller node required", "phone node required"), but `node_type` is
+  self-asserted at registration, so it was never a barrier to a stranger holding
+  the mesh_id; `_node_awaiting_confirmation()` is. New Lion-signed
+  `POST /vault/{mesh_id}/confirm-node` (`{node_id, ts, signature}`) stamps the row;
+  Lion's Share shows "⚠ joined automatically — not confirmed by you" plus a **Confirm
+  this device** button on the node row, and "Add as bunny" implies confirmation. Invite-code
+  members and pending-queue approvals are untouched — both already passed through the
+  Lion. Collars log the 403 and retry, so an unconfirmed device keeps enforcing locally;
+  only the server's view goes stale until the Lion taps once. `auto_accepted` /
+  `lion_confirmed` / `confirmed_at` are stripped from `/vault/{id}/nodes` for
+  unauthenticated callers, same reconnaissance reasoning as the `auto_accept` flag.
+- 18 new HTTP-level tests (`tests/test_auto_accept_window.py`) pin: window opens with a
+  deadline; open window auto-accepts; expired window and legacy no-deadline accounts
+  queue for approval; `off` closes immediately; a new mesh's window expires; key
+  rotation still needs approval inside an open window; `/nodes` reports live window
+  state and hides trust fields from anonymous callers; confirm-node accepts the Lion,
+  rejects a rogue key, 404s an unknown node; unconfirmed auto-accepted node cannot
+  write state, set a payer identity, or rename itself, and confirmation unlocks it;
+  invite-joined and Lion-approved nodes are unaffected. Suite `1227 → 1245`.
+
 <!-- ───────── 2026-08-09 unpaired-tamper trap + desktop standing-orders gate ───────── -->
 
 ### Fixed — safety floor: admin-tamper enforcement no longer traps an UNPAIRED device
