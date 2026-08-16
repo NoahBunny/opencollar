@@ -61,7 +61,11 @@ Commits on the above paths **must** be GPG or SSH signed (`git commit -S`). The 
 - **Why:** the crypto + enforcement surface is the adversary's lever for turning this tool against its users. A signed commit is a committed-to identity, which makes supply-chain tampering (e.g., a compromised contributor account pushing an unreviewed change) materially harder.
 - **Unsigned commits on non-sensitive paths** (docs, tests, CHANGELOG) are accepted. The CI check is path-scoped precisely so that drive-by documentation improvements don't trip the signing requirement.
 
-To retroactively sign a commit you've already made, rebase it: `git rebase --exec 'git commit --amend --no-edit -S' <upstream>..HEAD`.
+- **Prefer SSH signing.** CI can only verify SSH signatures: `.github/workflows/signed-commits.yml` points git at `.github/allowed_signers`, and nothing imports a GPG keyring into the runner, so a GPG-signed commit reads `%G?=E` there and fails the gate. If you sign with SSH, add your key to `.github/allowed_signers` (principal = your **committer** email) in the same PR — that file is itself a sensitive path, so extending the trust list requires a signature from a key already on it.
+
+To retroactively sign commits you've already made, run **`bash scripts/sign-branch.sh`** — it reports what would fail the gate, and `--apply` configures signing, rewrites the branch, and verifies the result against the same rule CI uses, leaving a `backup/pre-signing/…` branch behind. It never pushes.
+
+The underlying one-liner is `git rebase --exec 'git commit --amend --no-edit -S' <upstream>..HEAD`, but on its own it is not sufficient: it signs nothing unless signing is already configured, and an SSH signature reads `%G?=N` — indistinguishable from unsigned — in any checkout without `gpg.ssh.allowedSignersFile` set.
 
 ## Android specifics
 
