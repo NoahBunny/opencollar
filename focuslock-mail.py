@@ -3230,6 +3230,40 @@ def _auto_accept_active(account):
     return until > int(time.time())
 
 
+def _close_expired_auto_accept_windows():
+    """Make the persisted flag agree with the gate that enforces it.
+
+    `_auto_accept_active()` fails closed on an expired or missing deadline, so
+    behavior is already correct — but `auto_accept_nodes` stays `true` on disk
+    forever, and the account JSON is what an operator reads when they go to the
+    relay to ask whether the door is open. On mesh eMv8tP9KJL0D that flag has
+    been claiming an open door against a shut one since the window landed.
+
+    This changes no decision: every account it touches is one the gate was
+    already refusing. It only stops the record from lying about it. Runs at
+    every start, and is idempotent — an open window is left alone, and the
+    Lion's toggle reopens one whenever they want it.
+    """
+    for mesh_id, account in list(_mesh_accounts.meshes.items()):
+        if not account.get("auto_accept_nodes") or _auto_accept_active(account):
+            continue
+        try:
+            account["auto_accept_nodes"] = False
+            account["auto_accept_until"] = 0
+            _mesh_accounts._save(mesh_id)
+            logger.warning(
+                "Auto-accept window had already expired; flag reconciled to off: mesh=%s",
+                _sanitize_log(mesh_id),
+            )
+        except Exception as e:
+            logger.warning(
+                "auto-accept reconcile failed for mesh=%s: %s", _sanitize_log(mesh_id), e
+            )
+
+
+_close_expired_auto_accept_windows()
+
+
 def _verify_blob_two_writer(blob, lion_pubkey, registered_nodes):
     """Multi-writer verification. Try Lion pubkey first (order blobs from
     controller), then iterate registered node pubkeys (slave runtime pushes,

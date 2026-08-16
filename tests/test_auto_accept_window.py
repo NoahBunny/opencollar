@@ -626,3 +626,88 @@ class TestIdempotentReRegistration:
 
         pending = [p for p in mail_module._vault_store.get_pending_nodes(mesh_id) if p["node_id"] == node_id]
         assert [p["node_pubkey"] for p in pending] == [rotated]
+
+
+# ── the persisted flag vs. the gate that enforces it ──
+
+
+class TestExpiredWindowReconcile:
+    """`_auto_accept_active()` already fails closed on an expired or missing
+    deadline, so these accounts were never actually accepting anyone. What was
+    wrong is that `auto_accept_nodes` stayed `true` on disk, and the account
+    JSON is what an operator reads on the relay to answer "is the door open?".
+    Observed on the live mesh: flag on, no deadline, door shut."""
+
+    def test_expired_window_flag_is_reconciled_off(self, live_server, seeded_mesh, mail_module):
+        mesh_id = seeded_mesh["mesh_id"]
+        account = mail_module._mesh_accounts.meshes[mesh_id]
+        account["auto_accept_nodes"] = True
+        account["auto_accept_until"] = int(time.time()) - 60  # deadline passed
+
+        mail_module._close_expired_auto_accept_windows()
+
+        assert account["auto_accept_nodes"] is False
+        assert account["auto_accept_until"] == 0
+
+    def test_legacy_sticky_flag_with_no_deadline_is_reconciled_off(
+        self, live_server, seeded_mesh, mail_module
+    ):
+        """The shape the live mesh was actually in: flag true, no deadline at
+        all — an account persisted before the window existed."""
+        mesh_id = seeded_mesh["mesh_id"]
+        account = mail_module._mesh_accounts.meshes[mesh_id]
+        account["auto_accept_nodes"] = True
+        account.pop("auto_accept_until", None)
+
+        mail_module._close_expired_auto_accept_windows()
+
+        assert account["auto_accept_nodes"] is False
+        assert account["auto_accept_until"] == 0
+
+    def test_open_window_is_left_alone(self, live_server, seeded_mesh, mail_module):
+        """Reconciling must never shorten a window the Lion deliberately opened."""
+        mesh_id = seeded_mesh["mesh_id"]
+        assert _toggle(live_server, seeded_mesh, "on")[0] == 200
+        account = mail_module._mesh_accounts.meshes[mesh_id]
+        until_before = account["auto_accept_until"]
+        assert until_before > int(time.time())
+
+        mail_module._close_expired_auto_accept_windows()
+
+        assert account["auto_accept_nodes"] is True
+        assert account["auto_accept_until"] == until_before
+        assert mail_module._auto_accept_active(account) is True
+
+    def test_reconcile_survives_a_restart_and_stays_put(
+        self, live_server, seeded_mesh, mail_module
+    ):
+        """Idempotent, and the reconciled state is what a re-read sees — the
+        point of the pass is that the file on disk stops disagreeing."""
+        mesh_id = seeded_mesh["mesh_id"]
+        account = mail_module._mesh_accounts.meshes[mesh_id]
+        account["auto_accept_nodes"] = True
+        account["auto_accept_until"] = int(time.time()) - 1
+
+        mail_module._close_expired_auto_accept_windows()
+        mail_module._close_expired_auto_accept_windows()
+
+        assert account["auto_accept_nodes"] is False
+        persisted = json.loads(
+            (Path(mail_module._mesh_accounts.persist_dir) / f"{mesh_id}.json").read_text()
+        )
+        assert persisted["auto_accept_nodes"] is False
+        assert persisted["auto_accept_until"] == 0
+
+    def test_reconcile_does_not_reopen_the_door(self, live_server, seeded_mesh, mail_module):
+        """A registration after the reconcile still queues for approval."""
+        mesh_id = seeded_mesh["mesh_id"]
+        account = mail_module._mesh_accounts.meshes[mesh_id]
+        account["auto_accept_nodes"] = True
+        account["auto_accept_until"] = int(time.time()) - 1
+        mail_module._close_expired_auto_accept_windows()
+
+        _, pub = _keypair()
+        node_id = "desk-after-reconcile-" + str(int(time.time() * 1000000))
+        status, body = _register(live_server, mesh_id, node_id, pub)
+        assert status == 200
+        assert body["status"] != "approved"

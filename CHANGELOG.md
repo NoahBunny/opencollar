@@ -8,6 +8,39 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-17 the flag that claimed a door was open ───────── -->
+
+### Fixed — `auto_accept_nodes` stayed `true` on disk long after the window shut
+
+- **`_auto_accept_active()` fails closed on an expired or missing deadline, so no mesh
+  was actually accepting anyone** — but nothing ever wrote that verdict back, so
+  `auto_accept_nodes` sat `true` in the account JSON forever. That file is what an
+  operator reads on the relay when they go to ask whether the onboarding door is open,
+  and on the live mesh (`eMv8tP9KJL0D`) it had been answering *yes* against a door the
+  gate holds shut. Both HTTP readouts were already honest — `/nodes` and the Lion's
+  toggle both go through the helper — so this was never a security hole; it was a record
+  that disagreed with the system enforcing it, on the exact question the record exists to
+  answer. New `_close_expired_auto_accept_windows()` runs at every relay start and
+  reconciles the flag to `false` (with `auto_accept_until` zeroed) for any account the
+  gate was already refusing. Idempotent, and **an open window is never shortened** — a
+  Lion who opened one 30 minutes ago keeps all 30.
+- 5 new tests (`tests/test_auto_accept_window.py::TestExpiredWindowReconcile`): an expired
+  deadline reconciles; the legacy no-deadline shape the live mesh was actually in
+  reconciles; a deliberately-opened window survives untouched; the write lands on disk and
+  is stable across a re-run; and a registration after the reconcile still queues for
+  approval rather than sliding in.
+
+### Still owed — trust provenance on the live mesh is thin
+
+- Every node on `eMv8tP9KJL0D` except `relay`/`controller` is stamped
+  `confirmed_by: grandfathered` — swept in by the one-shot migration, never looked at by
+  the Lion — and `gengar-neon` was admitted from the relay console
+  (`admitted_by: operator-console`) at the bunny's request, without a Lion signature. The
+  grandfather sweep was the right call for working meshes, but a stamp that says "nobody
+  checked" is not authority. **One tap each in Lion's Share → Vault Nodes replaces the
+  inherited stamps with deliberate ones**; that is an operator action, not a code change,
+  and it has not been done.
+
 <!-- ───────── 2026-08-17 deploy-path defects + the template's missing safeword ───────── -->
 
 ### Fixed — `FOCUSLOCK_SRC` was documented, exported, and ignored
