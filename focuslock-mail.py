@@ -6852,8 +6852,33 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(404, {"error": f"unknown vault action: {action}"})
             return
 
-        elif self.path == "/controller":
-            # Return Lion's Share controller's last known address
+        elif self.path.split("?")[0] == "/controller":
+            # Return Lion's Share controller's last known address.
+            #
+            # Admin-gated 2026-08-17. The *write* side has required the token
+            # since audit 2026-04-27 M-2, on the reasoning that an unauth
+            # caller must not get to choose the address controller resolution
+            # hands back. The read side was left open, which served the answer
+            # to anyone who could reach the relay — and this relay is on public
+            # HTTPS. It read 404 for a while only because controller.json sits
+            # on tmpfs and a reboot had wiped it; it refills the moment the
+            # installer re-registers. Same gate shape as /standing-orders.
+            # scripts/release.sh sends FOCUSLOCK_ADMIN_TOKEN.
+            import urllib.parse as _up_ct
+
+            parsed_ct = _up_ct.urlparse(self.path)
+            params_ct = _up_ct.parse_qs(parsed_ct.query)
+            token_ct = params_ct.get("admin_token", [""])[0]
+            if not token_ct:
+                auth_header_ct = self.headers.get("Authorization", "")
+                if auth_header_ct.startswith("Bearer "):
+                    token_ct = auth_header_ct[7:]
+            if not ADMIN_TOKEN:
+                self.respond(503, {"error": "admin_token not configured"})
+                return
+            if not _is_valid_admin_auth(token_ct):
+                self.respond(403, {"error": "invalid admin_token"})
+                return
             reg_file = "/run/focuslock/controller.json"
             try:
                 if os.path.exists(reg_file):

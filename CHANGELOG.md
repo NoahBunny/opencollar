@@ -8,6 +8,33 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-17 the read side of the address gate ───────── -->
+
+### Fixed — `GET /controller` served the Lion's address to anyone who asked
+
+- **The write side has been admin-gated since audit 2026-04-27 M-2**, on the explicit
+  reasoning that an unauthenticated caller must not get to choose the address controller
+  resolution hands back. The read side was left open — so the address itself, the Lion's
+  controller on the mesh, was served to any caller that could reach the relay, and this
+  relay is on public HTTPS at `collar.nunyabiznu.com`. It answered 404 when checked only
+  because `controller.json` lives on tmpfs and a reboot had wiped it; it refills the moment
+  the installer re-registers. Gating the write and publishing the read is the gate facing
+  one direction.
+- **Now gated with the same shape as `/standing-orders`** (`?admin_token=` or
+  `Authorization: Bearer`): 503 when no `ADMIN_TOKEN` is configured, 403 on a missing or
+  wrong token. Dispatch had to stop comparing the raw path — an authed call carries a query
+  string, and `self.path == "/controller"` would have 404'd every one of them.
+- **`scripts/release.sh`, the one caller, sends `FOCUSLOCK_ADMIN_TOKEN`** as a Bearer
+  header rather than a query parameter, since a query string lands in the relay's access log
+  and this token is the whole admin API. With the variable unset the script says so and
+  falls back to `LION_DEVICE_IP`, exactly as it did before.
+- `tests/test_e2e_public_routes.py` gives up its claim on this route.
+  `TestControllerIsNoLongerPublic` replaces it with 6 tests: unauthenticated refused, wrong
+  token refused, unconfigured token fails closed rather than falling open, the query-token
+  and Bearer paths both reach the handler, and a registered address is still served to an
+  authed caller — the caller the endpoint exists for.
+
+
 <!-- ───────── 2026-08-17 the flag that claimed a door was open ───────── -->
 
 ### Fixed — `auto_accept_nodes` stayed `true` on disk long after the window shut
