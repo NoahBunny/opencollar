@@ -1749,6 +1749,60 @@ def _unpaired_hours():
     return max(0.0, (now - since) / 3600.0)
 
 
+def _fetch_lion_pubkey():
+    """Claim this machine: ask the relay for the mesh's Lion pubkey, proving
+    membership by signing with our own registered vault node key.
+
+    Mirrors the Linux collar's _fetch_lion_pubkey(). Without it a desktop that
+    registered itself into a mesh stayed unclaimed forever — the Lion's key only
+    ever arrived via the invite-code join or the passphrase pairing flow, so the
+    collar could not verify a Lion-signed order until someone hand-copied a PEM
+    onto the box. Quiet on failure: not claimed yet is a normal state, and the
+    interim marching orders cover it."""
+    if not MESH_URL or not MESH_ID or not _vault_privkey_pem:
+        return False
+    if os.path.exists(LION_PUBKEY_FILE) and os.path.getsize(LION_PUBKEY_FILE) > 0:
+        return True
+    try:
+        import base64 as _b64
+
+        from cryptography.hazmat.primitives import hashes as _hh
+        from cryptography.hazmat.primitives import serialization as _ser
+        from cryptography.hazmat.primitives.asymmetric import padding as _pad
+
+        ts_ms = int(time.time() * 1000)
+        payload = f"{MESH_ID}|{MESH_NODE_ID}|lion-pubkey|{ts_ms}"
+        priv = _ser.load_pem_private_key(_vault_privkey_pem.encode(), password=None)
+        sig = _b64.b64encode(priv.sign(payload.encode("utf-8"), _pad.PKCS1v15(), _hh.SHA256())).decode()
+        body = json.dumps({"node_id": MESH_NODE_ID, "ts": ts_ms, "signature": sig}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{MESH_URL}/vault/{MESH_ID}/lion-pubkey",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        key_b64 = (data.get("lion_pubkey") or "").strip()
+        if not key_b64:
+            return False
+        # PEM on disk, and loading it here proves the relay handed us a real RSA
+        # key rather than an error page from a reverse proxy.
+        pub = _ser.load_der_public_key(_b64.b64decode(key_b64))
+        pem = pub.public_bytes(_ser.Encoding.PEM, _ser.PublicFormat.SubjectPublicKeyInfo).decode()
+        tmp = LION_PUBKEY_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(pem)
+        os.replace(tmp, LION_PUBKEY_FILE)
+        logger.warning("Lion's pubkey claimed from the mesh — this machine is under a Lion now")
+        return True
+    except urllib.error.HTTPError as e:
+        logger.debug("lion-pubkey fetch HTTP %s (not claimed yet)", e.code)
+    except Exception as e:
+        logger.debug("lion-pubkey fetch failed: %s", e)
+    return False
+
+
 def apply_unpaired_orders():
     """Install the interim marching orders while no Lion holds this machine.
 
@@ -1805,12 +1859,37 @@ def sync_standing_orders():
     # to fetch it from. Install the interim orders instead of leaving the machine
     # silent, re-rendered each tick so the nudge escalates with the clock.
     if not get_lion_pubkey():
+        # Claim the key first — an unclaimed member should not settle for
+        # interim orders while the relay will hand over the Lion's key.
+        _fetch_lion_pubkey()
+    if not get_lion_pubkey():
         apply_unpaired_orders()
         return
     try:
         os.remove(_SO_UNPAIRED_SINCE)  # paired — a later unpairing escalates from zero
     except OSError:
         pass
+    # Claimed now, so the overlay's own "collared, unpaired" text is false —
+    # drop it even if the real orders can't be fetched below, restoring the
+    # bunny's own CLAUDE.md if they had one. Only ever touches our file.
+    if unpaired_orders_mod is not None:
+        try:
+            _target = _claude_md_path()
+            if os.path.exists(_target):
+                with open(_target, "r", encoding="utf-8") as f:
+                    _cur = f.read()
+                if unpaired_orders_mod.is_our_overlay(_cur):
+                    if os.path.exists(_SO_BACKUP):
+                        with open(_SO_BACKUP, "r", encoding="utf-8") as f:
+                            _prev = f.read()
+                        with open(_target, "w", encoding="utf-8") as f:
+                            f.write(_prev)
+                        os.remove(_SO_BACKUP)
+                    else:
+                        os.remove(_target)
+                    logger.info("Interim (unpaired) orders revoked — this machine has a Lion now")
+        except Exception as e:
+            logger.warning("Could not revoke interim orders: %s", e)
     if not ADMIN_TOKEN:
         logger.debug("Standing orders sync skipped: no admin_token configured")
         return

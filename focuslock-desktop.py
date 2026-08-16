@@ -1582,6 +1582,88 @@ def apply_unpaired_orders():
         logger.warning("Interim (unpaired) standing orders failed: %s", e)
 
 
+def _fetch_lion_pubkey():
+    """Claim this machine: ask the relay for the mesh's Lion pubkey, proving
+    membership by signing with our own registered vault node key.
+
+    Without this a desktop could join a mesh and stay unclaimed forever — the
+    Lion's key only ever arrived via the invite-code join or the passphrase
+    pairing flow, so a collar that registered itself (the normal path) had a
+    gray crown, no standing orders, and no way to verify a Lion-signed order
+    until a human hand-copied a PEM onto the box.
+
+    Writes MESH_CONFIG_DIR/lion_pubkey.pem on success. Returns True if the key
+    is on disk afterwards. Quiet on failure — an unreachable relay or a node
+    the Lion hasn't approved just means "not claimed yet", and the interim
+    marching orders cover that case."""
+    if not MESH_URL or not MESH_ID or not _vault_privkey_pem:
+        return False
+    if os.path.exists(LION_PUBKEY_FILE) and os.path.getsize(LION_PUBKEY_FILE) > 0:
+        return True
+    try:
+        import base64 as _b64
+
+        from cryptography.hazmat.primitives import hashes as _hh
+        from cryptography.hazmat.primitives import serialization as _ser
+        from cryptography.hazmat.primitives.asymmetric import padding as _pad
+
+        ts_ms = int(time.time() * 1000)
+        payload = f"{MESH_ID}|{MESH_NODE_ID}|lion-pubkey|{ts_ms}"
+        priv = _ser.load_pem_private_key(_vault_privkey_pem.encode(), password=None)
+        sig = _b64.b64encode(priv.sign(payload.encode("utf-8"), _pad.PKCS1v15(), _hh.SHA256())).decode()
+        body = json.dumps({"node_id": MESH_NODE_ID, "ts": ts_ms, "signature": sig}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{MESH_URL}/vault/{MESH_ID}/lion-pubkey",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        key_b64 = (data.get("lion_pubkey") or "").strip()
+        if not key_b64:
+            return False
+        # Store as PEM: that is what get_lion_pubkey()'s consumers expect, and
+        # loading it here also validates the relay handed us a real RSA key
+        # rather than an error page or a truncated string.
+        pub = _ser.load_der_public_key(_b64.b64decode(key_b64))
+        pem = pub.public_bytes(_ser.Encoding.PEM, _ser.PublicFormat.SubjectPublicKeyInfo).decode()
+        os.makedirs(os.path.dirname(LION_PUBKEY_FILE), exist_ok=True)
+        tmp = LION_PUBKEY_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(pem)
+        os.replace(tmp, LION_PUBKEY_FILE)
+        logger.warning("Lion's pubkey claimed from the mesh — this machine is under a Lion now")
+        return True
+    except urllib.error.HTTPError as e:
+        logger.debug("lion-pubkey fetch HTTP %s (not claimed yet)", e.code)
+    except Exception as e:
+        logger.debug("lion-pubkey fetch failed: %s", e)
+    return False
+
+
+def _revoke_unpaired_overlay():
+    """Drop the interim orders once a Lion has claimed this machine.
+
+    The overlay's own text says "collared, unpaired" — false the moment a Lion
+    key lands — so it must go even when the real orders can't be fetched (no
+    admin_token, unreachable homelab). Without this, a machine could sit
+    claimed while telling every Claude session on it that nobody owns it.
+
+    Only ever touches our own file: the marker check gates it, and
+    _revoke_standing_orders restores the bunny's pre-existing CLAUDE.md."""
+    if unpaired_orders_mod is None or not os.path.exists(_SO_TARGET):
+        return
+    try:
+        with open(_SO_TARGET) as f:
+            current = f.read()
+        if unpaired_orders_mod.is_our_overlay(current):
+            _revoke_standing_orders()
+            logger.info("Interim (unpaired) orders revoked — this machine has a Lion now")
+    except Exception as e:
+        logger.warning("Could not revoke interim orders: %s", e)
+
+
 def sync_standing_orders():
     """Pull CLAUDE.md from the mesh/homelab and install it as the Lion's standing
     orders for Claude Code sessions on this machine.
@@ -1601,9 +1683,15 @@ def sync_standing_orders():
     # to fetch it from. Install the interim orders instead of leaving the machine
     # silent, and re-render each tick so the nudge escalates with the clock.
     if not get_lion_pubkey():
+        # Try to claim the key first — an unclaimed member should not settle
+        # for interim orders while the relay is willing to hand over the Lion's
+        # key it already trusts us enough to store.
+        _fetch_lion_pubkey()
+    if not get_lion_pubkey():
         apply_unpaired_orders()
         return
     _clear_unpaired_marker()
+    _revoke_unpaired_overlay()
     if not ADMIN_TOKEN:
         logger.debug("Standing orders sync skipped: no admin_token configured")
         return

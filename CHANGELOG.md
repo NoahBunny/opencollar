@@ -8,6 +8,51 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-16 desktops claim their Lion ───────── -->
+
+### Added — a desktop can obtain its Lion's pubkey instead of waiting for a hand-copied PEM
+
+- **A collar could join a mesh and stay unclaimed forever** (`focuslock-mail.py`,
+  `focuslock-desktop.py`, `focuslock-desktop-win.py`). `register-node-request` never
+  returned the Lion's public key, and the collar has no fetch path — only the
+  invite-code join (`/api/mesh/join`) and the passphrase pairing flow ever handed it
+  over. So a self-registering desktop (the normal path) sat as a fully approved vault
+  node with a **gray crown**, no standing orders, and no way to verify a Lion-signed
+  order, until a human copied `lion_pubkey.pem` onto the box by hand. Found on
+  vaporeon: an approved, auto-accepted, state-mirroring member of the live mesh that
+  had never been claimed. New **`POST /vault/{mesh_id}/lion-pubkey`** — body
+  `{node_id, ts, signature}`, signature over `"{mesh_id}|{node_id}|lion-pubkey|{ts}"`
+  with the node's *own* registered key (vault `node_pubkey` or the `bunny_pubkey` on
+  its row, same pair state-mirror accepts), ±5 min replay window — returns the
+  account's `lion_pubkey`. Both collars call it on the standing-orders tick when no
+  Lion key is on file, write it as PEM (loading it first, so a reverse-proxy error
+  page can't become a trust anchor), and claim themselves within one poll.
+- **Why not read the `controller` row's `node_pubkey` client-side** (it does match the
+  account's `lion_pubkey` — verified on the live mesh, hash `73195ffcf316ab30`):
+  `node_type` is self-asserted at registration, so anything that registered as
+  `node_type: "controller"` during an open auto-accept window could poison a collar's
+  trust anchor and forge orders from then on. Only the relay knows the authoritative
+  key, so only the relay can safely hand it over.
+- **Not gated on `lion_confirmed`.** It is a public verification key, and a node that
+  adopts it only becomes *more* obedient — it starts enforcing Lion-signed orders it
+  would otherwise ignore. Withholding it would protect nothing and leave devices
+  unclaimed, which is the failure the endpoint exists to end.
+- 8 new tests (`tests/test_lion_pubkey_fetch.py`): approved node served; unconfirmed
+  auto-accepted node still served (deliberate); unknown node, rogue key, stale ts, and
+  a signature lifted from another mesh all rejected; mesh with no Lion key 404s;
+  missing fields 400. Suite `1263 → 1271`.
+
+### Fixed — a claimed machine kept telling Claude that nobody owned it
+
+- **The interim marching orders outlived their pairing** (`focuslock-desktop.py`,
+  `focuslock-desktop-win.py`). The paired branch cleared the `unpaired-since` marker
+  and then returned early when no `admin_token` was configured to fetch the Lion's real
+  orders — leaving the overlay, whose own text reads *"collared, unpaired"*, in place
+  indefinitely on a machine that now had a Lion. Both collars now revoke the overlay
+  the moment a Lion key lands, restoring the bunny's pre-existing `CLAUDE.md` if there
+  was one. Gated on the overlay marker, so a file the collar didn't write is never
+  touched.
+
 <!-- ───────── 2026-08-16 interim marching orders for an unpaired collar ───────── -->
 
 ### Added — a collared-but-unpaired PC is no longer silent

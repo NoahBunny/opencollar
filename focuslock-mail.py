@@ -5600,7 +5600,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(
                     400,
                     {
-                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|confirm-node|since/{v}|nodes|nodes-pending}"
+                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|confirm-node|lion-pubkey|since/{v}|nodes|nodes-pending}"
                     },
                 )
                 return
@@ -5752,6 +5752,104 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     _sanitize_log(node_id),
                 )
                 self.respond(200, {"ok": True, "node_id": node_id, "lion_confirmed": True})
+
+            elif action == "lion-pubkey":
+                # Node-signed request for the mesh's Lion public key.
+                # Body: {node_id, ts, signature}
+                # signature = SHA256withRSA over "mesh_id|node_id|lion-pubkey|ts"
+                # with the node's own registered key (vault node_pubkey, or the
+                # bunny_pubkey on its row — same pair state-mirror accepts).
+                #
+                # Why it exists: a desktop collar can join a mesh and never
+                # obtain the Lion's pubkey. Registration doesn't return it; only
+                # the invite-code join and the passphrase pairing flow do. So a
+                # perfectly good mesh member sat "unpaired" forever — gray crown,
+                # standing orders never applied, Lion-signed orders unverifiable
+                # — until a human hand-copied a PEM onto the box.
+                #
+                # Why not just read the controller row's node_pubkey client-side:
+                # node_type is self-asserted at registration, so anything that
+                # registered as node_type="controller" could poison a collar's
+                # trust anchor and forge orders. Only the relay knows the
+                # account's authoritative lion_pubkey; this hands over that one,
+                # to a caller that proved possession of an approved node key.
+                #
+                # Not gated on lion_confirmed: this is a public *verification*
+                # key, and a node that adopts it only becomes more obedient —
+                # it starts enforcing Lion-signed orders it would otherwise
+                # ignore. Withholding it would protect nothing and leave devices
+                # unclaimed, which is the failure this endpoint exists to end.
+                node_id = data.get("node_id", "")
+                signature = data.get("signature", "")
+                if not node_id or not signature:
+                    self.respond(400, {"error": "node_id and signature required"})
+                    return
+                try:
+                    ts_i = int(data.get("ts", 0) or 0)
+                except (ValueError, TypeError):
+                    self.respond(400, {"error": "ts must be int (ms epoch)"})
+                    return
+                if abs(int(time.time() * 1000) - ts_i) > 5 * 60 * 1000:
+                    self.respond(403, {"error": "ts out of window"})
+                    return
+                if not lion_pubkey:
+                    self.respond(404, {"error": "no lion_pubkey on file for this mesh"})
+                    return
+                candidates = []
+                for vnode in _vault_store.get_nodes(mesh_id):
+                    if vnode.get("node_id") == node_id:
+                        if vnode.get("node_pubkey"):
+                            candidates.append(vnode["node_pubkey"])
+                        if vnode.get("bunny_pubkey"):
+                            candidates.append(vnode["bunny_pubkey"])
+                        break
+                if not candidates:
+                    logger.warning(
+                        "Vault lion-pubkey DENIED (node not approved): mesh=%s node=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                    )
+                    self.respond(403, {"error": "node not registered in vault"})
+                    return
+                payload = f"{mesh_id}|{node_id}|lion-pubkey|{ts_i}"
+                verified = False
+                try:
+                    import base64 as _b64_lp
+
+                    from cryptography.hazmat.primitives import hashes as _hh_lp
+                    from cryptography.hazmat.primitives import serialization as _ser_lp
+                    from cryptography.hazmat.primitives.asymmetric import padding as _pad_lp
+
+                    sig_bytes = _b64_lp.b64decode(signature)
+                    for pk_b64 in candidates:
+                        try:
+                            pub = _ser_lp.load_der_public_key(_b64_lp.b64decode(pk_b64))
+                            pub.verify(sig_bytes, payload.encode("utf-8"), _pad_lp.PKCS1v15(), _hh_lp.SHA256())
+                            verified = True
+                            break
+                        except Exception:
+                            continue
+                except Exception as e:
+                    logger.warning(
+                        "lion-pubkey sig decode failed: mesh=%s node=%s err=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                        e,
+                    )
+                if not verified:
+                    logger.warning(
+                        "Vault lion-pubkey DENIED (bad signature): mesh=%s node=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                    )
+                    self.respond(403, {"error": "invalid signature"})
+                    return
+                logger.info(
+                    "Vault lion-pubkey served: mesh=%s node=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                )
+                self.respond(200, {"ok": True, "lion_pubkey": lion_pubkey, "format": "der-b64"})
 
             elif action == "reject-node-request":
                 # Lion-signed rejection. Drops the pending entry and adds the
@@ -6461,7 +6559,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(
                     400,
                     {
-                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|confirm-node|since/{v}|nodes|nodes-pending}"
+                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|confirm-node|lion-pubkey|since/{v}|nodes|nodes-pending}"
                     },
                 )
                 return
