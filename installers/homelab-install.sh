@@ -74,8 +74,16 @@ mkdir -p "$DEST"
 mkdir -p /var/lib/focuslock/meshes /var/lib/focuslock/vaults /var/lib/focuslock/mesh-orders && chmod 700 /var/lib/focuslock
 # VOLATILE bridge coordination only (devices.json / controller.json are
 # re-written by the ADB bridge each run) — fine to keep on tmpfs.
-mkdir -p /run/focuslock && chmod 777 /run/focuslock
-echo "d /run/focuslock 0777 root root -" > /etc/tmpfiles.d/focuslock.conf
+#
+# 0755, not 0777. Both relay units run as root (no User=), so nothing here
+# needs a world write bit — the 0777 was inherited from the desktop-collar
+# installer, where the collar genuinely runs as the user. On a relay it undoes
+# an audit fix: /webhook/controller-register is admin-token-gated (M-2) exactly
+# so an unauth caller cannot point controller-resolve at an address they chose,
+# and a world-writable directory lets any local account write controller.json
+# straight past that gate.
+mkdir -p /run/focuslock && chmod 755 /run/focuslock
+echo "d /run/focuslock 0755 root root -" > /etc/tmpfiles.d/focuslock.conf
 
 # ── 4. Copy the application tree ────────────────────────────────────────────
 echo "[4/6] Copying application files ..."
