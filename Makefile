@@ -13,6 +13,16 @@ PY ?= .venv/bin/python3
 else
 PY ?= python3
 endif
+# Bytecode lands OUTSIDE the checkout. This repo is mirrored into ~/Nextcloud
+# and the sync carries `__pycache__` with it; a .pyc records the compiling
+# checkout's absolute path in co_filename, so a synced-in one makes pytest
+# report skips and tracebacks against the *other* repo, on a different branch.
+# Audited 2026-08-17: 99 of 130 in-tree .pyc carried the mirror's path. Nothing
+# had executed wrong (contents matched), but "which checkout am I looking at"
+# is exactly the question that has cost this project hours. Keeping bytecode
+# out of the tree means there is nothing for the sync to carry.
+export PYTHONPYCACHEPREFIX ?= $(HOME)/.cache/focuslock/pycache
+
 STAGING_DIR := staging
 RELAY_PORT ?= 18435
 RELAY_URL ?= http://127.0.0.1:$(RELAY_PORT)
