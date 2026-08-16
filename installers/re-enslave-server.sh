@@ -188,13 +188,20 @@ REMOTE_SCRIPT=$(mktemp)
     fi
 } > "$REMOTE_SCRIPT"
 
+# Ship the script and run it by path. NOT `sudo bash -s < script`: redirecting
+# stdin makes ssh skip TTY allocation ("Pseudo-terminal will not be allocated
+# because stdin is not a terminal"), and sudo then has nowhere to prompt —
+# fatal on a homelab whose sudo asks for a password. Forcing -tt instead would
+# hand sudo the script text as its password prompt input, which is worse. With
+# the script already on disk, stdin stays the operator's terminal.
+scp -o ConnectTimeout=10 -q "$REMOTE_SCRIPT" "$DEPLOY_USER@$HOMELAB_SSH:$TMPDIR_REMOTE/_apply.sh"
+rm -f "$REMOTE_SCRIPT"
+
 section "Applying (one sudo session — enter the homelab password if prompted)"
-if ! ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" 'sudo bash -s' < "$REMOTE_SCRIPT"; then
-    rm -f "$REMOTE_SCRIPT"
+if ! ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" "sudo bash '$TMPDIR_REMOTE/_apply.sh'"; then
     ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" "rm -rf $TMPDIR_REMOTE" || true
     fail "Remote apply failed — check journalctl -u focuslock-mail on $HOMELAB_SSH"
 fi
-rm -f "$REMOTE_SCRIPT"
 ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" "rm -rf $TMPDIR_REMOTE" || true
 [ -n "$GIT_COMMIT" ] && log "  git commit: $GIT_COMMIT"
 
