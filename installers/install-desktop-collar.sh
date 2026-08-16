@@ -55,24 +55,30 @@ echo "=== Installing dependencies ==="
 # falls back to the retired plaintext-sync endpoint and gets HTTP 410 Gone on
 # every poll — it can never register or pair. It used to be omitted here, which
 # is exactly how a collar came up crippled.
+# libayatana-appindicator (+ typelib) is REQUIRED, not optional. focuslock-tray.py
+# (the crown icon) hard-fails without AppIndicator3/AyatanaAppIndicator3 — no
+# Gtk.StatusIcon fallback, since that API is deprecated and broken on Wayland.
+# Omitting this here is exactly how a tray crash-loops on every login with
+# "missing system packages" instead of ever showing the crown.
 if echo "$DISTRO $DISTRO_LIKE" | grep -qi "arch"; then
-    sudo pacman -S --needed --noconfirm python-gobject python-cairo python-cryptography gtk4 webkitgtk-6.0 2>/dev/null || true
+    sudo pacman -S --needed --noconfirm python-gobject python-cairo python-cryptography gtk4 webkitgtk-6.0 gtk3 libayatana-appindicator 2>/dev/null || true
 elif echo "$DISTRO $DISTRO_LIKE" | grep -qi "fedora"; then
     if command -v rpm-ostree &>/dev/null; then
         echo "Immutable OS detected. Checking deps..."
         /usr/bin/python3 -c "import gi; gi.require_version('Gtk', '4.0')" 2>/dev/null && \
         /usr/bin/python3 -c "import cairo" 2>/dev/null && \
-        /usr/bin/python3 -c "import cryptography" 2>/dev/null || {
-            echo "Missing deps. Run: rpm-ostree install python3-gobject python3-cairo python3-cryptography gtk4"
+        /usr/bin/python3 -c "import cryptography" 2>/dev/null && \
+        /usr/bin/python3 -c "import gi; gi.require_version('AyatanaAppIndicator3', '0.1')" 2>/dev/null || {
+            echo "Missing deps. Run: rpm-ostree install python3-gobject python3-cairo python3-cryptography gtk4 gtk3 libayatana-appindicator-gtk3"
             echo "Then reboot and re-run this installer."
             exit 1
         }
     else
-        sudo dnf install -y python3-gobject python3-cairo python3-cryptography gtk4 webkitgtk6.0 2>/dev/null || true
+        sudo dnf install -y python3-gobject python3-cairo python3-cryptography gtk4 webkitgtk6.0 gtk3 libayatana-appindicator-gtk3 2>/dev/null || true
     fi
 elif echo "$DISTRO $DISTRO_LIKE" | grep -qi "ubuntu\|debian"; then
     sudo apt-get update -qq
-    sudo apt-get install -y python3-gi python3-cairo python3-cryptography gir1.2-gtk-4.0 gir1.2-webkit-6.0 2>/dev/null || true
+    sudo apt-get install -y python3-gi python3-cairo python3-cryptography gir1.2-gtk-4.0 gir1.2-webkit-6.0 gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1 2>/dev/null || true
 else
     echo "Unknown distro: $DISTRO. Trying to proceed..."
 fi
@@ -83,6 +89,19 @@ fi
     echo "       (cryptography is required for vault mode — the collar cannot pair without it.)"
     exit 1
 }
+
+# Non-fatal: the crown (focuslock-tray.py) needs AppIndicator, but it's a status
+# display, not enforcement — desktop.py keeps working without it. Warn instead
+# of aborting, since focuslock-tray.service will just crash-loop and log why.
+/usr/bin/python3 -c "
+import gi
+try:
+    gi.require_version('AyatanaAppIndicator3', '0.1')
+    from gi.repository import AyatanaAppIndicator3
+except (ValueError, ImportError):
+    gi.require_version('AppIndicator3', '0.1')
+    from gi.repository import AppIndicator3
+" 2>/dev/null || echo "WARNING: no AppIndicator binding found — the crown tray icon will not appear until this is installed."
 
 # Verify loginctl
 command -v loginctl &>/dev/null || {
