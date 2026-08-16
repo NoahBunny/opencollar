@@ -5,18 +5,53 @@
 # Pulls CLAUDE.md + settings.json from homelab mail service (HTTP, no SSH needed)
 # Also installs systemd sync units with tamper detection
 #
+# No-ops on a machine no Lion has claimed — the collar's interim marching
+# orders own ~/.claude/CLAUDE.md until then (see the pairing gate below).
+#
 # Environment:
 #   FOCUSLOCK_HOMELAB       — homelab URL (e.g. http://x.x.x.x:8434)
+#   FOCUSLOCK_MESH_URL      — relay URL, used when there is no separate homelab
 #   FOCUSLOCK_HOMELAB_HOST  — Tailscale hostname for auto-discovery
 #   FOCUSLOCK_HOMELAB_SSH   — SSH address for homelab (fallback for SCP)
+#   FOCUSLOCK_ADMIN_TOKEN   — bearer for the admin-gated /standing-orders + /settings
 set -e
 
 CLAUDE_DIR="$HOME/.claude"
 
-# Resolve homelab URL: env var > Tailscale > error
+# ── Pairing gate ──
+# Standing orders belong to a Lion who has claimed this machine. Until Their
+# key is on file, ~/.claude/CLAUDE.md is owned by the desktop collar's interim
+# marching orders (shared/focuslock_unpaired_orders.py) — and the sync units
+# installed below would fight it: the .path watcher fires on every collar write,
+# re-pulls, and the collar rewrites on its next tick. There is also nothing to
+# pull, since an unclaimed machine has no Lion serving it orders.
+LION_PUBKEY_FILE="$HOME/.config/focuslock/lion_pubkey.pem"
+if [ ! -s "$LION_PUBKEY_FILE" ]; then
+    echo "Unpaired — no Lion key at $LION_PUBKEY_FILE."
+    echo "  Skipping standing-orders sync: the collar's interim marching orders own"
+    echo "  ~/.claude/CLAUDE.md until your Lion claims this machine."
+    exit 0
+fi
+
+# Authenticated pulls when the operator has the token in scope. /standing-orders
+# and /settings are admin-gated (audit 2026-04-27 H-1), so without this the HTTP
+# path always 401s and silently degrades to the SSH fallback.
+CURL_AUTH=()
+if [ -n "${FOCUSLOCK_ADMIN_TOKEN:-}" ]; then
+    CURL_AUTH=(-H "Authorization: Bearer $FOCUSLOCK_ADMIN_TOKEN")
+fi
+
+# Resolve homelab URL: env var > relay URL > Tailscale > error
+HOMELAB_URL=""
 HOMELAB_HOSTNAME="${FOCUSLOCK_HOMELAB_HOST:-}"
-if [ -n "$FOCUSLOCK_HOMELAB" ]; then
+if [ -n "${FOCUSLOCK_HOMELAB:-}" ]; then
     HOMELAB_URL="$FOCUSLOCK_HOMELAB"
+elif [ -n "${FOCUSLOCK_MESH_URL:-}" ]; then
+    # Relay-only deployments (no separate homelab box) serve /standing-orders
+    # from the relay itself, and FOCUSLOCK_MESH_URL is the one address every
+    # re-enslave script already requires — so don't demand a second variable
+    # naming the same endpoint.
+    HOMELAB_URL="$FOCUSLOCK_MESH_URL"
 elif command -v tailscale &>/dev/null && [ -n "$HOMELAB_HOSTNAME" ]; then
     HOMELAB_TS=$(tailscale status 2>/dev/null | grep "$HOMELAB_HOSTNAME" | awk '{print $1}')
     if [ -n "$HOMELAB_TS" ]; then
@@ -32,7 +67,7 @@ mkdir -p "$CLAUDE_DIR"
 
 # Pull latest from homelab via HTTP
 echo "Pulling standing orders from homelab..."
-if curl -sf -o "$CLAUDE_DIR/CLAUDE.md" --connect-timeout 5 "$HOMELAB_URL/standing-orders"; then
+if curl -sf "${CURL_AUTH[@]}" -o "$CLAUDE_DIR/CLAUDE.md" --connect-timeout 5 "$HOMELAB_URL/standing-orders"; then
     chmod 644 "$CLAUDE_DIR/CLAUDE.md"
     echo "  CLAUDE.md installed"
 else
@@ -46,7 +81,7 @@ else
     fi
 fi
 
-if curl -sf -o "$CLAUDE_DIR/settings.json" --connect-timeout 5 "$HOMELAB_URL/settings"; then
+if curl -sf "${CURL_AUTH[@]}" -o "$CLAUDE_DIR/settings.json" --connect-timeout 5 "$HOMELAB_URL/settings"; then
     chmod 644 "$CLAUDE_DIR/settings.json"
     echo "  settings.json installed"
 else

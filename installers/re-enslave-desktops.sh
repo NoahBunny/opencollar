@@ -56,6 +56,13 @@ deploy_local() {
         SUDO_OK=1  # dry-run pretends sudo works so we log all the steps
     elif sudo -n true 2>/dev/null; then
         SUDO_OK=1
+    elif [ -t 0 ] && sudo -v; then
+        # An operator running this from a terminal can just authenticate — the
+        # old probe was `sudo -n true` alone, so a machine with ordinary
+        # password sudo silently skipped every /opt/focuslock write and left
+        # the collar on old code while reporting success. One prompt, cached
+        # for the rest of the run, same as install-desktop-collar.sh does.
+        SUDO_OK=1
     else
         warn "  sudo not available — system-side ops (/opt/focuslock) will be skipped"
         warn "  user-side install (icons + autostart) will still complete"

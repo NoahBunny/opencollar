@@ -147,6 +147,12 @@ load_config() {
     if [ -f "$RE_CONFIG" ]; then
         # shellcheck disable=SC1090
         source "$RE_CONFIG"
+        # Sourcing sets shell variables, which child processes do not inherit —
+        # so install-standing-orders.sh (invoked as a separate bash) saw none of
+        # this and failed with "Set FOCUSLOCK_HOMELAB…" on a machine whose
+        # config named the relay perfectly well. Export the ones sub-scripts read.
+        export FOCUSLOCK_SRC FOCUSLOCK_MESH_URL FOCUSLOCK_ADMIN_TOKEN \
+               FOCUSLOCK_HOMELAB FOCUSLOCK_HOMELAB_SSH FOCUSLOCK_HOMELAB_HOST DEPLOY_USER
         log "Loaded config: $RE_CONFIG"
     fi
 }
