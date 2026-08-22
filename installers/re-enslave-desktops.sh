@@ -58,7 +58,15 @@ deploy_local() {
     local SUDO_OK=0
     if [ "$DRY_RUN" = 1 ]; then
         SUDO_OK=1  # dry-run pretends sudo works so we log all the steps
-    elif sudo -n true 2>/dev/null; then
+    elif sudo -n mkdir -p /opt/focuslock 2>/dev/null; then
+        # `sudo -n true` is the wrong probe: install-desktop-collar.sh's
+        # sudoers rules are scoped to exact commands (this mkdir, the
+        # install invocations below, the systemctl restarts) rather than a
+        # blanket NOPASSWD, so `true` was never covered and the probe failed
+        # even on a fully-bootstrapped machine — every /opt/focuslock write
+        # silently skipped, forever, with no prompt and no error. Probe with
+        # a whitelisted command we need to run anyway instead of one that
+        # was never granted.
         SUDO_OK=1
     elif [ -t 0 ] && sudo -v; then
         # An operator running this from a terminal can just authenticate — the
@@ -153,28 +161,38 @@ EOF
     # ── Phase 2: system-side (/opt/focuslock — needs sudo) ──
 
     if [ "$SUDO_OK" = 1 ]; then
-        [ "$DRY_RUN" = 1 ] || sudo mkdir -p /opt/focuslock /opt/focuslock/web
+        # Two separate calls: the sudoers rules are `mkdir -p /opt/focuslock`
+        # and `mkdir -p /opt/focuslock/web` as distinct NOPASSWD entries, not
+        # a wildcard — combining them into one `mkdir -p a b` invocation is a
+        # different argv that matches neither and silently demands a password.
+        if [ "$DRY_RUN" != 1 ]; then
+            sudo mkdir -p /opt/focuslock
+            sudo mkdir -p /opt/focuslock/web
+        fi
 
-        # Core files (Lion's Share = canonical Python tree)
+        # Core files (Lion's Share = canonical Python tree). Mode must be the
+        # literal "0755" the sudoers rule spells out — sudo matches command
+        # args as text, so "755" is a different, unwhitelisted invocation
+        # that silently falls back to requiring a password.
         for f in "${DESKTOP_FILES[@]}"; do
             if [ -f "$LS/$f" ]; then
                 log "  $f"
-                [ "$DRY_RUN" = 1 ] || sudo install -D -m 755 "$LS/$f" "/opt/focuslock/$f"
+                [ "$DRY_RUN" = 1 ] || sudo install -D -m 0755 "$LS/$f" "/opt/focuslock/$f"
             fi
         done
 
-        # Shared modules
+        # Shared modules (same "0644" literal-match requirement as above)
         for src in "$LS"/shared/focuslock_*.py; do
             [ -f "$src" ] || continue
             bn=$(basename "$src")
             log "  shared/$bn"
-            [ "$DRY_RUN" = 1 ] || sudo install -D -m 644 "$src" "/opt/focuslock/$bn"
+            [ "$DRY_RUN" = 1 ] || sudo install -D -m 0644 "$src" "/opt/focuslock/$bn"
         done
 
-        # Web UI
+        # Web UI (same "0644" literal-match requirement as above)
         if [ -f "$LS/web/index.html" ]; then
             log "  web/index.html"
-            [ "$DRY_RUN" = 1 ] || sudo install -D -m 644 "$LS/web/index.html" /opt/focuslock/web/index.html
+            [ "$DRY_RUN" = 1 ] || sudo install -D -m 0644 "$LS/web/index.html" /opt/focuslock/web/index.html
         fi
 
         # Lockscreen icons (system path — used by FocusActivity equivalent)
@@ -270,15 +288,31 @@ deploy_remote() {
 
     scp -o ConnectTimeout=5 -q "${files_to_push[@]}" "$DEPLOY_USER@$addr:/tmp/" 2>/dev/null
 
+    # Remote desktops get the same install-desktop-collar.sh sudoers file as
+    # this machine (see /etc/sudoers.d/focuslock) — exact-match NOPASSWD
+    # entries, not a blanket grant. That means the same two bugs the local
+    # deploy had apply here too: a combined `mkdir -p a b` matches neither of
+    # the two split mkdir rules, and an unpadded mode ("644") is a different,
+    # unwhitelisted argv from the "0644"/"0755" the rules spell out — either
+    # one silently demands a password mid-heredoc and kills the `set -e` run.
     ssh -o ConnectTimeout=5 "$DEPLOY_USER@$addr" "bash -s" << REMOTE_EOF
 set -e
-sudo mkdir -p /opt/focuslock /opt/focuslock/web
-for f in focuslock-desktop.py focuslock_mesh.py focuslock_*.py $SERVER_ICON lion_pubkey.pem; do
-    [ -f /tmp/\$f ] && sudo install -D -m 644 /tmp/\$f /opt/focuslock/\$f && rm -f /tmp/\$f
+sudo mkdir -p /opt/focuslock
+sudo mkdir -p /opt/focuslock/web
+for f in focuslock-desktop.py focuslock_mesh.py focuslock_ntfy.py; do
+    [ -f /tmp/\$f ] && sudo install -D -m 0755 /tmp/\$f /opt/focuslock/\$f && rm -f /tmp/\$f
 done
-# chmod no longer needed separately — `sudo install -D -m 0755` above
-# already sets the mode on each file. Sudoers no longer grants wildcard chmod.
-[ -f /tmp/index.html ] && sudo install -D -m 644 /tmp/index.html /opt/focuslock/web/index.html && rm -f /tmp/index.html
+# Whatever's left matching focuslock_*.py is a shared module (mesh.py/ntfy.py
+# were already installed — and removed from /tmp — by the loop above, so this
+# glob can't re-touch them at the wrong mode).
+for f in /tmp/focuslock_*.py; do
+    [ -f "\$f" ] || continue
+    bn=\$(basename "\$f")
+    sudo install -D -m 0644 "\$f" "/opt/focuslock/\$bn" && rm -f "\$f"
+done
+[ -f /tmp/$SERVER_ICON ] && sudo install -D -m 0644 /tmp/$SERVER_ICON /opt/focuslock/$SERVER_ICON && rm -f /tmp/$SERVER_ICON
+[ -f /tmp/lion_pubkey.pem ] && sudo install -D -m 0644 /tmp/lion_pubkey.pem /opt/focuslock/lion_pubkey.pem && rm -f /tmp/lion_pubkey.pem
+[ -f /tmp/index.html ] && sudo install -D -m 0644 /tmp/index.html /opt/focuslock/web/index.html && rm -f /tmp/index.html
 [ -f /tmp/config.json ] && mkdir -p ~/.config/focuslock && cp /tmp/config.json ~/.config/focuslock/config.json && rm -f /tmp/config.json
 mkdir -p ~/.local/share/focuslock
 [ -f /opt/focuslock/$SERVER_ICON ] && cp /opt/focuslock/$SERVER_ICON ~/.local/share/focuslock/ 2>/dev/null || true
