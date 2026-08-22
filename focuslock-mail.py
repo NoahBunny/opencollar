@@ -5971,7 +5971,15 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 # confirmation. Those two only ever make a machine more governed;
                 # this one moves money, so an auto-accepted node They have never
                 # looked at does not get to spend it.
-                vault_row_pen = _vault_resolve_mesh(mesh_id)
+                # The node's own vault row, the way state-mirror finds it.
+                # _vault_resolve_mesh returns the MESH account (and as a tuple),
+                # which carries neither auto_accepted nor lion_confirmed — those
+                # live per node.
+                vault_row_pen = {}
+                for _vn in _vault_store.get_nodes(mesh_id):
+                    if _vn.get("node_id") == node_id:
+                        vault_row_pen = _vn
+                        break
                 if self._reject_unconfirmed_node("Vault penalty", mesh_id, node_id, vault_row_pen):
                     return
                 # The same guard /webhook/desktop-penalty carries. Without it
