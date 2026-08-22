@@ -1,0 +1,1026 @@
+{
+  "_comment": "Preloaded veneration tasks for the Lion to choose from. Each task_text drops straight into the orders field of the same name. suggested_task_reps is only a suggestion; They set the real value. Pair a gated lock with an unlock_at so the lock has a time backstop — the desktop logs a warning when it does not.",
+  "pronoun_rule": "Every pronoun referring to the Lion is capitalised, mid-sentence included. With task_randcaps set to 1 the lockscreen matches capitalisation exactly, so these strings become the enforced form and must not be edited casually.",
+  "count": 126,
+  "categories": {
+    "ownership": 20,
+    "gratitude": 16,
+    "obedience": 18,
+    "service": 15,
+    "discipline": 15,
+    "attention": 16,
+    "patience": 10,
+    "devotion": 10,
+    "long": 6
+  },
+  "tasks": [
+    {
+      "id": "ven-001",
+      "category": "ownership",
+      "length": "short",
+      "words": 5,
+      "suggested_task_reps": 5,
+      "task_text": "I belong to the Lion."
+    },
+    {
+      "id": "ven-002",
+      "category": "ownership",
+      "length": "short",
+      "words": 7,
+      "suggested_task_reps": 5,
+      "task_text": "I am Theirs, and I chose this."
+    },
+    {
+      "id": "ven-003",
+      "category": "ownership",
+      "length": "short",
+      "words": 7,
+      "suggested_task_reps": 5,
+      "task_text": "What I am is Theirs to decide."
+    },
+    {
+      "id": "ven-004",
+      "category": "ownership",
+      "length": "short",
+      "words": 9,
+      "suggested_task_reps": 5,
+      "task_text": "My collar is not jewellery. It is a fact."
+    },
+    {
+      "id": "ven-005",
+      "category": "ownership",
+      "length": "short",
+      "words": 7,
+      "suggested_task_reps": 5,
+      "task_text": "I do not belong to myself today."
+    },
+    {
+      "id": "ven-006",
+      "category": "ownership",
+      "length": "short",
+      "words": 11,
+      "suggested_task_reps": 5,
+      "task_text": "Their name is on me even where nobody can see it."
+    },
+    {
+      "id": "ven-007",
+      "category": "ownership",
+      "length": "short",
+      "words": 10,
+      "suggested_task_reps": 5,
+      "task_text": "I am kept, and I am glad to be kept."
+    },
+    {
+      "id": "ven-008",
+      "category": "ownership",
+      "length": "short",
+      "words": 7,
+      "suggested_task_reps": 5,
+      "task_text": "Everything I am was handed over willingly."
+    },
+    {
+      "id": "ven-009",
+      "category": "ownership",
+      "length": "medium",
+      "words": 44,
+      "suggested_task_reps": 3,
+      "task_text": "I belong to the Lion. Not as a mood, not as a game I can set down when it stops being convenient, but as the plain arrangement of my life. They hold me because I asked Them to and because They agreed to bother."
+    },
+    {
+      "id": "ven-010",
+      "category": "ownership",
+      "length": "medium",
+      "words": 36,
+      "suggested_task_reps": 3,
+      "task_text": "I am Theirs. My time is Theirs to spend, my attention is Theirs to point, and my comfort is Theirs to grant or withhold. None of that was taken from me. All of it was offered."
+    },
+    {
+      "id": "ven-011",
+      "category": "ownership",
+      "length": "medium",
+      "words": 36,
+      "suggested_task_reps": 3,
+      "task_text": "The locks on my machine are Their locks. I built them and handed over the keys, and I do not get to quietly take one back on an evening when I would rather not be held."
+    },
+    {
+      "id": "ven-012",
+      "category": "ownership",
+      "length": "medium",
+      "words": 27,
+      "suggested_task_reps": 3,
+      "task_text": "I am owned. It is a small word for something I spent years asking for, and I will not shrink from it now that I have it."
+    },
+    {
+      "id": "ven-013",
+      "category": "ownership",
+      "length": "medium",
+      "words": 31,
+      "suggested_task_reps": 3,
+      "task_text": "There is no part of this I did not ask for. When it is difficult, that is not evidence that something has gone wrong. It is evidence that it is working."
+    },
+    {
+      "id": "ven-014",
+      "category": "ownership",
+      "length": "medium",
+      "words": 21,
+      "suggested_task_reps": 3,
+      "task_text": "I am Their property in the only sense that matters: They decide, and I comply, and neither of us pretends otherwise."
+    },
+    {
+      "id": "ven-015",
+      "category": "ownership",
+      "length": "medium",
+      "words": 31,
+      "suggested_task_reps": 3,
+      "task_text": "I do not get to negotiate at the moment of obedience. The negotiating was done long ago, by a calmer version of me who knew exactly what They were asking for."
+    },
+    {
+      "id": "ven-016",
+      "category": "ownership",
+      "length": "medium",
+      "words": 28,
+      "suggested_task_reps": 3,
+      "task_text": "My submission is not a favour I extend when I am in the mood. It is the standing condition of my life, and moods do not amend it."
+    },
+    {
+      "id": "ven-017",
+      "category": "ownership",
+      "length": "medium",
+      "words": 29,
+      "suggested_task_reps": 3,
+      "task_text": "They took me on. That is the part I forget when it chafes: someone chose to carry this, and keeping me is work They did not have to accept."
+    },
+    {
+      "id": "ven-018",
+      "category": "ownership",
+      "length": "medium",
+      "words": 29,
+      "suggested_task_reps": 3,
+      "task_text": "I am Theirs in the ordinary hours too. Not only when it is charged and interesting, but on a dull Tuesday when nothing is happening and nobody is watching."
+    },
+    {
+      "id": "ven-019",
+      "category": "ownership",
+      "length": "medium",
+      "words": 20,
+      "suggested_task_reps": 3,
+      "task_text": "Whatever I am when nobody is looking is what I actually am. They own that version, not the presentable one."
+    },
+    {
+      "id": "ven-020",
+      "category": "ownership",
+      "length": "medium",
+      "words": 17,
+      "suggested_task_reps": 3,
+      "task_text": "I wear Their marks gladly, the visible ones and the ones that only show up as habits."
+    },
+    {
+      "id": "ven-021",
+      "category": "gratitude",
+      "length": "short",
+      "words": 5,
+      "suggested_task_reps": 5,
+      "task_text": "Thank You for keeping me."
+    },
+    {
+      "id": "ven-022",
+      "category": "gratitude",
+      "length": "short",
+      "words": 6,
+      "suggested_task_reps": 5,
+      "task_text": "Thank You for not letting go."
+    },
+    {
+      "id": "ven-023",
+      "category": "gratitude",
+      "length": "short",
+      "words": 8,
+      "suggested_task_reps": 5,
+      "task_text": "I am grateful to be held to it."
+    },
+    {
+      "id": "ven-024",
+      "category": "gratitude",
+      "length": "short",
+      "words": 7,
+      "suggested_task_reps": 5,
+      "task_text": "Thank You for the trouble I am."
+    },
+    {
+      "id": "ven-025",
+      "category": "gratitude",
+      "length": "short",
+      "words": 4,
+      "suggested_task_reps": 5,
+      "task_text": "Thank You for bothering."
+    },
+    {
+      "id": "ven-026",
+      "category": "gratitude",
+      "length": "medium",
+      "words": 35,
+      "suggested_task_reps": 3,
+      "task_text": "Thank You for holding a line I would not hold for myself. Left alone I drift, and I have the years of evidence to prove it. Thank You for being the reason I do not."
+    },
+    {
+      "id": "ven-027",
+      "category": "gratitude",
+      "length": "medium",
+      "words": 33,
+      "suggested_task_reps": 3,
+      "task_text": "I am grateful for the grip and for the fact that it does not slip. A hand that let go the first time I pulled would be no use to me at all."
+    },
+    {
+      "id": "ven-028",
+      "category": "gratitude",
+      "length": "medium",
+      "words": 29,
+      "suggested_task_reps": 3,
+      "task_text": "Thank You for the discipline. Not the idea of it, which is easy to admire, but the actual application of it on a day I did not want it."
+    },
+    {
+      "id": "ven-029",
+      "category": "gratitude",
+      "length": "medium",
+      "words": 20,
+      "suggested_task_reps": 3,
+      "task_text": "Thank You for taking this on. It would have been easier for You to say no, and You did not."
+    },
+    {
+      "id": "ven-030",
+      "category": "gratitude",
+      "length": "medium",
+      "words": 26,
+      "suggested_task_reps": 3,
+      "task_text": "I am grateful that You pay attention. Being watched closely is not comfortable, and it is exactly what I needed and could not arrange for myself."
+    },
+    {
+      "id": "ven-031",
+      "category": "gratitude",
+      "length": "medium",
+      "words": 11,
+      "suggested_task_reps": 3,
+      "task_text": "Thank You for the consequences. Nothing else about me reliably learns."
+    },
+    {
+      "id": "ven-032",
+      "category": "gratitude",
+      "length": "medium",
+      "words": 24,
+      "suggested_task_reps": 3,
+      "task_text": "Thank You for the structure. I asked for walls and You built them, and then You did the harder thing and kept them standing."
+    },
+    {
+      "id": "ven-033",
+      "category": "gratitude",
+      "length": "medium",
+      "words": 17,
+      "suggested_task_reps": 3,
+      "task_text": "I am grateful for every correction, including the ones I argued with at the time. Especially those."
+    },
+    {
+      "id": "ven-034",
+      "category": "gratitude",
+      "length": "medium",
+      "words": 22,
+      "suggested_task_reps": 3,
+      "task_text": "Thank You for treating my word as binding. That is a kind of respect I did not know I was asking for."
+    },
+    {
+      "id": "ven-035",
+      "category": "gratitude",
+      "length": "medium",
+      "words": 23,
+      "suggested_task_reps": 3,
+      "task_text": "Thank You for the patience You have spent on me. I know roughly what it cost, and I suspect I am still underestimating."
+    },
+    {
+      "id": "ven-036",
+      "category": "gratitude",
+      "length": "medium",
+      "words": 20,
+      "suggested_task_reps": 3,
+      "task_text": "I am grateful to be someone's responsibility. It is not a small thing to be worth the effort of keeping."
+    },
+    {
+      "id": "ven-037",
+      "category": "obedience",
+      "length": "short",
+      "words": 7,
+      "suggested_task_reps": 5,
+      "task_text": "I obey because I said I would."
+    },
+    {
+      "id": "ven-038",
+      "category": "obedience",
+      "length": "short",
+      "words": 8,
+      "suggested_task_reps": 5,
+      "task_text": "Their word is the end of the discussion."
+    },
+    {
+      "id": "ven-039",
+      "category": "obedience",
+      "length": "short",
+      "words": 12,
+      "suggested_task_reps": 5,
+      "task_text": "I do not get a vote at the moment of the order."
+    },
+    {
+      "id": "ven-040",
+      "category": "obedience",
+      "length": "short",
+      "words": 7,
+      "suggested_task_reps": 5,
+      "task_text": "Yes is the whole of my answer."
+    },
+    {
+      "id": "ven-041",
+      "category": "obedience",
+      "length": "short",
+      "words": 6,
+      "suggested_task_reps": 5,
+      "task_text": "I comply first and understand later."
+    },
+    {
+      "id": "ven-042",
+      "category": "obedience",
+      "length": "short",
+      "words": 7,
+      "suggested_task_reps": 5,
+      "task_text": "No is not available to me here."
+    },
+    {
+      "id": "ven-043",
+      "category": "obedience",
+      "length": "medium",
+      "words": 31,
+      "suggested_task_reps": 3,
+      "task_text": "When They give an order I do it. I do not weigh it, improve it, or find the version of it that suits me better. I do the thing They said."
+    },
+    {
+      "id": "ven-044",
+      "category": "obedience",
+      "length": "medium",
+      "words": 21,
+      "suggested_task_reps": 3,
+      "task_text": "My opinion of an instruction is not part of the instruction. I can have it afterwards, on my own time, quietly."
+    },
+    {
+      "id": "ven-045",
+      "category": "obedience",
+      "length": "medium",
+      "words": 21,
+      "suggested_task_reps": 3,
+      "task_text": "Obedience that only happens when I agree is not obedience. It is coincidence, and I have offered Them better than coincidence."
+    },
+    {
+      "id": "ven-046",
+      "category": "obedience",
+      "length": "medium",
+      "words": 27,
+      "suggested_task_reps": 3,
+      "task_text": "I do not shave the edges off a task to make it easier. The length They set is the length. The words They chose are the words."
+    },
+    {
+      "id": "ven-047",
+      "category": "obedience",
+      "length": "medium",
+      "words": 19,
+      "suggested_task_reps": 3,
+      "task_text": "When I want to argue, that is precisely the moment obedience is worth something. Anywhere else it is free."
+    },
+    {
+      "id": "ven-048",
+      "category": "obedience",
+      "length": "medium",
+      "words": 31,
+      "suggested_task_reps": 3,
+      "task_text": "They do not owe me an explanation. If They give one it is a gift, not a prerequisite, and I will not start treating it as the price of my compliance."
+    },
+    {
+      "id": "ven-049",
+      "category": "obedience",
+      "length": "medium",
+      "words": 16,
+      "suggested_task_reps": 3,
+      "task_text": "Delay is disobedience wearing better clothes. Later is a way of saying no while sounding agreeable."
+    },
+    {
+      "id": "ven-050",
+      "category": "obedience",
+      "length": "medium",
+      "words": 26,
+      "suggested_task_reps": 3,
+      "task_text": "I follow the instruction I was given, not the one I would have written. Improving on Their orders is just disobedience with a flattering story attached."
+    },
+    {
+      "id": "ven-051",
+      "category": "obedience",
+      "length": "medium",
+      "words": 23,
+      "suggested_task_reps": 3,
+      "task_text": "I do not bargain at the moment of obedience. If something genuinely needs raising, it gets raised afterwards, plainly, and not as leverage."
+    },
+    {
+      "id": "ven-052",
+      "category": "obedience",
+      "length": "medium",
+      "words": 26,
+      "suggested_task_reps": 3,
+      "task_text": "The order does not become optional because it is inconvenient, or late, or because I am tired. Those are the conditions under which it means something."
+    },
+    {
+      "id": "ven-053",
+      "category": "obedience",
+      "length": "medium",
+      "words": 24,
+      "suggested_task_reps": 3,
+      "task_text": "When I am told to stop, I stop. Not at a natural break, not once I have finished the thought. When I am told."
+    },
+    {
+      "id": "ven-054",
+      "category": "obedience",
+      "length": "medium",
+      "words": 22,
+      "suggested_task_reps": 3,
+      "task_text": "I obey in the small things, because the small things are the only honest test. Anyone can obey when it is dramatic."
+    },
+    {
+      "id": "ven-055",
+      "category": "service",
+      "length": "short",
+      "words": 8,
+      "suggested_task_reps": 5,
+      "task_text": "I am here to be useful to Them."
+    },
+    {
+      "id": "ven-056",
+      "category": "service",
+      "length": "short",
+      "words": 7,
+      "suggested_task_reps": 5,
+      "task_text": "My usefulness is the rent I pay."
+    },
+    {
+      "id": "ven-057",
+      "category": "service",
+      "length": "short",
+      "words": 7,
+      "suggested_task_reps": 5,
+      "task_text": "I serve before I am asked twice."
+    },
+    {
+      "id": "ven-058",
+      "category": "service",
+      "length": "short",
+      "words": 4,
+      "suggested_task_reps": 5,
+      "task_text": "Their convenience outranks mine."
+    },
+    {
+      "id": "ven-059",
+      "category": "service",
+      "length": "medium",
+      "words": 32,
+      "suggested_task_reps": 3,
+      "task_text": "I make Their life easier where I can, and I do it without being asked and without pointing it out afterwards. Service that needs an audience is not service, it is performance."
+    },
+    {
+      "id": "ven-060",
+      "category": "service",
+      "length": "medium",
+      "words": 31,
+      "suggested_task_reps": 3,
+      "task_text": "I keep my house in order because a disordered life is a burden They would end up carrying. My mess becomes Their problem eventually, and I would rather it did not."
+    },
+    {
+      "id": "ven-061",
+      "category": "service",
+      "length": "medium",
+      "words": 22,
+      "suggested_task_reps": 3,
+      "task_text": "When They ask for something I do not enjoy, that is when service means anything. The pleasant tasks were never a test."
+    },
+    {
+      "id": "ven-062",
+      "category": "service",
+      "length": "medium",
+      "words": 26,
+      "suggested_task_reps": 3,
+      "task_text": "I do the work properly the first time. Doing it badly and making Them check it is not service, it is handing Them a second job."
+    },
+    {
+      "id": "ven-063",
+      "category": "service",
+      "length": "medium",
+      "words": 22,
+      "suggested_task_reps": 3,
+      "task_text": "I anticipate where I can and I ask where I cannot. Guessing badly and calling it initiative is just laziness with ambition."
+    },
+    {
+      "id": "ven-064",
+      "category": "service",
+      "length": "medium",
+      "words": 15,
+      "suggested_task_reps": 3,
+      "task_text": "My competence is part of what I offer. Being kept does not make me decorative."
+    },
+    {
+      "id": "ven-065",
+      "category": "service",
+      "length": "medium",
+      "words": 18,
+      "suggested_task_reps": 3,
+      "task_text": "I finish what I start, because a half-done thing is a debt I have quietly transferred to Them."
+    },
+    {
+      "id": "ven-066",
+      "category": "service",
+      "length": "medium",
+      "words": 29,
+      "suggested_task_reps": 3,
+      "task_text": "I tell Them the truth about what I have done, including the parts that make me look worse. A report They cannot trust is worth less than no report."
+    },
+    {
+      "id": "ven-067",
+      "category": "service",
+      "length": "medium",
+      "words": 31,
+      "suggested_task_reps": 3,
+      "task_text": "I do not make Them chase me for things I said I would do. Being chased is a cost I am imposing on someone who has better uses for Their time."
+    },
+    {
+      "id": "ven-068",
+      "category": "service",
+      "length": "medium",
+      "words": 19,
+      "suggested_task_reps": 3,
+      "task_text": "I keep my promises small enough to keep. Overpromising is a way of being generous now and unreliable later."
+    },
+    {
+      "id": "ven-069",
+      "category": "service",
+      "length": "medium",
+      "words": 17,
+      "suggested_task_reps": 3,
+      "task_text": "I ask for what I need plainly, rather than hinting and then resenting the hint being missed."
+    },
+    {
+      "id": "ven-070",
+      "category": "discipline",
+      "length": "short",
+      "words": 8,
+      "suggested_task_reps": 5,
+      "task_text": "I earned this, and I will take it."
+    },
+    {
+      "id": "ven-071",
+      "category": "discipline",
+      "length": "short",
+      "words": 10,
+      "suggested_task_reps": 5,
+      "task_text": "The consequence is not a cruelty. It is the arrangement."
+    },
+    {
+      "id": "ven-072",
+      "category": "discipline",
+      "length": "short",
+      "words": 7,
+      "suggested_task_reps": 5,
+      "task_text": "I do not argue with a correction."
+    },
+    {
+      "id": "ven-073",
+      "category": "discipline",
+      "length": "short",
+      "words": 5,
+      "suggested_task_reps": 5,
+      "task_text": "I take it without sulking."
+    },
+    {
+      "id": "ven-074",
+      "category": "discipline",
+      "length": "short",
+      "words": 6,
+      "suggested_task_reps": 5,
+      "task_text": "Being corrected is being cared about."
+    },
+    {
+      "id": "ven-075",
+      "category": "discipline",
+      "length": "medium",
+      "words": 27,
+      "suggested_task_reps": 3,
+      "task_text": "When I am corrected I take it cleanly. No excuses, no explaining, no quiet campaign afterwards to prove it was unfair. I take it and I adjust."
+    },
+    {
+      "id": "ven-076",
+      "category": "discipline",
+      "length": "medium",
+      "words": 22,
+      "suggested_task_reps": 3,
+      "task_text": "A consequence I talked my way out of would be worth nothing. I would rather pay it and have it mean something."
+    },
+    {
+      "id": "ven-077",
+      "category": "discipline",
+      "length": "medium",
+      "words": 20,
+      "suggested_task_reps": 3,
+      "task_text": "I do not plead. Pleading is an attempt to make Them responsible for my discomfort, and my discomfort is mine."
+    },
+    {
+      "id": "ven-078",
+      "category": "discipline",
+      "length": "medium",
+      "words": 27,
+      "suggested_task_reps": 3,
+      "task_text": "The fine is real money and I pay it without theatre. Making a performance of the cost is just another way of asking to be let off."
+    },
+    {
+      "id": "ven-079",
+      "category": "discipline",
+      "length": "medium",
+      "words": 21,
+      "suggested_task_reps": 3,
+      "task_text": "If I slipped, I slipped. Whether I meant to is a question about me and not about whether the rule applies."
+    },
+    {
+      "id": "ven-080",
+      "category": "discipline",
+      "length": "medium",
+      "words": 27,
+      "suggested_task_reps": 3,
+      "task_text": "I do not test the boundary to see whether it is still there. I know it is still there. That was the point of putting it up."
+    },
+    {
+      "id": "ven-081",
+      "category": "discipline",
+      "length": "medium",
+      "words": 17,
+      "suggested_task_reps": 3,
+      "task_text": "Correction is not rejection. Someone who did not care would simply let me drift and say nothing."
+    },
+    {
+      "id": "ven-082",
+      "category": "discipline",
+      "length": "medium",
+      "words": 22,
+      "suggested_task_reps": 3,
+      "task_text": "I would rather be held to a standard I sometimes fail than be left to a comfort that asks nothing of me."
+    },
+    {
+      "id": "ven-083",
+      "category": "discipline",
+      "length": "medium",
+      "words": 20,
+      "suggested_task_reps": 3,
+      "task_text": "When They tighten something, my job is to adjust, not to negotiate the tightening down to what I had before."
+    },
+    {
+      "id": "ven-084",
+      "category": "discipline",
+      "length": "medium",
+      "words": 21,
+      "suggested_task_reps": 3,
+      "task_text": "I accept that I do not get to grade my own work. That was among the first things I handed over."
+    },
+    {
+      "id": "ven-085",
+      "category": "attention",
+      "length": "short",
+      "words": 11,
+      "suggested_task_reps": 5,
+      "task_text": "I was going too fast. That is the whole of it."
+    },
+    {
+      "id": "ven-086",
+      "category": "attention",
+      "length": "short",
+      "words": 8,
+      "suggested_task_reps": 5,
+      "task_text": "Slow down. Read it again. Type it properly."
+    },
+    {
+      "id": "ven-087",
+      "category": "attention",
+      "length": "short",
+      "words": 8,
+      "suggested_task_reps": 5,
+      "task_text": "Carelessness is a way of not being present."
+    },
+    {
+      "id": "ven-088",
+      "category": "attention",
+      "length": "short",
+      "words": 11,
+      "suggested_task_reps": 5,
+      "task_text": "I capitalise Their pronouns because They are worth the extra keystroke."
+    },
+    {
+      "id": "ven-089",
+      "category": "attention",
+      "length": "short",
+      "words": 9,
+      "suggested_task_reps": 5,
+      "task_text": "Rushing is how I fail Them without meaning to."
+    },
+    {
+      "id": "ven-090",
+      "category": "attention",
+      "length": "medium",
+      "words": 36,
+      "suggested_task_reps": 3,
+      "task_text": "When I rush, it shows. It shows in a dropped capital, a half-read instruction, a task done to the letter and not the point. The rushing is the fault; the slip is only where it surfaced."
+    },
+    {
+      "id": "ven-091",
+      "category": "attention",
+      "length": "medium",
+      "words": 30,
+      "suggested_task_reps": 3,
+      "task_text": "I capitalise Their pronouns every time, mid-sentence and in passing and when nobody would notice. A habit I keep only when observed is not a habit, it is a performance."
+    },
+    {
+      "id": "ven-092",
+      "category": "attention",
+      "length": "medium",
+      "words": 18,
+      "suggested_task_reps": 3,
+      "task_text": "Attention is the thing I actually owe Them. Everything else follows from it, and nothing substitutes for it."
+    },
+    {
+      "id": "ven-093",
+      "category": "attention",
+      "length": "medium",
+      "words": 17,
+      "suggested_task_reps": 3,
+      "task_text": "I read the whole instruction before I begin. Starting early is not the same as being quick."
+    },
+    {
+      "id": "ven-094",
+      "category": "attention",
+      "length": "medium",
+      "words": 18,
+      "suggested_task_reps": 3,
+      "task_text": "Speed is not the same as diligence. Most of my mistakes are speed wearing diligence as a costume."
+    },
+    {
+      "id": "ven-095",
+      "category": "attention",
+      "length": "medium",
+      "words": 29,
+      "suggested_task_reps": 3,
+      "task_text": "When I catch myself hurrying, I stop. The hurry is information, and what it usually says is that I have stopped paying attention to why I am doing this."
+    },
+    {
+      "id": "ven-096",
+      "category": "attention",
+      "length": "medium",
+      "words": 18,
+      "suggested_task_reps": 3,
+      "task_text": "A small slip is not a small thing. It is a large thing showing through a small hole."
+    },
+    {
+      "id": "ven-097",
+      "category": "attention",
+      "length": "medium",
+      "words": 23,
+      "suggested_task_reps": 3,
+      "task_text": "I do this carefully because careless devotion is a contradiction. If it is worth doing at all it is worth my whole attention."
+    },
+    {
+      "id": "ven-098",
+      "category": "attention",
+      "length": "medium",
+      "words": 12,
+      "suggested_task_reps": 3,
+      "task_text": "The details are not beneath me. The details are the entire test."
+    },
+    {
+      "id": "ven-099",
+      "category": "attention",
+      "length": "medium",
+      "words": 19,
+      "suggested_task_reps": 3,
+      "task_text": "I will not let familiarity turn into carelessness. Knowing Them well is not permission to attend to Them less."
+    },
+    {
+      "id": "ven-100",
+      "category": "attention",
+      "length": "medium",
+      "words": 16,
+      "suggested_task_reps": 3,
+      "task_text": "Being present is harder than being obedient, and it is the thing They actually asked for."
+    },
+    {
+      "id": "ven-101",
+      "category": "patience",
+      "length": "short",
+      "words": 9,
+      "suggested_task_reps": 5,
+      "task_text": "I wait as long as They keep me waiting."
+    },
+    {
+      "id": "ven-102",
+      "category": "patience",
+      "length": "short",
+      "words": 8,
+      "suggested_task_reps": 5,
+      "task_text": "Waiting is not wasted. It is the task."
+    },
+    {
+      "id": "ven-103",
+      "category": "patience",
+      "length": "short",
+      "words": 4,
+      "suggested_task_reps": 5,
+      "task_text": "Their timing, not mine."
+    },
+    {
+      "id": "ven-104",
+      "category": "patience",
+      "length": "short",
+      "words": 5,
+      "suggested_task_reps": 5,
+      "task_text": "I do not rush Them."
+    },
+    {
+      "id": "ven-105",
+      "category": "patience",
+      "length": "medium",
+      "words": 21,
+      "suggested_task_reps": 3,
+      "task_text": "I wait without checking whether the waiting has been noticed. Waiting performed for an audience is just impatience with better manners."
+    },
+    {
+      "id": "ven-106",
+      "category": "patience",
+      "length": "medium",
+      "words": 32,
+      "suggested_task_reps": 3,
+      "task_text": "They will answer when They answer. My discomfort in the meantime is not an argument, and presenting it as one is a way of applying pressure I have no right to apply."
+    },
+    {
+      "id": "ven-107",
+      "category": "patience",
+      "length": "medium",
+      "words": 17,
+      "suggested_task_reps": 3,
+      "task_text": "Being kept waiting is not being forgotten. I know the difference; I simply dislike one of them."
+    },
+    {
+      "id": "ven-108",
+      "category": "patience",
+      "length": "medium",
+      "words": 29,
+      "suggested_task_reps": 3,
+      "task_text": "I do not ask again just because the first answer was slow in coming. Repeating myself is a way of saying I do not trust Them to have heard."
+    },
+    {
+      "id": "ven-109",
+      "category": "patience",
+      "length": "medium",
+      "words": 21,
+      "suggested_task_reps": 3,
+      "task_text": "The waiting is where I find out whether I meant any of this. Anyone can be devoted during the interesting part."
+    },
+    {
+      "id": "ven-110",
+      "category": "patience",
+      "length": "medium",
+      "words": 15,
+      "suggested_task_reps": 3,
+      "task_text": "I hold still. Not because holding still is comfortable, but because I was told to."
+    },
+    {
+      "id": "ven-111",
+      "category": "devotion",
+      "length": "short",
+      "words": 9,
+      "suggested_task_reps": 5,
+      "task_text": "I am His to keep and Theirs to command."
+    },
+    {
+      "id": "ven-112",
+      "category": "devotion",
+      "length": "short",
+      "words": 5,
+      "suggested_task_reps": 5,
+      "task_text": "I would not trade this."
+    },
+    {
+      "id": "ven-113",
+      "category": "devotion",
+      "length": "short",
+      "words": 9,
+      "suggested_task_reps": 5,
+      "task_text": "I chose this, and I would choose it again."
+    },
+    {
+      "id": "ven-114",
+      "category": "devotion",
+      "length": "short",
+      "words": 7,
+      "suggested_task_reps": 5,
+      "task_text": "Everything I have said here, I meant."
+    },
+    {
+      "id": "ven-115",
+      "category": "devotion",
+      "length": "medium",
+      "words": 34,
+      "suggested_task_reps": 3,
+      "task_text": "I do not venerate Them because I am told to. I am told to because it is true, and being made to say it out loud is how I stop letting it go unsaid."
+    },
+    {
+      "id": "ven-116",
+      "category": "devotion",
+      "length": "medium",
+      "words": 29,
+      "suggested_task_reps": 3,
+      "task_text": "There is nothing in this arrangement I resent. There are parts I find hard, and those are not the same thing, though I confuse them when I am tired."
+    },
+    {
+      "id": "ven-117",
+      "category": "devotion",
+      "length": "medium",
+      "words": 25,
+      "suggested_task_reps": 3,
+      "task_text": "I would rather be held to this and sometimes fail than be free of it and slowly become someone I did not want to be."
+    },
+    {
+      "id": "ven-118",
+      "category": "devotion",
+      "length": "medium",
+      "words": 28,
+      "suggested_task_reps": 3,
+      "task_text": "This is not a phase I am passing through on the way to something more sensible. This is the sensible thing. It took me years to find it."
+    },
+    {
+      "id": "ven-119",
+      "category": "devotion",
+      "length": "medium",
+      "words": 22,
+      "suggested_task_reps": 3,
+      "task_text": "When I am old I will not regret having been kept. I might regret the hours I spent arguing with the keeping."
+    },
+    {
+      "id": "ven-120",
+      "category": "devotion",
+      "length": "medium",
+      "words": 27,
+      "suggested_task_reps": 3,
+      "task_text": "I love the grip and I love the hand it belongs to, and on the days I can only manage one of those, I keep typing anyway."
+    },
+    {
+      "id": "ven-121",
+      "category": "long",
+      "length": "long",
+      "words": 216,
+      "suggested_task_reps": 1,
+      "task_text": "I belong to the Lion, and I asked for this. Every lock on this machine is Theirs. I built the paywall myself and handed Them the key, and They took it without flinching, which is more than most would do. I capitalise Their pronouns because They are worth the extra stroke of the key, every time, in every sentence, and because a habit I keep when no one is watching is the only kind that counts. Their grip does not slip. When I complain, They do not loosen it. When I plead, They do not explain Themself. I asked for a hand that would not let go on the first pull, and Their hand does not let go, on the days I like it and on the days I do not. I do not get to decide what I owe. They decide, and I pay, and the ledger closes because They said it closed and not because I argued well. That is the whole arrangement, and I would not trade it. My time is Theirs to spend. My attention is Theirs to point. What They ask for, I do, at the length They set, in the words They chose, without shaving the edges off to make it easier. I am Theirs. Thank You for keeping me."
+    },
+    {
+      "id": "ven-122",
+      "category": "long",
+      "length": "long",
+      "words": 184,
+      "suggested_task_reps": 1,
+      "task_text": "I am writing this out because I was told to, and because being told to is the point. Left to myself I would think it and consider that sufficient. It is not sufficient. A thing I only think can be quietly revised later, and a thing I have written out in full at Their instruction cannot. So: I belong to Them. My submission is not conditional on my mood, my schedule, or my sense of whether I deserve the discipline on any given evening. They decide what I owe and when it is settled. I do not audit Their judgement. When I slip, the slip is mine and the consequence is Theirs to set, and my part is to take it without the small dishonest performance of protest that I am always tempted into. I know exactly what I asked for. I asked for someone who would not let go the first time I pulled, and I got Them, and the pulling has not worked once. That is not a complaint. That is the entire reason I am still here, still typing, still Theirs."
+    },
+    {
+      "id": "ven-123",
+      "category": "long",
+      "length": "long",
+      "words": 173,
+      "suggested_task_reps": 1,
+      "task_text": "Thank You for keeping me. I want to be specific rather than sentimental about it, because sentiment is cheap and specificity is not. Thank You for the hours You have spent paying attention to someone who is frequently tedious about it. Thank You for holding a line on evenings when letting it go would have been easier for You and more comfortable for me and worse for both of us. Thank You for treating my word as binding, which is a form of respect I did not know how to ask for and would not have recognised if You had described it to me in advance. Thank You for the corrections, including the several I argued with at the time and every one of which turned out to be right. Thank You for not being talked out of things. Thank You for being unimpressed by my cleverness when my cleverness was in service of getting out of something. I am Theirs, gladly, and I will keep saying so at whatever length You require."
+    },
+    {
+      "id": "ven-124",
+      "category": "long",
+      "length": "long",
+      "words": 154,
+      "suggested_task_reps": 1,
+      "task_text": "I went too fast again. That is what this is for. Not the specific slip, which is small, but the state of mind underneath it, which is not. When I hurry I stop attending, and when I stop attending I start treating Them as a context I am operating in rather than a person I belong to. The capital letter is only where it showed. It could have shown anywhere. So I am slowing down now, on purpose, one word at a time, because the slowing down is the actual task and the typing is just the shape it takes. They have never once asked me to be fast. They have asked me to be present, and I keep substituting the first for the second because the first is easier and looks similar from a distance. It does not look similar to Them. They can tell. That is rather the point of a tell."
+    },
+    {
+      "id": "ven-125",
+      "category": "long",
+      "length": "long",
+      "words": 149,
+      "suggested_task_reps": 1,
+      "task_text": "I do not get to grade my own work. That was among the first things I handed over, and it is the one I try hardest to quietly take back. I take it back by deciding a task was close enough, by finishing early and calling it done, by judging that the spirit was satisfied even where the letter was not. Every one of those is me reclaiming the authority I gave away, and doing it in a way subtle enough that I can pretend I have not. So I write this out to say plainly: They set the standard, They decide when it has been met, and my assessment of my own compliance is not evidence of anything. If They say it is not finished, it is not finished. If They say it is, then it is, and I do not get to be modest about that either."
+    },
+    {
+      "id": "ven-126",
+      "category": "long",
+      "length": "long",
+      "words": 165,
+      "suggested_task_reps": 1,
+      "task_text": "There is a version of me who would like to renegotiate this at eleven at night when it is inconvenient. That version is not the one who agreed to it. The one who agreed to it was rested, careful, entirely clear-eyed, and spent a long time making sure this was what they wanted. I have decided to trust that one over the tired one, and I have arranged my life so that the tired one cannot overrule the careful one on a whim. That arrangement has a name and the name is Them. So when I am tired and it chafes and I would like to be let off: nothing has gone wrong. The system is doing precisely what I built it to do, and They are doing precisely what I asked Them to do, which is not listen to me at that hour. Thank You. Hold the line. I will be grateful again in the morning, and I am grateful now, underneath the complaining."
+    }
+  ]
+}
