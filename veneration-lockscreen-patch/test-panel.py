@@ -28,6 +28,69 @@ TASK_RANDCAPS = 1  # 1 = capitalisation must match exactly
 WORD_MIN = 0
 
 
+class ClipboardWatch:
+    """Keeps the clipboard and primary-selection text to hand, for telling a
+    paste from a compose.
+
+    `len(text) > 2` cannot do that. It fires on any lump insertion, and a
+    dead-key or IME commit is a lump insertion — so on a layout like Canadian
+    Multilingual Standard an honest typist trips it. Comparing the inserted
+    text against what is actually on a clipboard can tell them apart.
+
+    GTK4 has no synchronous clipboard read (read_text_async only, and no
+    `changed` signal — notify::formats stands in), while insert-text must
+    decide before it can veto. So read in the background and answer from cache.
+
+    A cold cache answers None, meaning "cannot prove", which is NOT the same as
+    "not a paste" and must never be billed as either.
+    """
+
+    def __init__(self, display):
+        self._text = {}
+        self._clipboards = {
+            "clipboard": display.get_clipboard(),
+            "primary": display.get_primary_clipboard(),
+        }
+        for name, cb in self._clipboards.items():
+            self._text[name] = None
+            cb.connect("notify::formats", self._on_formats, name)
+            self._refresh(cb, name)
+
+    def _on_formats(self, cb, _pspec, name):
+        # Contents changed: the cached copy is wrong until the read lands, and a
+        # wrong copy is worse than none — it could clear a real paste.
+        self._text[name] = None
+        self._refresh(cb, name)
+
+    def _refresh(self, cb, name):
+        def done(clipboard, res):
+            try:
+                self._text[name] = clipboard.read_text_finish(res)
+            except GLib.Error:
+                self._text[name] = None  # non-text contents, or the read was refused
+
+        cb.read_text_async(None, done)
+
+    @staticmethod
+    def _norm(text):
+        return " ".join((text or "").split())
+
+    def proves_paste(self, inserted):
+        """True if `inserted` is sitting on a clipboard, False if it demonstrably
+        is not, None if nothing can be proved right now."""
+        norm = self._norm(inserted)
+        if not norm:
+            return None
+        known = [v for v in self._text.values() if v]
+        if not known:
+            return None  # cold: nothing read yet, or neither holds text
+        for value in known:
+            whole = self._norm(value)
+            if norm == whole or (len(norm) > 8 and norm in whole):
+                return True
+        return False
+
+
 class Harness(Gtk.Application):
     def __init__(self):
         super().__init__(application_id="org.focuslock.venerationtest")
@@ -37,6 +100,9 @@ class Harness(Gtk.Application):
         self.started = time.monotonic()
         self.rep_started = self.started
         self.completed = False
+        self.clipboard = None
+        self.warned = False  # the one free warning, scoped to this session
+        self.billable = 0
 
     @staticmethod
     def _normalise(text, randcaps):
@@ -58,6 +124,38 @@ class Harness(Gtk.Application):
             return []
         return [(a, b) for a, b in zip(t, e, strict=True) if a != b and a.casefold() == b.casefold()]
 
+    def _paste_attempt(self, route, proven, detail=None):
+        """Block, then decide whether this one is chargeable.
+
+        Blocking is unconditional — enforcement must not weaken just because the
+        clipboard could not be read. Billing needs proof: an explicit paste
+        keystroke or gesture proves intent by itself, while a lump insertion
+        only proves it when the text is demonstrably what is on the clipboard.
+
+        The first chargeable attempt in a session spends the warning. In the
+        real lockscreen the rest would be reported to the relay to be priced
+        there; this harness only ever says what would happen.
+        """
+        entry = {"route": route, "proven": bool(proven)}
+        entry.update(detail or {})
+        if not proven:
+            entry["billable"] = False
+            entry["why"] = "unproven — blocked but not chargeable"
+            self._record("blocked-paste", entry)
+            self._set_status("Type it. Pasting is not typing.", "bad")
+            return
+        if not self.warned:
+            self.warned = True
+            entry["billable"] = False
+            entry["why"] = "first proven attempt — warning spent"
+            self._record("blocked-paste", entry)
+            self._set_status("Type it. Pasting is not typing. That is your warning.", "bad")
+            return
+        self.billable += 1
+        entry["billable"] = True
+        self._record("blocked-paste", entry)
+        self._set_status("Type it. Pasting is not typing. That one counts.", "bad")
+
     def _record(self, verdict, detail=None):
         self.rep_attempts += 1
         entry = {
@@ -76,6 +174,7 @@ class Harness(Gtk.Application):
 
     def do_activate(self):
         win = Gtk.ApplicationWindow(application=self, title="Veneration panel — TEST")
+        self.clipboard = ClipboardWatch(win.get_display())
         win.set_default_size(680, 560)
 
         css = Gtk.CssProvider()
@@ -166,8 +265,8 @@ class Harness(Gtk.Application):
     def on_insert(self, buf, location, text, length):
         if len(text) > 2:
             buf.stop_emission_by_name("insert-text")
-            self._record("blocked-paste", {"via": "insert", "chars": len(text)})
-            self._set_status("Type it. Pasting is not typing.", "bad")
+            proven = self.clipboard.proves_paste(text) if self.clipboard else None
+            self._paste_attempt("insert", proven is True, {"chars": len(text), "clipboard_match": proven})
 
     def on_key(self, controller, keyval, keycode, mod):
         ctrl = bool(mod & Gdk.ModifierType.CONTROL_MASK)
@@ -176,16 +275,14 @@ class Harness(Gtk.Application):
             self.on_submit()
             return True
         if (ctrl and keyval in (Gdk.KEY_v, Gdk.KEY_V, Gdk.KEY_Insert)) or (shift and keyval == Gdk.KEY_Insert):
-            self._record("blocked-paste", {"via": "keyboard"})
-            self._set_status("Type it. Pasting is not typing.", "bad")
+            self._paste_attempt("keyboard", True)
             return True
         return False
 
     def on_click(self, gesture, n_press, x, y):
         if gesture.get_current_button() in (2, 3):
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
-            self._record("blocked-paste", {"via": "mouse"})
-            self._set_status("Type it. Pasting is not typing.", "bad")
+            self._paste_attempt("mouse", True)
 
     def _set_status(self, text, kind=""):
         for c in ("collar-task-status", "collar-task-status-bad", "collar-task-status-good"):
@@ -293,11 +390,24 @@ class Harness(Gtk.Application):
             elif a["verdict"] == "wording":
                 line += f" — typed {a['typed_words']} words, wanted {len(TASK_TEXT.split())}"
             elif a["verdict"] == "blocked-paste":
-                line += f" — via {a['via']}"
+                mark = "BILLABLE" if a.get("billable") else "not billable"
+                line += f" — {a['route']}, {mark}"
+                if a.get("why"):
+                    line += f" ({a['why']})"
             print(line)
 
         if caps:
             print(f"  NOTE: {len(caps)} rejection(s) were capitalisation only — the pronoun rule bit.")
+
+        pastes = [a for a in self.attempts if a["verdict"] == "blocked-paste"]
+        if pastes:
+            unproven = [a for a in pastes if not a["proven"]]
+            print(f"  PASTE: {len(pastes)} blocked, {self.billable} chargeable, {len(unproven)} unproven")
+            if unproven:
+                print("         unproven attempts were blocked but not charged — the clipboard")
+                print("         could not corroborate them, and a compose looks the same from here.")
+            if self.billable:
+                print(f"         the real lockscreen would report {self.billable} to the relay to be priced.")
 
         dest = os.environ.get("FOCUSLOCK_VENERATION_REPORT")
         if dest:
@@ -308,6 +418,8 @@ class Harness(Gtk.Application):
                 "word_min": WORD_MIN,
                 "completed": self.completed,
                 "reps_done": self.reps_done,
+                "paste_billable": self.billable,
+                "paste_warning_spent": self.warned,
                 "seconds": elapsed,
                 "attempts": self.attempts,
             }
