@@ -2227,15 +2227,26 @@ public class MainActivity extends Activity {
                     body.put("signature", sig);
                 } catch (Exception e) { return; }
                 String resp = meshPost(meshUrl + "/api/mesh/" + meshId + "/auto-accept", body.toString());
-                final boolean okOn = resp != null && resp.contains("\"auto_accept_nodes\":true");
-                final boolean okOff = resp != null && resp.contains("\"auto_accept_nodes\":false");
-                // The relay decides how long the window lasts — read it back
-                // rather than hardcoding a duration that could drift from it.
+                // Parse the response; do not grep it. The relay serialises with
+                // json.dumps defaults, so every colon is followed by a space and a
+                // substring match for "auto_accept_nodes":true never fired. A window
+                // that had genuinely opened was reported as "Toggle failed" while the
+                // label kept the previous value — the control lied about its own state.
+                // The relay decides how long the window lasts — read it back rather
+                // than hardcoding a duration that could drift from it.
+                Boolean acState = null;
                 long expiresIn = 0;
                 if (resp != null) {
-                    try { expiresIn = new org.json.JSONObject(resp).optLong("expires_in_s", 0); }
-                    catch (Exception ignored) {}
+                    try {
+                        org.json.JSONObject o = new org.json.JSONObject(resp);
+                        if (o.has("auto_accept_nodes")) {
+                            acState = o.optBoolean("auto_accept_nodes", false);
+                        }
+                        expiresIn = o.optLong("expires_in_s", 0);
+                    } catch (Exception ignored) {}
                 }
+                final boolean okOn = Boolean.TRUE.equals(acState);
+                final boolean okOff = Boolean.FALSE.equals(acState);
                 final long fExpiresIn = expiresIn;
                 handler.post(() -> {
                     if (okOn) {
@@ -2247,7 +2258,12 @@ public class MainActivity extends Activity {
                         autoAcceptLabel.setText("Auto-accept new nodes (off)");
                         autoAcceptHint.setText("Window closed. New devices land in the pending queue.");
                     } else {
-                        autoAcceptHint.setText("Toggle failed: " + (resp == null ? "no response" : resp));
+                        // Never leave a stale value standing on a security control:
+                        // if the state is unknown, say unknown. Showing the previous
+                        // reading is how a Lion ends up trusting a door that is open.
+                        autoAcceptLabel.setText("Auto-accept new nodes (state UNKNOWN)");
+                        autoAcceptHint.setText("Toggle failed — check the relay log. "
+                            + (resp == null ? "no response" : resp));
                     }
                 });
             });
