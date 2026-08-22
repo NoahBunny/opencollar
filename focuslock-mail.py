@@ -5933,10 +5933,24 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 if not node_id or not signature:
                     self.respond(400, {"error": "node_id and signature required"})
                     return
-                # Allowlist: a kind maps to the pair of order fields that arm it
-                # and price it. An unknown kind must never reach a default.
+                # Allowlist: a kind maps to how it is priced. In none of these
+                # does the collar supply an amount — it reports what happened,
+                # the relay decides what that costs. An unknown kind must never
+                # reach a default.
+                #
+                #   orders  — the Lion arms and prices it in this mesh's orders
+                #   fixed   — a constant that lives here, not on the collar
+                #   ratchet — the server's own per-mesh lifetime counter
                 PENALTY_KINDS = {
-                    "veneration-paste": ("paste_fine_active", "paste_fine_amount"),
+                    "veneration-paste": {
+                        "mode": "orders",
+                        "armed": "paste_fine_active",
+                        "amount": "paste_fine_amount",
+                    },
+                    # Was hardcoded as 30 in the collar, where a bunny with root
+                    # could edit it. Same number, kept somewhere they cannot.
+                    "consent-decline": {"mode": "fixed", "amount": 30},
+                    "desktop-tamper": {"mode": "ratchet"},
                 }
                 if kind not in PENALTY_KINDS:
                     self.respond(400, {"error": f"unknown penalty kind: {kind!r}"})
@@ -5992,25 +6006,47 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 if orders_pen is None:
                     self.respond(404, {"error": "unknown mesh"})
                     return
-                active_key, amount_key = PENALTY_KINDS[kind]
-                try:
-                    armed = int(orders_pen.get(active_key, 0) or 0)
-                    amount = int(orders_pen.get(amount_key, 0) or 0)
-                except (TypeError, ValueError):
-                    armed, amount = 0, 0
-                if not armed:
-                    # Not an error. The collar is right to report; They simply
-                    # have not armed it. Say so plainly so it logs rather than
-                    # retries.
-                    logger.info(
-                        "Vault penalty NOT ARMED (%s): mesh=%s node=%s count=%s",
-                        kind,
-                        _sanitize_log(mesh_id),
-                        _sanitize_log(node_id),
-                        count,
-                    )
-                    self.respond(200, {"ok": True, "armed": False, "amount": 0})
-                    return
+                spec = PENALTY_KINDS[kind]
+                attempt_no = None
+                if spec["mode"] == "orders":
+                    try:
+                        armed = int(orders_pen.get(spec["armed"], 0) or 0)
+                        amount = int(orders_pen.get(spec["amount"], 0) or 0)
+                    except (TypeError, ValueError):
+                        armed, amount = 0, 0
+                    if not armed:
+                        # Not an error. The collar is right to report; They
+                        # simply have not armed it. Say so plainly so it logs
+                        # rather than retries.
+                        logger.info(
+                            "Vault penalty NOT ARMED (%s): mesh=%s node=%s count=%s",
+                            kind,
+                            _sanitize_log(mesh_id),
+                            _sanitize_log(node_id),
+                            count,
+                        )
+                        self.respond(200, {"ok": True, "armed": False, "amount": 0})
+                        return
+                elif spec["mode"] == "fixed":
+                    amount = int(spec["amount"])
+                else:
+                    # Ratchet: price off the SERVER's per-mesh lifetime counter,
+                    # never the collar's — the bunny has root over theirs. The
+                    # reported count only ever fast-forwards ours, and is bounded
+                    # so a bogus claim cannot leap the tier, exactly as
+                    # /webhook/desktop-penalty does it.
+                    TAMPER_CLAIM_JUMP_MAX = 100
+                    ceiling = _read_tamper_attempts(mesh_id) + TAMPER_CLAIM_JUMP_MAX
+                    if count > ceiling:
+                        logger.warning(
+                            "Vault penalty: tamper claim %s from mesh=%s exceeds +%s of the recorded count — clamping",
+                            count,
+                            _sanitize_log(mesh_id),
+                            TAMPER_CLAIM_JUMP_MAX,
+                        )
+                        count = ceiling
+                    attempt_no = _bump_tamper_attempts(mesh_id, at_least=count)
+                    amount = tamper_penalty(attempt_no)
                 amount = max(0, min(500, amount))
                 if amount == 0:
                     self.respond(200, {"ok": True, "armed": True, "amount": 0})
@@ -6030,6 +6066,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         "ok": True,
                         "armed": True,
                         "amount": amount,
+                        "attempt": attempt_no,
                         "paywall": (applied or {}).get("paywall"),
                     },
                 )

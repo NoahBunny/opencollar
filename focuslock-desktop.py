@@ -2063,12 +2063,23 @@ class CollarApp(Gtk.Application):
         self.start_collar()
 
     def on_consent_decline(self, btn, win):
-        """Declining costs $30. They can come back and accept later."""
+        """Declining costs $30. They can come back and accept later.
+
+        Reported through the node-signed vault route first, which needs no
+        admin token — a vault-mode collar holds none, so this penalty simply
+        never landed on those machines. The webhook stays as the fallback for
+        a collar that still has a token and an older relay to send it to.
+
+        The amount is no longer passed: the relay holds the 30 now. It was
+        sitting in this file, on the machine the bunny has root over.
+        """
         try:
             import socket
 
-            if not ADMIN_TOKEN:
-                logger.warning("desktop-penalty webhook skipped: admin_token not configured")
+            if _vault_privkey_pem and MESH_URL and MESH_ID:
+                threading.Thread(target=self._post_vault_penalty, args=("consent-decline", 0), daemon=True).start()
+            elif not ADMIN_TOKEN:
+                logger.warning("consent-decline penalty skipped: no vault key and no admin_token")
             else:
                 payload = {
                     "amount": 30,
@@ -2874,11 +2885,10 @@ for (var i = 0; i < c.length; i++) {
         free = max(0, int(getattr(state, "paste_free_warnings", 1) or 0))
         if state.paste_warned < free:
             state.paste_warned += 1
-            self._set_veneration_status(
-                "Type it. Pasting is not typing. That is your warning.", "bad"
+            self._set_veneration_status("Type it. Pasting is not typing. That is your warning.", "bad")
+            logger.warning(
+                "Veneration paste blocked (%s) — proven; warning %s of %s spent", route, state.paste_warned, free
             )
-            logger.warning("Veneration paste blocked (%s) — proven; warning %s of %s spent",
-                           route, state.paste_warned, free)
             return
         state.paste_billable += 1
         self._set_veneration_status("Type it. Pasting is not typing. That one counts.", "bad")
@@ -2903,12 +2913,12 @@ for (var i = 0; i < c.length; i++) {
             route,
         )
         count = state.paste_billable
-        threading.Thread(target=self._post_paste_penalty, args=(count,), daemon=True).start()
+        threading.Thread(target=self._post_vault_penalty, args=("veneration-paste", count), daemon=True).start()
 
     @staticmethod
-    def _post_paste_penalty(count):
+    def _post_vault_penalty(kind, count):
         if not MESH_URL or not MESH_ID or not _vault_privkey_pem:
-            logger.info("Paste penalty not reported: mesh or vault key not configured")
+            logger.info("%s penalty not reported: mesh or vault key not configured", kind)
             return
         try:
             import base64 as _b64
@@ -2918,7 +2928,6 @@ for (var i = 0; i < c.length; i++) {
             from cryptography.hazmat.primitives.asymmetric import padding as _pad
 
             ts_ms = int(time.time() * 1000)
-            kind = "veneration-paste"
             payload = f"{MESH_ID}|{MESH_NODE_ID}|penalty|{ts_ms}|{kind}|{count}"
             priv = _ser.load_pem_private_key(_vault_privkey_pem.encode(), password=None)
             sig = _b64.b64encode(priv.sign(payload.encode("utf-8"), _pad.PKCS1v15(), _hh.SHA256())).decode()
@@ -2936,16 +2945,17 @@ for (var i = 0; i < c.length; i++) {
         except urllib.error.HTTPError as e:
             # 404 means the relay predates this route. Worth a warning rather
             # than a debug line: the incident happened and went unpriced.
-            logger.warning("Paste penalty report rejected: HTTP %s", e.code)
+            logger.warning("%s penalty report rejected: HTTP %s", kind, e.code)
             return
         except Exception as e:
-            logger.warning("Paste penalty report failed: %s", e)
+            logger.warning("%s penalty report failed: %s", kind, e)
             return
         if not result.get("armed"):
-            logger.info("Paste penalty reported; They have not armed it — nothing charged")
+            logger.info("%s penalty reported; They have not armed it — nothing charged", kind)
         else:
-            logger.warning("Paste penalty applied: $%s (paywall now %s)",
-                           result.get("amount"), result.get("paywall"))
+            logger.warning(
+                "%s penalty applied: $%s (paywall now %s)", kind, result.get("amount"), result.get("paywall")
+            )
 
     def _on_task_insert(self, buf, location, text, length):
         """Veto lump insertions — that is what a paste looks like.
@@ -2993,8 +3003,10 @@ for (var i = 0; i < c.length; i++) {
         for cls in ("collar-task-status", "collar-task-status-bad", "collar-task-status-good"):
             self.task_status_label.remove_css_class(cls)
         self.task_status_label.add_css_class(
-            "collar-task-status-bad" if kind == "bad"
-            else "collar-task-status-good" if kind == "good"
+            "collar-task-status-bad"
+            if kind == "bad"
+            else "collar-task-status-good"
+            if kind == "good"
             else "collar-task-status"
         )
         self.task_status_label.set_label(text)
@@ -3012,7 +3024,8 @@ for (var i = 0; i < c.length; i++) {
             got = self._normalise_veneration(typed, state.task_randcaps)
             if got != want:
                 self._set_veneration_status(
-                    "Nothing typed. They are waiting." if not got
+                    "Nothing typed. They are waiting."
+                    if not got
                     else "That is not what They asked for. Read it again and type it in full.",
                     "bad",
                 )
@@ -3037,8 +3050,11 @@ for (var i = 0; i < c.length; i++) {
         # and count down out loud rather than sitting silent — a dead field and
         # an unexplained pause both read as "it broke".
         self.task_completed = True
-        for _w in (getattr(self, "task_scroller", None), getattr(self, "task_submit", None),
-                   getattr(self, "task_reps_label", None)):
+        for _w in (
+            getattr(self, "task_scroller", None),
+            getattr(self, "task_submit", None),
+            getattr(self, "task_reps_label", None),
+        ):
             if _w is not None:
                 _w.set_visible(False)
         self._release_countdown = 3
@@ -3048,9 +3064,7 @@ for (var i = 0; i < c.length; i++) {
     def _veneration_release_tick(self):
         self._release_countdown -= 1
         if self._release_countdown > 0:
-            self._set_veneration_status(
-                f"Accepted. Thank Them. Releasing in {self._release_countdown}\u2026", "good"
-            )
+            self._set_veneration_status(f"Accepted. Thank Them. Releasing in {self._release_countdown}\u2026", "good")
             return True
         self._release_after_veneration()
         return False

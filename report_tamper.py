@@ -51,6 +51,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -83,6 +84,74 @@ def _load_config():
         "mesh_url": os.environ.get("FOCUSLOCK_MESH_URL") or config.get("mesh_url", ""),
         "mesh_id": os.environ.get("FOCUSLOCK_MESH_ID") or config.get("mesh_id", ""),
     }
+
+
+def _node_privkey_path():
+    return os.path.join(os.path.dirname(_config_path()), "node_privkey.pem")
+
+
+def _report_via_vault(cfg, attempt_number, reason):
+    """Report the tamper over the node-signed vault route.
+
+    /webhook/desktop-penalty is admin-gated, and a vault-mode collar holds no
+    admin token by design — so on those machines this script could never report
+    anything at all. Signing with the node's own registered key proves the one
+    thing that matters: this is a node on this mesh.
+
+    The amount is not sent and could not be honoured if it were. The server
+    prices tamper off its own per-mesh lifetime ratchet, which is the whole
+    point of that ratchet: the counter must not live where the bunny has root.
+
+    Returns (exit_code, applied_amount, attempt) or (None, ...) when this route
+    is unavailable and the caller should fall back.
+    """
+    key_path = _node_privkey_path()
+    if not os.path.exists(key_path) or not cfg["mesh_url"] or not cfg["mesh_id"]:
+        return None, None, None
+    try:
+        import base64
+        import socket
+
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding
+    except ImportError:
+        return None, None, None
+    try:
+        with open(key_path, "rb") as f:
+            priv = serialization.load_pem_private_key(f.read(), password=None)
+        node_id = socket.gethostname()
+        ts_ms = int(time.time() * 1000)
+        kind = "desktop-tamper"
+        payload = f"{cfg['mesh_id']}|{node_id}|penalty|{ts_ms}|{kind}|{attempt_number}"
+        sig = base64.b64encode(priv.sign(payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())).decode()
+        body = json.dumps(
+            {
+                "node_id": node_id,
+                "ts": ts_ms,
+                "signature": sig,
+                "kind": kind,
+                "count": attempt_number,
+            }
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            f"{cfg['mesh_url']}/vault/{cfg['mesh_id']}/penalty",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        # 404 means the relay predates the route — let the caller try the
+        # webhook rather than reporting a failure it could still recover from.
+        if e.code == 404:
+            return None, None, None
+        print(f"[x] vault penalty rejected: HTTP {e.code}", file=sys.stderr)
+        return 1, None, None
+    except Exception as e:
+        print(f"[x] vault penalty failed: {e}", file=sys.stderr)
+        return 1, None, None
+    return 0, result.get("amount"), result.get("attempt")
 
 
 def _counter_path():
@@ -128,8 +197,25 @@ def _commit_escalation(attempt_number):
 
 def report_tamper(amount, reason):
     cfg = _load_config()
+
+    # Node-signed route first: it needs no admin token, so it is the only one a
+    # vault-mode collar can use. Falls through to the webhook when the key is
+    # absent or the relay is too old to know the route.
+    _, attempt_number_hint = _peek_escalating_amount()
+    code, applied, attempt = _report_via_vault(cfg, attempt_number_hint, reason)
+    if code is not None:
+        if code == 0:
+            if attempt is not None:
+                _commit_escalation(attempt)
+            suffix = f" (lifetime attempt #{attempt})" if attempt else ""
+            print(f"[+] tamper reported via vault: ${applied} penalty applied{suffix} -- {reason}")
+        return code
+
     if not cfg["admin_token"]:
-        print("[x] no admin_token configured locally -- can't report tamper", file=sys.stderr)
+        print(
+            "[x] no vault node key and no admin_token configured locally -- can't report tamper",
+            file=sys.stderr,
+        )
         return 1
     if not cfg["mesh_url"]:
         print("[x] no mesh_url configured locally -- can't report tamper", file=sys.stderr)
