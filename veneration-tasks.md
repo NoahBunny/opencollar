@@ -1,6 +1,6 @@
 # Veneration tasks
 
-126 preloaded tasks for the Lion to pick from when They would rather not write one.
+144 preloaded tasks for the Lion to pick from when They would rather not write one.
 
 Each entry drops straight into `task_text`. `task_randcaps: 1` makes the lockscreen
 enforce capitalisation exactly — including Their pronouns — so treat these strings as
@@ -84,7 +84,7 @@ the enforced form. Pair a gated lock with an `unlock_at` so there is a time back
 - **`ven-036`** · 20w · suggested reps 3  
   I am grateful to be someone's responsibility. It is not a small thing to be worth the effort of keeping.
 
-## Obedience  (18)
+## Obedience  (36)
 
 - **`ven-037`** · 7w · suggested reps 5  
   I obey because I said I would.
@@ -122,6 +122,42 @@ the enforced form. Pair a gated lock with an `unlock_at` so there is a time back
   When I am told to stop, I stop. Not at a natural break, not once I have finished the thought. When I am told.
 - **`ven-054`** · 22w · suggested reps 3  
   I obey in the small things, because the small things are the only honest test. Anyone can obey when it is dramatic.
+- **`ven-127`** · 7w · suggested reps 5  
+  I obey when no one is watching.
+- **`ven-128`** · 6w · suggested reps 5  
+  Their reasons are Theirs to keep.
+- **`ven-129`** · 6w · suggested reps 5  
+  Slow obedience is a polite refusal.
+- **`ven-130`** · 8w · suggested reps 5  
+  I do not need to agree to begin.
+- **`ven-131`** · 7w · suggested reps 5  
+  What They said, not what I heard.
+- **`ven-132`** · 4w · suggested reps 5  
+  Half-done is not done.
+- **`ven-133`** · 31w · suggested reps 3  
+  The order does not stop applying because They cannot see me. If it only holds while I am watched, I was never obeying Them. I was managing Their opinion of me.
+- **`ven-134`** · 31w · suggested reps 3  
+  A question asked to understand an order is service. The same question asked to put the order off is not, and I know which one I am doing at the time.
+- **`ven-135`** · 24w · suggested reps 3  
+  Doing it while making sure They can see I would rather not is not obedience. It is compliance with a complaint stapled to it.
+- **`ven-136`** · 25w · suggested reps 3  
+  A standing order does not need repeating to stay in force. If They have to say it twice, the failure was mine the first time.
+- **`ven-137`** · 28w · suggested reps 3  
+  Obedience is not the first minute of a task. It is the last one, when the interest has worn off and nobody would know if I stopped short.
+- **`ven-138`** · 34w · suggested reps 3  
+  If I think They have made a mistake I may say so once, plainly, and then I do it anyway. Being right is not a licence, and I have been wrong about being right.
+- **`ven-139`** · 32w · suggested reps 3  
+  I do not get to obey in the parts I find easy and deliberate in the parts I do not. A collar I take off for the inconvenient hours is a bracelet.
+- **`ven-140`** · 30w · suggested reps 3  
+  If I genuinely cannot do it there is a word for that, and They have never once punished me for using it. Quietly not doing it is not that word.
+- **`ven-141`** · 169w · suggested reps 1  
+  The part of this I am worst at is the gap between hearing an order and starting it. Not refusing — I almost never refuse outright, and I have been quietly proud of that, which is itself the problem. What I do instead is open a small negotiation nobody asked for. I check whether now is really the best time. I consider whether the spirit of it might be served some other way. I locate the version that costs me least and present it as though it were the same thing. None of that is refusal and all of it is disobedience, and the fact that it is polite has let me carry on doing it for years. So I am writing it out, because a habit I have named is harder to keep than one I have not. When They give an order, the correct interval between hearing it and beginning it is none. Not a better plan. Not a clarification I do not actually need. I begin.
+- **`ven-142`** · 162w · suggested reps 1  
+  Nobody is checking whether I have done this the way They asked. That is precisely why it counts. Obedience I perform for an audience is a performance, and I am good at performances; I was rehearsing them long before I met Them. The thing I am actually trying to build is duller and harder: doing it the same way at two in the morning with nobody awake as I would with Them standing in the room. Every time I cut a corner that will never be discovered, I am not getting away with something. I am teaching myself that Their orders are a social obligation rather than a real one, and that lesson does not stay in the corner I learned it in. It leaks into everything. So I do it properly when it is unwitnessed, not because I am afraid of being caught, but because the version of me who obeys only under observation is not the one I promised Them.
+- **`ven-143`** · 165w · suggested reps 1  
+  There is a way of obeying that satisfies the letter and poisons the whole thing, and I am fluent in it. I do the task. I do it correctly. And I make sure, by some small adjustment of timing or tone or the face I am wearing, that They know it cost me. Then I get to be obedient and aggrieved at once, which is a trick I was running long before Them and which They saw through almost immediately. It is not honest. If I have a real objection I can raise it plainly afterwards and They will hear it, because They always have. What I am not entitled to is the silent version — the one that never becomes a conversation, never has to be defended, and just sits there making the room slightly colder. Obedience handed over with a grudge attached is not a gift. It is an invoice. They asked me for the first and I keep giving Them the second.
+- **`ven-144`** · 171w · suggested reps 1  
+  I picked obedience as the thing to work on because it is the one I am least good at, and I want to be honest about that rather than noble about it. I am not bad at obedience in the dramatic sense. I do not defy Them. I am bad at it in a hundred small procedural ways that individually look like nothing: starting late, finishing early, choosing my own order of operations, deciding some detail was optional because it seemed optional to me. Each one is defensible on its own and the pattern is not defensible at all. The pattern says I have accepted Their authority in principle and quietly reserved implementation to myself, which is not what I agreed to and not what I want. So this is the training. Not grand submission. The small, boring, unglamorous business of doing the thing the way They said, at the time They said, to the length They set, on the days I feel like it and the days I do not.
 
 ## Service & usefulness  (15)
 

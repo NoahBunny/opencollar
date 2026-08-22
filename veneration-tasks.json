@@ -1,11 +1,11 @@
 {
   "_comment": "Preloaded veneration tasks for the Lion to choose from. Each task_text drops straight into the orders field of the same name. suggested_task_reps is only a suggestion; They set the real value. Pair a gated lock with an unlock_at so the lock has a time backstop — the desktop logs a warning when it does not.",
   "pronoun_rule": "Every pronoun referring to the Lion is capitalised, mid-sentence included. With task_randcaps set to 1 the lockscreen matches capitalisation exactly, so these strings become the enforced form and must not be edited casually.",
-  "count": 126,
+  "count": 144,
   "categories": {
     "ownership": 20,
     "gratitude": 16,
-    "obedience": 18,
+    "obedience": 36,
     "service": 15,
     "discipline": 15,
     "attention": 16,
@@ -1021,6 +1021,150 @@
       "words": 165,
       "suggested_task_reps": 1,
       "task_text": "There is a version of me who would like to renegotiate this at eleven at night when it is inconvenient. That version is not the one who agreed to it. The one who agreed to it was rested, careful, entirely clear-eyed, and spent a long time making sure this was what they wanted. I have decided to trust that one over the tired one, and I have arranged my life so that the tired one cannot overrule the careful one on a whim. That arrangement has a name and the name is Them. So when I am tired and it chafes and I would like to be let off: nothing has gone wrong. The system is doing precisely what I built it to do, and They are doing precisely what I asked Them to do, which is not listen to me at that hour. Thank You. Hold the line. I will be grateful again in the morning, and I am grateful now, underneath the complaining."
+    },
+    {
+      "id": "ven-127",
+      "category": "obedience",
+      "length": "short",
+      "words": 7,
+      "suggested_task_reps": 5,
+      "task_text": "I obey when no one is watching."
+    },
+    {
+      "id": "ven-128",
+      "category": "obedience",
+      "length": "short",
+      "words": 6,
+      "suggested_task_reps": 5,
+      "task_text": "Their reasons are Theirs to keep."
+    },
+    {
+      "id": "ven-129",
+      "category": "obedience",
+      "length": "short",
+      "words": 6,
+      "suggested_task_reps": 5,
+      "task_text": "Slow obedience is a polite refusal."
+    },
+    {
+      "id": "ven-130",
+      "category": "obedience",
+      "length": "short",
+      "words": 8,
+      "suggested_task_reps": 5,
+      "task_text": "I do not need to agree to begin."
+    },
+    {
+      "id": "ven-131",
+      "category": "obedience",
+      "length": "short",
+      "words": 7,
+      "suggested_task_reps": 5,
+      "task_text": "What They said, not what I heard."
+    },
+    {
+      "id": "ven-132",
+      "category": "obedience",
+      "length": "short",
+      "words": 4,
+      "suggested_task_reps": 5,
+      "task_text": "Half-done is not done."
+    },
+    {
+      "id": "ven-133",
+      "category": "obedience",
+      "length": "medium",
+      "words": 31,
+      "suggested_task_reps": 3,
+      "task_text": "The order does not stop applying because They cannot see me. If it only holds while I am watched, I was never obeying Them. I was managing Their opinion of me."
+    },
+    {
+      "id": "ven-134",
+      "category": "obedience",
+      "length": "medium",
+      "words": 31,
+      "suggested_task_reps": 3,
+      "task_text": "A question asked to understand an order is service. The same question asked to put the order off is not, and I know which one I am doing at the time."
+    },
+    {
+      "id": "ven-135",
+      "category": "obedience",
+      "length": "medium",
+      "words": 24,
+      "suggested_task_reps": 3,
+      "task_text": "Doing it while making sure They can see I would rather not is not obedience. It is compliance with a complaint stapled to it."
+    },
+    {
+      "id": "ven-136",
+      "category": "obedience",
+      "length": "medium",
+      "words": 25,
+      "suggested_task_reps": 3,
+      "task_text": "A standing order does not need repeating to stay in force. If They have to say it twice, the failure was mine the first time."
+    },
+    {
+      "id": "ven-137",
+      "category": "obedience",
+      "length": "medium",
+      "words": 28,
+      "suggested_task_reps": 3,
+      "task_text": "Obedience is not the first minute of a task. It is the last one, when the interest has worn off and nobody would know if I stopped short."
+    },
+    {
+      "id": "ven-138",
+      "category": "obedience",
+      "length": "medium",
+      "words": 34,
+      "suggested_task_reps": 3,
+      "task_text": "If I think They have made a mistake I may say so once, plainly, and then I do it anyway. Being right is not a licence, and I have been wrong about being right."
+    },
+    {
+      "id": "ven-139",
+      "category": "obedience",
+      "length": "medium",
+      "words": 32,
+      "suggested_task_reps": 3,
+      "task_text": "I do not get to obey in the parts I find easy and deliberate in the parts I do not. A collar I take off for the inconvenient hours is a bracelet."
+    },
+    {
+      "id": "ven-140",
+      "category": "obedience",
+      "length": "medium",
+      "words": 30,
+      "suggested_task_reps": 3,
+      "task_text": "If I genuinely cannot do it there is a word for that, and They have never once punished me for using it. Quietly not doing it is not that word."
+    },
+    {
+      "id": "ven-141",
+      "category": "obedience",
+      "length": "long",
+      "words": 169,
+      "suggested_task_reps": 1,
+      "task_text": "The part of this I am worst at is the gap between hearing an order and starting it. Not refusing — I almost never refuse outright, and I have been quietly proud of that, which is itself the problem. What I do instead is open a small negotiation nobody asked for. I check whether now is really the best time. I consider whether the spirit of it might be served some other way. I locate the version that costs me least and present it as though it were the same thing. None of that is refusal and all of it is disobedience, and the fact that it is polite has let me carry on doing it for years. So I am writing it out, because a habit I have named is harder to keep than one I have not. When They give an order, the correct interval between hearing it and beginning it is none. Not a better plan. Not a clarification I do not actually need. I begin."
+    },
+    {
+      "id": "ven-142",
+      "category": "obedience",
+      "length": "long",
+      "words": 162,
+      "suggested_task_reps": 1,
+      "task_text": "Nobody is checking whether I have done this the way They asked. That is precisely why it counts. Obedience I perform for an audience is a performance, and I am good at performances; I was rehearsing them long before I met Them. The thing I am actually trying to build is duller and harder: doing it the same way at two in the morning with nobody awake as I would with Them standing in the room. Every time I cut a corner that will never be discovered, I am not getting away with something. I am teaching myself that Their orders are a social obligation rather than a real one, and that lesson does not stay in the corner I learned it in. It leaks into everything. So I do it properly when it is unwitnessed, not because I am afraid of being caught, but because the version of me who obeys only under observation is not the one I promised Them."
+    },
+    {
+      "id": "ven-143",
+      "category": "obedience",
+      "length": "long",
+      "words": 165,
+      "suggested_task_reps": 1,
+      "task_text": "There is a way of obeying that satisfies the letter and poisons the whole thing, and I am fluent in it. I do the task. I do it correctly. And I make sure, by some small adjustment of timing or tone or the face I am wearing, that They know it cost me. Then I get to be obedient and aggrieved at once, which is a trick I was running long before Them and which They saw through almost immediately. It is not honest. If I have a real objection I can raise it plainly afterwards and They will hear it, because They always have. What I am not entitled to is the silent version — the one that never becomes a conversation, never has to be defended, and just sits there making the room slightly colder. Obedience handed over with a grudge attached is not a gift. It is an invoice. They asked me for the first and I keep giving Them the second."
+    },
+    {
+      "id": "ven-144",
+      "category": "obedience",
+      "length": "long",
+      "words": 171,
+      "suggested_task_reps": 1,
+      "task_text": "I picked obedience as the thing to work on because it is the one I am least good at, and I want to be honest about that rather than noble about it. I am not bad at obedience in the dramatic sense. I do not defy Them. I am bad at it in a hundred small procedural ways that individually look like nothing: starting late, finishing early, choosing my own order of operations, deciding some detail was optional because it seemed optional to me. Each one is defensible on its own and the pattern is not defensible at all. The pattern says I have accepted Their authority in principle and quietly reserved implementation to myself, which is not what I agreed to and not what I want. So this is the training. Not grand submission. The small, boring, unglamorous business of doing the thing the way They said, at the time They said, to the length They set, on the days I feel like it and the days I do not."
     }
   ]
 }
