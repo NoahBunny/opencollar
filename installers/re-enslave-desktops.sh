@@ -41,6 +41,27 @@ discover_paths
 
 DEPLOY_USER="${DEPLOY_USER:-$USER}"
 
+# ── Restart helper ──
+# Two unit names can own the same collar process: the hand-written
+# focuslock-<comp>.service that install-desktop-collar.sh drops in, and the
+# app-focuslock\x2d<comp>@autostart.service that systemd's XDG generator
+# synthesises from ~/.config/autostart. A machine can have both, with either
+# one active. Restarting the name that happens to be dead is a silent no-op
+# that leaves the old code running and looks like a successful deploy — so try
+# each and report which one actually answered.
+# Echoes the restarted unit name; returns non-zero if neither was active.
+restart_collar_unit() {
+    local comp="$1" unit
+    for unit in "focuslock-${comp}.service" "app-focuslock\x2d${comp}@autostart.service"; do
+        systemctl --user is-active --quiet "$unit" 2>/dev/null || continue
+        if systemctl --user restart "$unit" 2>/dev/null; then
+            printf '%s' "$unit"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # ── Local deploy ──
 # Two-phase: user-side first (icons, autostart, lion_pubkey to ~/.config —
 # always succeeds), then system-side (/opt/focuslock — needs sudo, soft-fails
@@ -154,9 +175,21 @@ EOF
     fi
     log "  autostart entries"
 
-    # Reset stale mesh state — collar will re-fetch from mesh on first sync
-    [ "$DRY_RUN" = 1 ] || rm -f ~/.config/focuslock/orders.json ~/.config/focuslock/peers.json
-    log "  cleared stale orders + peers cache"
+    # Reset stale mesh state — collar will re-fetch from mesh on first sync.
+    # The vault cursor has to go with them. The poll asks the relay for blobs
+    # *since* vault_last_version, so deleting orders.json while leaving the
+    # cursor at the current version means the re-fetch this comment promises
+    # comes back empty on a quiet mesh: the collar then runs on compiled-in
+    # defaults — unlocked, no paywall, no tier — until the Lion happens to
+    # change something. Clearing the cursor asks for everything from 0, which
+    # the poll treats as catchup: action deltas skipped, newest snapshot
+    # applied, orders.json rebuilt for real. Clear all three or none.
+    if [ "$DRY_RUN" != 1 ]; then
+        rm -f ~/.config/focuslock/orders.json \
+              ~/.config/focuslock/peers.json \
+              ~/.config/focuslock/vault_last_version
+    fi
+    log "  cleared stale orders + peers + vault cursor"
 
     # ── Phase 2: system-side (/opt/focuslock — needs sudo) ──
 
@@ -220,10 +253,6 @@ EOF
     # Restart collar (best effort — needs an active desktop session)
     if [ "$DRY_RUN" = 1 ]; then return 0; fi
 
-    pkill -f focuslock-desktop.py 2>/dev/null || true
-    pkill -f focuslock-tray.py 2>/dev/null || true
-    sleep 1
-
     # Resolve the script path: prefer /opt/focuslock when present, fall back to
     # the canonical source tree so user-only installs still launch.
     local desktop_py="/opt/focuslock/focuslock-desktop.py"
@@ -231,14 +260,35 @@ EOF
     [ -f "$desktop_py" ] || desktop_py="$LS/focuslock-desktop.py"
     [ -f "$tray_py" ]    || tray_py="$LS/focuslock-tray.py"
 
-    if systemctl --user restart focuslock-desktop.service 2>/dev/null; then
-        log "  restarted via systemd --user"
+    # Restart through whatever supervises each component, and do NOT pkill it
+    # first. The units carry Restart=always with RestartSec=1, so killing the
+    # process starts a systemd relaunch that races the explicit restart below —
+    # three starts of one daemon, and whichever loses the race dies binding
+    # :8435 with "Address already in use". Kill only what nothing supervises.
+    local unit
+    if unit=$(restart_collar_unit desktop); then
+        log "  collar: restarted $unit"
     elif [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        pkill -f focuslock-desktop.py 2>/dev/null || true
+        sleep 1
         nohup python3 -u "$desktop_py" >/tmp/focuslock-collar.log 2>&1 &
-        nohup python3 "$tray_py" >/dev/null 2>&1 &
-        log "  started directly (logs: /tmp/focuslock-collar.log)"
+        log "  collar: started directly (logs: /tmp/focuslock-collar.log)"
     else
-        warn "  not restarted — no DISPLAY/WAYLAND_DISPLAY (restart from desktop session)"
+        warn "  collar: not restarted — no DISPLAY/WAYLAND_DISPLAY (restart from desktop session)"
+    fi
+
+    # The crown gets its own branch. It used to be killed unconditionally above
+    # and then relaunched only in the direct-exec path, so on any machine where
+    # the systemd restart succeeded the tray was killed and never came back.
+    if unit=$(restart_collar_unit tray); then
+        log "  crown: restarted $unit"
+    elif [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        pkill -f focuslock-tray.py 2>/dev/null || true
+        sleep 1
+        nohup python3 "$tray_py" >/dev/null 2>&1 &
+        log "  crown: started directly"
+    else
+        warn "  crown: not restarted — no DISPLAY/WAYLAND_DISPLAY"
     fi
 
     # Verify mesh is responding within 5s
