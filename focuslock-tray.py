@@ -102,7 +102,7 @@ HTTP_TIMEOUT_S = 4
 # Matches Bunny Tasker's `mesh_last_sync_ms` 90s threshold so all clients
 # converge on the same "is the mesh alive" signal.
 CONNECTED_THRESHOLD_MS = 90_000
-STALE_AFTER_MS = 60_000  # orders.json older than this → daemon likely dead
+STALE_AFTER_MS = 60_000  # legacy-only: orders.json age, used when no heartbeat exists
 
 
 def load_config():
@@ -125,16 +125,29 @@ def _is_paired():
         return False
 
 
+def _heartbeat_age_ms():
+    """Milliseconds since focuslock-desktop.py last completed a mesh poll, or
+    None if it has never written a heartbeat (pre-heartbeat daemon, or the file
+    is unreadable).
+
+    This is the only honest liveness signal we have. The daemon touches the
+    heartbeat on every successful poll whether or not that poll carried new
+    orders; orders.json only moves when the orders themselves change."""
+    try:
+        if HEARTBEAT_FILE.exists():
+            return time.time() * 1000 - HEARTBEAT_FILE.stat().st_mtime * 1000
+    except Exception:
+        pass
+    return None
+
+
 def _is_mesh_connected():
     """True if focuslock-desktop.py heartbeated a successful mesh poll
     within CONNECTED_THRESHOLD_MS. Combined with _is_paired() to drive the
     gold/gray crown (gold requires BOTH)."""
-    try:
-        if HEARTBEAT_FILE.exists():
-            mtime_ms = HEARTBEAT_FILE.stat().st_mtime * 1000
-            return (time.time() * 1000 - mtime_ms) < CONNECTED_THRESHOLD_MS
-    except Exception:
-        return False
+    age_ms = _heartbeat_age_ms()
+    if age_ms is not None:
+        return age_ms < CONNECTED_THRESHOLD_MS
     # Transitional fallback: pre-heartbeat daemon. Use orders.json
     # `updated_at`, accepting that quiet meshes register false-disconnected.
     try:
@@ -264,8 +277,21 @@ class StatusPoller:
                 doc = json.loads(ORDERS_FILE.read_text())
             except Exception as e:
                 return {"error": f"parse-{type(e).__name__}"}
-            # Stale guard: if daemon died, orders.json freezes. Show "stale"
-            # rather than a phantom-fresh state.
+            # Stale guard: if the daemon died, orders.json freezes and we must
+            # not show a phantom-fresh state. But orders.json ALSO freezes on a
+            # perfectly healthy quiet mesh — `updated_at` only advances on
+            # bump_version(), and the vault poll returns early ("if not blobs")
+            # when the relay has nothing new. Judging liveness by it therefore
+            # reported "stale" on any mesh the Lion had simply left alone for a
+            # minute. Ask the heartbeat instead, and keep the same threshold the
+            # crown uses so the icon and the label can never disagree.
+            age_ms = _heartbeat_age_ms()
+            if age_ms is not None:
+                if age_ms > CONNECTED_THRESHOLD_MS:
+                    return {"error": "stale"}
+                return doc
+            # No heartbeat at all: pre-heartbeat daemon, so fall back to
+            # orders.json age and accept the quiet-mesh false positive.
             updated_ms = doc.get("updated_at") or 0
             if updated_ms and (time.time() * 1000 - updated_ms) > STALE_AFTER_MS:
                 return {"error": "stale"}
