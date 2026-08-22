@@ -295,11 +295,16 @@ deploy_remote() {
     # the two split mkdir rules, and an unpadded mode ("644") is a different,
     # unwhitelisted argv from the "0644"/"0755" the rules spell out — either
     # one silently demands a password mid-heredoc and kills the `set -e` run.
+    #
+    # DESKTOP_FILES is interpolated (unquoted heredoc, expanded here, not on the
+    # peer) instead of re-spelled: this loop and the array had already drifted
+    # apart once, and a name that is in files_to_push but not in this loop gets
+    # scp'd to the peer's /tmp and then left there, uninstalled and uncleaned.
     ssh -o ConnectTimeout=5 "$DEPLOY_USER@$addr" "bash -s" << REMOTE_EOF
 set -e
 sudo mkdir -p /opt/focuslock
 sudo mkdir -p /opt/focuslock/web
-for f in focuslock-desktop.py focuslock_mesh.py focuslock_ntfy.py; do
+for f in ${DESKTOP_FILES[*]}; do
     [ -f /tmp/\$f ] && sudo install -D -m 0755 /tmp/\$f /opt/focuslock/\$f && rm -f /tmp/\$f
 done
 # Whatever's left matching focuslock_*.py is a shared module (mesh.py/ntfy.py

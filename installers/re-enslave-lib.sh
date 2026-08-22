@@ -26,8 +26,15 @@ SERVER_ICON="collar-icon.png"
 # focuslock_ntfy.py is also deployed via the shared/focuslock_*.py glob in
 # re-enslave-desktops.sh — listed explicitly here so the entrypoint deploy
 # loop picks it up even on installs that skip the shared glob.
+# focuslock-tray.py is NOT covered by that glob (hyphen, not underscore), so
+# leaving it out of this list meant the crown was never deployed by a
+# re-enslave at all — not locally, and not pushed to peers either, since the
+# remote loop builds its file list from this same array. Every tray fix since
+# the original install-desktop-collar.sh run stayed on the operator's disk
+# while the header comment claimed otherwise.
 DESKTOP_FILES=(
     "focuslock-desktop.py"
+    "focuslock-tray.py"
     "focuslock_mesh.py"
     "focuslock_ntfy.py"
 )
@@ -69,14 +76,32 @@ discover_paths() {
         return 0
     fi
 
+    # Gather every candidate rather than stopping at the first: ~/Desktop is a
+    # normal place to keep the working checkout, and a machine that has both it
+    # and a Nextcloud copy gets whichever this list names first. FOCUSLOCK_SRC
+    # above is the fix and it returns before we ever reach here — this only
+    # runs unpinned, so say out loud which tree won and what it beat. Warn
+    # rather than fail: one checkout is still the common case, and a deploy
+    # that refuses to run is worse than one that announces its choice.
+    local _candidates=()
     NC=""
-    for p in "$_REAL_HOME/Nextcloud" "$_REAL_HOME/rclone_mounts/Nextcloud" /mnt/CargoBay8/NC-BFC; do
+    for p in "$_REAL_HOME/Nextcloud" "$_REAL_HOME/rclone_mounts/Nextcloud" \
+             /mnt/CargoBay8/NC-BFC "$_REAL_HOME/Desktop"; do
         if [ -d "$p/Scripts/FocusLock" ] || [ -d "$p/Scripts/Lion's Share + Bunny Tasker" ]; then
-            NC="$p"
-            break
+            [ -z "$NC" ] && NC="$p"
+            _candidates+=("$p")
         fi
     done
-    [ -z "$NC" ] && fail "Nextcloud not found. Checked ~/Nextcloud, ~/rclone_mounts/Nextcloud, /mnt/CargoBay8/NC-BFC."
+    [ -z "$NC" ] && fail "Project not found. Checked ~/Nextcloud, ~/rclone_mounts/Nextcloud, /mnt/CargoBay8/NC-BFC, ~/Desktop."
+
+    if [ "${#_candidates[@]}" -gt 1 ]; then
+        warn "More than one checkout present and FOCUSLOCK_SRC is not pinned."
+        warn "  deploying from: $NC"
+        for p in "${_candidates[@]}"; do
+            [ "$p" = "$NC" ] || warn "  ignoring:       $p"
+        done
+        warn "  pin FOCUSLOCK_SRC in ~/.config/focuslock/re-enslave.config to choose deliberately."
+    fi
 
     FL="$NC/Scripts/FocusLock"
     LS="$NC/Scripts/Lion's Share + Bunny Tasker"
