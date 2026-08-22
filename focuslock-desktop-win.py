@@ -583,23 +583,27 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
 
 def needs_first_run_config():
-    """Check if we need to collect config from the user."""
-    if os.path.exists(CONFIG_FILE):
+    """True when no mesh is configured yet. Mirrors the Linux installer's
+    'Mesh ID + relay URL' prompt (install-desktop-collar.sh): a collar that
+    already has a mesh — via config.json or env — skips straight to consent and
+    joins. No PIN is involved; on a vault mesh each device authenticates with
+    its own registered key, not a shared secret."""
+    if os.environ.get("FOCUSLOCK_MESH_ID") and os.environ.get("FOCUSLOCK_MESH_URL"):
         return False
-    # Also skip if PIN already set via env var
-    if os.environ.get("FOCUSLOCK_PIN") or os.environ.get("PHONE_PIN"):
-        return False
-    return not _cfg.get("pin")
+    return not (_cfg.get("mesh_id") and _cfg.get("mesh_url"))
 
 
 def show_first_run_config():
-    """Show first-run config dialog to collect PIN and optional endpoints."""
+    """Collect the two mesh-join values the Linux installer asks for — Mesh ID
+    and Mesh relay URL — and nothing else. No PIN prompt. Writes config.json
+    with vault_mode enabled, then reloads the live globals so consent gating and
+    registration see the new mesh immediately (no restart needed)."""
+    global _cfg, MESH_ID, MESH_URL, HOMELAB_URL, PHONE_ADDRESSES, VAULT_MODE, _ntfy_topic, _ntfy_enabled
     try:
         import tkinter as tk
         from tkinter import messagebox, simpledialog
     except ImportError:
-        # No tkinter — fall back to simple input box
-        # Can't do text input with just MessageBox — save empty config and let user edit
+        # No tkinter — can't collect input here; let the user edit config.json.
         logger.warning("No tkinter available. Please edit config.json manually.")
         return False
 
@@ -607,50 +611,59 @@ def show_first_run_config():
     root.withdraw()
 
     messagebox.showinfo(
-        "FocusLock Setup",
-        "First-time setup.\n\n"
-        "You need a mesh PIN (shared secret between all your devices).\n"
-        "Optionally configure your homelab URL or phone IP.",
+        "The Collar — Join a Mesh",
+        "Let's get this collar onto your Lion's mesh.\n\n"
+        "Grab two values from the mesh-join info the Lion gave you:\n"
+        "    •  the Mesh ID\n"
+        "    •  the Mesh relay URL\n\n"
+        "(No PIN needed — the mesh knows this device by its own key.)",
     )
 
-    pin = simpledialog.askstring("Mesh PIN", "Enter mesh PIN (required):", parent=root)
-    if not pin:
-        messagebox.showerror("Setup", "PIN is required. Exiting.")
+    mesh_id = simpledialog.askstring("Mesh ID", "Enter the Mesh ID:", parent=root)
+    if not mesh_id or not mesh_id.strip():
+        messagebox.showinfo("The Collar", "No Mesh ID entered — leaving this collar unpaired for now.")
         root.destroy()
-        return False
+        return True  # idle, mesh-less — same as a bare Linux collar
 
-    homelab = (
+    mesh_url = (
         simpledialog.askstring(
-            "Homelab URL",
-            "Homelab URL (optional — leave empty for P2P only):\ne.g. http://192.168.1.100:8434",
+            "Mesh relay URL",
+            "Enter the Mesh relay URL:",
+            initialvalue="https://collar.nunyabiznu.com",
             parent=root,
         )
         or ""
-    )
+    ).strip().rstrip("/")
+    if not mesh_url:
+        messagebox.showinfo("The Collar", "No relay URL entered — leaving this collar unpaired for now.")
+        root.destroy()
+        return True
 
-    phone_ip = (
-        simpledialog.askstring("Phone IP", "Phone LAN IP (optional if homelab set):\ne.g. 192.168.1.50", parent=root)
-        or ""
-    )
-
-    config = {
-        "pin": pin,
-        "homelab_url": homelab,
-        "phone_addresses": [phone_ip] if phone_ip else [],
-    }
+    config = dict(_cfg)  # preserve any existing keys; just set the mesh ones
+    config["mesh_id"] = mesh_id.strip()
+    config["mesh_url"] = mesh_url
+    config["vault_mode"] = True
 
     os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=2)
-    logger.info("Config saved to %s", CONFIG_FILE)
+    logger.info("Mesh config saved to %s", CONFIG_FILE)
 
-    # Reload config
-    global _cfg, MESH_URL, HOMELAB_URL, PHONE_ADDRESSES
+    # Reload live globals so consent + registration pick up the new mesh now.
     _cfg = load_config()
+    MESH_ID = _cfg.get("mesh_id", "")
     MESH_URL = _cfg.get("mesh_url", "")
     HOMELAB_URL = _cfg.get("homelab_url", "")
     PHONE_ADDRESSES = _cfg.get("phone_addresses", [])
+    VAULT_MODE = _cfg.get("vault_mode", False) and VAULT_CRYPTO_OK and bool(MESH_ID)
+    _ntfy_topic = _cfg.get("ntfy_topic") or (f"focuslock-{MESH_ID}" if MESH_ID else "")
+    _ntfy_enabled = _cfg.get("ntfy_enabled", False) and bool(_ntfy_topic) and ntfy_mod is not None
 
+    messagebox.showinfo(
+        "The Collar — Joined!",
+        f"Configured for mesh {mesh_id.strip()}.\n\n"
+        "The collar will register with the relay now, and the mesh approves it automatically.",
+    )
     root.destroy()
     return True
 
@@ -2243,16 +2256,20 @@ def main():
     # First run check
     first_run_check()
 
-    # Consent (before elevation — runs in user session)
-    if not has_consent():
-        if not show_consent():
-            logger.info("No consent — exiting")
-            sys.exit(0)
-
-    # First-run config (collect PIN, homelab URL, phone IP)
+    # Mesh join info first — same stage as the Linux installer's 'Mesh ID +
+    # relay URL' prompt. No PIN. A collar that already has a mesh skips this.
     if needs_first_run_config():
         if not show_first_run_config():
             logger.info("No config — exiting")
+            sys.exit(0)
+
+    # Consent (Terms of Surrender) — only meaningful once a mesh is configured,
+    # and shown right before the collar registers and the mesh auto-approves it.
+    # A mesh-less collar just idles in the tray, so we don't demand surrender.
+    # Mirrors the Linux collar's do_activate gate: `if MESH_ID and not consented`.
+    if MESH_ID and not has_consent():
+        if not show_consent():
+            logger.info("No consent — exiting")
             sys.exit(0)
 
     # Self-install if needed (exe mode only)
