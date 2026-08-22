@@ -5,8 +5,17 @@ Renders the SAME panel, entry and verification logic as the patched lockscreen,
 against a dummy task. Touches nothing: no orders.json, no mesh, no service, no
 lock. The release path is stubbed to a label so completing it proves the flow
 without unlocking anything real.
+
+Prints a report on exit: reps completed, attempts per rep, and why each rejected
+attempt was rejected. Set FOCUSLOCK_VENERATION_REPORT to a path to also write it
+as JSON, which is what makes a sweep over all 126 tasks readable.
 """
+
+import json
+import os
 import re
+import time
+
 import gi
 
 gi.require_version("Gtk", "4.0")
@@ -23,11 +32,43 @@ class Harness(Gtk.Application):
     def __init__(self):
         super().__init__(application_id="org.focuslock.venerationtest")
         self.reps_done = 0
+        self.attempts = []  # one dict per submit or blocked paste
+        self.rep_attempts = 0  # attempts against the rep in progress
+        self.started = time.monotonic()
+        self.rep_started = self.started
+        self.completed = False
 
     @staticmethod
     def _normalise(text, randcaps):
         out = re.sub(r"\s+", " ", (text or "")).strip()
         return out if randcaps else out.casefold()
+
+    @staticmethod
+    def _cap_mismatches(typed, expected):
+        """Words that match letter-for-letter but not case, as (typed, wanted).
+
+        This is the pronoun rule's failure mode and the reason the report exists:
+        with randcaps on, typing "you" for "You" fails the task on that alone,
+        and a flat "wrong text" verdict buries the one detail worth knowing.
+        Word counts must line up for the pairing to mean anything; when they do
+        not, the attempt is a wording problem and this returns nothing."""
+        t = re.sub(r"\s+", " ", typed or "").strip().split(" ")
+        e = re.sub(r"\s+", " ", expected or "").strip().split(" ")
+        if len(t) != len(e):
+            return []
+        return [(a, b) for a, b in zip(t, e, strict=True) if a != b and a.casefold() == b.casefold()]
+
+    def _record(self, verdict, detail=None):
+        self.rep_attempts += 1
+        entry = {
+            "rep": self.reps_done + 1,
+            "attempt": self.rep_attempts,
+            "verdict": verdict,
+            "seconds": round(time.monotonic() - self.rep_started, 1),
+        }
+        if detail:
+            entry.update(detail)
+        self.attempts.append(entry)
 
     def _reps_text(self):
         total = max(1, TASK_REPS)
@@ -125,6 +166,7 @@ class Harness(Gtk.Application):
     def on_insert(self, buf, location, text, length):
         if len(text) > 2:
             buf.stop_emission_by_name("insert-text")
+            self._record("blocked-paste", {"via": "insert", "chars": len(text)})
             self._set_status("Type it. Pasting is not typing.", "bad")
 
     def on_key(self, controller, keyval, keycode, mod):
@@ -134,6 +176,7 @@ class Harness(Gtk.Application):
             self.on_submit()
             return True
         if (ctrl and keyval in (Gdk.KEY_v, Gdk.KEY_V, Gdk.KEY_Insert)) or (shift and keyval == Gdk.KEY_Insert):
+            self._record("blocked-paste", {"via": "keyboard"})
             self._set_status("Type it. Pasting is not typing.", "bad")
             return True
         return False
@@ -141,14 +184,17 @@ class Harness(Gtk.Application):
     def on_click(self, gesture, n_press, x, y):
         if gesture.get_current_button() in (2, 3):
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            self._record("blocked-paste", {"via": "mouse"})
             self._set_status("Type it. Pasting is not typing.", "bad")
 
     def _set_status(self, text, kind=""):
         for c in ("collar-task-status", "collar-task-status-bad", "collar-task-status-good"):
             self.status.remove_css_class(c)
         self.status.add_css_class(
-            "collar-task-status-bad" if kind == "bad"
-            else "collar-task-status-good" if kind == "good"
+            "collar-task-status-bad"
+            if kind == "bad"
+            else "collar-task-status-good"
+            if kind == "good"
             else "collar-task-status"
         )
         self.status.set_label(text)
@@ -162,17 +208,39 @@ class Harness(Gtk.Application):
         if TASK_TEXT:
             if self._normalise(typed, TASK_RANDCAPS) != self._normalise(TASK_TEXT, TASK_RANDCAPS):
                 if not typed.strip():
+                    self._record("empty")
                     self._set_status("Nothing typed. They are waiting.", "bad")
                 else:
+                    # Separate "got the words, missed the case" from "got the
+                    # words wrong". Only the first is a pronoun-rule failure,
+                    # and only when randcaps is on does it fail at all.
+                    caps = (
+                        self._cap_mismatches(typed, TASK_TEXT)
+                        if self._normalise(typed, False) == self._normalise(TASK_TEXT, False)
+                        else []
+                    )
+                    if caps:
+                        self._record(
+                            "capitalisation",
+                            {
+                                "words": [{"typed": a, "wanted": b} for a, b in caps],
+                            },
+                        )
+                    else:
+                        self._record("wording", {"typed_words": len(typed.split())})
                     self._set_status("That is not what They asked for. Read it again and type it in full.", "bad")
                 return
         else:
             words = len(typed.split())
             if words < WORD_MIN:
+                self._record("short", {"words": words, "needed": WORD_MIN})
                 self._set_status(f"{words} of {WORD_MIN} words. Keep going.", "bad")
                 return
 
+        self._record("accepted")
         self.reps_done += 1
+        self.rep_attempts = 0
+        self.rep_started = time.monotonic()
         total = max(1, TASK_REPS)
         buf.set_text("", 0)
         if self.reps_done < total:
@@ -191,8 +259,63 @@ class Harness(Gtk.Application):
         if self.countdown > 0:
             self._set_status(f"Accepted. Thank Them. Releasing in {self.countdown}\u2026  [TEST]", "good")
             return True
-        self.win.close()   # stands in for hide_lock() dropping the real lock
+        self.win.close()  # stands in for hide_lock() dropping the real lock
         return False
 
+    def report(self):
+        """Print what happened, after the window is gone.
 
-Harness().run(None)
+        Closing the window early and finishing the task look identical from the
+        outside — same clean exit, same silence — so the first line says which
+        it was. Everything else exists to make a sweep over all 126 tasks
+        legible: a task that repeatedly draws capitalisation rejections is one
+        whose wording fights the pronoun rule, and that is worth knowing before
+        the Lion sets it rather than after."""
+        total = max(1, TASK_REPS)
+        elapsed = round(time.monotonic() - self.started, 1)
+        rejected = [a for a in self.attempts if a["verdict"] not in ("accepted",)]
+        caps = [a for a in rejected if a["verdict"] == "capitalisation"]
+
+        print()
+        if self.completed:
+            print(f"COMPLETED  {self.reps_done}/{total} reps in {elapsed}s")
+        else:
+            print(f"ABANDONED  {self.reps_done}/{total} reps done, closed after {elapsed}s")
+        print(f"  task      {TASK_TEXT!r}")
+        print(f"  randcaps  {'on — capitalisation enforced' if TASK_RANDCAPS else 'off'}")
+        print(f"  attempts  {len(self.attempts)} total, {len(rejected)} rejected")
+
+        for a in self.attempts:
+            line = f"    rep {a['rep']} attempt {a['attempt']}: {a['verdict']} ({a['seconds']}s)"
+            if a["verdict"] == "capitalisation":
+                pairs = ", ".join(f"{w['typed']!r} should be {w['wanted']!r}" for w in a["words"])
+                line += f" — {pairs}"
+            elif a["verdict"] == "wording":
+                line += f" — typed {a['typed_words']} words, wanted {len(TASK_TEXT.split())}"
+            elif a["verdict"] == "blocked-paste":
+                line += f" — via {a['via']}"
+            print(line)
+
+        if caps:
+            print(f"  NOTE: {len(caps)} rejection(s) were capitalisation only — the pronoun rule bit.")
+
+        dest = os.environ.get("FOCUSLOCK_VENERATION_REPORT")
+        if dest:
+            payload = {
+                "task_text": TASK_TEXT,
+                "task_reps": total,
+                "task_randcaps": TASK_RANDCAPS,
+                "word_min": WORD_MIN,
+                "completed": self.completed,
+                "reps_done": self.reps_done,
+                "seconds": elapsed,
+                "attempts": self.attempts,
+            }
+            with open(dest, "w") as fh:
+                json.dump(payload, fh, indent=2)
+            print(f"  wrote {dest}")
+
+
+_app = Harness()
+_app.run(None)
+_app.report()
