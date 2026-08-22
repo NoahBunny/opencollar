@@ -2885,24 +2885,67 @@ for (var i = 0; i < c.length; i++) {
         self._report_paste_penalty(route)
 
     def _report_paste_penalty(self, route):
-        """Hand a proven attempt to the relay to be priced there.
+        """Hand a proven attempt to the relay, and let the relay price it.
 
-        Never charges locally: fines are applied relay-side by the Lion, and a
-        counter the bunny has root over is not a counter. Disarmed unless They
-        set paste_fine_active.
+        Deliberately reports the EVENT and nothing else. The amount lives in
+        this mesh's orders, which only the Lion writes, so this machine — which
+        bunny has root on — cannot set what its own slip costs. Never charges
+        locally either: fines are applied relay-side, and a counter kept on the
+        collar is not a counter.
+
+        Off the GTK thread: this fires from a keystroke handler while the lock
+        is up, and a stalled relay must not freeze the panel bunny is being
+        asked to type into.
         """
-        if not int(getattr(state, "paste_fine_active", 0) or 0):
-            logger.info("Veneration paste chargeable (%s) — paste_fine_active is 0, not reported", route)
-            return
-        amount = max(0, int(getattr(state, "paste_fine_amount", 0) or 0))
         logger.warning(
-            "VENERATION PASTE: proven attempt #%s via %s — $%s owed, awaiting a delivery path",
-            state.paste_billable, route, amount,
+            "VENERATION PASTE: proven attempt #%s via %s — reporting to the relay",
+            state.paste_billable,
+            route,
         )
-        # No delivery path from a vault-mode collar yet: /webhook/desktop-penalty
-        # needs an admin_token this machine deliberately does not hold, and
-        # refuses vault_only meshes outright. Tracked separately; until then the
-        # attempt is blocked, counted and logged rather than silently dropped.
+        count = state.paste_billable
+        threading.Thread(target=self._post_paste_penalty, args=(count,), daemon=True).start()
+
+    @staticmethod
+    def _post_paste_penalty(count):
+        if not MESH_URL or not MESH_ID or not _vault_privkey_pem:
+            logger.info("Paste penalty not reported: mesh or vault key not configured")
+            return
+        try:
+            import base64 as _b64
+
+            from cryptography.hazmat.primitives import hashes as _hh
+            from cryptography.hazmat.primitives import serialization as _ser
+            from cryptography.hazmat.primitives.asymmetric import padding as _pad
+
+            ts_ms = int(time.time() * 1000)
+            kind = "veneration-paste"
+            payload = f"{MESH_ID}|{MESH_NODE_ID}|penalty|{ts_ms}|{kind}|{count}"
+            priv = _ser.load_pem_private_key(_vault_privkey_pem.encode(), password=None)
+            sig = _b64.b64encode(priv.sign(payload.encode("utf-8"), _pad.PKCS1v15(), _hh.SHA256())).decode()
+            body = json.dumps(
+                {"node_id": MESH_NODE_ID, "ts": ts_ms, "signature": sig, "kind": kind, "count": count}
+            ).encode("utf-8")
+            req = urllib.request.Request(
+                f"{MESH_URL}/vault/{MESH_ID}/penalty",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            # 404 means the relay predates this route. Worth a warning rather
+            # than a debug line: the incident happened and went unpriced.
+            logger.warning("Paste penalty report rejected: HTTP %s", e.code)
+            return
+        except Exception as e:
+            logger.warning("Paste penalty report failed: %s", e)
+            return
+        if not result.get("armed"):
+            logger.info("Paste penalty reported; They have not armed it — nothing charged")
+        else:
+            logger.warning("Paste penalty applied: $%s (paywall now %s)",
+                           result.get("amount"), result.get("paywall"))
 
     def _on_task_insert(self, buf, location, text, length):
         """Veto lump insertions — that is what a paste looks like.

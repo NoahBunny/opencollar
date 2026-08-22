@@ -5689,7 +5689,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(
                     400,
                     {
-                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|confirm-node|lion-pubkey|standing-orders|since/{v}|nodes|nodes-pending}"
+                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|confirm-node|lion-pubkey|standing-orders|penalty|since/{v}|nodes|nodes-pending}"
                     },
                 )
                 return
@@ -5907,6 +5907,125 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     _sanitize_log(node_id),
                 )
                 self.respond(200, {"ok": True, "lion_pubkey": lion_pubkey, "format": "der-b64"})
+
+            elif action == "penalty":
+                # Node-signed report of a fine-bearing incident on a collar.
+                # Body: {node_id, ts, signature, kind, count}
+                # signature = SHA256withRSA over "mesh_id|node_id|penalty|ts|kind|count"
+                #
+                # Why it exists: /webhook/desktop-penalty is admin-gated, so the
+                # only collar that could ever report one was a collar holding
+                # ADMIN_TOKEN. A vault-mode collar deliberately holds no such
+                # token (see standing-orders below), which meant every penalty it
+                # detected died in a log line — including the $30 consent
+                # decline, silently unchargeable on those machines for months.
+                #
+                # The collar reports the EVENT. It gets no say in the price. The
+                # amount is read from this mesh's own orders, which only the Lion
+                # writes, so a bunny with root on the collar can forge a report
+                # but cannot set what it costs, cannot charge at all unless They
+                # armed it, and gains nothing by lying about the count.
+                # Everything the collar sends is evidence; none of it is
+                # authority.
+                node_id = data.get("node_id", "")
+                signature = data.get("signature", "")
+                kind = str(data.get("kind", ""))
+                if not node_id or not signature:
+                    self.respond(400, {"error": "node_id and signature required"})
+                    return
+                # Allowlist: a kind maps to the pair of order fields that arm it
+                # and price it. An unknown kind must never reach a default.
+                PENALTY_KINDS = {
+                    "veneration-paste": ("paste_fine_active", "paste_fine_amount"),
+                }
+                if kind not in PENALTY_KINDS:
+                    self.respond(400, {"error": f"unknown penalty kind: {kind!r}"})
+                    return
+                try:
+                    ts_pen = int(data.get("ts", 0) or 0)
+                    count = max(0, int(data.get("count", 0) or 0))
+                except (ValueError, TypeError):
+                    self.respond(400, {"error": "ts and count must be ints"})
+                    return
+                if abs(int(time.time() * 1000) - ts_pen) > 5 * 60 * 1000:
+                    self.respond(403, {"error": "ts out of window"})
+                    return
+                if not _node_signing_keys(mesh_id, node_id):
+                    logger.warning(
+                        "Vault penalty DENIED (node not approved): mesh=%s node=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                    )
+                    self.respond(403, {"error": "node not approved on this mesh"})
+                    return
+                payload_pen = f"{mesh_id}|{node_id}|penalty|{ts_pen}|{kind}|{count}"
+                if not _verify_node_signature(mesh_id, node_id, signature, payload_pen):
+                    logger.warning(
+                        "Vault penalty DENIED (bad signature): mesh=%s node=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                    )
+                    self.respond(403, {"error": "signature verification failed"})
+                    return
+                # Unlike standing-orders and lion-pubkey, this is gated on Lion
+                # confirmation. Those two only ever make a machine more governed;
+                # this one moves money, so an auto-accepted node They have never
+                # looked at does not get to spend it.
+                vault_row_pen = _vault_resolve_mesh(mesh_id)
+                if self._reject_unconfirmed_node("Vault penalty", mesh_id, node_id, vault_row_pen):
+                    return
+                # The same guard /webhook/desktop-penalty carries. Without it
+                # this route is a way around the property vault_only is sold on,
+                # which is the shape a backdoor takes.
+                if mesh_id != OPERATOR_MESH_ID and _mesh_accounts.is_vault_only(mesh_id):
+                    self.respond(403, {"error": "vault_only mesh — penalty refused"})
+                    return
+                orders_pen = _orders_registry.get(mesh_id)
+                if orders_pen is None:
+                    self.respond(404, {"error": "unknown mesh"})
+                    return
+                active_key, amount_key = PENALTY_KINDS[kind]
+                try:
+                    armed = int(orders_pen.get(active_key, 0) or 0)
+                    amount = int(orders_pen.get(amount_key, 0) or 0)
+                except (TypeError, ValueError):
+                    armed, amount = 0, 0
+                if not armed:
+                    # Not an error. The collar is right to report; They simply
+                    # have not armed it. Say so plainly so it logs rather than
+                    # retries.
+                    logger.info(
+                        "Vault penalty NOT ARMED (%s): mesh=%s node=%s count=%s",
+                        kind,
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                        count,
+                    )
+                    self.respond(200, {"ok": True, "armed": False, "amount": 0})
+                    return
+                amount = max(0, min(500, amount))
+                if amount == 0:
+                    self.respond(200, {"ok": True, "armed": True, "amount": 0})
+                    return
+                logger.warning(
+                    "VAULT PENALTY: mesh=%s node=%s kind=%s count=%s $%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    kind,
+                    count,
+                    amount,
+                )
+                applied = _server_apply_order(mesh_id, "add-paywall", {"amount": amount})
+                self.respond(
+                    200,
+                    {
+                        "ok": True,
+                        "armed": True,
+                        "amount": amount,
+                        "paywall": (applied or {}).get("paywall"),
+                    },
+                )
+                return
 
             elif action == "standing-orders":
                 # Node-signed fetch of the Lion's standing orders.
