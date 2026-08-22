@@ -162,6 +162,12 @@ ORDER_KEYS = {
     "fine_active": 0,
     "fine_amount": 0,  # $ per interval
     "fine_interval_m": 60,  # minutes between charges
+    # Pasting a veneration task instead of typing it. Off by default: the collar
+    # detects and blocks regardless, but whether that costs anything is the
+    # Lion's to set, not the collar's to assume.
+    "paste_fine_active": 0,
+    "paste_fine_amount": 0,  # $ per proven attempt after the warnings are spent
+    "paste_free_warnings": 1,  # per lock session, not per rep and not lifetime
     "fine_last_applied": 0,  # epoch ms
     # Streak bonuses (positive reinforcement — Lion enables, server tracks)
     "streak_enabled": 0,

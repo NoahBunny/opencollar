@@ -1383,6 +1383,8 @@ class CollarState:
     word_min = 0  # freeform floor, only used when task_text is empty
     task_reps_done = 0  # LOCAL progress; reset when task_text changes
     task_gated_on = ""  # the task_text task_reps_done is counting against
+    paste_warned = 0  # warnings spent this lock session
+    paste_billable = 0  # proven attempts past the warning, this lock session
     task_status = ""  # feedback line under the entry
 
 
@@ -1891,6 +1893,8 @@ class CollarApp(Gtk.Application):
         self.consented = has_consent()
         self.allow_close = False
         self.original_wallpaper = _load_saved_wallpaper()  # persisted to disk
+        # Built lazily in _clipboard_watch, once a display exists to read from.
+        self._paste_clipboards = None
 
     def do_activate(self):
         self.hold()
@@ -2253,7 +2257,14 @@ class CollarApp(Gtk.Application):
             state.task_reps_done = 0
             state.task_status = ""
         state.task_text = task_text
-        for _f, _d in (("task_reps", 0), ("task_randcaps", 0), ("word_min", 0)):
+        for _f, _d in (
+            ("task_reps", 0),
+            ("task_randcaps", 0),
+            ("word_min", 0),
+            ("paste_fine_active", 0),
+            ("paste_fine_amount", 0),
+            ("paste_free_warnings", 1),
+        ):
             try:
                 setattr(state, _f, int(snap.get(_f) or _d))
             except (TypeError, ValueError):
@@ -2331,6 +2342,11 @@ class CollarApp(Gtk.Application):
 
         logger.info("SHOW LOCK — generating wallpaper + locking session")
         self.lock_active = True
+        # One warning per lock session — not per rep, which would give a 5-rep
+        # task five free attempts, and not lifetime, which would make the first
+        # curious middle-click cost money months later.
+        state.paste_warned = 0
+        state.paste_billable = 0
         try:
             import subprocess
 
@@ -2787,11 +2803,116 @@ for (var i = 0; i < c.length; i++) {
 
         GLib.idle_add(_focus_task_view)
 
+    def _clipboard_watch(self):
+        """Lazily build the clipboard cache, once a display exists to read from.
+
+        GTK4 has no synchronous clipboard read — read_text_async only, and no
+        `changed` signal, so notify::formats stands in — while insert-text has
+        to decide before it can veto. So the contents are read in the background
+        and answered from cache. A cold cache means "cannot prove", which is not
+        the same as "not a paste" and is never charged as either.
+        """
+        if self._paste_clipboards is None and self.task_view is not None:
+            display = self.task_view.get_display()
+            self._paste_clipboards = {}
+            for name, cb in (
+                ("clipboard", display.get_clipboard()),
+                ("primary", display.get_primary_clipboard()),
+            ):
+                self._paste_clipboards[name] = None
+                cb.connect("notify::formats", self._on_clipboard_formats, name)
+                self._read_clipboard(cb, name)
+        return self._paste_clipboards
+
+    def _on_clipboard_formats(self, cb, _pspec, name):
+        # Contents changed: a stale cached copy is worse than none, because it
+        # could clear a real paste. Blank it until the fresh read lands.
+        self._paste_clipboards[name] = None
+        self._read_clipboard(cb, name)
+
+    def _read_clipboard(self, cb, name):
+        def _done(clipboard, res):
+            try:
+                self._paste_clipboards[name] = clipboard.read_text_finish(res)
+            except GLib.Error:
+                self._paste_clipboards[name] = None  # non-text, or read refused
+
+        cb.read_text_async(None, _done)
+
+    def _proves_paste(self, inserted):
+        """True if `inserted` is on a clipboard, False if demonstrably not,
+        None if nothing can be proved right now."""
+        norm = " ".join((inserted or "").split())
+        if not norm:
+            return None
+        cache = self._clipboard_watch() or {}
+        known = [v for v in cache.values() if v]
+        if not known:
+            return None
+        for value in known:
+            whole = " ".join(value.split())
+            if norm == whole or (len(norm) > 8 and norm in whole):
+                return True
+        return False
+
+    def _paste_attempt(self, route, proven):
+        """Block, then decide whether this one is chargeable.
+
+        Blocking is unconditional — enforcement must not weaken because the
+        clipboard could not be read. Charging needs proof: an explicit paste
+        keystroke or gesture proves intent by itself, a lump insertion only
+        proves it when the text is demonstrably what is on a clipboard.
+
+        Unproven attempts do not spend a warning. A dead-key or IME commit on a
+        layout like Canadian Multilingual Standard arrives as a lump insertion,
+        and bunny should not lose the free pass to their own keyboard.
+        """
+        self._set_veneration_status("Type it. Pasting is not typing.", "bad")
+        if not proven:
+            logger.info("Veneration paste blocked (%s) — unproven, not chargeable", route)
+            return
+        free = max(0, int(getattr(state, "paste_free_warnings", 1) or 0))
+        if state.paste_warned < free:
+            state.paste_warned += 1
+            self._set_veneration_status(
+                "Type it. Pasting is not typing. That is your warning.", "bad"
+            )
+            logger.warning("Veneration paste blocked (%s) — proven; warning %s of %s spent",
+                           route, state.paste_warned, free)
+            return
+        state.paste_billable += 1
+        self._set_veneration_status("Type it. Pasting is not typing. That one counts.", "bad")
+        self._report_paste_penalty(route)
+
+    def _report_paste_penalty(self, route):
+        """Hand a proven attempt to the relay to be priced there.
+
+        Never charges locally: fines are applied relay-side by the Lion, and a
+        counter the bunny has root over is not a counter. Disarmed unless They
+        set paste_fine_active.
+        """
+        if not int(getattr(state, "paste_fine_active", 0) or 0):
+            logger.info("Veneration paste chargeable (%s) — paste_fine_active is 0, not reported", route)
+            return
+        amount = max(0, int(getattr(state, "paste_fine_amount", 0) or 0))
+        logger.warning(
+            "VENERATION PASTE: proven attempt #%s via %s — $%s owed, awaiting a delivery path",
+            state.paste_billable, route, amount,
+        )
+        # No delivery path from a vault-mode collar yet: /webhook/desktop-penalty
+        # needs an admin_token this machine deliberately does not hold, and
+        # refuses vault_only meshes outright. Tracked separately; until then the
+        # attempt is blocked, counted and logged rather than silently dropped.
+
     def _on_task_insert(self, buf, location, text, length):
-        """Veto lump insertions — that is what a paste looks like."""
+        """Veto lump insertions — that is what a paste looks like.
+
+        Lump-ness alone is not evidence, though: a dead-key or IME commit is
+        also a lump insertion. Block on the shape, charge only on the match.
+        """
         if len(text) > 2:
             buf.stop_emission_by_name("insert-text")
-            self._set_veneration_status("Type it. Pasting is not typing.", "bad")
+            self._paste_attempt("insert", self._proves_paste(text) is True)
 
     def _on_task_key(self, controller, keyval, keycode, mod):
         ctrl = bool(mod & Gdk.ModifierType.CONTROL_MASK)
@@ -2802,7 +2923,7 @@ for (var i = 0; i < c.length; i++) {
         # Belt to the insert-text braces: refuse the paste bindings outright so
         # the message is honest rather than a silently swallowed keystroke.
         if (ctrl and keyval in (Gdk.KEY_v, Gdk.KEY_V, Gdk.KEY_Insert)) or (shift and keyval == Gdk.KEY_Insert):
-            self._set_veneration_status("Type it. Pasting is not typing.", "bad")
+            self._paste_attempt("keyboard", True)
             return True
         return False
 
@@ -2810,7 +2931,7 @@ for (var i = 0; i < c.length; i++) {
         """Middle-click pastes primary; right-click offers a Paste item."""
         if gesture.get_current_button() in (2, 3):
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
-            self._set_veneration_status("Type it. Pasting is not typing.", "bad")
+            self._paste_attempt("mouse", True)
 
     def _veneration_reps_text(self):
         total = max(1, int(state.task_reps or 0))
