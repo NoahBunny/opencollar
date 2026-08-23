@@ -7,12 +7,12 @@
 # ── Version constants ──
 # Update these when bumping APK / desktop versions. The watcher daemon and
 # all sub-scripts read from here so there's exactly one place to change.
-TARGET_SLAVE_VERSIONCODE=83
-TARGET_SLAVE_APK="focuslock-v83.apk"
-TARGET_CONTROLLER_VERSIONCODE=81
-TARGET_CONTROLLER_APK="focusctl-v81.apk"
-TARGET_COMPANION_VERSIONCODE=62
-TARGET_COMPANION_APK="bunnytasker-v62.apk"
+TARGET_SLAVE_VERSIONCODE=84
+TARGET_SLAVE_APK="focuslock-v84.apk"
+TARGET_CONTROLLER_VERSIONCODE=83
+TARGET_CONTROLLER_APK="focusctl-v83.apk"
+TARGET_COMPANION_VERSIONCODE=64
+TARGET_COMPANION_APK="bunnytasker-v64.apk"
 
 # Server-side files that re-enslave-server.sh deploys
 SERVER_FILES=(

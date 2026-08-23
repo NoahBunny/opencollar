@@ -8,6 +8,29 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-23 published to F-Droid + GitHub ───────── -->
+
+### Released — Lion's Share 83, The Collar 84, Bunny Tasker 64
+
+- **Published to the OpenCollar F-Droid repo**, signing fingerprint unchanged
+  (`C5D875B0…B49E5D8E`), so existing QR codes and subscribed devices keep working.
+  All three APK signing certificates match the builds already published, which is
+  what lets a device install these as upgrades rather than refusing them.
+- **Lion's Share 83** carries this pass's work: the four-tab regroup, the kebab
+  overflow, veneration tasks, visible message history, the balance history, and
+  the dead-endpoint fixes behind all three of those screens.
+- **The Collar 84 / Bunny Tasker 64** were bumped because the repo already held
+  83 and 63 — F-Droid keys on the versionCode, so rebuilding under the same code
+  changes content nobody is offered. Both carry PWA pinning, the device-admin
+  onboarding gate, and balance-event reporting, none of which had ever shipped.
+- **Installer targets synced.** `re-enslave-lib.sh` still pinned controller 81 and
+  companion 62, two and one releases behind what the repo served.
+- **The publish script can no longer point at a stale build.** Its APK map carries
+  a literal filename, which drifted for the same reason the hand-typed
+  `CurrentVersionCode` did — a new APK is built beside the old one and nothing
+  notices. It now refuses to publish when `apks/` holds a higher versionCode for
+  the same package than the one it is about to ship.
+
 <!-- ───────── 2026-08-23 the balance moved and nothing said why ───────── -->
 
 ### Added — every balance movement records what caused it
