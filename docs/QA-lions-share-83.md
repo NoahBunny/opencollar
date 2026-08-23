@@ -9,7 +9,9 @@ the tabs entirely into a kebab, and extracted two logic cores out of
 > **Why part of this is manual.** UI automation for these apps was spiked in
 > 2026-04 and shelved — `docs/UI-AUTOMATION-DECISION.md`. Everything that can
 > be checked without a device is automated below and runs in CI; §3 is the part
-> that needs hands, and **83 does not ship until §3 is walked.**
+> that needs hands. **§2b now covers most of it programmatically** (75/77 on a
+> clean Waydroid); what remains in §3 is the handful of rows that need a fully
+> provisioned Collar or a second device.
 
 ---
 
@@ -62,7 +64,46 @@ the tabs entirely into a kebab, and extracted two logic cores out of
   menu items, the page/tab ids were renamed, and `btn_kebab` plus the two
   section summaries are new. Nothing was dropped.
 
-## 3. Device walk — REQUIRED before publishing
+## 2b. Programmatic device walk — RUN 2026-08-23, 75/77 ✅
+
+Run on a **wiped, freshly initialised Waydroid** (LineageOS 20 / Android 13,
+x86_64) at 1080x2400 @ 420dpi, driven by `staging/qa_lions_share_83.py` against
+a staging relay on the host. **75 passed, 2 failed.**
+
+Set-up performed, for reproducibility:
+
+- `sudo waydroid init -f` after wiping `/var/lib/waydroid` (needs root — the
+  only step this harness cannot do itself).
+- adb authorised by dropping the host's `adbkey.pub` into
+  `~/.local/share/waydroid/data/misc/adb/adb_keys` and restarting the session.
+  `waydroid shell` needs root; the data dir does not.
+- A real mesh created **from the app** against `staging/start-staging.sh`
+  (relay reachable from the container at the bridge gateway `192.168.240.1`),
+  and a real bunny paired via invite code from Bunny Tasker. The relay logged
+  the node registration and its state-mirror, so this was an end-to-end mesh,
+  not a mock.
+
+What it verified, beyond "the control exists": the four verb-named tabs are
+there and the old power-level ones are not; every control is on the tab it was
+moved to; Live Pokes and Modifiers start collapsed and the collapsed summary
+reads `Taunt, Mute` after toggling them; picking **Compliment** reveals its
+field and switching away hides it; the duplicate clear is gone and the survivor
+asks first; the kebab carries its six entries with Payment Email correctly
+hidden (no homelab) and Release Forever still reachable and still confirming.
+Screenshots of all four tabs in `docs/Screenshots/lions-share-83-*.png`.
+
+**The 2 failures are environment, not app.** Row 3.10d charges $5 and expects
+the balance to move; with no *fully provisioned* Collar (device admin plus the
+launcher role, both declined so the container would not lock the automation out
+mid-run) the order has nowhere to land, so the optimistic bump reverts and the
+ledger stays empty. Two earlier "failures" — `lion_payment_history` and
+`device_cards_container` absent — turned out to be the harness's fault, not the
+app's: both are filled programmatically, so while empty they have zero height
+and never appear in a `uiautomator` dump. Confirmed in logcat
+(`visible: false`), and the checks now assert the always-rendered section
+header instead.
+
+## 3. Device walk — the rows still owed
 
 Run on the SM-S908 rig (`R5CT339K1ZL`; provisioning order in the
 `project_on_device_adb_qa` notes). Install with

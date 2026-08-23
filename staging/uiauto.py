@@ -184,9 +184,23 @@ class UiDevice:
         self.adb("shell", "input", "keyevent", "KEYCODE_BACK")
         time.sleep(settle)
 
-    def launch(self, pkg: str, settle: float = 4.0) -> None:
-        self.adb("shell", "monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1")
-        time.sleep(settle)
+    def launch(self, pkg: str, activity: str | None = None, settle: float = 4.0, attempts: int = 3) -> bool:
+        """Bring an app to the foreground, and confirm it got there.
+
+        Prefers an explicit `am start -n`: on Waydroid `monkey` reports success
+        and leaves the launcher resumed, which produced a whole run of
+        cascading "control not found" failures that were really one failure.
+        Returns whether the package is actually resumed.
+        """
+        for _ in range(attempts):
+            if activity:
+                self.adb("shell", "am", "start", "-n", f"{pkg}/{activity}")
+            else:
+                self.adb("shell", "monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1")
+            time.sleep(settle)
+            if pkg in self.current_activity():
+                return True
+        return pkg in self.current_activity()
 
     def force_stop(self, pkg: str) -> None:
         self.adb("shell", "am", "force-stop", pkg)
@@ -201,6 +215,12 @@ class UiDevice:
         return True
 
     def current_activity(self) -> str:
+        """The resumed component, e.g. "com.focusctl/.MainActivity".
+
+        Reads `topResumedActivity` / `ResumedActivity:` — the field is NOT
+        called `mResumedActivity` on Android 13, which is how an earlier
+        version of this returned "" while the app was plainly running.
+        """
         out = self.adb("shell", "dumpsys", "activity", "activities")
-        m = re.search(r"mResumedActivity.*?\{[^}]*\s(\S+/\S+)", out)
+        m = re.search(r"ResumedActivity[=:]\s*ActivityRecord\{\S+\s+\S+\s+([\w.]+/[\w.$]+)", out)
         return m.group(1) if m else ""

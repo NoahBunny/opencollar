@@ -32,6 +32,7 @@ from uiauto import UiDevice
 REPO = Path(__file__).resolve().parent.parent
 APK = REPO / "android" / "controller" / "focusctl-signed.apk"
 PKG = "com.focusctl"
+ACTIVITY = ".MainActivity"
 
 results: list[dict] = []
 
@@ -54,11 +55,25 @@ def goto_tab(d: UiDevice, tab_id: str) -> None:
 # ─────────────────────────────────────────────────────────────────────────
 
 
+class Abort(Exception):
+    """The app is not on screen; every later check would fail for that one
+    reason and bury it under fifty lines of noise."""
+
+
 def step_launch(d: UiDevice) -> None:
     d.force_stop(PKG)
-    d.launch(PKG, settle=6)
+    up = d.launch(PKG, ACTIVITY, settle=6)
     act = d.current_activity()
-    check("3.1", "app launches", PKG in act, act or "no resumed activity")
+    if not check("3.1", "app launches", up, act or "no resumed activity"):
+        raise Abort(f"app never came to the foreground (resumed: {act or 'nothing'})")
+
+    # A modal (mesh-created, pair conflict) covers the whole activity and would
+    # read as "every control is missing".
+    for _ in range(3):
+        if d.find("android:id/alertTitle") is None:
+            break
+        title = d.find("android:id/alertTitle")
+        check("3.1", f"dismissed a modal: {title['text'][:40]}", d.tap("android:id/button1", settle=2))
 
     present = ids_on_screen(d)
     if "btn_onboard_next" in present or d.visible("Welcome"):
@@ -198,10 +213,15 @@ def step_money_tab(d: UiDevice) -> None:
         "btn_stop_fine",
         "btn_force_sub",
         "sub_status_text",
-        "lion_payment_history",
         "btn_gamble",
     ):
         check("3.9", f"Money has {wanted}", wanted in present)
+
+    # `lion_payment_history` is filled programmatically, so while it is empty it
+    # has zero height and never appears in a uiautomator dump. Assert the
+    # section header, which always renders, and prove the container itself
+    # separately by putting a row in it (below).
+    check("3.9", "Money has the PAYMENT HISTORY section", d.find("PAYMENT HISTORY") is not None)
 
     check(
         "3.9",
@@ -209,6 +229,27 @@ def step_money_tab(d: UiDevice) -> None:
         "btn_clear_paywall" not in present,
         "two buttons used to POST the identical clear",
     )
+
+    # ── the regression review caught: Money's ledger and subscription were
+    # populated only from refreshInbox(), so landing on Money showed the
+    # layout defaults forever. Charging $5 must make history appear WITHOUT
+    # navigating away and back.
+    before = d.find("id/balance_display")
+    before_txt = before["text"] if before else "?"
+    if d.tap("id/btn_add_5", settle=3):
+        time.sleep(4)  # scheduleMoneyRefresh coalesces on 800ms, then fetches
+        after = d.find("id/balance_display")
+        after_txt = after["text"] if after else "?"
+        check("3.10d", "charging $5 moves the balance", before_txt != after_txt, f"{before_txt} -> {after_txt}")
+        populated = d.find("id/lion_payment_history") is not None
+        check(
+            "3.10d",
+            "payment history populates without leaving the tab",
+            populated,
+            "this is what regressed: the widget moved to Money, its refresh stayed on Inbox",
+        )
+    else:
+        check("3.10d", "+$5 tappable", False)
 
     # The clear must confirm before doing anything.
     d.tap("id/btn_clear_balance")
@@ -222,7 +263,6 @@ def step_inbox_tab(d: UiDevice) -> None:
     goto_tab(d, "tab_inbox")
     present = ids_on_screen(d)
     for wanted in (
-        "device_cards_container",
         "inbox_message_input",
         "btn_send_message",
         "btn_schedule_message",
@@ -231,6 +271,9 @@ def step_inbox_tab(d: UiDevice) -> None:
         "toggle_mandatory",
     ):
         check("3.11", f"Inbox has {wanted}", wanted in present)
+    # Same zero-height caveat as lion_payment_history: with nothing paired,
+    # device_cards_container has no children and is absent from the dump.
+    check("3.11", "Inbox has the COLLARED DEVICES section", d.find("COLLARED DEVICES") is not None)
     check("3.11", "subscription/history no longer live on Inbox", "sub_status_text" not in present)
 
 
@@ -251,12 +294,23 @@ def step_kebab(d: UiDevice) -> None:
     dialog = d.nodes()
     asks = any("cancel" in n["text"].lower() for n in dialog)
     check("3.13", "Release Forever confirms before doing anything", asks)
-    d.tap("Cancel") or d.back()
+    if not d.tap("Cancel"):
+        d.back()
+    # One more back closes the popup itself; if that pops the Activity too,
+    # bring it straight back rather than leaving the launcher on screen.
     d.back()
+    if PKG not in d.current_activity():
+        d.launch(PKG, ACTIVITY, settle=5)
 
 
 def step_screens(d: UiDevice, out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
+    # Re-assert the app is in front. Dismissing the kebab's confirm dialog can
+    # leave the launcher resumed, and a screenshot taken then is a picture of
+    # the home screen — which is exactly what the first run produced.
+    if PKG not in d.current_activity():
+        d.launch(PKG, ACTIVITY, settle=6)
+    check("3.17", "app is in front for screenshots", PKG in d.current_activity(), d.current_activity())
     for tab, name in (("tab_lock", "lock"), ("tab_rules", "rules"), ("tab_money", "money"), ("tab_inbox", "inbox")):
         goto_tab(d, tab)
         time.sleep(1.0)
@@ -300,6 +354,10 @@ def main() -> int:
         print(f"\n== {name} ==")
         try:
             fn(d)
+        except Abort as e:
+            check(name, "prerequisite", False, str(e))
+            print("\n  ABORTED — the app is not on screen; later checks would all fail for that one reason.")
+            break
         except Exception as e:  # a step blowing up must not hide the rows that passed
             check(name, "step completed", False, f"{type(e).__name__}: {e}")
 
