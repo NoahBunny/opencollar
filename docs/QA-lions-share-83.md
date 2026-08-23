@@ -85,6 +85,9 @@ Each row is "the thing the Lion actually does", not "the button exists".
 | 3.10a | **Cold-start, then go straight to Money** | Subscription shows the real tier and Payment History lists entries — *without* visiting Inbox first. This regressed once already: both widgets moved to Money while their only refresh trigger stayed on Inbox |
 | 3.10b | Rules → pick **Compliment** from Mode | The compliment field appears under the mode; pick any other mode and it disappears. Locking in Compliment mode must carry the prompt, not fall through to a basic lock |
 | 3.10c | Paste a message copied from a Windows editor (CRLF) into Lock message, then lock | The order lands. Before 83 the raw CR made the body invalid JSON and both the Collar and the relay rejected it |
+| 3.10d | Money: tap +$50 **while standing on Money** | Payment History gains the entry without navigating away; same for Subscription after Change Subscription |
+| 3.10e | Rules → Compliment, type a prompt, switch Mode to **Basic**, lock | Bunny gets a plain lock with **no** compliment gate. The Collar keys that gate off presence, not mode, so a leftover prompt would have silently gated a lock the UI showed as Basic |
+| 3.10f | Long-press the Lock button, set a countdown with a pasted CRLF message | The countdown schedules. This body escaped quotes only until 83 |
 | 3.11 | Inbox: send a message, pin one, mark must-reply | All three land on the Collar |
 | 3.12 | Kebab → each of the 6 non-destructive entries | Each opens its dialog; **Payment Email is absent with no homelab attached, present with one** |
 | 3.13 | Kebab → Release Forever | Still reachable, still confirms before doing anything |

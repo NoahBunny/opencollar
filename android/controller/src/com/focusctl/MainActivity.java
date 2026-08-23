@@ -412,8 +412,11 @@ public class MainActivity extends Activity {
                 final int og = beginOptimistic(false, false, 0, newVal);
                 executor.execute(() -> {
                     String r = api("/api/add-paywall", "{\"amount\":\"" + amount + "\"}");
-                    if (r != null && r.contains("ok")) handler.post(() -> setStatus("Added $" + amount));
-                    else cancelOptimistic(og);
+                    if (r != null && r.contains("ok")) {
+                        handler.post(() -> { setStatus("Added $" + amount); scheduleMoneyRefresh(); });
+                    } else {
+                        cancelOptimistic(og);
+                    }
                 });
             });
         }
@@ -1620,7 +1623,7 @@ public class MainActivity extends Activity {
                 version = nextVersion;
             }
             android.util.Log.w("vault", "rpc " + action + " gave up after 5 attempts: " + lastError);
-            return "{\"error\":\"vault: append failed after 5 attempts (" + lastError.replace("\"", "'") + ")\"}";
+            return "{\"error\":\"vault: append failed after 5 attempts (" + JsonScan.escape(lastError) + ")\"}";
         } catch (Exception e) {
             android.util.Log.w("vault", "apiVault error: " + e.getMessage());
             return "{\"error\":\"vault: " + e.getMessage() + "\"}";
@@ -3101,8 +3104,21 @@ public class MainActivity extends Activity {
         j.append(",\"mute\":").append(toggleMute.isChecked());
         String pw = paywallInput.getText().toString();
         if (!pw.isEmpty()) j.append(",\"paywall\":\"").append(pw).append("\"");
+        // Gated on the mode, not merely on the field being non-empty. The
+        // Collar keys its compliment gate off PRESENCE — FocusActivity:826
+        // is `if (!compliment.isEmpty() && taskText.isEmpty())`, it never
+        // looks at the mode — so a prompt left over from a Compliment lock
+        // would put a compliment gate on a lock the Lion had switched to
+        // Basic. Since 83 hides the field for other modes, they could not
+        // even see the text that was doing it. ("random" resolves on the
+        // Collar to one of basic/negotiation/gratitude/exercise/love_letter,
+        // ControlService:1160 — never compliment — so it is not special-cased
+        // here.) The text is deliberately NOT cleared when the field hides:
+        // switching modes back should bring it back.
         String comp = complimentInput.getText().toString();
-        if (!comp.isEmpty()) j.append(",\"compliment\":\"").append(JsonScan.escape(comp)).append("\"");
+        if (!comp.isEmpty() && "compliment".equals(selectedMode())) {
+            j.append(",\"compliment\":\"").append(JsonScan.escape(comp)).append("\"");
+        }
         j.append("}");
         return j.toString();
     }
@@ -3188,7 +3204,7 @@ public class MainActivity extends Activity {
                 long lockAt = System.currentTimeMillis() + mins * 60_000L;
                 String msg = msgInput.getText().toString().trim();
                 String params = "{\"lock_at\":" + lockAt
-                    + ",\"message\":\"" + msg.replace("\"", "\\\"") + "\"}";
+                    + ",\"message\":\"" + JsonScan.escape(msg) + "\"}";
                 setStatus("Scheduling...");
                 executor.execute(() -> {
                     String r = meshOrder("set-countdown", params);
@@ -3927,7 +3943,7 @@ public class MainActivity extends Activity {
             String r = api("/api/add-paywall", "{\"amount\":\"" + val + "\"}");
             meshOrder("add-paywall", "{\"amount\":" + val + "}");
             handler.post(() -> input.setText(""));
-            if (r.contains("ok")) setStatus("Balance set to $" + val);
+            if (r.contains("ok")) { setStatus("Balance set to $" + val); handler.post(this::scheduleMoneyRefresh); }
             else { if (og != 0) cancelOptimistic(og); setStatus("Failed"); }
         });
     }
@@ -4234,7 +4250,7 @@ public class MainActivity extends Activity {
                 executor.execute(() -> {
                     String r = api("/api/clear-paywall", "{}");
                     meshOrder("clear-paywall", "{}");
-                    if (r.contains("ok")) setStatus("Paywall cleared");
+                    if (r.contains("ok")) { setStatus("Paywall cleared"); handler.post(this::scheduleMoneyRefresh); }
                     else { cancelOptimistic(og); setStatus("Failed"); }
                 });
             })
@@ -4519,6 +4535,9 @@ public class MainActivity extends Activity {
                 executor.execute(() -> {
                     String r = api("/api/subscribe", "{\"tier\":\"" + tier + "\"}");
                     setStatus(r.contains("ok") ? "Subscribed: " + tier : "Failed: " + r);
+                    // The tier the Money tab shows comes from a separate fetch,
+                    // so without this it keeps reporting the previous one.
+                    if (r.contains("ok")) handler.post(this::scheduleMoneyRefresh);
                 });
             })
             .setNegativeButton("Cancel", null)
@@ -4789,6 +4808,16 @@ public class MainActivity extends Activity {
      *
      *  <p>Fetches only what those two need; the message thread and device cards
      *  stay on the Inbox path. */
+    /** Coalesced Money refresh. The Lion can tap +$1 five times in a second;
+     *  each one writes a ledger entry, and re-fetching per tap would be five
+     *  round-trips for one answer. */
+    private void scheduleMoneyRefresh() {
+        handler.removeCallbacks(moneyRefresh);
+        handler.postDelayed(moneyRefresh, 800);
+    }
+
+    private final Runnable moneyRefresh = this::refreshMoney;
+
     private void refreshMoney() {
         executor.execute(() -> {
             String meshResp = currentStatusJson();
