@@ -735,6 +735,17 @@ def mesh_apply_order(action, params, orders):
         new_value = orders.add("paywall", params.get("amount", 0), default=0)
         if new_value < 0:
             orders.set("paywall", "0")
+            new_value = 0
+        # Report the number that landed. Until 2026-08-23 this branch fell
+        # through to the bare `{"applied": action}` at the bottom of the
+        # function, so every caller that read `paywall` off the result got
+        # None: the evidence line the Lion is sent after a desktop penalty
+        # said "New paywall: $0" while the charge itself had gone through
+        # correctly, /webhook/desktop-penalty answered `new_paywall: 0`, and
+        # the node-signed /vault/{mesh}/penalty replied `"paywall": null`.
+        # Same failure mode as the auto-accept flag: enforcement right,
+        # record wrong. Every other charging action already returns this.
+        return {"applied": action, "amount": params.get("amount", 0), "paywall": new_value}
     elif action == "clear-paywall":
         orders.set("paywall", "0")
     elif action == "send-message":

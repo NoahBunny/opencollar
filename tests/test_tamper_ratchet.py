@@ -177,6 +177,18 @@ class TestDesktopPenaltyRatchet:
         pw = int(mail_module._orders_registry.get(penalty_mesh["mesh_id"]).get("paywall", "0"))
         assert pw == 5 + 5 + 5 + 10
 
+    def test_the_reported_new_paywall_is_the_real_one(self, live_server, penalty_mesh, mail_module):
+        """`new_paywall` in the response — and the "New paywall: $X" line the
+        Lion is sent as evidence — both read `paywall` off the apply result.
+        `add-paywall` returned no such key until 2026-08-23, so every desktop
+        penalty told Them the balance was $0 immediately after raising it."""
+        for _ in range(3):
+            status, body = _report(live_server, penalty_mesh, tamper=True, attempt=1, amount=5)
+            assert status == 200, body
+        real_pw = int(mail_module._orders_registry.get(penalty_mesh["mesh_id"]).get("paywall", "0"))
+        assert real_pw == 15
+        assert body["new_paywall"] == real_pw
+
     def test_caller_amount_is_a_floor_not_a_discount(self, live_server, penalty_mesh):
         # Climb to tier 2 ($10), then ask to be charged $1.
         for _ in range(3):
