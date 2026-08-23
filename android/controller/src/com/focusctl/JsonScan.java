@@ -102,14 +102,40 @@ final class JsonScan {
 
     /** Escape a string for embedding in the hand-built JSON request bodies.
      *
-     *  <p>Backslash, quote and newline only — carried over verbatim from
-     *  MainActivity.esc(). A carriage return or tab still passes through raw,
-     *  which is invalid JSON (RFC 8259 forbids unescaped control characters
-     *  below 0x20 inside a string); see JsonScanTest, which pins both the
-     *  behaviour and the gap. Left as-is here deliberately: this class is an
-     *  extraction, and changing what goes on the wire belongs in its own
-     *  change, not smuggled inside a refactor. */
+     *  <p>MainActivity.esc(), which this replaced, handled backslash, quote and
+     *  newline and nothing else. That was a live failure, not merely untidy:
+     *  RFC 8259 forbids unescaped control characters below 0x20 inside a
+     *  string, and both consumers enforce it — {@code org.json.JSONTokener} on
+     *  the Collar and Python's strict {@code json.loads} on the relay. So a
+     *  lock message or writing task pasted with Windows line endings escaped
+     *  its LF and left the CR raw, and the whole order was rejected rather than
+     *  merely rendering oddly. The Lion pressed Lock and nothing happened.
+     *
+     *  <p>Now every C0 character is escaped: the five with short forms, and
+     *  anything else below 0x20 as {@code \\u00XX}. Characters at or above
+     *  0x20 — including all non-ASCII — are passed through unchanged, which is
+     *  what the servers already accept and what keeps this byte-compatible
+     *  with every body that worked before. */
     static String escape(String s) {
-        return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
+        StringBuilder out = new StringBuilder(s.length() + 16);
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '\\': out.append("\\\\"); break;
+                case '"':  out.append("\\\""); break;
+                case '\n': out.append("\\n"); break;
+                case '\r': out.append("\\r"); break;
+                case '\t': out.append("\\t"); break;
+                case '\b': out.append("\\b"); break;
+                case '\f': out.append("\\f"); break;
+                default:
+                    if (c < 0x20) {
+                        out.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        out.append(c);
+                    }
+            }
+        }
+        return out.toString();
     }
 }

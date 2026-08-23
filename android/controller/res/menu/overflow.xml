@@ -8,8 +8,9 @@
   Shown via PopupMenu anchored to btn_kebab, because the app's theme is
   Theme.Material.NoActionBar and there is no system overflow to inherit.
 
-  menu_payment_email is homelab-only and is hidden per applyHomelabGating()
-  when no homelab is attached to the active bunny.
+  menu_payment_email is homelab-only. It is gated in showOverflow(), which
+  rebuilds this menu on every tap — NOT in applyHomelabGating(), which stopped
+  touching it when it ceased to be a View.
 -->
 <menu xmlns:android="http://schemas.android.com/apk/res/android">
 

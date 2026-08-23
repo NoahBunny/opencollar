@@ -17,12 +17,12 @@ the tabs entirely into a kebab, and extracted two logic cores out of
 
 | Check | Command | Result | Protects |
 |---|---|---|---|
-| Layout↔code id contract | `pytest tests/test_android_layout_ids.py` | ✅ 9 passed | Every string-based view lookup resolves. `MainActivity` uses `getResources().getIdentifier()`, so a moved id fails at *runtime* — and with ~20 null-guards and several `try{}catch(Exception){}` wrappers around those lookups, it fails **silently**. This is the single largest hazard in this change. |
+| Layout↔code id contract | `pytest tests/test_android_layout_ids.py` | ✅ 10 passed | Every string-based view lookup resolves. `MainActivity` uses `getResources().getIdentifier()`, so a moved id fails at *runtime* — and with ~20 null-guards and several `try{}catch(Exception){}` wrappers around those lookups, it fails **silently**. This is the single largest hazard in this change. |
 | Section convention | (same file) | ✅ | `wireSection()` builds `_head`/`_body`/`_chevron` ids by concatenation, where no static check can see them. A half-rename would leave a header that does not open. |
 | No orphan buttons | (same file) | ✅ | A button the Lion can see and press that no code reaches reads as a broken feature, not a missing one. |
 | Java ↔ Python wire conformance | `make qa-android` | ✅ 30 passed | 17 of these normally skip without the CLIs exported. Canonical JSON, orders signatures and the message pipe-payload still match the server byte-for-byte. |
-| JVM unit tests | `bash android/build-conformance.sh` | ✅ 104 passed (was 80) | +24 for the two extracted classes. |
-| Python suite | `pytest -q` | ✅ 1340 passed, 21 skipped | |
+| JVM unit tests | `bash android/build-conformance.sh` | ✅ 106 passed (was 80) | +26 for the two extracted classes. |
+| Python suite | `pytest -q` | ✅ 1341 passed, 21 skipped | |
 | Gated mesh coverage | `make qa-cov-mesh` | ✅ floor holds | |
 | Lint / format / types | `ruff check`, `ruff format --check`, `mypy shared` | ✅ clean, 135 files | |
 | APK builds + signs | `android/controller/build.sh` + `apksigner verify` | ✅ 83/83.0, 206 KB | |
@@ -55,6 +55,9 @@ the tabs entirely into a kebab, and extracted two logic cores out of
   only difference was that one confirmed first and one fired instantly. They
   sat on separate tabs, so nothing made it visible. One clear survives, and it
   is the confirming one — a mis-tap beside `+$1` forgives real money owed.
+- **UI-automation scripts checked too.** `tests/ui/` addresses views by
+  `com.pkg:id/name` string; those drift the same way and more quietly, since
+  they are shelved behind `UI_TESTS=1`. Now covered by the same test file.
 - **Wired-id diff is exactly the intended set**: the 7 kebab buttons became 7
   menu items, the page/tab ids were renamed, and `btn_kebab` plus the two
   section summaries are new. Nothing was dropped.
@@ -79,6 +82,9 @@ Each row is "the thing the Lion actually does", not "the button exists".
 | 3.8 | Open Live Pokes; Speak and Play Audio | Both fire; the toy row appears only with a Lovense reachable |
 | 3.9 | Money: +$5, Set, Clear | Balance moves; the reply shows the *new* balance, not `$0`. **Clear now asks first** — there is exactly one clear button, and it confirms |
 | 3.10 | Money: Start Fine / Stop Fine | Fine status line appears and clears |
+| 3.10a | **Cold-start, then go straight to Money** | Subscription shows the real tier and Payment History lists entries — *without* visiting Inbox first. This regressed once already: both widgets moved to Money while their only refresh trigger stayed on Inbox |
+| 3.10b | Rules → pick **Compliment** from Mode | The compliment field appears under the mode; pick any other mode and it disappears. Locking in Compliment mode must carry the prompt, not fall through to a basic lock |
+| 3.10c | Paste a message copied from a Windows editor (CRLF) into Lock message, then lock | The order lands. Before 83 the raw CR made the body invalid JSON and both the Collar and the relay rejected it |
 | 3.11 | Inbox: send a message, pin one, mark must-reply | All three land on the Collar |
 | 3.12 | Kebab → each of the 6 non-destructive entries | Each opens its dialog; **Payment Email is absent with no homelab attached, present with one** |
 | 3.13 | Kebab → Release Forever | Still reachable, still confirms before doing anything |

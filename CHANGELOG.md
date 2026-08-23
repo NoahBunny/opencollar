@@ -45,8 +45,9 @@ starting with v1.0.0.
 - Also: Modifiers and Live Pokes collapse to a single line that still names what is
   switched on inside them; Entrap sits in a bordered danger block rather than being
   distinguished only by hue on a dark background; and the primary Lock button now reports
-  the live state (`LOCKED — 42m left`) instead of reading "Lock all devices" whether or
-  not the bunny was already locked. onCreate's 90 lines of wiring are grouped into
+  the live state (`Re-lock · 42m left`) instead of reading "Lock all devices" whether or
+  not the bunny was already locked — single-line, because a Button truncates rather than
+  wraps when its label outgrows it. onCreate's 90 lines of wiring are grouped into
   `wireLockTab()` / `wireRulesTab()` / `wireMoneyTab()` / `wireInboxTab()`, so the code
   mirrors the taxonomy.
 - **Not yet walked on hardware** — no device attached, Waydroid uninitialised. The APK

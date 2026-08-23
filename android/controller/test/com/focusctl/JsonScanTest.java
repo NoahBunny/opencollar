@@ -105,17 +105,39 @@ public class JsonScanTest {
     }
 
     @Test
-    void carriageReturnAndTabStillPassThroughRaw() {
-        // KNOWN GAP, pinned so a fix is a deliberate change with this test
-        // updated alongside it. RFC 8259 forbids unescaped control characters
-        // below 0x20 inside a string, so a lock message pasted with Windows
-        // line endings yields "\\n" for the LF and a raw CR — an unparseable
-        // body, which the relay rejects rather than merely renders oddly.
-        assertEquals("a\rb", JsonScan.escape("a\rb"));
-        assertEquals("a\tb", JsonScan.escape("a\tb"));
-        // A CRLF paste: the LF half becomes the two characters \ and n, while
-        // the CR half survives as a raw 0x0D — which is what makes the body
-        // invalid rather than merely ugly.
-        assertEquals("a\r\\n", JsonScan.escape("a\r\n"));
+    void escapesEveryControlCharacterSoACrlfPasteStillProducesValidJson() {
+        // The failure this closes: esc() escaped the LF and left the CR raw, so
+        // a message pasted from a Windows editor made the whole body invalid
+        // (RFC 8259 forbids unescaped control characters below 0x20), and both
+        // consumers reject it — org.json on the Collar, strict json.loads on
+        // the relay. The Lion pressed Lock and nothing happened.
+        assertEquals("a\\r\\nb", JsonScan.escape("a\r\nb"));
+        assertEquals("a\\tb", JsonScan.escape("a\tb"));
+        assertEquals("a\\bb", JsonScan.escape("a\bb"));
+        assertEquals("a\\fb", JsonScan.escape("a\fb"));
+        assertEquals("a\\u0000b", JsonScan.escape("a" + (char) 0x00 + "b"),
+            "no short form for NUL — falls back to the \\uXXXX form");
+        assertEquals("a\\u001fb", JsonScan.escape("a" + (char) 0x1f + "b"),
+            "0x1F is the last character that must be escaped");
+    }
+
+    @Test
+    void leavesEverythingAtOrAboveZeroXTwentyAlone() {
+        // Byte-compatible with every body that already worked: only C0 changed.
+        assertEquals("a b", JsonScan.escape("a" + (char) 0x20 + "b"), "0x20 is the first character that passes through");
+        assertEquals("Bonne nuit, petit lapin éèê", JsonScan.escape("Bonne nuit, petit lapin éèê"));
+        assertEquals("🐰", JsonScan.escape("🐰"), "surrogate pairs survive intact");
+    }
+
+    @Test
+    void isValidJsonForEveryControlCharacter() {
+        // The property that actually matters, asserted end to end rather than
+        // character by character: whatever goes in, the body parses back out
+        // to exactly what went in.
+        StringBuilder nasty = new StringBuilder("lock: ");
+        for (char c = 0; c < 0x21; c++) nasty.append(c);
+        nasty.append("\"quoted\" and a \\ backslash");
+        String body = "{\"message\":\"" + JsonScan.escape(nasty.toString()) + "\"}";
+        assertEquals(nasty.toString(), new org.json.JSONObject(body).getString("message"));
     }
 }

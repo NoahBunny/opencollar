@@ -145,6 +145,31 @@ def test_every_button_on_the_main_screen_does_something():
     assert not orphans, "buttons in activity_main.xml that no code references:\n  " + "\n  ".join(orphans)
 
 
+def test_ui_automation_scripts_do_not_target_deleted_views():
+    """UI scripts address views as `com.pkg:id/name` strings, which drift out of
+    sync exactly like the Java lookups do — and more quietly, because these are
+    shelved behind `UI_TESTS=1` and a Waydroid rig, so nothing runs them for
+    months at a time. They are kept as the record of the intended flow; a record
+    naming a view that no longer exists is worse than no record.
+
+    Found the hard way: the 83 reorganisation deleted `btn_setup`, and
+    `tests/ui/test_pair_direct.py` went on driving the pair flow through it.
+    """
+    pkg_to_app = {"com.focusctl": "controller", "com.bunnytasker": "companion", "com.focuslock": "slave"}
+    resources = {app: _resources(app) for app in APPS}
+    pattern = re.compile(r'"(com\.[a-z]+):id/([A-Za-z0-9_]+)"')
+    stale = []
+    for script in sorted((REPO_ROOT / "tests").rglob("*.py")) + sorted((REPO_ROOT / "staging").rglob("*.py")):
+        if script.name == Path(__file__).name:
+            continue
+        for lineno, line in enumerate(script.read_text(encoding="utf-8").splitlines(), 1):
+            for pkg, name in pattern.findall(line):
+                app = pkg_to_app.get(pkg)
+                if app and name not in resources[app]["id"]:
+                    stale.append(f"  {script.relative_to(REPO_ROOT)}:{lineno} — {pkg}:id/{name} no longer exists")
+    assert not stale, "UI scripts targeting views that were deleted or renamed:\n" + "\n".join(stale)
+
+
 @pytest.mark.parametrize("app", APPS)
 def test_no_duplicate_ids_within_one_layout(app):
     """Two views sharing an id in one layout makes findViewById order-dependent

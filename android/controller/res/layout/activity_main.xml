@@ -233,6 +233,13 @@
             <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="🎭  MODE" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="6dp" android:layout_marginTop="4dp" />
             <Spinner android:id="@+id/mode_spinner" android:layout_width="match_parent" android:layout_height="44dp" android:backgroundTint="#333" android:layout_marginBottom="12dp" />
 
+            <!-- The Compliment mode's only parameter, so it belongs with the
+                 mode rather than among the modifiers. Revealed by
+                 refreshModeParams() when that mode is selected; hidden
+                 otherwise, so the other eight modes do not carry a field that
+                 does nothing for them. -->
+            <EditText android:id="@+id/compliment_prompt" android:layout_width="match_parent" android:layout_height="50dp" android:hint="Compliment to type to unlock" android:textColor="#e0e0e0" android:textColorHint="#3a3a4a" android:textSize="14sp" android:background="#111118" android:paddingLeft="16dp" android:paddingRight="16dp" android:inputType="text" android:layout_marginBottom="12dp" android:visibility="gone" />
+
             <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="4dp" />
 
             <!-- ── MODIFIERS — collapsed; the summary lists what is on ── -->
@@ -255,7 +262,6 @@
                     <View android:layout_width="0dp" android:layout_weight="1" android:layout_height="1dp" />
                 </LinearLayout>
 
-                <EditText android:id="@+id/compliment_prompt" android:layout_width="match_parent" android:layout_height="50dp" android:hint="Compliment to type to unlock" android:textColor="#e0e0e0" android:textColorHint="#3a3a4a" android:textSize="14sp" android:background="#111118" android:paddingLeft="16dp" android:paddingRight="16dp" android:inputType="text" android:layout_marginBottom="12dp" />
             </LinearLayout>
 
             <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />

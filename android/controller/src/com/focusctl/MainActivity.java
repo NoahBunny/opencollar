@@ -164,6 +164,7 @@ public class MainActivity extends Activity {
     // which is the naming problem this reorganisation exists to fix.
     private View pageLock, pageRules, pageMoney, pageInbox;
     private Button tabLock, tabRules, tabMoney, tabInbox;
+    private static final int TAB_MONEY = 2;
     private static final int TAB_INBOX = 3;
 
     @Override
@@ -254,7 +255,7 @@ public class MainActivity extends Activity {
         tabInbox = (Button) findViewById(getId("tab_inbox"));
         tabLock.setOnClickListener(v -> selectTab(0));
         tabRules.setOnClickListener(v -> selectTab(1));
-        tabMoney.setOnClickListener(v -> selectTab(2));
+        tabMoney.setOnClickListener(v -> selectTab(TAB_MONEY));
         tabInbox.setOnClickListener(v -> selectTab(TAB_INBOX));
 
         // ── Kebab: setup, administration and teardown, off the tabs ──
@@ -279,6 +280,24 @@ public class MainActivity extends Activity {
         ArrayAdapter<String> modeAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, MODES);
         modeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         modeSpinner.setAdapter(modeAdapter);
+        // The Compliment prompt is that mode's ONLY parameter, so it appears
+        // when the mode does. It previously sat inside the collapsed MODIFIERS
+        // section, where picking "Compliment" showed no field at all: the Lion
+        // locked, buildLockJson omitted "compliment", and the Collar fell
+        // through to a basic lock with no unlock condition — enforcement
+        // quietly weaker than what was selected, with nothing saying so.
+        modeSpinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) {
+                refreshModeParams();
+            }
+
+            @Override
+            public void onNothingSelected(android.widget.AdapterView<?> parent) {
+                refreshModeParams();
+            }
+        });
+        refreshModeParams();
 
         // Wiring mirrors the tabs, so "which screen is this control on?" is
         // answerable by reading one method instead of scanning 90 lines of
@@ -318,6 +337,7 @@ public class MainActivity extends Activity {
                 i == index ? 0xFF2a2510 : 0xFF111118));
             tabs[i].setTextColor(i == index ? 0xFFDAA520 : 0xFF555555);
         }
+        if (index == TAB_MONEY) refreshMoney();
         if (index == TAB_INBOX) { refreshInbox(); markLionRead(); updateE2eeWarning(); fetchBunnyPubkey(); }
     }
 
@@ -3059,6 +3079,12 @@ public class MainActivity extends Activity {
     }
 
     // PIN auth removed — RSA signatures only
+    /** Show only the parameters the selected mode actually uses. */
+    private void refreshModeParams() {
+        View comp = findViewById(getId("compliment_prompt"));
+        if (comp != null) comp.setVisibility("compliment".equals(selectedMode()) ? View.VISIBLE : View.GONE);
+    }
+
     private String selectedMode() { int pos = modeSpinner.getSelectedItemPosition(); return pos >= 0 ? MODE_KEYS[pos] : "basic"; }
 
     // ── Actions ──
@@ -4751,6 +4777,28 @@ public class MainActivity extends Activity {
     }
 
     // ── Inbox ──
+
+    /** Money tab: subscription state and payment history.
+     *
+     *  <p>Both widgets used to live on the Inbox page, where refreshInbox()
+     *  filled them. Moving them to Money in 83 left their only refresh trigger
+     *  behind: landing on Money showed the layout's "No subscription active"
+     *  default and an empty history no matter what was actually true, until the
+     *  Lion happened to open Inbox or switch bunny slots. Nothing failed and
+     *  nothing logged — the widgets were simply never written to.
+     *
+     *  <p>Fetches only what those two need; the message thread and device cards
+     *  stay on the Inbox path. */
+    private void refreshMoney() {
+        executor.execute(() -> {
+            String meshResp = currentStatusJson();
+            String ledgerResp = meshGet("/mesh/ledger?limit=20");
+            handler.post(() -> {
+                updateSubStatus(meshResp);
+                updatePaymentHistory(ledgerResp);
+            });
+        });
+    }
 
     private void refreshInbox() {
         if (deviceCardsContainer == null) return;
