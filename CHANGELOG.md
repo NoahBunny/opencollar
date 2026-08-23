@@ -8,6 +8,26 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-23 the mesh id was the wake-up channel ───────── -->
+
+### Fixed — a leaked mesh id no longer leaks the wake-up feed
+
+- **The ntfy topic was `focuslock-{mesh_id}`.** ntfy topics are world-readable
+  and world-writable with no registration, so the mesh id *was* the channel:
+  anywhere one had been written down — including this changelog, which spelled
+  out `https://ntfy.sh/focuslock-DNfs4xCZM-HY` in full — published that mesh's
+  lock and unlock timing to anyone who read it, and handed them a way to inject
+  spurious wakes. Payload is only `{"v": N}`, so no content leaked; timing did.
+- **A derived topic cannot be rotated.** That was the real defect. The relay now
+  stores a random topic per mesh, and `scripts/rotate-ntfy-topic.sh` mints a new
+  one whenever the old one is suspect.
+- **Nodes learn it over a node-signed route**, not an `auth_token` one: the token
+  is the Lion's, and the collar is exactly the node that needs the topic and
+  holds no token. A stranger with the mesh id gets 403.
+- **Back-compat on both sides.** A mesh that has never rotated still resolves to
+  the derived topic, and a client whose relay predates the route keeps the one it
+  derived — so upgrading either half alone changes nothing.
+
 <!-- ───────── 2026-08-23 published to F-Droid + GitHub ───────── -->
 
 ### Released — Lion's Share 83, The Collar 84, Bunny Tasker 64
