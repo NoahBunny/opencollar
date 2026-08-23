@@ -1,5 +1,5 @@
 {
-  "passed": 75,
+  "passed": 87,
   "failed": 2,
   "results": [
     {
@@ -154,6 +154,12 @@
     },
     {
       "row": "3.6",
+      "check": "Rules has btn_veneration",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6",
       "check": "Rules has btn_deadline_task",
       "ok": true,
       "detail": ""
@@ -217,6 +223,72 @@
       "check": "switching away hides it again",
       "ok": true,
       "detail": ""
+    },
+    {
+      "row": "3.6a",
+      "check": "veneration picker opens",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6a",
+      "check": "offers Anything across all 144",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6a",
+      "check": "offers category Ownership & belonging",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6a",
+      "check": "offers category Obedience",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6a",
+      "check": "offers category Long-form",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6a",
+      "check": "draws a task with its id and suggested reps",
+      "ok": true,
+      "detail": "ven-003  \u00b7  suggested 5 reps"
+    },
+    {
+      "row": "3.6a",
+      "check": "offers another draw",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6a",
+      "check": "drawing again gives a different task",
+      "ok": true,
+      "detail": "ven-003  \u00b7  suggested 5 reps -> ven-010  \u00b7  suggested 3 reps"
+    },
+    {
+      "row": "3.6a",
+      "check": "task text landed in the writing field",
+      "ok": true,
+      "detail": "I am Theirs. My time is Theirs to spend, my "
+    },
+    {
+      "row": "3.6a",
+      "check": "suggested reps landed",
+      "ok": true,
+      "detail": "3"
+    },
+    {
+      "row": "3.6a",
+      "check": "random caps switched on with it",
+      "ok": true,
+      "detail": "the catalogue's capitalisation IS the enforced form"
     },
     {
       "row": "3.9",

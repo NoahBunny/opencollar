@@ -31,7 +31,9 @@ DUMP = """<?xml version='1.0' encoding='UTF-8'?>
     <node index="3" text="Lock all devices" resource-id="com.focusctl:id/btn_lock" class="android.widget.Button" enabled="true" bounds="[20,900][1060,960]" />
     <node index="4" text="" resource-id="com.focusctl:id/message_input" class="android.widget.EditText" enabled="true" bounds="[20,500][1060,550]" />
     <node index="5" text="Taunt" resource-id="com.focusctl:id/toggle_shame" class="android.widget.ToggleButton" checked="true" enabled="true" bounds="[20,600][350,642]" />
-    <node index="6" text="Mute" resource-id="com.focusctl:id/toggle_mute" class="android.widget.ToggleButton" checked="false" enabled="true" bounds="[360,600][690,642]" />
+    <node index="6" text="Ownership &amp; belonging" resource-id="" class="android.widget.TextView" bounds="[20,700][690,742]" />
+    <node index="7" text="Hi, bunny &#128156;" resource-id="" class="android.widget.TextView" bounds="[20,760][690,802]" />
+    <node index="8" text="Mute" resource-id="com.focusctl:id/toggle_mute" class="android.widget.ToggleButton" checked="false" enabled="true" bounds="[360,600][690,642]" />
   </node>
 </hierarchy>"""
 
@@ -43,8 +45,16 @@ def nodes():
 
 class TestParsing:
     def test_reads_every_node_that_has_bounds(self, nodes):
-        # The root FrameLayout has bounds too, so 7 nodes, not 6.
-        assert len(nodes) == 7
+        # The root FrameLayout has bounds too.
+        assert len(nodes) == 9
+
+    def test_resolves_xml_entities_in_labels(self):
+        """uiautomator escapes attribute values. Matching the raw form makes a
+        control that is plainly on screen read as missing — which is exactly
+        what happened to the "Ownership & belonging" category."""
+        ns = parse_nodes(DUMP)
+        assert match(ns, "Ownership & belonging") is not None
+        assert match(ns, "Hi, bunny 💜") is not None
 
     def test_computes_the_centre_point_to_tap(self, nodes):
         lock = match(nodes, "id/btn_lock")

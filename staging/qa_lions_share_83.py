@@ -139,6 +139,7 @@ def step_rules_tab(d: UiDevice) -> None:
         "task_input",
         "task_reps",
         "btn_task",
+        "btn_veneration",
         "btn_deadline_task",
         "btn_set_geofence",
         "btn_confine_home",
@@ -194,6 +195,63 @@ def step_compliment_reveal(d: UiDevice) -> None:
     d.tap("Basic lock")
     time.sleep(1.2)
     check("3.10b", "switching away hides it again", "compliment_prompt" not in ids_on_screen(d))
+
+
+def step_veneration(d: UiDevice) -> None:
+    """The Lion draws a preloaded task instead of composing one."""
+    goto_tab(d, "tab_rules")
+    if not d.tap("id/btn_veneration", settle=3):
+        check("3.6a", "veneration picker opens", False)
+        return
+
+    check("3.6a", "veneration picker opens", d.visible("Draw a veneration"))
+    check("3.6a", "offers Anything across all 144", d.visible("Anything  (144)"))
+    for title in ("Ownership & belonging", "Obedience", "Long-form"):
+        check("3.6a", f"offers category {title}", d.visible(title))
+
+    if not d.tap("Ownership & belonging", settle=3):
+        check("3.6a", "a category is selectable", False)
+        d.back()
+        return
+    drawn = [n["text"] for n in d.nodes() if n["text"].startswith("ven-")]
+    check("3.6a", "draws a task with its id and suggested reps", bool(drawn), drawn[0] if drawn else "none")
+    check("3.6a", "offers another draw", d.visible("Draw another"))
+
+    first = drawn[0] if drawn else ""
+    d.tap("Draw another", settle=3)
+    again = [n["text"] for n in d.nodes() if n["text"].startswith("ven-")]
+    check(
+        "3.6a",
+        "drawing again gives a different task",
+        bool(again) and again[0] != first,
+        f"{first} -> {again[0] if again else 'none'}",
+    )
+
+    if not d.tap("Use it", settle=3):
+        check("3.6a", "accepting fills the task", False)
+        d.back()
+        return
+    task = d.find("id/task_input")
+    reps = d.find("id/task_reps")
+    rand = d.find("id/task_randomize")
+    check(
+        "3.6a",
+        "task text landed in the writing field",
+        task is not None and len(task["text"]) > 10,
+        (task or {}).get("text", "")[:44],
+    )
+    check(
+        "3.6a",
+        "suggested reps landed",
+        reps is not None and reps["text"].strip().isdigit(),
+        (reps or {}).get("text", ""),
+    )
+    check(
+        "3.6a",
+        "random caps switched on with it",
+        rand is not None and rand["checked"],
+        "the catalogue's capitalisation IS the enforced form",
+    )
 
 
 def step_money_tab(d: UiDevice) -> None:
@@ -323,6 +381,7 @@ STEPS = [
     ("lock", step_lock_tab),
     ("rules", step_rules_tab),
     ("compliment", step_compliment_reveal),
+    ("veneration", step_veneration),
     ("money", step_money_tab),
     ("inbox", step_inbox_tab),
     ("kebab", step_kebab),

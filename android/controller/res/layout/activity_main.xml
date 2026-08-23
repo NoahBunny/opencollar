@@ -277,6 +277,12 @@
                 <Button android:id="@+id/btn_task" android:layout_width="0dp" android:layout_weight="1" android:layout_height="44dp" android:text="TASK" android:textSize="13sp" android:backgroundTint="#2244aa" android:textColor="#fff" android:minWidth="0dp" android:minHeight="0dp" android:singleLine="true" />
             </LinearLayout>
 
+            <!-- 144 preloaded venerations, drawn by category. Sits with the
+                 writing task because that is what it fills in — the Lion picks
+                 a flavour instead of composing a line, and the exact string
+                 (capitalised pronouns included) goes across without retyping. -->
+            <Button android:id="@+id/btn_veneration" android:layout_width="match_parent" android:layout_height="42dp" android:text="🎲 Draw a veneration…" android:textSize="12sp" android:backgroundTint="#2a2510" android:textColor="#DAA520" android:minWidth="0dp" android:minHeight="0dp" android:layout_marginBottom="4dp" />
+
             <Button android:id="@+id/btn_deadline_task" android:layout_width="match_parent" android:layout_height="42dp" android:text="⏰ Deadline Task" android:textSize="12sp" android:backgroundTint="#2a1a2a" android:textColor="#cc88cc" android:minWidth="0dp" android:minHeight="0dp" android:layout_marginBottom="12dp" />
 
             <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />

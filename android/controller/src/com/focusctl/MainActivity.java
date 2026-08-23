@@ -371,6 +371,7 @@ public class MainActivity extends Activity {
     /** RULES — what the bunny will have to do to get out. */
     private void wireRulesTab() {
         findViewById(getId("btn_task")).setOnClickListener(v -> doTask());
+        findViewById(getId("btn_veneration")).setOnClickListener(v -> doDrawVeneration());
         try { findViewById(getId("btn_deadline_task")).setOnClickListener(v -> doDeadlineTask()); } catch (Exception e) {}
         findViewById(getId("btn_set_geofence")).setOnClickListener(v -> doSetGeofence());
         btnConfineHome = (android.widget.Button) findViewById(getId("btn_confine_home"));
@@ -3082,6 +3083,85 @@ public class MainActivity extends Activity {
     }
 
     // PIN auth removed — RSA signatures only
+    // The catalogue is parsed once and kept — 144 tasks is nothing to hold, and
+    // re-reading res/raw on every draw would make "another" feel slower than it
+    // is. Null until the first draw, and again if the resource is unreadable.
+    private VenerationTasks venerations;
+    private final Random venerationRng = new Random();
+
+    /** Load the shipped veneration catalogue, or null with the reason shown. */
+    private VenerationTasks loadVenerations() {
+        if (venerations != null) return venerations;
+        try (java.io.InputStream in =
+                getResources().openRawResource(getResources().getIdentifier("veneration_tasks", "raw", getPackageName()))) {
+            java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+            byte[] chunk = new byte[8192];
+            int n;
+            while ((n = in.read(chunk)) > 0) buf.write(chunk, 0, n);
+            venerations = VenerationTasks.parse(buf.toString("UTF-8"));
+            return venerations;
+        } catch (Exception e) {
+            android.util.Log.w("focusctl", "veneration catalogue unreadable", e);
+            setStatus("Veneration list unavailable: " + e.getClass().getSimpleName());
+            return null;
+        }
+    }
+
+    /** Pick a category, then draw from it. */
+    private void doDrawVeneration() {
+        VenerationTasks cat = loadVenerations();
+        if (cat == null) return;
+        java.util.List<VenerationTasks.Category> cats = cat.categories();
+        String[] labels = new String[cats.size() + 1];
+        final String[] keys = new String[cats.size() + 1];
+        labels[0] = "Anything  (" + cat.size() + ")";
+        keys[0] = VenerationTasks.ANY;
+        for (int i = 0; i < cats.size(); i++) {
+            labels[i + 1] = cats.get(i).title + "  (" + cats.get(i).count + ")";
+            keys[i + 1] = cats.get(i).key;
+        }
+        new AlertDialog.Builder(this)
+            .setTitle("Draw a veneration")
+            .setItems(labels, (d, which) -> showDrawnVeneration(keys[which]))
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    /** Show one drawn task, with the choice to take it or draw again.
+     *
+     *  <p>Nothing is written to the task field until the Lion accepts: a picker
+     *  that overwrites what They already typed the moment it opens is a picker
+     *  They will stop opening. */
+    private void showDrawnVeneration(String categoryKey) {
+        VenerationTasks cat = loadVenerations();
+        if (cat == null) return;
+        VenerationTasks.Task t = cat.draw(categoryKey, venerationRng);
+        if (t == null) {
+            setStatus("No tasks in that category");
+            return;
+        }
+        new AlertDialog.Builder(this)
+            .setTitle(t.id + "  ·  suggested " + t.reps + " reps")
+            .setMessage(t.text)
+            .setPositiveButton("Use it", (d, w) -> applyVeneration(t))
+            .setNeutralButton("Draw another", (d, w) -> showDrawnVeneration(categoryKey))
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    /** Drop a drawn task into the writing-task fields. */
+    private void applyVeneration(VenerationTasks.Task t) {
+        taskInput.setText(t.text);
+        taskRepsInput.setText(String.valueOf(t.reps));
+        // Random caps ON, deliberately. Every one of these capitalises Their
+        // pronouns mid-sentence, and the catalogue's own pronoun_rule says the
+        // strings ARE the enforced form; with randcaps off the lockscreen would
+        // accept a lowercase "them", which is the one thing these tasks exist
+        // to make the bunny write out correctly.
+        if (taskRandomize != null) taskRandomize.setChecked(true);
+        setStatus("Loaded " + t.id + " — " + t.reps + " reps. Press TASK to send.");
+    }
+
     /** Show only the parameters the selected mode actually uses. */
     private void refreshModeParams() {
         View comp = findViewById(getId("compliment_prompt"));

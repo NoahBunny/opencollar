@@ -21,6 +21,7 @@ see `tests/test_uiauto.py`.
 
 from __future__ import annotations
 
+import html
 import re
 import subprocess
 import time
@@ -30,8 +31,16 @@ NODE_RE = re.compile(r"<node[^>]*>")
 
 
 def _attr(tag: str, name: str) -> str:
+    """One attribute, with XML entities resolved.
+
+    `uiautomator dump` escapes attribute values, so a label reading
+    "Ownership & belonging" on screen arrives as "Ownership &amp; belonging",
+    and an emoji as "&#128156;". Matching against the raw form silently fails to
+    find controls that are plainly visible — which is how a category the picker
+    was offering read as missing.
+    """
     m = re.search(rf'{name}="([^"]*)"', tag)
-    return m.group(1) if m else ""
+    return html.unescape(m.group(1)) if m else ""
 
 
 def parse_nodes(xml: str) -> list[dict]:

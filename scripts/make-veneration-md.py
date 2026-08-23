@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Regenerate veneration-tasks.md from veneration-tasks.json.
+"""Regenerate the derived views of veneration-tasks.json.
+
+Two outputs, one source:
+  * `veneration-tasks.md`                              — a reading view for a phone
+  * `android/controller/res/raw/veneration_tasks.json` — what Lion's Share ships
 
 The JSON is the source of truth; the markdown is a reading view for a phone.
 They were kept in step by hand, which works right up until it doesn't -- a task
@@ -22,6 +26,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "veneration-tasks.json"
 DEST = ROOT / "veneration-tasks.md"
+# Lion's Share reads this at runtime to offer a random task by category. It is
+# DERIVED, never hand-edited: a second copy of 144 strings that drifts is a
+# task the Lion sets from one and the lockscreen enforces from the other, and
+# with randcaps on "slightly different" is a task the bunny cannot satisfy.
+APP_DEST = ROOT / "android" / "controller" / "res" / "raw" / "veneration_tasks.json"
 
 # Display names for the category keys, in the order they appear in the document.
 SECTIONS = [
@@ -44,6 +53,33 @@ Each entry drops straight into `task_text`. `task_randcaps: 1` makes the lockscr
 enforce capitalisation exactly — including Their pronouns — so treat these strings as
 the enforced form. Pair a gated lock with an `unlock_at` so there is a time backstop.
 """
+
+
+def render_app(doc):
+    """The app-facing view: minified, prose stripped, display titles baked in.
+
+    Carrying the titles here means the app does not keep its own copy of
+    SECTIONS — the order and wording of the categories are decided in exactly
+    one place, and the picker cannot disagree with the document the Lion reads.
+    """
+    tasks = doc["tasks"]
+    cats = []
+    out_tasks = []
+    for key, title in SECTIONS:
+        group = sorted((t for t in tasks if t["category"] == key), key=lambda t: t["id"])
+        if not group:
+            continue
+        cats.append({"key": key, "title": title, "count": len(group)})
+        for t in group:
+            out_tasks.append(
+                {
+                    "id": t["id"],
+                    "category": key,
+                    "reps": int(t["suggested_task_reps"]),
+                    "text": t["task_text"],
+                }
+            )
+    return json.dumps({"categories": cats, "tasks": out_tasks}, ensure_ascii=False, separators=(",", ":")) + "\n"
 
 
 def render(doc):
@@ -70,16 +106,20 @@ def render(doc):
 
 def main():
     doc = json.loads(SRC.read_text(encoding="utf-8"))
-    rendered = render(doc)
+    outputs = [(DEST, render(doc)), (APP_DEST, render_app(doc))]
+
     if "--check" in sys.argv:
-        current = DEST.read_text(encoding="utf-8") if DEST.exists() else ""
-        if current != rendered:
-            print(f"{DEST.name} is stale — run: python3 scripts/make-veneration-md.py")
+        stale = [d.name for d, want in outputs if (d.read_text(encoding="utf-8") if d.exists() else "") != want]
+        if stale:
+            print(f"stale: {', '.join(stale)} — run: python3 scripts/make-veneration-md.py")
             return 1
-        print(f"{DEST.name} is up to date ({len(doc['tasks'])} tasks)")
+        print(f"up to date ({len(doc['tasks'])} tasks): {', '.join(d.name for d, _ in outputs)}")
         return 0
-    DEST.write_text(rendered, encoding="utf-8")
-    print(f"wrote {DEST.name} ({len(doc['tasks'])} tasks)")
+
+    for dest, want in outputs:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(want, encoding="utf-8")
+        print(f"wrote {dest.name} ({len(doc['tasks'])} tasks)")
     return 0
 
 

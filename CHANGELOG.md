@@ -8,6 +8,60 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-23 the Lion draws a task instead of retyping one ───────── -->
+
+### Added — 144 preloaded venerations, drawn by category, in Lion's Share
+
+- **The tasks existed; only the retyping did not.** `veneration-tasks.md` has held 144
+  written-out venerations since 2026-08-22, and the only way to use one was to read it and
+  type it into the writing-task field. Fine once, tedious nightly — and retyping is where
+  the danger sat: Lion's Share turns `task_randcaps` on for these, so the lockscreen
+  enforces capitalisation exactly, and a remembered "their" where the document says
+  "Their" is a task the bunny cannot satisfy and cannot argue with.
+- **Rules → 🎲 Draw a veneration…** offers *Anything (144)* plus the nine categories with
+  their counts — Ownership & belonging (20), Gratitude (16), Obedience (36), Service (15),
+  Discipline (15), Attention (16), Patience (10), Devotion (10), Long-form (6). Picking one
+  draws a task, shows its id and suggested reps, and offers **Draw another** before
+  anything is written. Nothing touches the task field until the Lion accepts: a picker that
+  overwrites what They already typed the moment it opens is one They stop opening.
+- **Accepting sets all three fields together** — text, the catalogue's suggested reps, and
+  Random caps ON. That last is deliberate rather than incidental: every task capitalises
+  Their pronouns mid-sentence and the catalogue's own `pronoun_rule` says the strings *are*
+  the enforced form, so leaving randcaps off would let the lockscreen accept a lowercase
+  "them" — the one thing these tasks exist to make the bunny write out correctly.
+- **`res/raw/veneration_tasks.json` is generated, never hand-edited.**
+  `scripts/make-veneration-md.py` now emits the app view alongside the markdown one, with
+  the category display titles baked in so the picker cannot disagree with the document the
+  Lion reads. 32 KB minified.
+- New `VenerationTasks.java` keeps parsing and drawing free of Android, the same shape as
+  `StatusCore` and `PollGate`, so both are unit-tested off a device. "Draw another" cannot
+  return the line it just gave (a picker that repeats reads as broken), a single-task
+  category still returns its one task, and an empty category yields null rather than
+  something the Lion did not choose.
+
+### Fixed — the generator's own drift check was never run
+
+- `make-veneration-md.py --check` has existed since the markdown view was added and
+  **nothing invoked it**. A drift guard nobody runs is not a guard. New
+  `tests/test_veneration_catalogue.py` runs it in CI and compares the shipped strings to
+  the source directly, so a hand-edit of `res/raw` fails even if the generator was re-run
+  afterwards. Also bounds the suggested reps: a long-form task at five reps is a different
+  punishment from the one the Lion thought They were setting.
+- A first draft of the Java test tried to police capitalisation directly — flag any
+  lowercase "them"/"their". It fired on `ven-011`, *"I built them and handed over the
+  keys"*, where **them** is the locks. That is the trap `CLAUDE.md` already records for
+  `collar-pronoun-check.sh`: a regex cannot tell the Lion from a courier. Replaced with a
+  character-exact comparison against the source, which needs no judgement.
+
+### Fixed — the UI driver could not see any label containing `&`
+
+- `uiautomator dump` XML-escapes attribute values, so "Ownership & belonging" arrives as
+  `Ownership &amp; belonging` and an emoji as `&#128156;`. `staging/uiauto.py` matched the
+  raw form, so a category the picker was plainly offering read as missing — and the failed
+  tap left a modal up, which then read as *every* later control being absent. Entities are
+  resolved on parse now, with a test.
+
+
 <!-- ───────── 2026-08-23 the tabs were named after power, not purpose ───────── -->
 
 ### Changed — Lion's Share tabs are named after what the Lion is doing (controller 83)

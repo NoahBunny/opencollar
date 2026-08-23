@@ -68,7 +68,7 @@ the tabs entirely into a kebab, and extracted two logic cores out of
 
 Run on a **wiped, freshly initialised Waydroid** (LineageOS 20 / Android 13,
 x86_64) at 1080x2400 @ 420dpi, driven by `staging/qa_lions_share_83.py` against
-a staging relay on the host. **75 passed, 2 failed.**
+a staging relay on the host. **87 passed, 2 failed** (re-run after the veneration picker landed).
 
 Set-up performed, for reproducibility:
 
@@ -90,6 +90,9 @@ reads `Taunt, Mute` after toggling them; picking **Compliment** reveals its
 field and switching away hides it; the duplicate clear is gone and the survivor
 asks first; the kebab carries its six entries with Payment Email correctly
 hidden (no homelab) and Release Forever still reachable and still confirming.
+Since the veneration picker landed it also draws a task by category, confirms
+"Draw another" gives a different one, and checks that accepting sets the text,
+the suggested reps and Random caps together.
 Screenshots of all four tabs in `docs/Screenshots/lions-share-83-*.png`.
 
 **The 2 failures are environment, not app.** Row 3.10d charges $5 and expects
