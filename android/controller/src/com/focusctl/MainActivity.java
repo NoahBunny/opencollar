@@ -5425,6 +5425,16 @@ public class MainActivity extends Activity {
         return (diff / 86_400_000) + "d ago";
     }
 
+    /** "3m ago" / "2h ago" / "5d ago" — a balance row without a time is a
+     *  charge the Lion cannot place against anything that happened. */
+    private String relativeTime(long ms) {
+        long secs = Math.max(0, (System.currentTimeMillis() - ms) / 1000);
+        if (secs < 60) return "just now";
+        if (secs < 3600) return (secs / 60) + "m ago";
+        if (secs < 86400) return (secs / 3600) + "h ago";
+        return (secs / 86400) + "d ago";
+    }
+
     private void updatePaymentHistory(String ledgerResp) {
         LinearLayout historyContainer = (LinearLayout) findViewById(getId("lion_payment_history"));
         if (historyContainer == null || ledgerResp == null) return;
@@ -5461,12 +5471,20 @@ public class MainActivity extends Activity {
                 try { amount = Double.parseDouble(amountStr); } catch (Exception e) {}
                 boolean isPayment = "payment".equals(type) || "prepay".equals(type) || "historical".equals(type);
                 boolean isReversal = "reversal".equals(type);
-                String prefix = isReversal ? "\u21ba $" : isPayment ? "\u2193 $" : "\u2191 $";
-                int color = isReversal ? 0xFFaa6644 : isPayment ? 0xFF44aa44 : 0xFFcc6644;
+                // "charge" and "credit" are what every balance movement records
+                // now; a credit (a clear, a streak bonus) reduces what is owed
+                // without anyone having paid, so it reads down but not green.
+                boolean isCredit = "credit".equals(type);
+                boolean reducesDebt = isPayment || isCredit;
+                String prefix = isReversal ? "\u21ba $" : reducesDebt ? "\u2193 $" : "\u2191 $";
+                int color = isReversal ? 0xFFaa6644 : isPayment ? 0xFF44aa44 : isCredit ? 0xFF88aa88 : 0xFFcc6644;
                 if ("historical".equals(type)) color = 0xFF6688aa;
+                long ets = 0;
+                try { ets = Long.parseLong(JsonScan.numStr(obj, "timestamp")); } catch (Exception ignored) {}
                 TextView tv = new TextView(this);
                 tv.setText(prefix + String.format("%.2f", Math.abs(amount)) + "  " + desc
-                    + (balStr != null ? "  |  bal: $" + balStr : ""));
+                    + (balStr != null && !balStr.isEmpty() ? "   \u2192 $" + balStr : "")
+                    + (ets > 0 ? "  " + relativeTime(ets) : ""));
                 tv.setTextColor(color);
                 tv.setTextSize(11);
                 tv.setPadding(0, 6, 0, 6);

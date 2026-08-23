@@ -1495,7 +1495,22 @@ class PaymentLedger:
                     total += e.get("amount", 0)
             return total
 
-    def add_entry(self, entry_type: str, amount: float, source: str = "", description: str = "") -> dict:
+    def add_entry(
+        self,
+        entry_type: str,
+        amount: float,
+        source: str = "",
+        description: str = "",
+        balance_after: float | None = None,
+    ) -> dict:
+        """Append one balance event.
+
+        `balance_after` is what the balance became once this entry was applied.
+        Both apps render it, so a row can say what the charge was AND where it
+        left things — without it the history is a list of deltas the reader has
+        to add up themselves. Optional because entries written before it existed
+        do not have one.
+        """
         with self.lock:
             # Dedup by source
             if source:
@@ -1509,6 +1524,8 @@ class PaymentLedger:
                 "description": description,
                 "timestamp": int(time.time() * 1000),
             }
+            if balance_after is not None:
+                entry["balance_after"] = round(float(balance_after), 2)
             self.entries.append(entry)
             self.save()
             return {"ok": True, "entry": entry}

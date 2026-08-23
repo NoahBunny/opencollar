@@ -2279,19 +2279,35 @@ public class MainActivity extends Activity {
                         double amount = e.optDouble("amount", 0);
                         String desc = e.optString("description", "");
                         long ets = e.optLong("timestamp", 0);
+                        String type = e.optString("type", "payment");
+
+                        // The ledger carries charges as well as payments now,
+                        // so the sign and colour have to come from the type. A
+                        // fine rendered "+$5" in green reads as money paid off
+                        // rather than money owed — the exact opposite.
+                        boolean owedMore = "charge".equals(type);
+                        boolean reversal = "reversal".equals(type);
+                        String sign = owedMore ? "+$" : "\u2212$";   // − for anything that reduces it
+                        int colour = owedMore ? 0xFFcc7755 : reversal ? 0xFFaa8844 : 0xFF66aa66;
+
+                        StringBuilder row = new StringBuilder();
+                        row.append(sign).append(String.format("%.2f", Math.abs(amount)));
+                        if (!desc.isEmpty()) row.append("  ").append(desc);
+                        if (e.has("balance_after")) {
+                            row.append("   \u2192 $").append(String.format("%.2f", e.optDouble("balance_after", 0)));
+                        }
+                        row.append("  ").append(formatRelativeTime(ets));
 
                         TextView tv = new TextView(MainActivity.this);
-                        tv.setText("+$" + String.format("%.2f", amount)
-                            + "  " + desc
-                            + "  " + formatRelativeTime(ets));
-                        tv.setTextColor(0xFF66aa66);
+                        tv.setText(row.toString());
+                        tv.setTextColor(colour);
                         tv.setTextSize(10);
                         tv.setPadding(0, 4, 0, 4);
                         paymentHistory.addView(tv);
                     }
                     if (entries.length() == 0) {
                         TextView tv = new TextView(MainActivity.this);
-                        tv.setText("No payments yet");
+                        tv.setText("Nothing on the balance yet");
                         tv.setTextColor(0xFF3a3a4a);
                         tv.setTextSize(11);
                         paymentHistory.addView(tv);

@@ -1820,7 +1820,11 @@ def check_desktop_heartbeats():
                                 _sanitize_log(hostname),
                                 silence_days,
                             )
-                            applied = _server_apply_order(mid, "add-paywall", {"amount": 50})
+                            applied = _server_apply_order(
+                                mid,
+                                "add-paywall",
+                                {"amount": 50, "reason": f"Silent for {silence_days} days"},
+                            )
                             if applied is None and mid == OPERATOR_MESH_ID:
                                 # Legacy ADB fallback for operator's pre-mesh-registry phones.
                                 pw_str = adb.get("focus_lock_paywall")
@@ -1846,6 +1850,69 @@ def check_desktop_heartbeats():
 # ── Subscription auto-charge (server-side, per-mesh) ──
 
 
+# ── Balance history ───────────────────────────────────────────────────
+#
+# Every charge used to move the balance and leave no trace. The ledger held
+# payments and reversals only, so both apps' "payment history" was a one-sided
+# account: the bunny watched what they owed climb with nothing saying which
+# fine, tribute, escape or manual charge did it, and the Lion had the same
+# blind spot in reverse.
+#
+# _server_apply_order is the single choke point — mesh_apply_order has exactly
+# one caller — so recording here catches every action that moves money,
+# including ones added later that nobody remembers to instrument.
+
+# Actions that write their own ledger entry. Recording them again here would
+# double-count the same movement.
+_SELF_LEDGERED_ACTIONS = {"payment-received"}
+
+# What the Lion and the bunny should read. Falls back to the action name, so an
+# unmapped action still records a legible row instead of vanishing.
+_LEDGER_DESCRIPTIONS = {
+    "add-paywall": "Added by the Lion",
+    "clear-paywall": "Balance cleared",
+    "tribute-charge": "Daily tribute",
+    "fine-charge": "Recurring fine",
+    "escape-penalty": "Escape attempt",
+    "app-launch-penalty": "Opened a blocked app while locked",
+    "sit-boy-recorded": "SMS sit-boy",
+    "compound-interest-tick": "Compound interest",
+    "subscribe": "Subscription",
+    "unsubscribe": "Subscription ended",
+}
+
+
+def _paywall_of(orders) -> float:
+    try:
+        return float(orders.get("paywall", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _record_balance_change(mesh_id, action, params, before, after):
+    """Append a ledger row for a balance movement, if there was one."""
+    delta = round(after - before, 2)
+    if not delta:
+        return
+    reason = ""
+    if isinstance(params, dict):
+        reason = str(params.get("reason", "") or "").strip()
+    description = reason or _LEDGER_DESCRIPTIONS.get(action, action.replace("-", " ").capitalize())
+    try:
+        _get_payment_ledger(mesh_id).add_entry(
+            entry_type="charge" if delta > 0 else "credit",
+            amount=abs(delta),
+            source="",  # no dedup key: every charge is its own event
+            description=description,
+            balance_after=after,
+        )
+    except Exception:
+        # Never let bookkeeping fail the order it is describing: the charge
+        # itself has already landed, and a missing history row is a smaller
+        # harm than an enforcement action that reports failure.
+        logger.exception("ledger: could not record %s on %s", action, mesh_id)
+
+
 def _server_apply_order(mesh_id, action, params):
     """Apply an order server-side and propagate via vault blob.
     Analogous to the /admin/order path but invoked from background threads.
@@ -1853,12 +1920,15 @@ def _server_apply_order(mesh_id, action, params):
     orders = _orders_registry.get(mesh_id)
     if orders is None:
         return None
+    balance_before = _paywall_of(orders)
     try:
         result = mesh_apply_order(action, params, orders)
         orders.bump_version()
     except Exception:
         logger.exception("server apply %s on %s failed", action, mesh_id)
         return None
+    if action not in _SELF_LEDGERED_ACTIONS:
+        _record_balance_change(mesh_id, action, params, balance_before, _paywall_of(orders))
     try:
         _admin_order_to_vault_blob(action, params, mesh_id)
     except Exception as e:
@@ -3693,7 +3763,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             # on the mesh's orders doc + propagates via vault blob to any
             # vault-mode slaves. For the operator mesh this also keeps the
             # ADB write (server is single writer — no legacy dual-write).
-            applied = _server_apply_order(mesh_id, "add-paywall", {"amount": amount}) if mesh_id else None
+            applied = (
+                _server_apply_order(mesh_id, "add-paywall", {"amount": amount, "reason": reason}) if mesh_id else None
+            )
             if applied is None:
                 # Mesh unknown — fall back to operator ADB write for
                 # backward compat with pre-mesh-aware collars.
@@ -3920,7 +3992,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         return
                     dt["used"] = True
                 target_mesh = data.get("mesh_id", "") or OPERATOR_MESH_ID
-                result = _server_apply_order(target_mesh, "add-paywall", {"amount": amount})
+                result = _server_apply_order(target_mesh, "add-paywall", {"amount": amount, "reason": "Disposal token"})
                 if result:
                     self.respond(200, {"ok": True, "disposal": True, "result": result})
                 else:
@@ -6075,7 +6147,19 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     count,
                     amount,
                 )
-                applied = _server_apply_order(mesh_id, "add-paywall", {"amount": amount})
+                # The kind is the whole point of the row: "consent declined" or
+                # "desktop tamper #3" is what the balance history should say,
+                # not "added by the Lion" for something They did not do.
+                PENALTY_REASONS = {
+                    "veneration-paste": "Pasted a veneration instead of typing it",
+                    "consent-decline": "Consent declined",
+                    "desktop-tamper": "Desktop tamper" + (f" #{attempt_no}" if attempt_no else ""),
+                }
+                applied = _server_apply_order(
+                    mesh_id,
+                    "add-paywall",
+                    {"amount": amount, "reason": PENALTY_REASONS.get(kind, kind)},
+                )
                 self.respond(
                     200,
                     {

@@ -8,6 +8,44 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-23 the balance moved and nothing said why ───────── -->
+
+### Added — every balance movement records what caused it
+
+- **The ledger was a one-sided account.** It held payments and reversals only:
+  `_apply_payment_reversal` and the IMAP credit path were its two production writers
+  (`handle_ledger_entry` is reachable from tests alone). Every *charge* — manual `+$`,
+  daily tribute, recurring fine, escape penalty, app-launch penalty, SMS sit-boy,
+  compound interest, desktop tamper, consent decline — moved the balance through
+  `mesh_apply_order` and recorded nothing. The bunny watched what they owed climb with
+  nothing saying which charge did it, and the Lion had the same blind spot in reverse.
+- **Recorded at the choke point, not per action.** `mesh_apply_order` has exactly one
+  caller, so `_server_apply_order` now diffs the paywall across every order and appends a
+  row when it moved. A charging action added later is recorded whether or not anyone
+  remembers to instrument it — the property the tests pin, because the list of actions is
+  the part that rots. `payment-received` is excluded: it writes its own row first, and
+  recording the movement again would show the bunny paying twice for one payment.
+- **Rows say what happened, and where it left things.** A `reason` on the order takes
+  precedence, so the callers that know supply it — "Desktop tamper #3", "Consent declined",
+  "Pasted a veneration instead of typing it", "Silent for 4 days", "Disposal token". An
+  action with no reason falls back to a readable name ("Recurring fine", "Daily tribute"),
+  and one in neither table still records rather than vanishing. `PaymentLedger.add_entry`
+  takes an optional `balance_after` so a row can state the resulting balance instead of
+  leaving the reader to add up deltas.
+- **Bookkeeping cannot fail enforcement.** The charge has already landed by the time the
+  row is written, so a ledger failure is logged and swallowed: a missing history line is a
+  smaller harm than an enforcement action reporting failure.
+
+### Fixed — Bunny Tasker rendered every ledger row as money paid
+
+- Its history hardcoded `+$` and green, which was correct while the ledger held only
+  payments. With charges in it, a $5 fine would have read as **five dollars paid off** —
+  the exact opposite of what happened. Sign and colour now come from the row type: charges
+  climb in amber, payments fall in green, credits (a clear, a bonus — a reduction nobody
+  paid for) fall in a muted green, reversals in gold. Both apps show the resulting balance
+  and a relative time; Lion's Share had neither.
+
+
 <!-- ───────── 2026-08-23 the Lion draws a task instead of retyping one ───────── -->
 
 ### Added — 144 preloaded venerations, drawn by category, in Lion's Share
