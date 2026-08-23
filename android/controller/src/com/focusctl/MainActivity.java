@@ -152,16 +152,11 @@ public class MainActivity extends Activity {
     // We remember what we just commanded and keep rendering it until the snapshot
     // confirms it (or the window lapses, in which case reality wins — the order
     // genuinely didn't land). See updateLiveStatus() for the reconciliation.
-    private static final long OPTIMISTIC_WINDOW_MS = 45000;
-    private long optimisticUntilMs = 0;       // 0 = no pending optimistic state
-    private boolean optimisticHasLock = false; // did this order change lock state?
-    private boolean optimisticLocked = false;  // expected lock state
-    private long optimisticTimerEndMs = 0;     // expected timer end (0 = none/indefinite)
-    private int optimisticPaywall = -1;        // expected balance (-1 = no expectation)
-    private boolean optimisticPaywallRaise = false; // expect balance to rise (vs. drop)
-    private int optimisticGen = 0;             // bumped each beginOptimistic; a stale
-                                               // cancelOptimistic(gen) is ignored so a
-                                               // late-failing order can't cancel a newer one
+    // The "keep showing what the Lion just commanded" machine. Lifted into
+    // OptimisticState so the rule that decides whether the Lion is shown the
+    // truth about a lock and a balance can be tested off-device at all.
+    private final OptimisticState optimistic = new OptimisticState();
+
     private volatile String lastSnapshotJson = null; // last real runtime snapshot rendered
 
     // Tab views. Named after what the tab is FOR — the old page_simple /
@@ -658,26 +653,13 @@ public class MainActivity extends Activity {
         handler.postDelayed(timerTicker, 1000);
     }
 
-    private boolean parseJsonBool(String json, String key) {
-        String search = "\"" + key + "\":";
-        int i = json.indexOf(search);
-        if (i < 0) return false;
-        String rest = json.substring(i + search.length()).trim();
-        return rest.startsWith("true");
-    }
-
     /** Record what the Lion just commanded so the UI keeps showing it until the
      *  Bunny's runtime snapshot confirms (see the optimistic fields). Call on the
      *  UI thread before firing the network request. paywallTarget = -1 means "no
      *  balance expectation"; hasLock = false means "don't force a lock state". */
     private int beginOptimistic(boolean hasLock, boolean locked, long timerEndMsExpected, int paywallTarget) {
-        optimisticHasLock = hasLock;
-        optimisticLocked = locked;
-        optimisticTimerEndMs = timerEndMsExpected;
-        optimisticPaywall = paywallTarget;
-        optimisticPaywallRaise = paywallTarget < 0 || paywallTarget >= lastPaywall;
-        optimisticUntilMs = System.currentTimeMillis() + OPTIMISTIC_WINDOW_MS;
-        int gen = ++optimisticGen;
+        int gen = optimistic.begin(hasLock, locked, timerEndMsExpected, paywallTarget,
+                                   lastPaywall, System.currentTimeMillis());
         renderOptimisticNow();
         return gen;
     }
@@ -688,9 +670,7 @@ public class MainActivity extends Activity {
      *  late-failing order can't cancel an unrelated command issued after it. */
     private void cancelOptimistic(int gen) {
         handler.post(() -> {
-            if (gen != optimisticGen) return;
-            optimisticUntilMs = 0;
-            renderOptimisticNow();
+            if (optimistic.cancel(gen)) renderOptimisticNow();
         });
     }
 
@@ -723,7 +703,7 @@ public class MainActivity extends Activity {
         // object — the same reader verifyStatusSignature uses. In direct mode
         // /mesh/status embeds the whole orders document and six of these names
         // repeat inside it EARLIER in the byte stream, so the first-match
-        // parseJson* helpers would render the shadowing orders copies instead of
+        // JsonScan first-match scanners would render the shadowing orders copies
         // the values the signature actually covers (the fix-#5 hazard, here on
         // the display path). Non-core fields (lovense / geofence / fine /
         // body_check) live ONLY inside `orders` in direct mode, so they must
@@ -735,18 +715,18 @@ public class MainActivity extends Activity {
         catch (org.json.JSONException e) { core = null; }
 
         isLocked = core != null ? (Boolean) core.get("locked")
-                                : parseJsonBool(json, "locked");
+                                : JsonScan.bool(json, "locked");
         lastEscapes = core != null ? ((Long) core.get("escapes")).intValue()
-                                   : parseJsonInt(json, "escapes");
+                                   : JsonScan.asInt(json, "escapes");
         long timerMs = core != null ? (Long) core.get("timer_remaining_ms")
-                                    : parseJsonLong(json, "timer_remaining_ms");
+                                    : JsonScan.asLong(json, "timer_remaining_ms");
         String offer = core != null ? (String) core.get("offer")
-                                    : parseJsonStr(json, "offer");
+                                    : JsonScan.str(json, "offer");
         String offerStatus = core != null ? (String) core.get("offer_status")
-                                          : parseJsonStr(json, "offer_status");
+                                          : JsonScan.str(json, "offer_status");
         String subTier = core != null ? (String) core.get("sub_tier")
-                                      : parseJsonStr(json, "sub_tier");
-        boolean lovenseAvail = parseJsonBool(json, "lovense_available");
+                                      : JsonScan.str(json, "sub_tier");
+        boolean lovenseAvail = JsonScan.bool(json, "lovense_available");
 
         timerEndMs = timerMs > 0 ? System.currentTimeMillis() + timerMs : 0;
 
@@ -756,49 +736,22 @@ public class MainActivity extends Activity {
         int snapPaywall;
         {
             String pwRaw = core != null ? (String) core.get("paywall")
-                                        : parseJsonStr(json, "paywall");
+                                        : JsonScan.str(json, "paywall");
             int v;
             try { v = pwRaw.isEmpty() ? 0 : Integer.parseInt(pwRaw); }
             catch (NumberFormatException e) { v = 0; }
             snapPaywall = v;
         }
 
-        // ── Optimistic reconciliation (see field declarations above) ──
+        // ── Optimistic reconciliation (see OptimisticState) ──
         // While a just-issued order is still in flight, keep showing the
-        // commanded state. Clear the pending state the moment the snapshot
-        // confirms it; once the window lapses, trust the snapshot again.
-        if (System.currentTimeMillis() < optimisticUntilMs) {
-            // For a lock WITH a new timer, don't self-confirm just because the
-            // device is already locked (a re-lock to extend the timer): also
-            // require the snapshot's timer to have caught up to the commanded end
-            // (within ~90s of round-trip slack). Otherwise the bar keeps counting
-            // the OLD remaining time — exactly the gap this feature closes.
-            boolean lockOk = !optimisticHasLock
-                || (isLocked == optimisticLocked
-                    && (!optimisticLocked || optimisticTimerEndMs <= 0
-                        || Math.abs(timerEndMs - optimisticTimerEndMs) < 90000L));
-            boolean payOk = optimisticPaywall < 0
-                || (optimisticPaywallRaise ? snapPaywall >= optimisticPaywall
-                                           : snapPaywall <= optimisticPaywall);
-            if (lockOk && payOk) {
-                optimisticUntilMs = 0; // confirmed — the snapshot caught up
-            } else {
-                if (optimisticHasLock) {
-                    isLocked = optimisticLocked;
-                    if (optimisticLocked) {
-                        if (optimisticTimerEndMs > 0) {
-                            timerEndMs = optimisticTimerEndMs;
-                            timerMs = timerEndMs - System.currentTimeMillis();
-                            if (timerMs < 0) timerMs = 0;
-                        }
-                    } else {
-                        timerEndMs = 0;
-                        timerMs = 0;
-                    }
-                }
-                if (optimisticPaywall >= 0) snapPaywall = optimisticPaywall;
-            }
-        }
+        // commanded state rather than a snapshot that has not caught up yet.
+        OptimisticState.Shown shown = optimistic.reconcile(
+            isLocked, timerMs, timerEndMs, snapPaywall, System.currentTimeMillis());
+        isLocked = shown.locked;
+        timerMs = shown.timerMs;
+        timerEndMs = shown.timerEndMs;
+        snapPaywall = shown.paywall;
 
         StringBuilder sb = new StringBuilder();
         // Multi-bunny: prepend the active bunny's label so Lion always knows
@@ -814,9 +767,9 @@ public class MainActivity extends Activity {
             }
             if (lastEscapes > 0) sb.append(" | ").append(lastEscapes).append(" esc");
             int reps = core != null ? ((Long) core.get("task_reps")).intValue()
-                                     : parseJsonInt(json, "task_reps");
+                                     : JsonScan.asInt(json, "task_reps");
             int done = core != null ? ((Long) core.get("task_done")).intValue()
-                                     : parseJsonInt(json, "task_done");
+                                     : JsonScan.asInt(json, "task_done");
             if (reps > 0) sb.append(" | Rep ").append(done + 1).append("/").append(reps);
             if (snapPaywall > 0) sb.append(" | $").append(snapPaywall);
         } else {
@@ -832,9 +785,9 @@ public class MainActivity extends Activity {
         // transient setStatus() message on the button click confirmed it,
         // and the next poll wiped that). Field is provided by the Collar's
         // buildRuntimeBodyMap (ControlService.java:959).
-        boolean geofenceActive = parseJsonBool(json, "geofence_active");
+        boolean geofenceActive = JsonScan.bool(json, "geofence_active");
         if (geofenceActive) {
-            String radius = parseJsonStr(json, "geofence_radius");
+            String radius = JsonScan.str(json, "geofence_radius");
             sb.append(" | 📍 ");  // 📍
             if (!radius.isEmpty() && !radius.equals("0")) {
                 sb.append(radius).append("m");
@@ -876,11 +829,11 @@ public class MainActivity extends Activity {
         if (pokesSummary != null) pokesSummary.setText(lovenseAvail ? "Speak, Audio, Toy" : "Speak, Audio");
 
         // Fine status
-        String fineActive = parseJsonNumStr(json, "fine_active");
+        String fineActive = JsonScan.numStr(json, "fine_active");
         TextView fineStatus = (TextView) findViewById(getId("fine_status"));
         if (fineStatus != null) {
             if ("1".equals(fineActive)) {
-                String fineAmt = parseJsonNumStr(json, "fine_amount");
+                String fineAmt = JsonScan.numStr(json, "fine_amount");
                 if (fineAmt.isEmpty()) fineAmt = "?";
                 fineStatus.setText("Fine: $" + fineAmt + "/hr \uD83D\uDCB8");
                 fineStatus.setVisibility(View.VISIBLE);
@@ -890,7 +843,7 @@ public class MainActivity extends Activity {
         }
 
         // Body check status (from mesh, checked periodically)
-        String bodyCheckActive = parseJsonNumStr(json, "body_check_active");
+        String bodyCheckActive = JsonScan.numStr(json, "body_check_active");
         if ("1".equals(bodyCheckActive)) updateBodyCheckStatus();
 
         // Offer section
@@ -923,56 +876,6 @@ public class MainActivity extends Activity {
         pill.setColor(bgColor);
         tierBadge.setBackground(pill);
         tierBadge.setTextColor(textColor);
-    }
-
-    // ── JSON Parsing ──
-
-    private int parseJsonInt(String json, String key) {
-        try {
-            int i = json.indexOf("\"" + key + "\":");
-            if (i < 0) return 0;
-            i = json.indexOf(":", i) + 1;
-            int e = i;
-            while (e < json.length() && json.charAt(e) != ',' && json.charAt(e) != '}') e++;
-            return Integer.parseInt(json.substring(i, e).trim());
-        } catch (Exception e) { return 0; }
-    }
-
-    private long parseJsonLong(String json, String key) {
-        try {
-            int i = json.indexOf("\"" + key + "\":");
-            if (i < 0) return 0;
-            i = json.indexOf(":", i) + 1;
-            int e = i;
-            while (e < json.length() && json.charAt(e) != ',' && json.charAt(e) != '}') e++;
-            return Long.parseLong(json.substring(i, e).trim());
-        } catch (Exception e) { return 0; }
-    }
-
-    private String parseJsonStr(String json, String key) {
-        try {
-            // Handle both "key":"val" and "key": "val" (with space)
-            String search1 = "\"" + key + "\":\"";
-            String search2 = "\"" + key + "\": \"";
-            int i = json.indexOf(search1);
-            int len = search1.length();
-            if (i < 0) { i = json.indexOf(search2); len = search2.length(); }
-            if (i < 0) return "";
-            i += len;
-            int e = json.indexOf("\"", i);
-            return e > i ? json.substring(i, e) : "";
-        } catch (Exception e) { return ""; }
-    }
-
-    private String parseJsonNumStr(String json, String key) {
-        try {
-            int i = json.indexOf("\"" + key + "\":");
-            if (i < 0) return "";
-            i = json.indexOf(":", i) + 1;
-            int e = i;
-            while (e < json.length() && json.charAt(e) != ',' && json.charAt(e) != '}') e++;
-            return json.substring(i, e).trim();
-        } catch (Exception e) { return ""; }
     }
 
     // ── Multi-bunny helpers ──
@@ -1342,8 +1245,7 @@ public class MainActivity extends Activity {
         // failover list via renderOptimisticNow → mergeDirectCandidates.
         lastPaywall = 0;
         lastSnapshotJson = null;
-        optimisticUntilMs = 0;
-        optimisticGen++;   // invalidate any in-flight cancelOptimistic for the old slot
+        optimistic.reset();   // also invalidates in-flight cancels for the old slot
 
         // Force-refresh UI on next tick.
         handler.post(() -> {
@@ -2940,10 +2842,10 @@ public class MainActivity extends Activity {
         catch (Exception e) { return null; }
         String body = "{\"node_id\":\"controller\","
             + "\"ts\":" + ts + ","
-            + "\"email\":\"" + esc(email) + "\","
-            + "\"imap_host\":\"" + esc(imapHost) + "\","
-            + "\"imap_pass\":\"" + esc(imapPass) + "\","
-            + "\"signature\":\"" + esc(sig) + "\"}";
+            + "\"email\":\"" + JsonScan.escape(email) + "\","
+            + "\"imap_host\":\"" + JsonScan.escape(imapHost) + "\","
+            + "\"imap_pass\":\"" + JsonScan.escape(imapPass) + "\","
+            + "\"signature\":\"" + JsonScan.escape(sig) + "\"}";
         return meshPost(meshUrl + "/api/mesh/" + meshId + "/set-payee-identity", body);
     }
 
@@ -2955,9 +2857,9 @@ public class MainActivity extends Activity {
         if (meshUrl.isEmpty() || meshId.isEmpty()) return null;
         String adminToken = prefs.getString("admin_token", "");
         if (adminToken.isEmpty()) return "{\"error\":\"admin_token not set\"}";
-        String body = "{\"admin_token\":\"" + esc(adminToken) + "\","
-            + "\"mesh_id\":\"" + esc(meshId) + "\","
-            + "\"source\":\"" + esc(source) + "\"}";
+        String body = "{\"admin_token\":\"" + JsonScan.escape(adminToken) + "\","
+            + "\"mesh_id\":\"" + JsonScan.escape(meshId) + "\","
+            + "\"source\":\"" + JsonScan.escape(source) + "\"}";
         return meshPost(meshUrl + "/admin/reverse-payment", body);
     }
 
@@ -3158,7 +3060,7 @@ public class MainActivity extends Activity {
     private String buildLockJson(String msg, long mins) {
         StringBuilder j = new StringBuilder("{\"mode\":\"");
         j.append(selectedMode()).append("\"");
-        if (msg != null && !msg.isEmpty()) j.append(",\"message\":\"").append(esc(msg)).append("\"");
+        if (msg != null && !msg.isEmpty()) j.append(",\"message\":\"").append(JsonScan.escape(msg)).append("\"");
         if (mins > 0) j.append(",\"timer\":\"").append(mins).append("\"");
         j.append(",\"vibrate\":").append(toggleVibrate.isChecked());
         j.append(",\"penalty\":").append(togglePenalty.isChecked());
@@ -3168,7 +3070,7 @@ public class MainActivity extends Activity {
         String pw = paywallInput.getText().toString();
         if (!pw.isEmpty()) j.append(",\"paywall\":\"").append(pw).append("\"");
         String comp = complimentInput.getText().toString();
-        if (!comp.isEmpty()) j.append(",\"compliment\":\"").append(esc(comp)).append("\"");
+        if (!comp.isEmpty()) j.append(",\"compliment\":\"").append(JsonScan.escape(comp)).append("\"");
         j.append("}");
         return j.toString();
     }
@@ -3364,8 +3266,8 @@ public class MainActivity extends Activity {
         final String ft = task; final int fr = reps;
         setStatus("Task...");
         executor.execute(() -> {
-            String json = "{\"text\":\"" + esc(ft) + "\",\"reps\":" + fr;
-            if (!msg.isEmpty()) json += ",\"message\":\"" + esc(msg) + "\"";
+            String json = "{\"text\":\"" + JsonScan.escape(ft) + "\",\"reps\":" + fr;
+            if (!msg.isEmpty()) json += ",\"message\":\"" + JsonScan.escape(msg) + "\"";
             json += ",\"vibrate\":" + toggleVibrate.isChecked();
             json += ",\"penalty\":" + togglePenalty.isChecked();
             json += ",\"shame\":" + toggleShame.isChecked();
@@ -3382,7 +3284,7 @@ public class MainActivity extends Activity {
         setStatus(action.equals("accept") ? "Accepting..." : "Declining...");
         executor.execute(() -> {
             String json = "{\"action\":\"" + action + "\"";
-            if (!counter.isEmpty()) json += ",\"response\":\"" + esc(counter) + "\"";
+            if (!counter.isEmpty()) json += ",\"response\":\"" + JsonScan.escape(counter) + "\"";
             json += "}";
             String r = api("/api/offer-respond", json);
             setStatus(r.contains("ok") ? (action.equals("accept") ? "ACCEPTED + UNLOCKED" : "DECLINED") : "Failed");
@@ -3401,7 +3303,7 @@ public class MainActivity extends Activity {
                 String msg = messageInput.getText().toString();
                 setStatus("Entrapping...");
                 executor.execute(() -> {
-                    String json = "{\"message\":\"" + esc(msg.isEmpty() ? "Entrapped." : msg) + "\"}";
+                    String json = "{\"message\":\"" + JsonScan.escape(msg.isEmpty() ? "Entrapped." : msg) + "\"}";
                     String r = api("/api/entrap", json);
                     setStatus(r != null && r.contains("ok") ? "Entrapped." : "Failed: " + r);
                 });
@@ -3667,7 +3569,7 @@ public class MainActivity extends Activity {
      * false. Mirrors the Collar's verifyMeshOrdersSignature symmetry.
      *
      * The rebuild lives in StatusCore.fromWire and is scoped to the TOP-LEVEL
-     * JSON object. It used to use the indexOf-based parseJson* helpers, which
+     * JSON object. It used to use the indexOf-based JsonScan scanners, which
      * take the first match anywhere in the body — and the status body embeds
      * the whole orders document, which carries six of the same key names
      * earlier in the stream. See StatusCore for the full write-up; the short
@@ -3738,7 +3640,7 @@ public class MainActivity extends Activity {
                 // Tasker's Reset button. Show a dialog with the server's own
                 // hint text rather than dumping raw JSON at the user.
                 if (resp.contains("\"clearable\":true")) {
-                    String hint = parseJsonStr(resp, "hint");
+                    String hint = JsonScan.str(resp, "hint");
                     showPairConflictDialog(bunnyUrl, hint);
                     return;
                 }
@@ -3753,7 +3655,7 @@ public class MainActivity extends Activity {
             boolean alreadyPaired = resp.contains("\"action\":\"already-paired\"");
 
             // Extract bunny_pubkey from response
-            String bunnyPubB64 = parseJsonStr(resp, "bunny_pubkey");
+            String bunnyPubB64 = JsonScan.str(resp, "bunny_pubkey");
             if (bunnyPubB64.isEmpty()) {
                 setStatus("Pair failed: no bunny pubkey");
                 return;
@@ -3761,7 +3663,7 @@ public class MainActivity extends Activity {
             // SMS gate token: provisioned by the Collar at pairing (random, ships
             // once in the pair response). Lion can't derive it, so store + display
             // it so the operator knows what to text: "sit-boy <token> 15 $20".
-            String smsTokenResp = parseJsonStr(resp, "sms_token");
+            String smsTokenResp = JsonScan.str(resp, "sms_token");
 
             // Audit C5: verify the returned bunny_pubkey against the
             // fingerprint the user read off the bunny's own screen. If
@@ -3873,19 +3775,19 @@ public class MainActivity extends Activity {
             // POST /api/mesh/create — seed account + email config (all optional).
             StringBuilder bodyB = new StringBuilder("{\"lion_pubkey\":\"" + pubKey + "\"");
             if (accountEmail != null && !accountEmail.isEmpty())
-                bodyB.append(",\"account_email\":\"").append(esc(accountEmail)).append("\"");
+                bodyB.append(",\"account_email\":\"").append(JsonScan.escape(accountEmail)).append("\"");
             if (accountPass != null && !accountPass.isEmpty())
-                bodyB.append(",\"account_pass\":\"").append(esc(accountPass)).append("\"");
+                bodyB.append(",\"account_pass\":\"").append(JsonScan.escape(accountPass)).append("\"");
             StringBuilder cfg = new StringBuilder();
             if (imapHost != null && !imapHost.isEmpty() && imapUser != null && !imapUser.isEmpty()
                     && imapPass != null && !imapPass.isEmpty()) {
-                cfg.append("\"imap_host\":\"").append(esc(imapHost)).append("\",")
-                   .append("\"imap_user\":\"").append(esc(imapUser)).append("\",")
-                   .append("\"imap_pass\":\"").append(esc(imapPass)).append("\"");
+                cfg.append("\"imap_host\":\"").append(JsonScan.escape(imapHost)).append("\",")
+                   .append("\"imap_user\":\"").append(JsonScan.escape(imapUser)).append("\",")
+                   .append("\"imap_pass\":\"").append(JsonScan.escape(imapPass)).append("\"");
             }
             if (evidenceEmail != null && !evidenceEmail.isEmpty()) {
                 if (cfg.length() > 0) cfg.append(",");
-                cfg.append("\"evidence_email\":\"").append(esc(evidenceEmail)).append("\"");
+                cfg.append("\"evidence_email\":\"").append(JsonScan.escape(evidenceEmail)).append("\"");
             }
             if (cfg.length() > 0) bodyB.append(",\"initial_config\":{").append(cfg).append("}");
             bodyB.append("}");
@@ -3906,10 +3808,10 @@ public class MainActivity extends Activity {
             conn.disconnect();
             String resp = sb.toString();
 
-            String newMeshId = parseJsonStr(resp, "mesh_id");
-            String newAuthToken = parseJsonStr(resp, "auth_token");
-            String inviteCode = parseJsonStr(resp, "invite_code");
-            String pin = parseJsonStr(resp, "pin");
+            String newMeshId = JsonScan.str(resp, "mesh_id");
+            String newAuthToken = JsonScan.str(resp, "auth_token");
+            String inviteCode = JsonScan.str(resp, "invite_code");
+            String pin = JsonScan.str(resp, "pin");
 
             if (newMeshId.isEmpty() || newAuthToken.isEmpty()) {
                 setStatus("Mesh creation failed: " + resp);
@@ -3978,10 +3880,6 @@ public class MainActivity extends Activity {
         return sb.toString();
     }
 
-    private String esc(String s) {
-        return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
-    }
-
     // -- Balance --
 
     private void doClearBalance() {
@@ -4033,7 +3931,7 @@ public class MainActivity extends Activity {
                 setStatus("Starting body check: " + area);
                 executor.execute(() -> {
                     String r = meshOrder("start-body-check",
-                        "{\"area\":\"" + esc(areaKey) + "\",\"interval_h\":12}");
+                        "{\"area\":\"" + JsonScan.escape(areaKey) + "\",\"interval_h\":12}");
                     setStatus(r != null && r.contains("ok")
                         ? "Body check active: " + area + " (every 12h)"
                         : "Failed");
@@ -4050,13 +3948,13 @@ public class MainActivity extends Activity {
             String area = "";
             String meshResp = currentStatusJson();
             if (meshResp != null) {
-                String a = parseJsonStr(meshResp, "body_check_area");
+                String a = JsonScan.str(meshResp, "body_check_area");
                 if (!a.isEmpty()) area = a;
             }
             if (area.isEmpty()) area = "body";
             String json = "{\"hint\":\"Body inspection: photograph " + area + " clearly"
                 + "\",\"webhook\":\"/webhook/body-check\""
-                + ",\"area\":\"" + esc(area) + "\"}";
+                + ",\"area\":\"" + JsonScan.escape(area) + "\"}";
             String r = api("/api/photo-request", json);
             setStatus(r != null && r.contains("ok") ? "Photo requested" : "Failed");
         });
@@ -4073,13 +3971,13 @@ public class MainActivity extends Activity {
                     String area = "";
                     String meshResp = currentStatusJson();
                     if (meshResp != null) {
-                        String a = parseJsonStr(meshResp, "body_check_area");
+                        String a = JsonScan.str(meshResp, "body_check_area");
                         if (!a.isEmpty()) area = a;
                     }
                     if (area.isEmpty()) area = "body";
                     String json = "{\"hint\":\"Baseline photo: photograph " + area + " clearly"
                         + "\",\"webhook\":\"/webhook/body-check-baseline\""
-                        + ",\"area\":\"" + esc(area) + "\"}";
+                        + ",\"area\":\"" + JsonScan.escape(area) + "\"}";
                     String r = api("/api/photo-request", json);
                     setStatus(r != null && r.contains("ok") ? "Baseline photo requested" : "Failed");
                 });
@@ -4092,10 +3990,10 @@ public class MainActivity extends Activity {
         executor.execute(() -> {
             String meshResp = currentStatusJson();
             if (meshResp == null) return;
-            String active = parseJsonNumStr(meshResp, "body_check_active");
-            String area = parseJsonStr(meshResp, "body_check_area");
-            String streak = parseJsonNumStr(meshResp, "body_check_streak");
-            String lastResult = parseJsonStr(meshResp, "body_check_last_result");
+            String active = JsonScan.numStr(meshResp, "body_check_active");
+            String area = JsonScan.str(meshResp, "body_check_area");
+            String streak = JsonScan.numStr(meshResp, "body_check_streak");
+            String lastResult = JsonScan.str(meshResp, "body_check_last_result");
             handler.post(() -> {
                 TextView status = (TextView) findViewById(getId("body_check_status"));
                 if (status == null) return;
@@ -4332,8 +4230,8 @@ public class MainActivity extends Activity {
                 setStatus("Flipping...");
                 executor.execute(() -> {
                     String r = api("/api/gamble", "{}");
-                    String result = parseJsonStr(r, "result");
-                    String newPw = parseJsonStr(r, "new_paywall");
+                    String result = JsonScan.str(r, "result");
+                    String newPw = JsonScan.str(r, "new_paywall");
                     if (!result.isEmpty()) {
                         setStatus((result.equals("heads") ? "HEADS \u2014 halved! $" : "TAILS \u2014 doubled! $") + newPw);
                     } else {
@@ -4361,7 +4259,7 @@ public class MainActivity extends Activity {
                 if (url.isEmpty()) return;
                 setStatus("Playing audio...");
                 executor.execute(() -> {
-                    String r = api("/api/play-audio", "{\"url\":\"" + esc(url) + "\"}");
+                    String r = api("/api/play-audio", "{\"url\":\"" + JsonScan.escape(url) + "\"}");
                     setStatus(r.contains("ok") ? "Audio playing" : "Failed");
                 });
             })
@@ -4385,7 +4283,7 @@ public class MainActivity extends Activity {
                 if (text.isEmpty()) return;
                 setStatus("Speaking...");
                 executor.execute(() -> {
-                    String r = api("/api/speak", "{\"text\":\"" + esc(text) + "\"}");
+                    String r = api("/api/speak", "{\"text\":\"" + JsonScan.escape(text) + "\"}");
                     setStatus(r.contains("ok") ? "Speaking on phone" : "Failed");
                 });
             })
@@ -4494,7 +4392,7 @@ public class MainActivity extends Activity {
                 String msg = msgInput.getText().toString().trim();
                 setStatus(msg.isEmpty() ? "Clearing pin..." : "Pinning...");
                 executor.execute(() -> {
-                    String json = "{\"message\":\"" + esc(msg) + "\"}";
+                    String json = "{\"message\":\"" + JsonScan.escape(msg) + "\"}";
                     String r = api("/api/pin-message", json);
                     setStatus(r.contains("ok") ? (msg.isEmpty() ? "Pin cleared" : "Message pinned") : "Failed");
                 });
@@ -4800,11 +4698,11 @@ public class MainActivity extends Activity {
             setStatus("Arming deadline task...");
             executor.execute(() -> {
                 StringBuilder jb = new StringBuilder();
-                jb.append("{\"text\":\"").append(esc(fText)).append("\"");
+                jb.append("{\"text\":\"").append(JsonScan.escape(fText)).append("\"");
                 jb.append(",\"deadline_minutes\":").append(fMins);
                 jb.append(",\"interval_ms\":").append((long)fIntervalMinutes * 60000L);
                 jb.append(",\"proof_type\":\"").append(fProofType).append("\"");
-                if (!fProofHint.isEmpty()) jb.append(",\"proof_hint\":\"").append(esc(fProofHint)).append("\"");
+                if (!fProofHint.isEmpty()) jb.append(",\"proof_hint\":\"").append(JsonScan.escape(fProofHint)).append("\"");
                 jb.append(",\"on_miss\":\"").append(fOnMiss).append("\"");
                 if ("paywall".equals(fOnMiss)) jb.append(",\"miss_amount\":").append(fMissAmt);
                 jb.append("}");
@@ -4901,7 +4799,7 @@ public class MainActivity extends Activity {
             } else if (c == '}') {
                 if (depth == 2 && currentKey != null) {
                     String value = meshJson.substring(valueStart, i + 1);
-                    String type = parseJsonStr(value, "type");
+                    String type = JsonScan.str(value, "type");
                     boolean online = value.contains("\"online\": true") || value.contains("\"online\":true");
                     String info = type;
                     if (online) info += " \u2022 online";
@@ -5013,11 +4911,11 @@ public class MainActivity extends Activity {
         if (subText == null) return;
         if (meshResp == null) { subText.setText("No mesh connection"); return; }
         String orders = meshResp;
-        String tier = parseJsonStr(orders, "sub_tier");
+        String tier = JsonScan.str(orders, "sub_tier");
         if (tier.isEmpty()) {
             subText.setText("No subscription active");
         } else {
-            String totalOwed = parseJsonNumStr(orders, "sub_total_owed");
+            String totalOwed = JsonScan.numStr(orders, "sub_total_owed");
             subText.setText(tier.toUpperCase() + " tier" +
                 (totalOwed != null && !totalOwed.isEmpty() && !totalOwed.equals("0") ? " \u2022 $" + totalOwed + " owed" : " \u2022 current"));
         }
@@ -5121,9 +5019,9 @@ public class MainActivity extends Activity {
 
             int count = 0;
             for (String obj : objs) {
-                String from = parseJsonStr(obj, "from");
-                String text = parseJsonStr(obj, "text");
-                String msgId = parseJsonStr(obj, "id");
+                String from = JsonScan.str(obj, "from");
+                String text = JsonScan.str(obj, "text");
+                String msgId = JsonScan.str(obj, "id");
                 boolean encrypted = obj.contains("\"encrypted\":true") || obj.contains("\"encrypted\": true");
                 boolean pinned = obj.contains("\"pinned\":true") || obj.contains("\"pinned\": true");
                 boolean mandatory = obj.contains("\"mandatory_reply\":true");
@@ -5150,9 +5048,9 @@ public class MainActivity extends Activity {
 
                 // Decrypt E2EE messages from bunny
                 if (encrypted && "bunny".equals(from)) {
-                    String ct = parseJsonStr(obj, "ciphertext");
-                    String ek = parseJsonStr(obj, "encrypted_key");
-                    String iv = parseJsonStr(obj, "iv");
+                    String ct = JsonScan.str(obj, "ciphertext");
+                    String ek = JsonScan.str(obj, "encrypted_key");
+                    String iv = JsonScan.str(obj, "iv");
                     // Lion decrypts with own private key
                     String lionPriv = prefs.getString("lion_privkey", "");
                     if (E2EEHelper.canDecrypt(lionPriv) && ct != null && ek != null && iv != null) {
@@ -5167,7 +5065,7 @@ public class MainActivity extends Activity {
                 if (text == null) text = "";
 
                 // Check for attachment
-                String attachUrl = parseJsonStr(obj, "attachment_url");
+                String attachUrl = JsonScan.str(obj, "attachment_url");
                 boolean hasAttachment = attachUrl != null && !attachUrl.isEmpty();
 
                 boolean fromBunny = "bunny".equals(from);
@@ -5177,7 +5075,7 @@ public class MainActivity extends Activity {
                 // the last-notified ts. Done in the render loop (rather than
                 // a separate pass) so it sees the post-decryption text.
                 if (fromBunny && !isDeleted) {
-                    String tsRaw = parseJsonNumStr(obj, "ts");
+                    String tsRaw = JsonScan.numStr(obj, "ts");
                     if (tsRaw != null && !tsRaw.isEmpty()) {
                         try {
                             long mts = Long.parseLong(tsRaw);
@@ -5242,7 +5140,7 @@ public class MainActivity extends Activity {
                 row.addView(msgBox);
 
                 // Timestamp under the bubble, dim, on the same edge.
-                String tsStr = parseJsonNumStr(obj, "ts");
+                String tsStr = JsonScan.numStr(obj, "ts");
                 if (tsStr != null && !tsStr.isEmpty()) {
                     try {
                         long mts = Long.parseLong(tsStr);
@@ -5278,11 +5176,11 @@ public class MainActivity extends Activity {
                         try {
                             String resp = meshGet(attUrl);
                             if (resp != null) {
-                                String content = parseJsonStr(resp, "content");
+                                String content = JsonScan.str(resp, "content");
                                 boolean attEnc = resp.contains("\"encrypted\":true") || resp.contains("\"encrypted\": true");
                                 if (attEnc && E2EEHelper.canDecrypt(privKey)) {
-                                    String aek = parseJsonStr(resp, "encrypted_key");
-                                    String aiv = parseJsonStr(resp, "iv");
+                                    String aek = JsonScan.str(resp, "encrypted_key");
+                                    String aiv = JsonScan.str(resp, "iv");
                                     String dec = (aek != null && aiv != null) ? E2EEHelper.decrypt(content, aek, aiv, privKey) : null;
                                     if (dec != null) content = dec;
                                 }
@@ -5380,11 +5278,11 @@ public class MainActivity extends Activity {
                     else if (entriesJson.charAt(i) == '}') { d--; if (d == 0) { objEnd = i; break; } }
                 }
                 String obj = entriesJson.substring(objStart, objEnd + 1);
-                String type = parseJsonStr(obj, "type");
-                String amountStr = parseJsonNumStr(obj, "amount");
-                String desc = parseJsonStr(obj, "description");
-                String balStr = parseJsonNumStr(obj, "balance_after");
-                String source = parseJsonStr(obj, "source");
+                String type = JsonScan.str(obj, "type");
+                String amountStr = JsonScan.numStr(obj, "amount");
+                String desc = JsonScan.str(obj, "description");
+                String balStr = JsonScan.numStr(obj, "balance_after");
+                String source = JsonScan.str(obj, "source");
                 double amount = 0;
                 try { amount = Double.parseDouble(amountStr); } catch (Exception e) {}
                 boolean isPayment = "payment".equals(type) || "prepay".equals(type) || "historical".equals(type);
@@ -5422,7 +5320,7 @@ public class MainActivity extends Activity {
                 historyContainer.addView(tv);
             }
             // Show balance summary
-            String balanceStr = parseJsonNumStr(ledgerResp, "balance");
+            String balanceStr = JsonScan.numStr(ledgerResp, "balance");
             if (balanceStr != null) {
                 TextView bal = new TextView(this);
                 double balance = 0;
@@ -5610,14 +5508,14 @@ public class MainActivity extends Activity {
                 E2EEHelper.EncryptedMessage enc = E2EEHelper.encrypt(msg, bunnyPubKey);
                 if (enc != null) {
                     json.append(",\"encrypted\":true");
-                    json.append(",\"ciphertext\":\"").append(esc(enc.ciphertext)).append("\"");
-                    json.append(",\"encrypted_key\":\"").append(esc(enc.encryptedKey)).append("\"");
-                    json.append(",\"iv\":\"").append(esc(enc.iv)).append("\"");
+                    json.append(",\"ciphertext\":\"").append(JsonScan.escape(enc.ciphertext)).append("\"");
+                    json.append(",\"encrypted_key\":\"").append(JsonScan.escape(enc.encryptedKey)).append("\"");
+                    json.append(",\"iv\":\"").append(JsonScan.escape(enc.iv)).append("\"");
                 } else {
-                    json.append(",\"text\":\"").append(esc(msg)).append("\"");
+                    json.append(",\"text\":\"").append(JsonScan.escape(msg)).append("\"");
                 }
             } else {
-                json.append(",\"text\":\"").append(esc(msg)).append("\"");
+                json.append(",\"text\":\"").append(JsonScan.escape(msg)).append("\"");
             }
             if (pinAsNotif) json.append(",\"pinned\":true");
             if (mandatory) json.append(",\"mandatory_reply\":true,\"reply_deadline_minutes\":15");
@@ -5666,7 +5564,7 @@ public class MainActivity extends Activity {
                 if (vaultMode && !"direct".equals(pairMode)) {
                     api("/api/send-message", json.toString());
                 } else {
-                    String apiJson = "{\"message\":\"" + esc(msg) + "\"}";
+                    String apiJson = "{\"message\":\"" + JsonScan.escape(msg) + "\"}";
                     if (pinAsNotif) api("/api/pin-message", apiJson);
                     else api("/api/message", apiJson);
                 }
@@ -5915,8 +5813,8 @@ public class MainActivity extends Activity {
                         else if (hjson.charAt(i) == '}') { d--; if (d == 0) { e = i; break; } }
                     }
                     String entry = hjson.substring(s, e + 1);
-                    String prev = parseJsonStr(entry, "prev_text");
-                    String ts = parseJsonNumStr(entry, "ts");
+                    String prev = JsonScan.str(entry, "prev_text");
+                    String ts = JsonScan.numStr(entry, "ts");
                     body.append("v").append(idx++).append(" @ ").append(ts).append("\n")
                         .append(prev == null ? "(empty)" : prev).append("\n\n");
                     p = e + 1;

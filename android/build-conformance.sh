@@ -46,11 +46,15 @@ echo "== compiling Android src (controller + slave + companion) + shims + tests 
     "$SCRIPT_DIR/controller/src/com/focusctl/E2EEHelper.java" \
     "$SCRIPT_DIR/controller/src/com/focusctl/StatusCore.java" \
     "$SCRIPT_DIR/controller/src/com/focusctl/PollGate.java" \
+    "$SCRIPT_DIR/controller/src/com/focusctl/JsonScan.java" \
+    "$SCRIPT_DIR/controller/src/com/focusctl/OptimisticState.java" \
     "$SCRIPT_DIR/controller/test/com/focusctl/ConformanceCli.java" \
     "$SCRIPT_DIR/controller/test/com/focusctl/VaultCryptoTest.java" \
     "$SCRIPT_DIR/controller/test/com/focusctl/E2EEHelperTest.java" \
     "$SCRIPT_DIR/controller/test/com/focusctl/StatusCoreTest.java" \
     "$SCRIPT_DIR/controller/test/com/focusctl/PollGateTest.java" \
+    "$SCRIPT_DIR/controller/test/com/focusctl/JsonScanTest.java" \
+    "$SCRIPT_DIR/controller/test/com/focusctl/OptimisticStateTest.java" \
     "$SCRIPT_DIR/slave/src/com/focuslock/VaultCrypto.java" \
     "$SCRIPT_DIR/slave/src/com/focuslock/MeshOrderApply.java" \
     "$SCRIPT_DIR/slave/test/com/focuslock/ConformanceCli.java" \
