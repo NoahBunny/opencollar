@@ -8,6 +8,82 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-23 three places the record disagreed with the money ───────── -->
+
+### Fixed — F-Droid held Lion's Share 82 and told every client 81 was current
+
+- **The newer build was published, indexed, downloadable — and not offered.**
+  `build-collar-repo.sh` wrote `CurrentVersionCode` from a literal typed into the
+  `write_meta` call, and that literal still said `81` after `LionsShare-82.apk` was
+  staged beside it. `fdroid update` turns that into `suggestedVersionCode: 81`, which is
+  the number a client uses to decide whether an update exists, so the auto-accept toggle
+  fix (`95f33bd`) sat in the repo unoffered from 2026-08-22 until now. Confirmed against
+  the live index at `fdroid.nunyabiznu.com` before and after.
+- **The literal is gone rather than corrected.** The same number used to be written down
+  three times — in the source APK filename, in the name it takes in `repo/`, and in
+  `CurrentVersionCode` — with nothing checking that the three agreed. All three now derive
+  from `aapt2 dump badging` on the APK itself, so the index cannot advertise a version the
+  repo does not hold, or hold one it does not advertise. The build also refuses an APK
+  whose declared package does not match the slot it was put in.
+- **Repo signing fingerprint unchanged** (`C5D875B0…5D8E`) and re-verified after the
+  rebuild, as is required of any run against this repo; the subscribe QR re-encodes to the
+  same URL + fingerprint. The Collar (83) and Bunny Tasker (63) are published as the
+  2026-08-09/15 builds and now predate the vector icons — they need a versionCode bump
+  before a rebuild can carry those, and are deliberately left alone here.
+
+### Fixed — every `add-paywall` reported the balance as `$0` right after raising it
+
+- **`mesh_apply_order("add-paywall", …)` fell through to the bare `{"applied": action}`
+  at the bottom of the function**, so every caller reading `paywall` off the result got
+  `None`. `/webhook/desktop-penalty` answered `new_paywall: 0` and — worse — sent the Lion
+  an evidence line reading *"$5 penalty applied. New paywall: $0"* while the charge itself
+  had landed correctly. The node-signed penalty route replied `"paywall": null`. Every
+  other charging action (`tribute-charge`, `fine-charge`, `escape-penalty`,
+  `app-launch-penalty`) already returned the new value; this one never did.
+- Enforcement was right and the record was wrong — the same shape as the auto-accept flag
+  (`30dbd96`) and the mirror-`.pyc` test run (`71c70eb`). The negative-delta clamp had the
+  matching bug: it reset the stored paywall to 0 but kept returning the negative number,
+  invisible only because nothing read it.
+- Mutation-checked: reverting the return drops 3 of the new tests.
+
+### Added — QA for the node-signed penalty route, which landed without any
+
+- `POST /vault/{mesh_id}/penalty` (`803c432`, `be76064`, `0e6885d`) let a vault-mode collar
+  report a fine-bearing incident with its own node key instead of `ADMIN_TOKEN` — a
+  credential for the whole admin API, which those machines deliberately do not hold. It
+  shipped with **no tests**. New `tests/test_vault_penalty_node_signed.py`, 26 of them.
+- Pins the property the design rests on: **the collar reports the event and gets no say in
+  the price.** An `amount` in the request body is ignored; an unarmed kind charges nothing
+  and says so with a 200 rather than inviting a retry; an unknown kind never reaches a
+  default; the Lion's own price is capped at $500; the tamper tier comes off the relay's
+  per-mesh counter, which a claimed count can fast-forward but never walk back, and a wild
+  claim is clamped to +100.
+- Pins the refusals too: a stranger, a member signing with the wrong key, a stale
+  timestamp, a signature lifted from another mesh, and a signature covering a different
+  kind or count than the body carries. Plus the one place this route parts company with
+  `standing-orders` and `lion-pubkey` — an auto-accepted node the Lion has never confirmed
+  is served orders but **cannot spend money**, and starts being able to the moment They
+  confirm it.
+- Also pinned: a negative count is refused rather than floored, because the server
+  normalizes before it rebuilds the payload it verifies. Fails closed, which is the right
+  side to fail on.
+- Suite `1299 → 1331`.
+
+### Fixed — the lint gate had drifted again, in the scripts that generate the app art
+
+- `ruff check .` was **54 errors** across `scripts/svg-to-vectordrawable.py`,
+  `scripts/make-fdroid-icons.py` and `veneration-lockscreen-patch/`, with 6 files
+  unformatted — all landed by the 2026-08-22/23 commits, all of it CI-red. Same recurrence
+  the branch had before `36d02b0`.
+- Six of those were `B023` on closures over loop variables in the gradient math of both
+  icon generators — latent, not live (each is called inside its own iteration), and now
+  bound as defaults. Also removed an `import_module(...) if False else None` line left over
+  from an approach that could not work.
+- **These scripts generate committed artifacts**, so the rewrite was verified the only way
+  that counts: both generators were run before and after, and all four VectorDrawables plus
+  all three 512px F-Droid icons came back **byte-identical**.
+
+
 <!-- ───────── 2026-08-17 the signing gate could not be passed by signing ───────── -->
 
 ### Fixed — `signed-commits` CI rejected correctly-signed commits
