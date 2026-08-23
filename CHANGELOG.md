@@ -8,6 +8,73 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-23 the tabs were named after power, not purpose ───────── -->
+
+### Changed — Lion's Share tabs are named after what the Lion is doing (controller 83)
+
+- **The Lion's verdict on the shipped UI: "too cluttered, and the buttons don't make
+  sense in their current named sections."** Both halves were structural. The tabs were
+  *Control / Advanced / Inbox* — two named after how dangerous a control was, one after a
+  container — so neither name predicted its contents and **"Advanced" became a junk
+  drawer**: the mode spinner and writing task (core), geofencing (situational), payment
+  email and vault nodes (setup), Play Audio and Double or Nothing (occasional), and Entrap
+  and `RELEASE FOREVER` (destructive), all on one 25-button scroll. 48 Buttons, 7
+  ToggleButtons, 9 EditTexts and 2 Spinners in a single 369-line layout.
+- **The worst consequence was that the commonest composite action spanned two tabs.**
+  Locking with a writing task meant setting the mode in Advanced, typing the task in
+  Advanced, and returning to Control to press Lock.
+- Now each tab answers exactly one question — **Lock** (what is happening, and make it
+  happen), **Rules** (what must the bunny do to get out?), **Money** (what do they owe?),
+  **Inbox** (what have they said?). The `Lock / Rules / Money` naming is carried over from
+  `web/index.html`, whose four-tab restructure the 2026-04-28 usability audit recorded as
+  landing well — one mental model across both surfaces.
+- **Seven controls left the tabs entirely.** Bunnies, Vault Nodes, Web Remote, Payment
+  Email, Setup, App PIN and Release Forever are configuration, administration and
+  teardown, not actions on the bunny; they now live in a kebab (`res/menu/overflow.xml`)
+  behind a `PopupMenu`, since the app's `Theme.Material.NoActionBar` provides no system
+  overflow to inherit. Release Forever keeps its own separated group: it is a documented
+  consent guarantee (`CLAUDE.md` → Safety), so it stays discoverable — a named row one tap
+  away is both easier to find deliberately and harder to hit by accident than a button
+  sharing a scroll with Play Audio.
+- **`paywall_amount` was not the duplicate money field it appeared to be.** It sat one
+  field away from `balance_set_input` in the quick-add money row, which is exactly why the
+  two read as redundant — but it stages the balance for the *next lock order*
+  (`buildLockJson`, MainActivity:3067; the lock order's `paywall` field SETS the balance,
+  ControlService.java:1105). Moved in with the other lock parameters, where its label can
+  say so.
+- Also: Modifiers and Live Pokes collapse to a single line that still names what is
+  switched on inside them; Entrap sits in a bordered danger block rather than being
+  distinguished only by hue on a dark background; and the primary Lock button now reports
+  the live state (`LOCKED — 42m left`) instead of reading "Lock all devices" whether or
+  not the bunny was already locked. onCreate's 90 lines of wiring are grouped into
+  `wireLockTab()` / `wireRulesTab()` / `wireMoneyTab()` / `wireInboxTab()`, so the code
+  mirrors the taxonomy.
+- **Not yet walked on hardware** — no device attached, Waydroid uninitialised. The APK
+  builds and `apksigner verify`s clean, and the checks below cover the regression class,
+  but the on-device walk is still owed and v83 is deliberately **not published**.
+
+### Added — `tests/test_android_layout_ids.py`, the layout↔code contract nothing checked
+
+- **`MainActivity` resolves every view by string**, via
+  `getResources().getIdentifier(name, "id", getPackageName())`. Nothing links those strings
+  to the layout, so moving or renaming a view returns id `0`, `findViewById(0)` returns
+  null, and — given the ~20 `if (x != null)` guards and several `try { … } catch
+  (Exception e) {}` wrappers around exactly these lookups — **the control silently stops
+  working**. The Lion presses the button, nothing happens, and no log line says why. That
+  is the single largest hazard in reorganising this UI, and it had no coverage at all.
+- Nine tests over all three apps: every statically-resolvable `getIdentifier(name, type)`
+  and `getId(name)` resolves to a real resource (ids, layouts, menus, drawables, mipmaps,
+  strings); every collapsible section has all three of its `_head` / `_body` / `_chevron`
+  parts, since `wireSection()` builds those ids by concatenation where no static check can
+  see them; every id-bearing Button in the main layout is referenced from code, so a
+  control cannot survive on screen with no handler behind it; and no layout defines the
+  same id twice.
+- Mutation-checked four ways — a renamed id, a broken menu resource name, a half-renamed
+  section and a planted orphan button each fail the suite, naming the offending file and
+  line. Passed against `HEAD` before the reorganisation began, so it went in as a net
+  rather than a rationalisation. Suite `1331 → 1340`.
+
+
 <!-- ───────── 2026-08-23 three places the record disagreed with the money ───────── -->
 
 ### Fixed — F-Droid held Lion's Share 82 and told every client 81 was current
