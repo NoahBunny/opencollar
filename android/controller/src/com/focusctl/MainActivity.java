@@ -416,7 +416,13 @@ public class MainActivity extends Activity {
                     if (r != null && r.contains("ok")) {
                         handler.post(() -> { setStatus("Added $" + amount); scheduleMoneyRefresh(); });
                     } else {
+                        // Say what went wrong. This used to revert the optimistic
+                        // bump and print nothing, so an order that never left the
+                        // phone looked identical to one that landed and bounced
+                        // back — which is how a dead endpoint went unnoticed.
                         cancelOptimistic(og);
+                        final String err = describeApiError(r);
+                        handler.post(() -> setStatus("Could not add $" + amount + " — " + err));
                     }
                 });
             });
@@ -1378,18 +1384,15 @@ public class MainActivity extends Activity {
         // dispatches via handleMeshOrder (see ControlService.java vaultSync
         // RPC dispatch branch). Vault mode needs no auth token, so it is also
         // the relay-fallback path for a direct bunny.
-        if (vaultMode) {
-            return apiVault(action, jsonBody);
-        }
-
-        // Legacy non-vault relay proxy requires an auth token.
-        if (authToken.isEmpty()) {
-            return "{\"error\":\"not configured — run Setup\"}";
-        }
-        String body = "{\"action\":\"" + action + "\",\"params\":" + jsonBody + "}";
-        String r = meshPost(meshUrl + "/api/mesh/" + meshId + "/order", body);
-        if (r == null) return "{\"error\":\"connection failed\"}";
-        return r;
+        // The relay speaks vault and nothing else. /api/mesh/{id}/order was
+        // removed in Phase D and answers 410 Gone UNCONDITIONALLY — not, as the
+        // old comment here assumed, only once vault_only was flipped on. So
+        // routing on the per-bunny vault_mode toggle sent every order from a
+        // mesh created with that box unticked (the default) to a dead endpoint:
+        // locks, unlocks, tasks and charges alike, failing silently because
+        // callers discard the error string. A mesh on a relay is a vault mesh;
+        // there is no longer a second way to talk to one.
+        return apiVault(action, jsonBody);
     }
 
     /** Cold-Collar wake hook (A3): bump the onion-derived ntfy topic so a
@@ -5798,6 +5801,14 @@ public class MainActivity extends Activity {
     // server stopped serving. Vault-mode messaging continues to flow through
     // /api/send-message → vault append (unchanged) — these new helpers are
     // for the non-vault path and the on-demand mark-read flow.
+
+    /** Pull the reason out of an api() error reply for a status line. */
+    private String describeApiError(String resp) {
+        if (resp == null || resp.isEmpty()) return "no response";
+        String e = JsonScan.str(resp, "error");
+        if (!e.isEmpty()) return e.length() > 70 ? e.substring(0, 70) + "…" : e;
+        return resp.length() > 70 ? resp.substring(0, 70) + "…" : resp;
+    }
 
     /** Our own public key, base64 X.509 — the second recipient every message
      *  we encrypt is wrapped for, so we can still read what we sent. */
