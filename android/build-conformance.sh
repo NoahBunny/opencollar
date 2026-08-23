@@ -64,7 +64,9 @@ echo "== compiling Android src (controller + slave + companion) + shims + tests 
     "$SCRIPT_DIR/test-support/android/content/ContentResolver.java" \
     "$SCRIPT_DIR/test-support/android/provider/Settings.java" \
     "$SCRIPT_DIR/slave/src/com/focuslock/SigVerifier.java" \
+    "$SCRIPT_DIR/slave/src/com/focuslock/PwaShortcut.java" \
     "$SCRIPT_DIR/slave/test/com/focuslock/SigVerifierTest.java" \
+    "$SCRIPT_DIR/slave/test/com/focuslock/PwaShortcutTest.java" \
     "$SCRIPT_DIR/companion/src/com/bunnytasker/PairingManager.java" \
     "$SCRIPT_DIR/companion/test/com/bunnytasker/PairingManagerTest.java"
 

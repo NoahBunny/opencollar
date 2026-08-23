@@ -57,6 +57,25 @@
             </intent-filter>
         </activity>
 
+        <!-- Confirms pin-shortcut requests (Chrome's "Add to Home screen").
+             Android routes these to the DEFAULT home app; the Collar claims
+             CATEGORY_HOME to intercept the home button during a lock, so
+             without this the whole device reports pinning unsupported and no
+             PWA can be installed. Exported because the system starts it.
+             excludeFromRecents + NoDisplay-ish: it accepts or refuses and
+             finishes, and must never look like a screen the wearer landed on. -->
+        <activity
+            android:name=".PinShortcutActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.content.pm.action.CONFIRM_PIN_SHORTCUT" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <receiver
             android:name=".BootReceiver"
             android:exported="true"
