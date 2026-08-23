@@ -166,9 +166,11 @@ public class VenerationTasksTest {
         // An earlier version of this test tried to police the capitalisation
         // directly — flag any lowercase "them"/"their". It fired on ven-011,
         // "I built them and handed over the keys", where *them* is the locks.
-        // That is the same trap CLAUDE.md records for collar-pronoun-check.sh:
-        // a regex cannot tell the Lion from a courier. Comparing against the
-        // source needs no judgement and catches case drift outright.
+        // A regex cannot tell the Lion from a courier, which is the same reason
+        // collar-pronoun-check.sh is a review queue rather than a judge — and
+        // task text is excluded from that check outright, since the Lion set
+        // these strings and Bunny is only reproducing Them. Comparing against
+        // the source needs no judgement and catches case drift outright.
         File src = null;
         File dir = new File(".").getAbsoluteFile();
         for (int i = 0; i < 6 && dir != null; i++, dir = dir.getParentFile()) {
