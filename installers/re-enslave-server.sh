@@ -285,14 +285,32 @@ else
     fi
 fi
 
-# Check journal for errors in the last 2 minutes
-err_count=$(ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
-    'sudo journalctl -u focuslock-mail --since "2 minutes ago" --no-pager 2>/dev/null | grep -ciE "error|exception|traceback" || true' \
-    2>/dev/null | tr -d '\r')
-if [ "${err_count:-0}" -gt 0 ]; then
-    warn "  $err_count error/exception line(s) in last 2 min — investigate with: journalctl -u focuslock-mail --since '2 minutes ago'"
+# Check journal for errors in the last 2 minutes.
+#
+# `sudo -n`, and no `-t`, on purpose. journalctl is NOT in the relay's NOPASSWD
+# grant — that covers `systemctl restart|is-active focuslock-mail` and nothing
+# else, which is correct. This used to run `sudo` under `ssh -t` with stderr
+# sent to /dev/null, so sudo prompted for a password and the prompt was
+# swallowed: the deploy appeared to hang forever at "Verifying server health",
+# after every file had already been installed and the service restarted.
+#
+# So: fail immediately when sudo would prompt, and SAY the check was skipped.
+# Reporting "Journal: clean" for a check that never ran would be worse than
+# hanging — a green line nobody earned.
+journal_out=$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$DEPLOY_USER@$HOMELAB_SSH" \
+    'sudo -n journalctl -u focuslock-mail --since "2 minutes ago" --no-pager 2>&1' \
+    2>&1 | tr -d '\r' || true)
+if printf '%s' "$journal_out" | grep -qiE 'password is required|sudo: a terminal is required|may not run|not allowed'; then
+    warn "  Journal: NOT checked — journalctl needs an interactive sudo on the relay."
+    warn "           Check it yourself with:"
+    warn "             ssh $DEPLOY_USER@$HOMELAB_SSH \"sudo journalctl -u focuslock-mail --since '2 minutes ago'\""
 else
-    log "  Journal: clean (no errors in last 2 min)"
+    err_count=$(printf '%s' "$journal_out" | grep -ciE 'error|exception|traceback' || true)
+    if [ "${err_count:-0}" -gt 0 ]; then
+        warn "  $err_count error/exception line(s) in last 2 min — investigate with: journalctl -u focuslock-mail --since '2 minutes ago'"
+    else
+        log "  Journal: clean (no errors in last 2 min)"
+    fi
 fi
 
 section "Server re-enslave complete"
