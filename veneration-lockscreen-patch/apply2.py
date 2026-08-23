@@ -16,11 +16,14 @@ NOT changed: loginctl lock-session, the KDE greeter, kscreenlockerrc handling,
 and the unlock_at timer. The overlay is layered on top of the real session lock,
 never a replacement for it. A lock with no task pending behaves exactly as before.
 """
-import io, sys
+
+import re as _re
+import sys
 
 PATH = sys.argv[1]
-src = io.open(PATH, encoding="utf-8").read()
+src = open(PATH, encoding="utf-8").read()
 n = 0
+
 
 def sub(anchor, replacement, count=1):
     global src, n
@@ -29,15 +32,16 @@ def sub(anchor, replacement, count=1):
     src = src.replace(anchor, replacement, count)
     n += 1
 
+
 # ── 1. state ───────────────────────────────────────────────────────────────
 sub(
-    '    countdown_last_warn = 0  # epoch ms of last warning beep\n',
-    '    countdown_last_warn = 0  # epoch ms of last warning beep\n'
+    "    countdown_last_warn = 0  # epoch ms of last warning beep\n",
+    "    countdown_last_warn = 0  # epoch ms of last warning beep\n"
     '    task_text = ""  # veneration text bunny must type to clear the lock\n'
-    '    task_reps = 0  # times through; 0 and 1 both mean once\n'
-    '    task_randcaps = 0  # 1 = capitalisation must match exactly\n'
-    '    word_min = 0  # freeform floor, only used when task_text is empty\n'
-    '    task_reps_done = 0  # LOCAL progress; reset when task_text changes\n'
+    "    task_reps = 0  # times through; 0 and 1 both mean once\n"
+    "    task_randcaps = 0  # 1 = capitalisation must match exactly\n"
+    "    word_min = 0  # freeform floor, only used when task_text is empty\n"
+    "    task_reps_done = 0  # LOCAL progress; reset when task_text changes\n"
     '    task_gated_on = ""  # the task_text task_reps_done is counting against\n'
     '    task_status = ""  # feedback line under the entry\n',
 )
@@ -50,29 +54,29 @@ sub(
     '            "task_reps",\n'
     '            "task_randcaps",\n'
     '            "word_min",\n'
-    '        ]\n',
+    "        ]\n",
 )
 
 # ── 3. mirror into state; reset progress when the task changes ─────────────
 sub(
     '        state.sub_tier = str(snap.get("sub_tier") or "")\n',
     '        state.sub_tier = str(snap.get("sub_tier") or "")\n'
-    '\n'
-    '        # Veneration task. A change to task_text is a NEW task: drop local rep\n'
-    '        # progress so a fresh order never inherits a stale count.\n'
+    "\n"
+    "        # Veneration task. A change to task_text is a NEW task: drop local rep\n"
+    "        # progress so a fresh order never inherits a stale count.\n"
     '        task_text = str(snap.get("task_text") or "")\n'
     '        if task_text == "null":\n'
     '            task_text = ""\n'
-    '        if task_text != state.task_gated_on:\n'
-    '            state.task_gated_on = task_text\n'
-    '            state.task_reps_done = 0\n'
+    "        if task_text != state.task_gated_on:\n"
+    "            state.task_gated_on = task_text\n"
+    "            state.task_reps_done = 0\n"
     '            state.task_status = ""\n'
-    '        state.task_text = task_text\n'
+    "        state.task_text = task_text\n"
     '        for _f, _d in (("task_reps", 0), ("task_randcaps", 0), ("word_min", 0)):\n'
-    '            try:\n'
-    '                setattr(state, _f, int(snap.get(_f) or _d))\n'
-    '            except (TypeError, ValueError):\n'
-    '                setattr(state, _f, _d)\n'
+    "            try:\n"
+    "                setattr(state, _f, int(snap.get(_f) or _d))\n"
+    "            except (TypeError, ValueError):\n"
+    "                setattr(state, _f, _d)\n"
     '        if state.locked and (state.task_text or state.word_min) and not int(snap.get("unlock_at") or 0):\n'
     '            logger.warning("Task gate active with no unlock_at — no time backstop on this lock")\n',
 )
@@ -83,83 +87,82 @@ sub(
     '            logger.info("Session locked via loginctl")\n',
     '            subprocess.run(["loginctl", "lock-session"], capture_output=True, timeout=5)\n'
     '            logger.info("Session locked via loginctl")\n'
-    '            # Veneration overlay rides ON TOP of the session lock — the greeter\n'
-    '            # still guards the session, this is what bunny faces after auth.\n'
-    '            # Locks with no task pending are untouched: no overlay, no change.\n'
-    '            if state.task_text or state.word_min:\n'
-    '                self._present_veneration_overlay()\n',
+    "            # Veneration overlay rides ON TOP of the session lock — the greeter\n"
+    "            # still guards the session, this is what bunny faces after auth.\n"
+    "            # Locks with no task pending are untouched: no overlay, no change.\n"
+    "            if state.task_text or state.word_min:\n"
+    "                self._present_veneration_overlay()\n",
 )
 
 # ── 5. enforce_session_lock stands down while the overlay is live ──────────
 sub(
-    '    def enforce_session_lock(self):\n'
+    "    def enforce_session_lock(self):\n"
     '        """If still locked, re-lock the session — password won\'t save you."""\n'
-    '        if not self.lock_active:\n'
-    '            return False\n',
-    '    def enforce_session_lock(self):\n'
+    "        if not self.lock_active:\n"
+    "            return False\n",
+    "    def enforce_session_lock(self):\n"
     '        """If still locked, re-lock the session — password won\'t save you."""\n'
-    '        if not self.lock_active:\n'
-    '            return False\n'
-    '        # Stand down ONLY while the veneration overlay is actually up and a task\n'
-    '        # is pending: otherwise the greeter re-asserts every second and bunny\n'
-    '        # never reaches a keyboard. Kill the overlay and re-locking resumes on\n'
-    '        # the next tick, so this is a pause, not a hole.\n'
-    '        if self.windows and (state.task_text or state.word_min):\n'
-    '            return True\n',
+    "        if not self.lock_active:\n"
+    "            return False\n"
+    "        # Stand down ONLY while the veneration overlay is actually up and a task\n"
+    "        # is pending: otherwise the greeter re-asserts every second and bunny\n"
+    "        # never reaches a keyboard. Kill the overlay and re-locking resumes on\n"
+    "        # the next tick, so this is a pause, not a hole.\n"
+    "        if self.windows and (state.task_text or state.word_min):\n"
+    "            return True\n",
 )
 
 # ── 6. caption must match the KWin enforce script ──────────────────────────
 sub(
-    '        win = Gtk.ApplicationWindow(application=self)\n'
-    '        win.set_title("FocusLock")\n',
-    '        win = Gtk.ApplicationWindow(application=self)\n'
-    '        # force_lock_fullscreen() matches this exact caption via KWin scripting.\n'
-    '        # It was written for the old browser lock; the GTK window must claim it.\n'
+    '        win = Gtk.ApplicationWindow(application=self)\n        win.set_title("FocusLock")\n',
+    "        win = Gtk.ApplicationWindow(application=self)\n"
+    "        # force_lock_fullscreen() matches this exact caption via KWin scripting.\n"
+    "        # It was written for the old browser lock; the GTK window must claim it.\n"
     '        win.set_title("FOCUSLOCK-COLLAR-ACTIVE")\n',
 )
 
 # ── 7. CSS ─────────────────────────────────────────────────────────────────
 sub(
-    '            .collar-divider { background-color: rgba(200, 168, 78, 0.1); min-height: 1px; }\n',
-    '            .collar-divider { background-color: rgba(200, 168, 78, 0.1); min-height: 1px; }\n'
-    '            .collar-task { color: #c8a84e; font-size: 15px; font-weight: 300; }\n'
-    '            .collar-task-reps { color: #c8a84e; font-size: 12px; letter-spacing: 3px; }\n'
-    '            .collar-task-entry textview, .collar-task-entry text {\n'
-    '                background-color: rgba(0, 0, 0, 0.45); color: #ddccaa; font-size: 14px; font-weight: 300;\n'
-    '            }\n'
-    '            .collar-task-entry { border: 1px solid rgba(200, 168, 78, 0.25); border-radius: 8px; padding: 8px; }\n'
-    '            .collar-task-status { color: #aa8866; font-size: 13px; font-weight: 300; }\n'
-    '            .collar-task-status-bad { color: #cc4422; font-size: 13px; font-weight: 300; }\n'
-    '            .collar-task-status-good { color: #66aa44; font-size: 13px; font-weight: 300; }\n',
+    "            .collar-divider { background-color: rgba(200, 168, 78, 0.1); min-height: 1px; }\n",
+    "            .collar-divider { background-color: rgba(200, 168, 78, 0.1); min-height: 1px; }\n"
+    "            .collar-task { color: #c8a84e; font-size: 15px; font-weight: 300; }\n"
+    "            .collar-task-reps { color: #c8a84e; font-size: 12px; letter-spacing: 3px; }\n"
+    "            .collar-task-entry textview, .collar-task-entry text {\n"
+    "                background-color: rgba(0, 0, 0, 0.45); color: #ddccaa; font-size: 14px; font-weight: 300;\n"
+    "            }\n"
+    "            .collar-task-entry { border: 1px solid rgba(200, 168, 78, 0.25); border-radius: 8px; padding: 8px; }\n"
+    "            .collar-task-status { color: #aa8866; font-size: 13px; font-weight: 300; }\n"
+    "            .collar-task-status-bad { color: #cc4422; font-size: 13px; font-weight: 300; }\n"
+    "            .collar-task-status-good { color: #66aa44; font-size: 13px; font-weight: 300; }\n",
 )
 
 # ── 8. build the panel (primary window only) ───────────────────────────────
 sub(
     '        self.taunt_label = Gtk.Label(label=state.current_taunt or (random.choice(TAUNTS) if TAUNTS else ""))\n'
     '        self.taunt_label.add_css_class("collar-taunt")\n'
-    '        card.append(self.taunt_label)\n',
+    "        card.append(self.taunt_label)\n",
     '        self.taunt_label = Gtk.Label(label=state.current_taunt or (random.choice(TAUNTS) if TAUNTS else ""))\n'
     '        self.taunt_label.add_css_class("collar-taunt")\n'
-    '        card.append(self.taunt_label)\n'
-    '\n'
-    '        # Veneration panel. Primary window only — type it once, not once per\n'
-    '        # monitor. Guarded because create_lock_window runs per display and an\n'
-    '        # unconditional reset would null the primary window\'s entry reference.\n'
-    '        if primary:\n'
-    '            self.task_view = None\n'
-    '            self.task_label = None\n'
-    '            self.task_reps_label = None\n'
-    '            self.task_status_label = None\n'
-    '            if state.task_text or state.word_min:\n'
-    '                self._build_veneration_panel(card)\n',
+    "        card.append(self.taunt_label)\n"
+    "\n"
+    "        # Veneration panel. Primary window only — type it once, not once per\n"
+    "        # monitor. Guarded because create_lock_window runs per display and an\n"
+    "        # unconditional reset would null the primary window's entry reference.\n"
+    "        if primary:\n"
+    "            self.task_view = None\n"
+    "            self.task_label = None\n"
+    "            self.task_reps_label = None\n"
+    "            self.task_status_label = None\n"
+    "            if state.task_text or state.word_min:\n"
+    "                self._build_veneration_panel(card)\n",
 )
 
-io.open(PATH, "w", encoding="utf-8").write(src)
+open(PATH, "w", encoding="utf-8").write(src)
 print(f"part 1: {n} hunks")
 
 # ── 9. the panel, paste-blocking, verification, overlay lifecycle ──────────
 sub(
-    '    def enforce_fullscreen_loop(self):\n',
+    "    def enforce_fullscreen_loop(self):\n",
     r'''    def _build_veneration_panel(self, card):
         """Task text + entry + submit, appended to the lock card."""
         div = Gtk.Box()
@@ -400,38 +403,35 @@ sub(
 
 # ── 10. tear the overlay down on unlock ────────────────────────────────────
 sub(
-    '    def hide_lock(self):\n'
-    '        logger.info("HIDE LOCK — unlocking session")\n',
-    '    def hide_lock(self):\n'
+    '    def hide_lock(self):\n        logger.info("HIDE LOCK — unlocking session")\n',
+    "    def hide_lock(self):\n"
     '        logger.info("HIDE LOCK — unlocking session")\n'
-    '        self._teardown_veneration_overlay()\n',
+    "        self._teardown_veneration_overlay()\n",
 )
 
 # ── 11. mid-lock: a task set while already locked still gets a surface ─────
 sub(
     '                if hasattr(self, "taunt_label") and self.taunt_label:\n'
-    '                    self.taunt_label.set_label(state.current_taunt)\n',
+    "                    self.taunt_label.set_label(state.current_taunt)\n",
     '                if hasattr(self, "taunt_label") and self.taunt_label:\n'
-    '                    self.taunt_label.set_label(state.current_taunt)\n'
+    "                    self.taunt_label.set_label(state.current_taunt)\n"
     '                if getattr(self, "task_label", None) and state.task_text:\n'
-    '                    self.task_label.set_label(state.task_text)\n'
+    "                    self.task_label.set_label(state.task_text)\n"
     '                if getattr(self, "task_reps_label", None):\n'
-    '                    self.task_reps_label.set_label(self._veneration_reps_text())\n',
+    "                    self.task_reps_label.set_label(self._veneration_reps_text())\n",
 )
 sub(
-    '    def update_lock(self):\n'
-    '        """Update existing lock windows with new state."""\n',
-    '    def update_lock(self):\n'
+    '    def update_lock(self):\n        """Update existing lock windows with new state."""\n',
+    "    def update_lock(self):\n"
     '        """Update existing lock windows with new state."""\n'
-    '        # A task assigned mid-lock still needs a surface to be typed on.\n'
-    '        if self.lock_active and (state.task_text or state.word_min) and not self.windows:\n'
-    '            self._present_veneration_overlay()\n',
+    "        # A task assigned mid-lock still needs a surface to be typed on.\n"
+    "        if self.lock_active and (state.task_text or state.word_min) and not self.windows:\n"
+    "            self._present_veneration_overlay()\n",
 )
 
-import re as _re
-if not _re.search(r'^import re$', src, _re.M):
+if not _re.search(r"^import re$", src, _re.M):
     # alphabetical: random, re, signal — ruff's isort rule is enforced on this branch
-    sub('import signal\n', 'import re\nimport signal\n')
+    sub("import signal\n", "import re\nimport signal\n")
 
-io.open(PATH, "w", encoding="utf-8").write(src)
+open(PATH, "w", encoding="utf-8").write(src)
 print(f"total: {n} hunks")

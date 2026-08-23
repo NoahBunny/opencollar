@@ -626,14 +626,18 @@ def show_first_run_config():
         return True  # idle, mesh-less — same as a bare Linux collar
 
     mesh_url = (
-        simpledialog.askstring(
-            "Mesh relay URL",
-            "Enter the Mesh relay URL:",
-            initialvalue="https://collar.nunyabiznu.com",
-            parent=root,
+        (
+            simpledialog.askstring(
+                "Mesh relay URL",
+                "Enter the Mesh relay URL:",
+                initialvalue="https://collar.nunyabiznu.com",
+                parent=root,
+            )
+            or ""
         )
-        or ""
-    ).strip().rstrip("/")
+        .strip()
+        .rstrip("/")
+    )
     if not mesh_url:
         messagebox.showinfo("The Collar", "No relay URL entered — leaving this collar unpaired for now.")
         root.destroy()

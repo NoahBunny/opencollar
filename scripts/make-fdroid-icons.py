@@ -12,18 +12,15 @@ in-APK icon at all, so it gets one from icons/ instead of showing a blank tile.
 Usage:  python3 scripts/make-fdroid-icons.py [outdir]
 """
 
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from importlib import import_module
-
-vd = import_module("svg-to-vectordrawable".replace("-", "_")) if False else None
-# the generator's module name has dashes; load it by path instead
-import importlib.util
-_spec = importlib.util.spec_from_file_location(
-    "svgvd", Path(__file__).resolve().parent / "svg-to-vectordrawable.py")
+# The generator's module name has dashes, so it cannot be imported by name --
+# load it by path. (An `import_module(...) if False else None` line used to sit
+# here as a leftover of the attempt that could not work.)
+_spec = importlib.util.spec_from_file_location("svgvd", Path(__file__).resolve().parent / "svg-to-vectordrawable.py")
 svgvd = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(svgvd)
 
@@ -34,11 +31,15 @@ SIZE = 512
 # launcher PNGs so the F-Droid tile keeps the framing people already recognise.
 APPS = {
     "com.bunnytasker": dict(
-        svg="icons/bunny-tasker-icon.svg", bg="#0a0812", fill="#A18BC4",
+        svg="icons/bunny-tasker-icon.svg",
+        bg="#0a0812",
+        fill="#A18BC4",
         frac=(13 / 192, 8 / 192, 168 / 192, 175 / 192),
     ),
     "com.focusctl": dict(
-        svg="icons/lions-share-icon-v2.svg", bg="#0a0a14", fill="#FFFFFF",
+        svg="icons/lions-share-icon-v2.svg",
+        bg="#0a0a14",
+        fill="#FFFFFF",
         frac=(28 / 192, 3 / 192, 139 / 192, 188 / 192),
     ),
     # The Collar gets the actual collar. Note icons/collar-icon*.png are LIONS
@@ -61,7 +62,7 @@ def render_svg(cfg, out):
     ty = by + (bh - (y1 - y0) * s) / 2 - y0 * s
 
     defs, body = [], []
-    for i, ((segs, fill, rule), _) in enumerate(zip(parsed, boxes)):
+    for i, ((segs, fill, rule), _) in enumerate(zip(parsed, boxes, strict=True)):
         d = svgvd.emit(segs, s, tx, ty)
         fr = ' fill-rule="evenodd"' if rule == "evenodd" else ""
         if fill.startswith("url("):
@@ -70,62 +71,83 @@ def render_svg(cfg, out):
             gx0, gy0, gx1, gy1 = svgvd.bbox(segs)
             gw, gh = gx1 - gx0, gy1 - gy0
 
-            def pt(xk, yk, dx, dy):
-                x = gx0 + svgvd.pct(gattrs.get(xk, dx)) * gw
-                y = gy0 + svgvd.pct(gattrs.get(yk, dy)) * gh
+            # Loop vars bound as defaults -- see the same closure in
+            # svg-to-vectordrawable.py, which this mirrors.
+            def pt(xk, yk, dx, dy, _gx0=gx0, _gy0=gy0, _gw=gw, _gh=gh, _ga=gattrs):
+                x = _gx0 + svgvd.pct(_ga.get(xk, dx)) * _gw
+                y = _gy0 + svgvd.pct(_ga.get(yk, dy)) * _gh
                 return x * s + tx, y * s + ty
+
             sx, sy = pt("x1", "y1", "0%", "0%")
             ex, ey = pt("x2", "y2", "100%", "0%")
-            st = "".join('<stop offset="%s" stop-color="%s"/>'
-                         % (o.get("offset", "0"), o["stop-color"]) for o in stops)
-            defs.append('<linearGradient id="g%d" gradientUnits="userSpaceOnUse" '
-                        'x1="%f" y1="%f" x2="%f" y2="%f">%s</linearGradient>'
-                        % (i, sx, sy, ex, ey, st))
-            body.append('<path d="%s" fill="url(#g%d)"%s/>' % (d, i, fr))
+            st = "".join(f'<stop offset="{o.get("offset", "0")}" stop-color="{o["stop-color"]}"/>' for o in stops)
+            defs.append(
+                f'<linearGradient id="g{i}" gradientUnits="userSpaceOnUse" '
+                f'x1="{sx:f}" y1="{sy:f}" x2="{ex:f}" y2="{ey:f}">{st}</linearGradient>'
+            )
+            body.append(f'<path d="{d}" fill="url(#g{i})"{fr}/>')
         else:
-            body.append('<path d="%s" fill="%s"%s/>' % (d, cfg["fill"], fr))
+            body.append('<path d="{}" fill="{}"{}/>'.format(d, cfg["fill"], fr))
 
-    svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" '
-           'viewBox="0 0 %d %d"><rect width="%d" height="%d" fill="%s"/>'
-           '<defs>%s</defs>%s</svg>'
-           % (SIZE, SIZE, SIZE, SIZE, SIZE, SIZE, cfg["bg"], "".join(defs), "".join(body)))
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{SIZE}" height="{SIZE}" '
+        f'viewBox="0 0 {SIZE} {SIZE}"><rect width="{SIZE}" height="{SIZE}" fill="{cfg["bg"]}"/>'
+        f"<defs>{''.join(defs)}</defs>{''.join(body)}</svg>"
+    )
     tmp = out.with_suffix(".tmp.svg")
     tmp.write_text(svg)
-    subprocess.run(["rsvg-convert", "-w", str(SIZE), "-h", str(SIZE),
-                    str(tmp), "-o", str(out)], check=True)
+    subprocess.run(["rsvg-convert", "-w", str(SIZE), "-h", str(SIZE), str(tmp), "-o", str(out)], check=True)
     tmp.unlink()
 
 
 def render_png(cfg, out):
-    bx, by, bw, bh = (f * SIZE for f in cfg["frac"])
-    subprocess.run([
-        "magick", str(ROOT / cfg["png"]),
-        # the 4096px source is mostly transparent margin -- drop it before fitting
-        "-trim", "+repage",
-        "-resize", "%dx%d" % (int(bw), int(bh)),
-        "-background", cfg["bg"], "-gravity", "center",
-        "-extent", "%dx%d" % (SIZE, SIZE), "-alpha", "remove", "-alpha", "off",
-        str(out)], check=True)
+    # Only the box size matters here -- magick centres the art itself, so the
+    # box origin the SVG path stays unused.
+    _bx, _by, bw, bh = (f * SIZE for f in cfg["frac"])
+    subprocess.run(
+        [
+            "magick",
+            str(ROOT / cfg["png"]),
+            # the 4096px source is mostly transparent margin -- drop it before fitting
+            "-trim",
+            "+repage",
+            "-resize",
+            f"{int(bw)}x{int(bh)}",
+            "-background",
+            cfg["bg"],
+            "-gravity",
+            "center",
+            "-extent",
+            f"{SIZE}x{SIZE}",
+            "-alpha",
+            "remove",
+            "-alpha",
+            "off",
+            str(out),
+        ],
+        check=True,
+    )
 
 
 def render_raw(cfg, out):
     """Rasterise a already-composed SVG tile verbatim -- no refit, no recolour."""
-    subprocess.run(["rsvg-convert", "-w", str(SIZE), "-h", str(SIZE),
-                    str(ROOT / cfg["svg_raw"]), "-o", str(out)], check=True)
+    subprocess.run(
+        ["rsvg-convert", "-w", str(SIZE), "-h", str(SIZE), str(ROOT / cfg["svg_raw"]), "-o", str(out)], check=True
+    )
 
 
 def main():
     outdir = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "icons" / "fdroid"
     outdir.mkdir(parents=True, exist_ok=True)
     for pkg, cfg in APPS.items():
-        out = outdir / ("%s.png" % pkg)
+        out = outdir / (f"{pkg}.png")
         if "svg_raw" in cfg:
             render_raw(cfg, out)
         elif "png" in cfg:
             render_png(cfg, out)
         else:
             render_svg(cfg, out)
-        print("  %-18s -> %s (%d bytes)" % (pkg, out, out.stat().st_size))
+        print(f"  {pkg:<18} -> {out} ({out.stat().st_size} bytes)")
 
 
 if __name__ == "__main__":

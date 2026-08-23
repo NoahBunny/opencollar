@@ -2829,8 +2829,10 @@ for (var i = 0; i < c.length; i++) {
         for cls in ("collar-task-status", "collar-task-status-bad", "collar-task-status-good"):
             self.task_status_label.remove_css_class(cls)
         self.task_status_label.add_css_class(
-            "collar-task-status-bad" if kind == "bad"
-            else "collar-task-status-good" if kind == "good"
+            "collar-task-status-bad"
+            if kind == "bad"
+            else "collar-task-status-good"
+            if kind == "good"
             else "collar-task-status"
         )
         self.task_status_label.set_label(text)
@@ -2848,7 +2850,8 @@ for (var i = 0; i < c.length; i++) {
             got = self._normalise_veneration(typed, state.task_randcaps)
             if got != want:
                 self._set_veneration_status(
-                    "Nothing typed. They are waiting." if not got
+                    "Nothing typed. They are waiting."
+                    if not got
                     else "That is not what They asked for. Read it again and type it in full.",
                     "bad",
                 )
@@ -2873,8 +2876,11 @@ for (var i = 0; i < c.length; i++) {
         # and count down out loud rather than sitting silent — a dead field and
         # an unexplained pause both read as "it broke".
         self.task_completed = True
-        for _w in (getattr(self, "task_scroller", None), getattr(self, "task_submit", None),
-                   getattr(self, "task_reps_label", None)):
+        for _w in (
+            getattr(self, "task_scroller", None),
+            getattr(self, "task_submit", None),
+            getattr(self, "task_reps_label", None),
+        ):
             if _w is not None:
                 _w.set_visible(False)
         self._release_countdown = 3
@@ -2884,9 +2890,7 @@ for (var i = 0; i < c.length; i++) {
     def _veneration_release_tick(self):
         self._release_countdown -= 1
         if self._release_countdown > 0:
-            self._set_veneration_status(
-                f"Accepted. Thank Them. Releasing in {self._release_countdown}\u2026", "good"
-            )
+            self._set_veneration_status(f"Accepted. Thank Them. Releasing in {self._release_countdown}\u2026", "good")
             return True
         self._release_after_veneration()
         return False
