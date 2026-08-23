@@ -28,6 +28,7 @@ import java.util.List;
  */
 public class ConsentActivity extends Activity {
 
+    private static final int REQ_OWN_ADMIN = 4801;
     private static final int REQ_ROLE_HOME = 1001;
 
     // Radio ids for the cage-ceiling chooser (arbitrary, view-local).
@@ -195,6 +196,27 @@ public class ConsentActivity extends Activity {
         cageGroup.check(RB_LEASH);
         root.addView(cageGroup);
 
+        // Device Owner is a PREFERENCE of Sealed, never a requirement: Android
+        // only grants it during provisioning, on a phone with no accounts
+        // added, in practice straight after a factory reset. Gating Sealed on
+        // it would mean the dynamic could only tighten on a freshly wiped
+        // phone — a constraint on the relationship rather than on the wearer.
+        // So Sealed works without it and says exactly how much less it holds.
+        final TextView ownerNote = new TextView(this);
+        ownerNote.setTextColor(0xFF998866);
+        ownerNote.setTextSize(12);
+        ownerNote.setPadding(12, 8, 12, 16);
+        ownerNote.setVisibility(View.GONE);
+        root.addView(ownerNote);
+        cageGroup.setOnCheckedChangeListener((g, id) -> {
+            if (id != RB_SEALED) {
+                ownerNote.setVisibility(View.GONE);
+                return;
+            }
+            ownerNote.setText(deviceOwnerExplanation());
+            ownerNote.setVisibility(View.VISIBLE);
+        });
+
         // Consent button
         Button consentBtn = new Button(this);
         consentBtn.setText("I CONSENT TO THESE TERMS");
@@ -237,7 +259,7 @@ public class ConsentActivity extends Activity {
                     }
                 } catch (Exception e) { /* pre-Q or role unavailable — fall through */ }
             }
-            showConsentRecordedDialog();
+            requestOwnAdminThenFinish();
         });
         root.addView(consentBtn);
 
@@ -270,11 +292,73 @@ public class ConsentActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         if (requestCode == REQ_ROLE_HOME) {
+            requestOwnAdminThenFinish();
+        } else if (requestCode == REQ_OWN_ADMIN) {
+            // Whatever they chose on the system screen, consent itself is
+            // already recorded; the dialog reports where things stand.
             showConsentRecordedDialog();
         }
     }
 
+    /** Ask for the Collar's own device admin, then close out consent.
+     *
+     *  <p>Nothing asked for this before. Both apps hold device-administrator
+     *  privileges and ControlService's mutual-admin monitor re-locks and
+     *  reports a tamper event when Bunny Tasker's is missing — so a freshly
+     *  consented pair went straight into a relock loop over an admin that had
+     *  never been granted, explained by a notification saying it was
+     *  "removed". Asking here is the difference between a cage that closes and
+     *  one that appears to be malfunctioning on first use.
+     *
+     *  <p>Declining is allowed: consent is already recorded and the safeword
+     *  already saved, so a wearer who backs out here is not trapped half-caged.
+     *  The dialog tells them what is missing and how to finish. */
+    private void requestOwnAdminThenFinish() {
+        try {
+            android.app.admin.DevicePolicyManager dpm =
+                (android.app.admin.DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
+            android.content.ComponentName admin =
+                new android.content.ComponentName(this, AdminReceiver.class);
+            if (dpm != null && !dpm.isAdminActive(admin)) {
+                Intent activate = new Intent(
+                    android.app.admin.DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN);
+                activate.putExtra(
+                    android.app.admin.DevicePolicyManager.EXTRA_DEVICE_ADMIN, admin);
+                activate.putExtra(
+                    android.app.admin.DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                    "The Collar needs this to hold a lock. Without it the cage can be "
+                    + "shrugged off by uninstalling the app mid-lock, and your Lion is "
+                    + "told either way.");
+                startActivityForResult(activate, REQ_OWN_ADMIN);
+                return;
+            }
+        } catch (Exception e) {
+            android.util.Log.w("FocusLock", "could not request device admin", e);
+        }
+        showConsentRecordedDialog();
+    }
+
     private void showConsentRecordedDialog() {
+        boolean adminOn = false;
+        try {
+            android.app.admin.DevicePolicyManager dpm =
+                (android.app.admin.DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
+            adminOn = dpm != null
+                && dpm.isAdminActive(new android.content.ComponentName(this, AdminReceiver.class));
+        } catch (Exception ignored) {}
+        if (!adminOn) {
+            // Say so plainly rather than reporting a cage that is not closed.
+            new AlertDialog.Builder(this)
+                .setTitle("Consent Recorded — but not yet held")
+                .setMessage("Your consent and safeword are saved.\n\nThe Collar does not have "
+                    + "device admin, so locks can be shrugged off by uninstalling it. Grant it "
+                    + "in Settings \u2192 Security \u2192 Device admin apps, or reopen this "
+                    + "screen to be asked again.")
+                .setPositiveButton("UNDERSTOOD", (d, w) -> finish())
+                .setCancelable(false)
+                .show();
+            return;
+        }
         new AlertDialog.Builder(this)
             .setTitle("Consent Recorded")
             .setMessage("Timestamp: " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
@@ -294,6 +378,43 @@ public class ConsentActivity extends Activity {
      *  would take whichever launcher PackageManager happened to enumerate
      *  first — often the stock launcher even when the user has switched to
      *  a third-party. */
+    /** Whether the Collar currently holds Device Owner. */
+    private boolean isDeviceOwner() {
+        try {
+            android.app.admin.DevicePolicyManager dpm =
+                (android.app.admin.DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
+            return dpm != null && dpm.isDeviceOwnerApp(getPackageName());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** What Sealed gains from Device Owner, and what it costs to get.
+     *
+     *  <p>Written out in full rather than as a checkbox because it is the one
+     *  choice here that cannot be revisited without wiping the phone. A wearer
+     *  who picks Sealed and later learns it could have held harder — but only
+     *  before they had a phone full of their things — was not told enough. */
+    private String deviceOwnerExplanation() {
+        if (isDeviceOwner()) {
+            return "Device Owner: ACTIVE. Sealed holds at full strength — The Collar can "
+                + "block its own uninstall and refuse safe-mode boot. Factory reset stays "
+                + "available, always.";
+        }
+        return "Sealed prefers Device Owner, which this phone does not have.\n\n"
+            + "WITH it, The Collar can block its own uninstall and stop a safe-mode boot "
+            + "from suspending the cage — the wearer cannot lift the restrictions "
+            + "themselves.\n\n"
+            + "WITHOUT it, Sealed still bounces apps and still blocks ordinary calls, but "
+            + "the wearer can uninstall the app from Settings, and booting into safe mode "
+            + "suspends enforcement until they boot normally again.\n\n"
+            + "Android only grants Device Owner during provisioning, on a phone with no "
+            + "accounts added — in practice straight after a factory reset. It cannot be "
+            + "switched on from here, now or later, without wiping this phone first. "
+            + "Sealed is yours either way; this only decides how firmly it holds.\n\n"
+            + "Factory reset always remains available, with or without it.";
+    }
+
     private void storePriorHomePkg() {
         Intent homeIntent = new Intent(Intent.ACTION_MAIN);
         homeIntent.addCategory(Intent.CATEGORY_HOME);

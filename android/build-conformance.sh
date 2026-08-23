@@ -68,7 +68,9 @@ echo "== compiling Android src (controller + slave + companion) + shims + tests 
     "$SCRIPT_DIR/slave/test/com/focuslock/SigVerifierTest.java" \
     "$SCRIPT_DIR/slave/test/com/focuslock/PwaShortcutTest.java" \
     "$SCRIPT_DIR/companion/src/com/bunnytasker/PairingManager.java" \
-    "$SCRIPT_DIR/companion/test/com/bunnytasker/PairingManagerTest.java"
+    "$SCRIPT_DIR/companion/src/com/bunnytasker/CagePrereqs.java" \
+    "$SCRIPT_DIR/companion/test/com/bunnytasker/PairingManagerTest.java" \
+    "$SCRIPT_DIR/companion/test/com/bunnytasker/CagePrereqsTest.java"
 
 echo "== running JUnit unit tests =="
 "$JAVA" -jar "$JUNIT_JAR" execute \

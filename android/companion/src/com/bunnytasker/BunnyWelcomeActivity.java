@@ -42,6 +42,9 @@ public class BunnyWelcomeActivity extends Activity {
     // allowlist once paired (deferred — not paired yet at welcome time). Never
     // reaches the Lion's app.
     private EditText payerInput;
+    private TextView adminStatus;
+    private static final int PAGE_ADMIN = 4;
+    private static final int PAGE_PAIR = 5;
 
     // Soft lavender brand (matches BunnyTheme).
     private static final int BG      = 0xFF0a0812;
@@ -75,7 +78,8 @@ public class BunnyWelcomeActivity extends Activity {
         flipper.addView(panelCompanion());  // 1
         flipper.addView(panelLion());       // 2
         flipper.addView(panelPayer());      // 3
-        flipper.addView(panelPair());       // 4
+        flipper.addView(panelAdmin());      // 4
+        flipper.addView(panelPair());       // 5
         LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         flp.weight = 1f;
@@ -103,7 +107,14 @@ public class BunnyWelcomeActivity extends Activity {
 
     private void goNext() {
         int i = flipper.getDisplayedChild();
-        if (i >= 4) { finishComplete(); return; }
+        // The admin step is the one page that will not let itself be walked
+        // past. Everything before it is explanation; this is the grant the
+        // Collar's mutual-admin monitor already assumes exists.
+        if (i == PAGE_ADMIN && !selfAdminActive()) {
+            requestSelfAdmin();
+            return;
+        }
+        if (i >= PAGE_PAIR) { finishComplete(); return; }
         flipper.setDisplayedChild(i + 1);
         updateButtons();
     }
@@ -118,8 +129,59 @@ public class BunnyWelcomeActivity extends Activity {
     private void updateButtons() {
         int i = flipper.getDisplayedChild();
         backBtn.setText(i == 0 ? "Skip" : "Back");
-        String[] cta = {"Hop in", "Next", "I understand", "Next", "Show my pairing code"};
-        nextBtn.setText(cta[i]);
+        String[] cta = {"Hop in", "Next", "I understand", "Next", "Give Bunny Tasker admin", "Show my pairing code"};
+        nextBtn.setText(i == PAGE_ADMIN && selfAdminActive() ? "Next" : cta[i]);
+        if (i == PAGE_ADMIN) refreshAdminStatus();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Coming back from the system admin screen — reflect what was granted.
+        if (flipper != null && flipper.getDisplayedChild() == PAGE_ADMIN) updateButtons();
+    }
+
+    // ── Device admin ──
+
+    private android.content.ComponentName selfAdmin() {
+        return new android.content.ComponentName(this, "com.bunnytasker.AdminReceiver");
+    }
+
+    private boolean selfAdminActive() {
+        try {
+            android.app.admin.DevicePolicyManager dpm =
+                (android.app.admin.DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
+            return dpm != null && dpm.isAdminActive(selfAdmin());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Open the system screen, with the explanation Android shows above the
+     *  Activate button — so the bunny reads why before they are asked. */
+    private void requestSelfAdmin() {
+        try {
+            Intent activate = new Intent(android.app.admin.DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN);
+            activate.putExtra(android.app.admin.DevicePolicyManager.EXTRA_DEVICE_ADMIN, selfAdmin());
+            activate.putExtra(android.app.admin.DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                "Bunny Tasker needs this so your Lion's locks hold. Without it The Collar "
+                + "treats the companion as tampered with and keeps re-locking your phone.");
+            startActivity(activate);
+        } catch (Exception e) {
+            if (adminStatus != null) {
+                adminStatus.setText("Could not open the admin screen. Settings \u2192 Security \u2192 "
+                    + "Device admin apps \u2192 Bunny Tasker.");
+            }
+        }
+    }
+
+    private void refreshAdminStatus() {
+        if (adminStatus == null) return;
+        boolean on = selfAdminActive();
+        adminStatus.setText(on
+            ? "\u2713  Bunny Tasker has device admin."
+            : "\u25cb  Not granted yet \u2014 the button below opens the right screen.");
+        adminStatus.setTextColor(on ? 0xFF66aa66 : MUTED);
     }
 
     /** Completed the welcome — remember it so it doesn't re-show, stash any payer
@@ -215,6 +277,22 @@ public class BunnyWelcomeActivity extends Activity {
         payerInput.setBackground(ibg);
         payerInput.setPadding(px(14), px(12), px(14), px(12));
         p.addView(payerInput);
+        return p;
+    }
+
+    private View panelAdmin() {
+        LinearLayout p = panel();
+        p.addView(title("The leash needs a grip"));
+        p.addView(body("Both apps hold device-administrator privileges. It is what stops "
+            + "the cage being shrugged off by uninstalling an app mid-lock, and The Collar "
+            + "checks that this one has it."));
+        p.addView(bullet("Without it, The Collar treats Bunny Tasker as tampered with and re-locks."));
+        p.addView(bullet("It does not let anyone read your messages or your screen."));
+        p.addView(bullet("You can revoke it any time \u2014 your Lion is told, and that is the point."));
+        p.addView(body("The button below opens the exact system screen. Tap Activate there, "
+            + "then come back."));
+        adminStatus = body("");
+        p.addView(adminStatus);
         return p;
     }
 
