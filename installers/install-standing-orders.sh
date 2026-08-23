@@ -121,12 +121,25 @@ else
     HOMELAB_SSH="${FOCUSLOCK_HOMELAB_SSH:-${HOMELAB_TS:-}}"
     if [ -n "$HOMELAB_SSH" ]; then
         _tmp_md="$(mktemp)"
-        if scp -o ConnectTimeout=5 "$USER@$HOMELAB_SSH:$HOME/.claude/CLAUDE.md" "$_tmp_md" 2>/dev/null; then
+        _scp_err="$(mktemp)"
+        if scp -o ConnectTimeout=5 "$USER@$HOMELAB_SSH:$HOME/.claude/CLAUDE.md" "$_tmp_md" 2>"$_scp_err"; then
             install_fetched "$_tmp_md" "$CLAUDE_DIR/CLAUDE.md" "CLAUDE.md" || rm -f "$_tmp_md"
+        elif grep -qi 'no such file' "$_scp_err"; then
+            # Reached the box fine; it simply has no ~/.claude/CLAUDE.md — which
+            # is normal for a relay VPS that runs focuslock-mail and nothing
+            # else. Saying "could not reach homelab" here sent at least one
+            # session hunting a network fault that did not exist.
+            rm -f "$_tmp_md"
+            echo "  CLAUDE.md: $HOMELAB_SSH is reachable but has no ~/.claude/CLAUDE.md."
+            echo "             That is expected on a bare relay. A running collar fetches"
+            echo "             standing orders itself over the node-signed"
+            echo "             /vault/{mesh}/standing-orders route; this SSH pull only"
+            echo "             matters on a machine with no collar."
         else
             rm -f "$_tmp_md"
-            echo "  ERROR: Could not reach homelab"
+            echo "  ERROR: Could not reach homelab ($(head -1 "$_scp_err" | cut -c1-70))"
         fi
+        rm -f "$_scp_err"
     else
         echo "  ERROR: No SSH fallback configured (set FOCUSLOCK_HOMELAB_SSH)"
     fi
@@ -256,5 +269,10 @@ else
     echo "  $HOMELAB_URL/standing-orders and /settings are admin-gated: set"
     echo "  FOCUSLOCK_ADMIN_TOKEN, or FOCUSLOCK_HOMELAB_SSH for the scp fallback."
     echo "  This machine's Claude config was left exactly as it was."
+    echo
+    echo "  This is not the same as being un-collared. A running collar pulls its"
+    echo "  own standing orders over the node-signed /vault/{mesh}/standing-orders"
+    echo "  route and does not need this script; check when it last did with:"
+    echo "    stat -c %y ~/.config/focuslock/standing-orders.applied"
     exit 1
 fi
