@@ -5448,6 +5448,17 @@ public class MainActivity extends Activity {
         return (diff / 86_400_000) + "d ago";
     }
 
+    /** A raw JSON number token as money: "50.0" -> "50.00". Falls back to the
+     *  token unchanged if it is not a number, so a surprising value is shown
+     *  rather than swallowed. */
+    private String fmtMoney(String raw) {
+        try {
+            return String.format("%.2f", Double.parseDouble(raw.trim()));
+        } catch (Exception e) {
+            return raw;
+        }
+    }
+
     /** "3m ago" / "2h ago" / "5d ago" — a balance row without a time is a
      *  charge the Lion cannot place against anything that happened. */
     private String relativeTime(long ms) {
@@ -5506,7 +5517,11 @@ public class MainActivity extends Activity {
                 try { ets = Long.parseLong(JsonScan.numStr(obj, "timestamp")); } catch (Exception ignored) {}
                 TextView tv = new TextView(this);
                 tv.setText(prefix + String.format("%.2f", Math.abs(amount)) + "  " + desc
-                    + (balStr != null && !balStr.isEmpty() ? "   \u2192 $" + balStr : "")
+                    // Format it: balStr is the raw JSON token, so a balance of
+                    // 50 arrives as "50.0" and rendered "$50.0" beside a
+                    // "$25.00" charge. Bunny Tasker already formats its copy,
+                    // and the two sit side by side in conversation.
+                    + (balStr != null && !balStr.isEmpty() ? "   \u2192 $" + fmtMoney(balStr) : "")
                     + (ets > 0 ? "  " + relativeTime(ets) : ""));
                 tv.setTextColor(color);
                 tv.setTextSize(11);
@@ -5534,18 +5549,26 @@ public class MainActivity extends Activity {
                 tv.setTextSize(11);
                 historyContainer.addView(tv);
             }
-            // Show balance summary
-            String balanceStr = JsonScan.numStr(ledgerResp, "balance");
-            if (balanceStr != null) {
-                TextView bal = new TextView(this);
-                double balance = 0;
-                try { balance = Double.parseDouble(balanceStr); } catch (Exception e) {}
-                bal.setText(balance > 0 ? "Bunny owes: $" + String.format("%.0f", balance) :
-                           balance < 0 ? "Credit: $" + String.format("%.0f", -balance) : "Balance: $0");
-                bal.setTextColor(balance > 0 ? 0xFFcc4444 : 0xFF44aa44);
-                bal.setTextSize(13);
-                bal.setPadding(0, 8, 0, 0);
-                historyContainer.addView(bal, 0);
+            // Lifetime paid, which nothing else on this screen shows.
+            //
+            // This used to read a "balance" field and print "Bunny owes: $X" —
+            // but the response it now comes from has no such field, so
+            // Double.parseDouble("") threw, balance stayed 0, and the header
+            // rendered a flat "Balance: $0" directly above rows saying $55 and
+            // beneath a BUNNY BALANCE card saying $55. A second balance derived
+            // a second way is how a screen ends up arguing with itself; the
+            // card above is the authoritative one and this is no longer a
+            // balance at all.
+            String paidCentsStr = JsonScan.numStr(ledgerResp, "total_paid_cents");
+            long paidCents = 0;
+            try { paidCents = Long.parseLong(paidCentsStr.trim()); } catch (Exception e) {}
+            if (paidCents > 0) {
+                TextView paid = new TextView(this);
+                paid.setText("Paid to date: $" + String.format("%.2f", paidCents / 100.0));
+                paid.setTextColor(0xFF44aa44);
+                paid.setTextSize(12);
+                paid.setPadding(0, 8, 0, 0);
+                historyContainer.addView(paid, 0);
             }
         } catch (Exception e) { /* parsing error — skip */ }
     }
