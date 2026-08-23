@@ -151,9 +151,19 @@ IP="$(waydroid status 2>/dev/null | sed -n 's/^IP address:[[:space:]]*//p' | hea
 say "Up at ${IP:-<unknown>}"
 
 if [ -n "${IP:-}" ] && command -v adb >/dev/null 2>&1; then
-    adb connect "$IP:5555" >/dev/null 2>&1 || true
-    sleep 3
-    if adb devices 2>/dev/null | grep -q "$IP:5555[[:space:]]*device"; then
+    # adbd is not listening the instant the session reports RUNNING, and a
+    # single connect-then-check reports "unauthorised" for a device that is
+    # merely still booting. Retry instead of guessing a sleep. kill-server
+    # first: the host caches a device as unauthorised and will keep saying so
+    # after the container has accepted the key.
+    adb kill-server >/dev/null 2>&1 || true
+    authorised=0
+    for _ in $(seq 1 20); do
+        adb connect "$IP:5555" >/dev/null 2>&1 || true
+        if adb devices 2>/dev/null | grep -q "$IP:5555[[:space:]]*device"; then authorised=1; break; fi
+        sleep 2
+    done
+    if [ "$authorised" -eq 1 ]; then
         say "adb authorised"
         case "$GEOMETRY" in
             *x*@*)

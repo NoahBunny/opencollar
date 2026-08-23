@@ -106,6 +106,28 @@ and never appear in a `uiautomator` dump. Confirmed in logcat
 (`visible: false`), and the checks now assert the always-rendered section
 header instead.
 
+
+## 2c. Onboarding device-admin walk — RUN 2026-08-23 ✅
+
+Walked on a container reset with `installers/waydroid-reset.sh` (no download),
+both apps installed fresh, **zero active admins** at the start.
+
+| Step | Result |
+|---|---|
+| Bunny Tasker wizard reaches the new admin page | ✅ "The leash needs a grip", status `○ Not granted yet` |
+| "Give Bunny Tasker admin" opens the system screen | ✅ `settings/…deviceadmin.DeviceAdminAdd`, carrying our written explanation |
+| Activating flips the page | ✅ status `✓ Bunny Tasker has device admin`, CTA becomes **Next** |
+| Wizard hands off to the Terms of Surrender | ✅ |
+| Selecting **Sealed** shows the Device Owner note | ✅ all five paragraphs, including that it cannot be switched on later without wiping the phone |
+| Consent requests the Collar's own admin | ✅ with its own explanation |
+| **Declining** it reports honestly | ✅ "Consent Recorded — but not yet held" |
+| With both admins active, no relock loop | ✅ Bunny Tasker still resumed 30s later |
+
+**The bug was reproduced first, on the same rig**: install both, pair, and The
+Collar bounced to the jail captioned *"BunnyTasker admin removed"* — over an
+admin that had never been granted, because nothing in either onboarding ever
+asked for it.
+
 ## 3. Device walk — the rows still owed
 
 Run on the SM-S908 rig (`R5CT339K1ZL`; provisioning order in the
