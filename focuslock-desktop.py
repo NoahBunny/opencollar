@@ -174,6 +174,53 @@ _ntfy_topic = _cfg.get("ntfy_topic") or (f"focuslock-{MESH_ID}" if MESH_ID else 
 _ntfy_enabled = _cfg.get("ntfy_enabled", False) and bool(_ntfy_topic) and ntfy_mod is not None
 
 
+def _refresh_ntfy_topic():
+    """Ask the relay what this mesh's wake-up topic is, before subscribing.
+
+    The topic used to be `focuslock-{mesh_id}` — computable by anyone who had
+    ever seen the mesh id, and ntfy topics are world-readable, so the mesh id
+    published the mesh's lock/unlock timing. The relay can now hold a stored
+    random topic instead, which a node has to be told.
+
+    Local config still wins: an operator who pinned a topic meant it. A relay
+    that predates the route 404s, and the derived topic already in
+    `_ntfy_topic` stays — so an old relay keeps working unchanged.
+    """
+    global _ntfy_topic
+    if _cfg.get("ntfy_topic"):
+        return
+    if not (MESH_URL and MESH_ID and _vault_privkey_pem):
+        return
+    try:
+        import base64 as _b64
+
+        from cryptography.hazmat.primitives import hashes as _hh
+        from cryptography.hazmat.primitives import serialization as _ser
+        from cryptography.hazmat.primitives.asymmetric import padding as _pad
+
+        ts_ms = int(time.time() * 1000)
+        payload = f"{MESH_ID}|{MESH_NODE_ID}|ntfy-topic|{ts_ms}"
+        priv = _ser.load_pem_private_key(_vault_privkey_pem.encode(), password=None)
+        sig = _b64.b64encode(priv.sign(payload.encode("utf-8"), _pad.PKCS1v15(), _hh.SHA256())).decode()
+        req = urllib.request.Request(
+            f"{MESH_URL}/vault/{MESH_ID}/ntfy-topic",
+            data=json.dumps({"node_id": MESH_NODE_ID, "ts": ts_ms, "signature": sig}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            topic = (json.loads(resp.read().decode()) or {}).get("topic", "")
+    except urllib.error.HTTPError as e:
+        logger.info("ntfy topic not served (HTTP %s) — keeping %s", e.code, _ntfy_topic)
+        return
+    except Exception as e:
+        logger.info("ntfy topic fetch failed (%s) — keeping %s", e, _ntfy_topic)
+        return
+    if topic and topic != _ntfy_topic:
+        logger.info("ntfy topic updated from relay")
+        _ntfy_topic = topic
+
+
 def _ntfy_fn(version):
     """Best-effort ntfy publish after local order mutations."""
     if _ntfy_enabled:
@@ -1963,6 +2010,9 @@ class CollarApp(Gtk.Application):
                 else:
                     GLib.idle_add(_direct_sync_tick)
 
+            # Learn the relay's topic before subscribing, or we subscribe to
+            # the derived one and hear nothing after a rotation.
+            _refresh_ntfy_topic()
             self.ntfy_sub = ntfy_mod.NtfySubscribeThread(_ntfy_topic, on_wake=_ntfy_wake, server=_ntfy_server)
             self.ntfy_sub.start()
             logger.info("Subscribed to ntfy %s/%s", _ntfy_server, _ntfy_topic)

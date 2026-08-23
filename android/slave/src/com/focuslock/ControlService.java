@@ -2920,6 +2920,7 @@ public class ControlService extends Service {
         // ── ntfy Push Subscriber (latency optimization — triggers immediate vault sync) ──
         String ntfyServer = gstr("focus_lock_ntfy_server");
         String ntfyTopic = gstr("focus_lock_ntfy_topic");
+        final boolean ntfyTopicPinned = !ntfyTopic.isEmpty();
         if (ntfyTopic.isEmpty()) {
             String mid = gstr("focus_lock_mesh_id");
             if (!mid.isEmpty()) ntfyTopic = "focuslock-" + mid;
@@ -2927,11 +2928,21 @@ public class ControlService extends Service {
         if (!ntfyTopic.isEmpty()) {
             if (ntfyServer.isEmpty()) ntfyServer = "https://ntfy.sh";
             final String fServer = ntfyServer;
-            final String fTopic = ntfyTopic;
-            Thread ntfyThread = new Thread(() -> ntfySubscribeLoop(fServer, fTopic));
+            final String fDerived = ntfyTopic;
+            // Resolve the topic on the subscriber thread, not here: this runs
+            // in service startup and the fetch is a network round-trip. A
+            // pinned topic is an explicit choice and is never overridden.
+            Thread ntfyThread = new Thread(() -> {
+                String topic = fDerived;
+                if (!ntfyTopicPinned) {
+                    String served = fetchNtfyTopic();
+                    if (!served.isEmpty()) topic = served;
+                }
+                Log.w(TAG, "ntfy subscriber started: " + fServer + "/" + topic);
+                ntfySubscribeLoop(fServer, topic);
+            });
             ntfyThread.setDaemon(true);
             ntfyThread.start();
-            Log.w(TAG, "ntfy subscriber started: " + ntfyServer + "/" + ntfyTopic);
         }
 
         // A3: also subscribe to the onion-derived wake topic so a battery-cold
@@ -3566,6 +3577,51 @@ public class ControlService extends Service {
      * <p>Signed with the bunny key, same shape as state-mirror. Blocking; call
      * off the main thread.
      */
+    /**
+     * Ask the relay for this mesh's ntfy wake-up topic.
+     *
+     * <p>The topic used to be {@code focuslock-<mesh_id>}, which every node
+     * could compute — and so could anyone who had ever seen the mesh id.
+     * ntfy topics are world-readable, so the mesh id published this collar's
+     * lock and unlock timing to whoever read it. The relay can now hold a
+     * stored random topic instead, which a node has to be told and only gets
+     * told if it can sign as a registered node.
+     *
+     * <p>Returns "" on any failure, including a relay too old to serve the
+     * route — the caller then keeps the derived topic, so an old relay keeps
+     * working exactly as before. Blocking; call off the main thread.
+     */
+    private String fetchNtfyTopic() {
+        try {
+            String meshId = gstr("focus_lock_mesh_id");
+            String meshUrl = gstr("focus_lock_mesh_url");
+            String nodeId = gstr("focus_lock_mesh_node_id");
+            String bunnyPrivB64 = gstr("focus_lock_bunny_privkey");
+            if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty() || bunnyPrivB64.isEmpty()) return "";
+
+            long ts = System.currentTimeMillis();
+            String payload = meshId + "|" + nodeId + "|ntfy-topic|" + ts;
+
+            byte[] privBytes = android.util.Base64.decode(bunnyPrivB64, android.util.Base64.NO_WRAP);
+            java.security.PrivateKey priv = java.security.KeyFactory.getInstance("RSA")
+                .generatePrivate(new java.security.spec.PKCS8EncodedKeySpec(privBytes));
+            java.security.Signature sig = java.security.Signature.getInstance("SHA256withRSA");
+            sig.initSign(priv);
+            sig.update(payload.getBytes("UTF-8"));
+            String signature = android.util.Base64.encodeToString(sig.sign(), android.util.Base64.NO_WRAP);
+
+            String body = "{\"node_id\":\"" + esc(nodeId)
+                + "\",\"ts\":" + ts
+                + ",\"signature\":\"" + signature + "\"}";
+            String resp = vaultHttpPost(meshUrl + "/vault/" + meshId + "/ntfy-topic", body);
+            if (resp == null || resp.isEmpty()) return "";
+            return new org.json.JSONObject(resp).optString("topic", "");
+        } catch (Exception e) {
+            Log.w(TAG, "fetchNtfyTopic: " + e.getMessage());
+            return "";
+        }
+    }
+
     private void reportBalanceEvent(String appliedAction, double before, double after, long version) {
         try {
             String meshId = gstr("focus_lock_mesh_id");

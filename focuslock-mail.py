@@ -430,9 +430,25 @@ def _get_ntfy_topic(mesh_id: str = "") -> str:
     if mesh_id:
         # Per-mesh topic. Operator's explicitly-configured topic wins
         # ONLY for the operator mesh, so consumer meshes always get
-        # their own deterministic topic regardless of config.
+        # their own topic regardless of config.
         if OPERATOR_MESH_ID and mesh_id == OPERATOR_MESH_ID and _ntfy_topic:
             return _ntfy_topic
+        # A STORED topic beats the derived one. The derived form is
+        # `focuslock-{mesh_id}`, which means the wake-up channel is a pure
+        # function of the mesh id — and ntfy topics are world-readable and
+        # world-writable. So anywhere a mesh id appears (a changelog, a
+        # handoff doc, a support thread, a screenshot) the mesh's wake-up
+        # channel appears with it: a stranger can subscribe and watch lock
+        # and unlock timing in real time, or publish spurious wakes. The
+        # payload is only {"v": N}, so no content leaks — but when a device
+        # gets locked is not nothing.
+        #
+        # Rotating the mesh id to fix that would re-pair every node. A
+        # stored random topic fixes it without touching mesh identity, and
+        # can be rotated again the moment one leaks.
+        stored = _mesh_accounts.get_ntfy_topic(mesh_id) if _mesh_accounts else ""
+        if stored:
+            return stored
         return f"focuslock-{mesh_id}"
     # Fallback when the caller doesn't know a mesh_id — matches old behavior.
     if _ntfy_topic:
@@ -2644,6 +2660,27 @@ class MeshAccountStore:
             account["vault_only"] = bool(value)
             self._save(mesh_id)
             return True
+
+    def get_ntfy_topic(self, mesh_id):
+        """This mesh's stored wake-up topic, or "" if it has never had one."""
+        account = self.meshes.get(mesh_id)
+        return (account or {}).get("ntfy_topic", "") or ""
+
+    def rotate_ntfy_topic(self, mesh_id):
+        """Mint a fresh, unguessable wake-up topic for this mesh.
+
+        Returns the new topic, or "" if the mesh does not exist. Safe to call
+        repeatedly; each call invalidates the previous topic, which is the
+        point — a topic that leaked is only dead once nothing publishes to it.
+        """
+        with self.lock:
+            account = self.meshes.get(mesh_id)
+            if not account:
+                return ""
+            topic = "focuslock-" + secrets.token_urlsafe(18)
+            account["ntfy_topic"] = topic
+            self._save(mesh_id)
+            return topic
 
     def _find_by_invite(self, invite_code):
         code = invite_code.upper().strip()
@@ -6009,6 +6046,46 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     _sanitize_log(node_id),
                 )
                 self.respond(200, {"ok": True, "lion_pubkey": lion_pubkey, "format": "der-b64"})
+
+            elif action == "ntfy-topic":
+                # Node-signed read of this mesh's wake-up topic.
+                # Body: {node_id, ts, signature}
+                # signature = SHA256withRSA over "mesh_id|node_id|ntfy-topic|ts"
+                #
+                # Why it needs a route at all: the topic used to be
+                # `focuslock-{mesh_id}`, which every node could compute on its
+                # own — and so could anyone who had ever seen the mesh id.
+                # Now it is stored and random, so a node has to be told, and
+                # only a node that can prove it holds a registered key gets
+                # told. Deliberately NOT auth_token-gated: that token is the
+                # Lion's, and the collar is exactly the node that needs this
+                # and does not hold one.
+                node_id = data.get("node_id", "")
+                signature = data.get("signature", "")
+                if not node_id or not signature:
+                    self.respond(400, {"error": "node_id and signature required"})
+                    return
+                try:
+                    ts_nt = int(data.get("ts", 0) or 0)
+                except (ValueError, TypeError):
+                    self.respond(400, {"error": "ts must be an int"})
+                    return
+                if abs(int(time.time() * 1000) - ts_nt) > 5 * 60 * 1000:
+                    self.respond(403, {"error": "ts out of window"})
+                    return
+                if not _node_signing_keys(mesh_id, node_id):
+                    logger.warning(
+                        "Vault ntfy-topic DENIED (node not approved): mesh=%s node=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                    )
+                    self.respond(403, {"error": "node not approved on this mesh"})
+                    return
+                payload_nt = f"{mesh_id}|{node_id}|ntfy-topic|{ts_nt}"
+                if not _verify_node_signature(mesh_id, node_id, signature, payload_nt):
+                    self.respond(403, {"error": "bad signature"})
+                    return
+                self.respond(200, {"topic": _get_ntfy_topic(mesh_id)})
 
             elif action == "penalty":
                 # Node-signed report of a fine-bearing incident on a collar.
