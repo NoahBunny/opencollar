@@ -24,12 +24,33 @@ public class E2EEHelper {
         public String ciphertext;   // base64 AES-GCM encrypted message
         public String encryptedKey; // base64 RSA encrypted AES key
         public String iv;           // base64 AES-GCM IV
+        /** The SAME AES key, wrapped a second time for the sender. Null when
+         *  no second recipient was given. See {@link #encrypt(String, String, String)}. */
+        public String encryptedKeySelf;
     }
 
     /**
      * Encrypt a message for the given recipient's RSA public key.
      */
     public static EncryptedMessage encrypt(String plaintext, String recipientPubKey) {
+        return encrypt(plaintext, recipientPubKey, null);
+    }
+
+    /**
+     * Encrypt for a recipient, and optionally wrap the same AES key for the
+     * sender so they can still read what they sent.
+     *
+     * <p>Without this the Lion encrypts to Bunny's key alone and cannot decrypt
+     * their own copy: their sent messages render as "[encrypted — sent by
+     * you]" forever, so the Inbox shows who they wrote to and when but never
+     * what they said. Wrapping the key a second time is how every E2EE
+     * messenger solves this — one ciphertext, one AES key, wrapped once per
+     * reader. The message body is encrypted exactly once, so the relay learns
+     * nothing new: it still holds only opaque blobs.
+     *
+     * @param alsoForPubKey the sender's own public key, or null for one reader
+     */
+    public static EncryptedMessage encrypt(String plaintext, String recipientPubKey, String alsoForPubKey) {
         try {
             // Parse public key (PEM or raw base64)
             String keyStr = recipientPubKey
@@ -60,6 +81,27 @@ public class E2EEHelper {
             result.ciphertext = Base64.encodeToString(ciphertext, Base64.NO_WRAP);
             result.encryptedKey = Base64.encodeToString(encryptedKey, Base64.NO_WRAP);
             result.iv = Base64.encodeToString(iv, Base64.NO_WRAP);
+
+            // Second wrap for the sender. A failure here must NOT fail the
+            // send: the recipient's copy is already sealed and correct, and a
+            // message the bunny never receives is a worse outcome than one the
+            // Lion cannot re-read.
+            if (canEncrypt(alsoForPubKey)) {
+                try {
+                    String selfStr = alsoForPubKey
+                        .replace("-----BEGIN PUBLIC KEY-----", "")
+                        .replace("-----END PUBLIC KEY-----", "")
+                        .replaceAll("[\\s|]+", "");
+                    PublicKey selfPub = KeyFactory.getInstance("RSA")
+                        .generatePublic(new X509EncodedKeySpec(Base64.decode(selfStr, Base64.DEFAULT)));
+                    Cipher selfCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+                    selfCipher.init(Cipher.ENCRYPT_MODE, selfPub);
+                    result.encryptedKeySelf =
+                        Base64.encodeToString(selfCipher.doFinal(aesKey.getEncoded()), Base64.NO_WRAP);
+                } catch (Exception e) {
+                    android.util.Log.w("E2EE", "self-wrap failed; sender will not be able to re-read", e);
+                }
+            }
             return result;
         } catch (Exception e) {
             android.util.Log.e("E2EE", "Encrypt failed", e);

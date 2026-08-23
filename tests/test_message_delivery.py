@@ -248,3 +248,65 @@ class TestSendIdempotencyHTTP:
         assert s1 == 200 and s2 == 200
         store = mail_module._get_message_store(seeded_mesh["mesh_id"])
         assert len(store.messages) == 2
+
+
+class TestSenderCopyPassthrough:
+    """`encrypted_key_lion` is the same AES key wrapped for the SENDER.
+
+    Without it the Lion encrypts to Bunny's key alone and cannot decrypt their
+    own copy — the Inbox shows who they wrote to and when, but never what they
+    said. The relay stores it opaquely, exactly like ciphertext/encrypted_key/iv,
+    and it sits outside the signed payload (which binds `text`), so dropping it
+    would cost the Lion their history and never cost the bunny their message.
+    """
+
+    def _encrypted_body(self, seeded, **extra):
+        mesh, node = seeded["mesh_id"], seeded["node_id"]
+        ts = int(time.time() * 1000)
+        # E2EE sends put the "[e2ee]" marker in the signed payload, not the body.
+        marker = "[e2ee]"
+        body = {
+            "op": "send",
+            "node_id": node,
+            "from": "bunny",
+            "text": marker,
+            "ts": ts,
+            "encrypted": True,
+            "ciphertext": "Y3Q=",
+            "encrypted_key": "ZWs=",
+            "iv": "aXY=",
+            "signature": _sign(seeded["bunny_priv"], f"{mesh}|{node}|bunny|{marker}|0|0|{ts}"),
+        }
+        body.update(extra)
+        return body
+
+    def test_the_senders_wrapped_key_is_stored(self, live_server, seeded_mesh, mail_module):
+        url = f"{live_server}/api/mesh/{seeded_mesh['mesh_id']}/messages/send"
+        status, _ = _http_post(url, self._encrypted_body(seeded_mesh, encrypted_key_lion="c2VsZg=="))
+        assert status == 200
+        store = mail_module._get_message_store(seeded_mesh["mesh_id"])
+        assert store.messages[-1].get("encrypted_key_lion") == "c2VsZg=="
+
+    def test_the_other_e2ee_fields_still_come_through(self, live_server, seeded_mesh, mail_module):
+        url = f"{live_server}/api/mesh/{seeded_mesh['mesh_id']}/messages/send"
+        _http_post(url, self._encrypted_body(seeded_mesh, encrypted_key_lion="c2VsZg=="))
+        msg = mail_module._get_message_store(seeded_mesh["mesh_id"]).messages[-1]
+        assert msg["encrypted"] is True
+        assert (msg["ciphertext"], msg["encrypted_key"], msg["iv"]) == ("Y3Q=", "ZWs=", "aXY=")
+
+    def test_a_message_without_it_is_still_accepted(self, live_server, seeded_mesh, mail_module):
+        """Older clients, and the bunny's own sends, never set it."""
+        url = f"{live_server}/api/mesh/{seeded_mesh['mesh_id']}/messages/send"
+        status, _ = _http_post(url, self._encrypted_body(seeded_mesh))
+        assert status == 200
+        assert "encrypted_key_lion" not in mail_module._get_message_store(seeded_mesh["mesh_id"]).messages[-1]
+
+    def test_it_is_not_stored_for_a_plaintext_message(self, live_server, seeded_mesh, mail_module):
+        """The passthrough is gated on `encrypted`; a plaintext send that
+        smuggles the field must not get an unexplained blob into the store."""
+        url = f"{live_server}/api/mesh/{seeded_mesh['mesh_id']}/messages/send"
+        body = _bunny_send_body(seeded_mesh, "hi")
+        body["encrypted_key_lion"] = "c2VsZg=="
+        status, _ = _http_post(url, body)
+        assert status == 200
+        assert "encrypted_key_lion" not in mail_module._get_message_store(seeded_mesh["mesh_id"]).messages[-1]

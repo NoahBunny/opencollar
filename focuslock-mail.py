@@ -5594,7 +5594,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 # E2EE passthrough (server stores opaquely; signature binds `text`)
                 if data.get("encrypted"):
                     entry["encrypted"] = True
-                    for k in ("ciphertext", "encrypted_key", "iv"):
+                    # encrypted_key_lion is the same AES key wrapped for the
+                    # SENDER, so the Lion can re-read what they sent. Opaque to
+                    # the relay exactly like the others, and outside the signed
+                    # payload (which binds `text`) — dropping it would only cost
+                    # the Lion their own history, never the bunny their message.
+                    for k in ("ciphertext", "encrypted_key", "encrypted_key_lion", "iv"):
                         v = data.get(k, "")
                         if isinstance(v, str) and v:
                             entry[k] = v

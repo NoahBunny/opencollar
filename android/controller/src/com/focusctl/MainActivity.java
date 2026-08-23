@@ -5221,7 +5221,20 @@ public class MainActivity extends Activity {
                         text = "[encrypted — key not available]";
                     }
                 } else if (encrypted && "lion".equals(from)) {
-                    text = "[encrypted — sent by you]";
+                    // Our own copy, wrapped for us at send time. Messages sent
+                    // before that existed carry no encrypted_key_lion and stay
+                    // unreadable — say so plainly rather than implying the
+                    // whole feature is broken.
+                    String ct = JsonScan.str(obj, "ciphertext");
+                    String ekSelf = JsonScan.str(obj, "encrypted_key_lion");
+                    String iv = JsonScan.str(obj, "iv");
+                    String lionPriv = prefs.getString("lion_privkey", "");
+                    if (!ekSelf.isEmpty() && E2EEHelper.canDecrypt(lionPriv)) {
+                        String dec = E2EEHelper.decrypt(ct, ekSelf, iv, lionPriv);
+                        text = dec != null ? dec : "[encrypted — could not read your own copy]";
+                    } else {
+                        text = "[encrypted — sent before your copy was kept]";
+                    }
                 }
                 if (text == null) text = "";
 
@@ -5666,12 +5679,18 @@ public class MainActivity extends Activity {
             String bunnyPubKey = bunnyPubkeyB64;
             StringBuilder json = new StringBuilder("{\"from\":\"lion\"");
             if (E2EEHelper.canEncrypt(bunnyPubKey)) {
-                E2EEHelper.EncryptedMessage enc = E2EEHelper.encrypt(msg, bunnyPubKey);
+                // Wrap the same AES key for ourselves as well, or this message
+                // becomes unreadable to the Lion the moment it is sent.
+                E2EEHelper.EncryptedMessage enc = encryptForBoth(msg, bunnyPubKey);
                 if (enc != null) {
                     json.append(",\"encrypted\":true");
                     json.append(",\"ciphertext\":\"").append(JsonScan.escape(enc.ciphertext)).append("\"");
                     json.append(",\"encrypted_key\":\"").append(JsonScan.escape(enc.encryptedKey)).append("\"");
                     json.append(",\"iv\":\"").append(JsonScan.escape(enc.iv)).append("\"");
+                    if (enc.encryptedKeySelf != null) {
+                        json.append(",\"encrypted_key_lion\":\"")
+                            .append(JsonScan.escape(enc.encryptedKeySelf)).append("\"");
+                    }
                 } else {
                     json.append(",\"text\":\"").append(JsonScan.escape(msg)).append("\"");
                 }
@@ -5705,7 +5724,7 @@ public class MainActivity extends Activity {
             // the server dedups retries to a single message.
             E2EEHelper.EncryptedMessage enc = null;
             if (E2EEHelper.canEncrypt(bunnyPubKey)) {
-                enc = E2EEHelper.encrypt(msg, bunnyPubKey);
+                enc = encryptForBoth(msg, bunnyPubKey);
             }
             long ts = System.currentTimeMillis();
             String clientMsgId = java.util.UUID.randomUUID().toString();
@@ -5743,6 +5762,12 @@ public class MainActivity extends Activity {
                     scheduledAtMs = 0;
                     TextView schedLabel = (TextView) findViewById(getId("schedule_label"));
                     if (schedLabel != null) schedLabel.setVisibility(View.GONE);
+                    // Pull the thread so the message the Lion just sent appears
+                    // in it. Without this the input clears and the status line
+                    // says "Sent" while the thread above still shows the state
+                    // before it — indistinguishable from a send that vanished,
+                    // until something else happened to refresh.
+                    refreshInbox();
                 }
             });
         });
@@ -5755,6 +5780,23 @@ public class MainActivity extends Activity {
     // server stopped serving. Vault-mode messaging continues to flow through
     // /api/send-message → vault append (unchanged) — these new helpers are
     // for the non-vault path and the on-demand mark-read flow.
+
+    /** Our own public key, base64 X.509 — the second recipient every message
+     *  we encrypt is wrapped for, so we can still read what we sent. */
+    private String ownPubB64() {
+        byte[] der = lionPubDer();
+        return der != null ? android.util.Base64.encodeToString(der, android.util.Base64.NO_WRAP) : null;
+    }
+
+    /** Encrypt for the bunny AND for ourselves.
+     *
+     *  <p>Every send path goes through here. Three call sites used to each call
+     *  E2EEHelper.encrypt directly, and adding the self-wrap to one of them
+     *  fixed the Inbox for exactly one of the three — the vault side channel,
+     *  not the server message store the thread actually reads. */
+    private E2EEHelper.EncryptedMessage encryptForBoth(String plaintext, String bunnyPub) {
+        return E2EEHelper.encrypt(plaintext, bunnyPub, ownPubB64());
+    }
 
     /** Sign + POST a lion-authored message to /api/mesh/{id}/messages/send.
      *  Returns true on 200. Blocking — call from executor. */
@@ -5788,6 +5830,10 @@ public class MainActivity extends Activity {
                 body.put("ciphertext", enc.ciphertext);
                 body.put("encrypted_key", enc.encryptedKey);
                 body.put("iv", enc.iv);
+                // Our own wrap of the same AES key. Outside the signed payload
+                // (which binds `text`), so a relay dropping it costs us our
+                // history and never costs the bunny their message.
+                if (enc.encryptedKeySelf != null) body.put("encrypted_key_lion", enc.encryptedKeySelf);
             }
             body.put("ts", ts);
             if (clientMsgId != null && !clientMsgId.isEmpty()) body.put("client_msg_id", clientMsgId);
@@ -6004,7 +6050,7 @@ public class MainActivity extends Activity {
         E2EEHelper.EncryptedMessage enc = null;
         String signedText = newText;
         if (reEncrypt && E2EEHelper.canEncrypt(bunnyPubkeyB64)) {
-            enc = E2EEHelper.encrypt(newText, bunnyPubkeyB64);
+            enc = encryptForBoth(newText, bunnyPubkeyB64);
             if (enc != null) signedText = "[e2ee]";
         }
         String payload = meshId + "|controller|lion|edit|" + messageId
