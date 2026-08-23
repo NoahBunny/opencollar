@@ -12,7 +12,7 @@ off the device over adb and uses that fallback, so a whole feature sweep can be
 run without the Lion's private key (which lives in app-private prefs).
 
     ./qa_collar_driver.py <adb-serial> <host:port> <path> [json-body]
-    ./qa_collar_driver.py R5CT339K1ZL 192.168.199.109:8432 /api/lock \
+    ./qa_collar_driver.py R5CTQA000ZL 192.168.199.109:8432 /api/lock \
         '{"duration_min":15,"mode":"basic"}'
 
 Read-only by design about *its own* state: it never writes to the device, it

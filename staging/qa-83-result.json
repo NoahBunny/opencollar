@@ -564,25 +564,25 @@
       "row": "3.17",
       "check": "screenshot lock",
       "ok": true,
-      "detail": "/home/livv/Desktop/Scripts/Lion's Share + Bunny Tasker/docs/Screenshots/lions-share-83-lock.png"
+      "detail": "/home/<user>/Desktop/Scripts/Lion's Share + Bunny Tasker/docs/Screenshots/lions-share-83-lock.png"
     },
     {
       "row": "3.17",
       "check": "screenshot rules",
       "ok": true,
-      "detail": "/home/livv/Desktop/Scripts/Lion's Share + Bunny Tasker/docs/Screenshots/lions-share-83-rules.png"
+      "detail": "/home/<user>/Desktop/Scripts/Lion's Share + Bunny Tasker/docs/Screenshots/lions-share-83-rules.png"
     },
     {
       "row": "3.17",
       "check": "screenshot money",
       "ok": true,
-      "detail": "/home/livv/Desktop/Scripts/Lion's Share + Bunny Tasker/docs/Screenshots/lions-share-83-money.png"
+      "detail": "/home/<user>/Desktop/Scripts/Lion's Share + Bunny Tasker/docs/Screenshots/lions-share-83-money.png"
     },
     {
       "row": "3.17",
       "check": "screenshot inbox",
       "ok": true,
-      "detail": "/home/livv/Desktop/Scripts/Lion's Share + Bunny Tasker/docs/Screenshots/lions-share-83-inbox.png"
+      "detail": "/home/<user>/Desktop/Scripts/Lion's Share + Bunny Tasker/docs/Screenshots/lions-share-83-inbox.png"
     }
   ]
 }

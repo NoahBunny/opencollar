@@ -166,7 +166,7 @@ away now.
 
 ## 3. Device walk — the rows still owed
 
-Run on the SM-S908 rig (`R5CT339K1ZL`; provisioning order in the
+Run on the SM-S908 rig (`R5CTQA000ZL`; provisioning order in the
 `project_on_device_adb_qa` notes). Install with
 `adb install -r apks/focusctl-v83.apk`.
 
@@ -214,7 +214,7 @@ Then confirm the fingerprint printed is unchanged
 the live index offers 83:
 
 ```
-curl -s https://fdroid.nunyabiznu.com/repo/index-v1.json | python3 -c "import json,sys; print([(a['packageName'],a.get('suggestedVersionCode')) for a in json.load(sys.stdin)['apps']])"
+curl -s https://fdroid.example.com/repo/index-v1.json | python3 -c "import json,sys; print([(a['packageName'],a.get('suggestedVersionCode')) for a in json.load(sys.stdin)['apps']])"
 ```
 
 The build script's APK map still names `focusctl-v82.apk`; point it at

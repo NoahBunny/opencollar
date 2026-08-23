@@ -3352,7 +3352,7 @@ def _close_expired_auto_accept_windows():
     `_auto_accept_active()` fails closed on an expired or missing deadline, so
     behavior is already correct — but `auto_accept_nodes` stays `true` on disk
     forever, and the account JSON is what an operator reads when they go to the
-    relay to ask whether the door is open. On mesh eMv8tP9KJL0D that flag has
+    relay to ask whether the door is open. On mesh Mn4pQr7tVw2X that flag has
     been claiming an open door against a shut one since the window landed.
 
     This changes no decision: every account it touches is one the gate was

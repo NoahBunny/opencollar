@@ -20,8 +20,8 @@ fix 6, which is why the previous session saw a rejection log rather than
 silence.
 
 ## Test devices (both are real phones, to be enslaved later — treat as ephemeral)
-- **Bunny**: Samsung **SM-S908W**, adb `R5CT339K1ZL`, Android 16 / API 36.
-  Its real prod collar config (mesh `qOZ8W6mGo2ZB` @ `collar.nunyabiznu.com`)
+- **Bunny**: Samsung **SM-S908W**, adb `R5CTQA000ZL`, Android 16 / API 36.
+  Its real prod collar config (mesh `Ab3dEf6hJ9kL` @ `collar.example.com`)
   was **backed up** and restored at end of session. Backup + restore script:
   `<session-scratchpad>/prod-config-backup/` (contains the **real bunny privkey** —
   local/ephemeral, not committed).
@@ -265,7 +265,7 @@ later with *"Missed daily check-in. Message your Lion."* — Bunny Tasker's
 `BunnyService` enforcing autonomously, no order involved. (It re-fires until the
 bunny checks in or the deadline is cleared; `deadline >= 0` is the enable gate.)
 
-**Relay path — mesh created (`PRnLhTZI6Ec7`, invite `MARE-36-SWAN`), bunny joined
+**Relay path — mesh created (`Rs6uVx9y2Bd4`, invite `WOLF-42-BEAR`), bunny joined
 via the real `/api/mesh/join`, vault appends flowing** (`slots=2`, ~1.7 KB
 ciphertext every 10 s), **and `state-mirror` verifying** with `signer=bunny` over
 `paywall, paywall_original, sub_tier, sub_due, lock_active, locked_at,
@@ -426,19 +426,19 @@ Honest list. Nothing here should be read as working.
 
 Both phones are still in QA state. Nothing has been torn down.
 
-- **Bunny SM-S908W** (`R5CT339K1ZL`): Collar 81/8.38 + Bunny Tasker 60/2.27
+- **Bunny SM-S908W** (`R5CTQA000ZL`): Collar 81/8.38 + Bunny Tasker 60/2.27
   installed; `focus_lock_mesh_url` **repointed off production** to
   `http://192.168.199.217:18435`; paired to this session's throwaway Lion key
   (`focus_lock_lion_pubkey` set, SMS token provisioned); unlocked, paywall
   cleared. Its **prod config survived the previous session in `Settings.Global`**
-  (mesh `qOZ8W6mGo2ZB` @ `collar.nunyabiznu.com`) and all 34 `focus_lock_*` keys
+  (mesh `Ab3dEf6hJ9kL` @ `collar.example.com`) and all 34 `focus_lock_*` keys
   were backed up **before** anything was touched.
 - **Lion Pixel 10** (`57261FDCR004ZQ`): **fully clean.** Lion's Share was
   uninstalled at end of session (all three packages absent), `adb reverse`
   tunnels removed, screen settings restored. Nothing of this QA run remains.
-- **Bunny SM-S908W** (`R5CT339K1ZL`): Collar **81 / 8.38** + Bunny Tasker
+- **Bunny SM-S908W** (`R5CTQA000ZL`): Collar **81 / 8.38** + Bunny Tasker
   **60 / 2.27** left installed, on its **production** config —
-  `mesh_id=qOZ8W6mGo2ZB`, `mesh_url=https://collar.nunyabiznu.com`,
+  `mesh_id=Ab3dEf6hJ9kL`, `mesh_url=https://collar.example.com`,
   `lion_pubkey=null`, unlocked, no balance, no subscription, check-in cleared.
   All 34 `focus_lock_*` keys restored **and verified**.
 - **The test-Lion pubkey is cleared**, which is the one that would have bitten:
@@ -460,8 +460,8 @@ To restore the bunny to its pre-QA state:
 `adb uninstall com.focuslock com.bunnytasker` on the bunny and
 `adb uninstall com.focusctl` on the Pixel. **That scratchpad is ephemeral — if
 it's gone, re-take a backup before touching the phone again.** Verify after
-restore: `adb -s R5CT339K1ZL shell settings get global focus_lock_mesh_id`
-should read `qOZ8W6mGo2ZB`.
+restore: `adb -s R5CTQA000ZL shell settings get global focus_lock_mesh_id`
+should read `Ab3dEf6hJ9kL`.
 
 ## To resume
 

@@ -12,7 +12,7 @@ from the Lion, rewrite history, replay, or slip a tampered body past the
 signature?
 
     ./qa_messaging.py <adb-serial> <relay> <mesh_id> <node_id>
-    ./qa_messaging.py R5CT339K1ZL http://127.0.0.1:18435 PRnLhTZI6Ec7 sm-s908w
+    ./qa_messaging.py R5CTQA000ZL http://127.0.0.1:18435 Rs6uVx9y2Bd4 sm-s908w
 """
 
 import base64

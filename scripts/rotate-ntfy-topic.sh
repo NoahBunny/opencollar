@@ -25,7 +25,7 @@
 # Usage:
 #   scripts/rotate-ntfy-topic.sh --list                 # what the relay holds
 #   scripts/rotate-ntfy-topic.sh --all                  # rotate every mesh
-#   scripts/rotate-ntfy-topic.sh eMv8tP9KJL0D           # rotate one
+#   scripts/rotate-ntfy-topic.sh Mn4pQr7tVw2X           # rotate one
 #   scripts/rotate-ntfy-topic.sh --all --show           # print topics in full
 #
 # The relay is restarted afterwards: the running process holds the account

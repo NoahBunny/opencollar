@@ -7,7 +7,7 @@ mesh id had ever been written down — a CHANGELOG line, a handoff doc, a suppor
 thread, a screenshot — published a feed of that mesh's lock and unlock timing to
 anyone who read it, and a way to inject spurious wakes.
 
-`focuslock-DNfs4xCZM-HY` was in the repo's own changelog, spelled out as a full
+`focuslock-Cd5gHj8k-Nq3` was in the repo's own changelog, spelled out as a full
 ntfy.sh URL, and had been public for months.
 
 The payload is only `{"v": N}`, so no content leaks — that part of the

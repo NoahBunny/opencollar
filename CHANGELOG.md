@@ -8,6 +8,34 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-08-23 operator identifiers out of a public repo ───────── -->
+
+### Changed — the operator's own infrastructure is no longer in the tree
+
+- **Scrubbed:** the live relay and F-Droid hostnames, four mesh ids, and a
+  phone's adb serial, replaced with `*.example.com` and same-shaped fakes. Mesh
+  ids keep their character classes on purpose — the validity fixtures assert
+  that mixed case, digits and a hyphen are accepted, and a placeholder that
+  quietly stopped covering hyphens would be worse than the leak.
+- **Both desktop collars prefilled the author's own relay** as the default mesh
+  URL, so every fresh install offered a stranger's host and one Enter accepted
+  it. The GTK tray now prefills only what the machine is already configured
+  with and shows the example as placeholder text; the Windows prompt moved its
+  example into the prompt, where it reads as an example rather than an answer.
+- **Machine hostnames were deliberately left alone.** They identify the operator
+  only to people who already know them personally, and those people already know
+  about the dynamic — so scrubbing them cost the handoff docs their real
+  referents and bought nothing.
+- **Guarded, without writing the secrets down.** A denylist of the real values
+  would publish them, so the test derives the operator's domain from the repo's
+  own commit authorship and asserts it appears nowhere but
+  `.github/allowed_signers` — exempt because the signing principal *must* equal
+  the committer email or CI cannot verify a signature. A second check rejects
+  `/home/<someone>` paths, which kept arriving via pasted shell output.
+- **This does not un-publish anything.** The strings remain in git history and on
+  the public branches that already carry them; the scrub stops future exposure
+  and stops a merge from regressing `main`, which `670ebe9` had already cleaned.
+
 <!-- ───────── 2026-08-23 the mesh id was the wake-up channel ───────── -->
 
 ### Fixed — a leaked mesh id no longer leaks the wake-up feed
@@ -15,7 +43,7 @@ starting with v1.0.0.
 - **The ntfy topic was `focuslock-{mesh_id}`.** ntfy topics are world-readable
   and world-writable with no registration, so the mesh id *was* the channel:
   anywhere one had been written down — including this changelog, which spelled
-  out `https://ntfy.sh/focuslock-DNfs4xCZM-HY` in full — published that mesh's
+  out `https://ntfy.sh/focuslock-Cd5gHj8k-Nq3` in full — published that mesh's
   lock and unlock timing to anyone who read it, and handed them a way to inject
   spurious wakes. Payload is only `{"v": N}`, so no content leaked; timing did.
 - **A derived topic cannot be rotated.** That was the real defect. The relay now
@@ -221,7 +249,7 @@ starting with v1.0.0.
   staged beside it. `fdroid update` turns that into `suggestedVersionCode: 81`, which is
   the number a client uses to decide whether an update exists, so the auto-accept toggle
   fix (`95f33bd`) sat in the repo unoffered from 2026-08-22 until now. Confirmed against
-  the live index at `fdroid.nunyabiznu.com` before and after.
+  the live index at `fdroid.example.com` before and after.
 - **The literal is gone rather than corrected.** The same number used to be written down
   three times — in the source APK filename, in the name it takes in `repo/`, and in
   `CurrentVersionCode` — with nothing checking that the three agreed. All three now derive
@@ -335,7 +363,7 @@ starting with v1.0.0.
   reasoning that an unauthenticated caller must not get to choose the address controller
   resolution hands back. The read side was left open — so the address itself, the Lion's
   controller on the mesh, was served to any caller that could reach the relay, and this
-  relay is on public HTTPS at `collar.nunyabiznu.com`. It answered 404 when checked only
+  relay is on public HTTPS at `collar.example.com`. It answered 404 when checked only
   because `controller.json` lives on tmpfs and a reboot had wiped it; it refills the moment
   the installer re-registers. Gating the write and publishing the read is the gate facing
   one direction.
@@ -362,7 +390,7 @@ starting with v1.0.0.
   was actually accepting anyone** — but nothing ever wrote that verdict back, so
   `auto_accept_nodes` sat `true` in the account JSON forever. That file is what an
   operator reads on the relay when they go to ask whether the onboarding door is open,
-  and on the live mesh (`eMv8tP9KJL0D`) it had been answering *yes* against a door the
+  and on the live mesh (`Mn4pQr7tVw2X`) it had been answering *yes* against a door the
   gate holds shut. Both HTTP readouts were already honest — `/nodes` and the Lion's
   toggle both go through the helper — so this was never a security hole; it was a record
   that disagreed with the system enforcing it, on the exact question the record exists to
@@ -378,7 +406,7 @@ starting with v1.0.0.
 
 ### Still owed — trust provenance on the live mesh is thin
 
-- Every node on `eMv8tP9KJL0D` except `relay`/`controller` is stamped
+- Every node on `Mn4pQr7tVw2X` except `relay`/`controller` is stamped
   `confirmed_by: grandfathered` — swept in by the one-shot migration, never looked at by
   the Lion — and `gengar-neon` was admitted from the relay console
   (`admitted_by: operator-console`) at the bunny's request, without a Lion signature. The
@@ -1447,7 +1475,7 @@ shipping. Versions: slave **80 / 8.37**, controller **73 / 73.0**, companion
 - **Lion↔Bunny messaging — edit + delete + ntfy fan-out + Android UI** (`focuslock-mail.py:4007-4256`, `focuslock_mesh.py:1485-1617`, both Android `MainActivity.java`). Five HTTP routes under `/api/mesh/{id}/messages/{send,fetch,mark,edit,delete}`, all RSA-SHA256 (PKCS1v15) signed and verified against the per-mesh `lion_pubkey` (or the per-node `bunny_pubkey` for bunny-signed sends/fetches/marks). Edit + delete are Lion-only — the server returns 403 with a `"lion-only"` error before signature verification, so a tampered Bunny client can't even attempt to forge from=lion. New `MessageStore.edit()` appends the prior live fields (text, ciphertext, encrypted_key, iv) to `edit_history[]` and overwrites with the new values; `MessageStore.delete_message()` sets a tombstone (`deleted: true`, `deleted_at`, `deleted_by`) but preserves the original text + ciphertext server-side so Lion's own audit view can render it (Bunny's UI shows "[deleted]"). E2EE-aware: edit replaces the ciphertext/iv/encrypted_key bundle while history captures the prior bundle. `_messages_publish_ntfy(mesh_id)` fires after every send/edit/delete via the per-mesh ntfy topic so subscribers refresh the inbox in ~1s instead of waiting 5–10s for the next poll. Android UI: controller `lion_message_thread` ScrollView + companion `messages_container`, both with reply chains, edited/deleted markers, and pinned/mandatory-reply flags. Tests: `tests/test_messages.py` (8 unit tests of `MessageStore` edit/delete/tombstone semantics) plus the new `tests/test_e2e_messages_admin.py` (15 HTTP-level tests covering edit/delete/fetch/mark + ntfy fan-out + cross-mesh signer rejection).
 - **Generic mesh installer — `installers/install-mesh.{sh,ps1}` + `installers/README.md`**. One-shot pre-configured desktop-collar installer for any mesh — writes `~/.config/focuslock/config.json` (Linux) or `%APPDATA%\focuslock\config.json` (Windows) with `mesh_id` + `mesh_url` + `vault_mode: true` + ntfy enabled, then hands off to the platform installer (`install-desktop-collar.sh` / `FocusLock.exe`). `--mesh-id` and `--mesh-url` (or `FOCUSLOCK_MESH_ID` / `FOCUSLOCK_MESH_URL` env vars) are required — there is no default mesh, no operator-specific hostname baked in. `--no-ntfy` skips ntfy subscription, `--reset-keys` wipes the vault keypair to force a fresh `register-node-request` cycle (defaults to preserving so prior Lion approvals stick). Idempotent — re-running rewrites `config.json` authoritatively + re-runs the platform installer. `installers/README.md` documents every parameter with sample `<your-mesh-id>` / `https://your.relay.example` invocations across Bash + PowerShell.
 
-- **Per-mesh ntfy push topic** (`focuslock-mail.py:415`, audit followup #7). Pre-fix the server published every vault-blob wake-up to one config-wide `ntfy_topic`, so consumer meshes on the multi-tenant relay never got push notifications — silently falling back to the 30s vault poll (measured lock-propagation ~12s in hands-on QA). `_get_ntfy_topic(mesh_id)` now derives `focuslock-{mesh_id}` for non-operator meshes; operator keeps its config-wide topic for continuity. `ntfy_fn(version, mesh_id="")` threads the id through `_server_apply_order` + `/admin/order`. Consumer-mesh Collars subscribe via `focus_lock_ntfy_topic` in Settings.Global. Deployed + verified live on pegasus — Pixel subscribed to `https://ntfy.sh/focuslock-DNfs4xCZM-HY` and now receives sub-second wake-ups.
+- **Per-mesh ntfy push topic** (`focuslock-mail.py:415`, audit followup #7). Pre-fix the server published every vault-blob wake-up to one config-wide `ntfy_topic`, so consumer meshes on the multi-tenant relay never got push notifications — silently falling back to the 30s vault poll (measured lock-propagation ~12s in hands-on QA). `_get_ntfy_topic(mesh_id)` now derives `focuslock-{mesh_id}` for non-operator meshes; operator keeps its config-wide topic for continuity. `ntfy_fn(version, mesh_id="")` threads the id through `_server_apply_order` + `/admin/order`. Consumer-mesh Collars subscribe via `focus_lock_ntfy_topic` in Settings.Global. Deployed + verified live on pegasus — Pixel subscribed to `https://ntfy.sh/focuslock-Cd5gHj8k-Nq3` and now receives sub-second wake-ups.
 - **`installers/install-desktop-collar.sh` hardening**. Three hang points fixed: (1) new `--non-interactive` / `-n` flag (auto-detected via `[ ! -t 0 ]`) fails fast instead of blocking on the "Homelab URL" `read` prompt when run from a watcher/CI; (2) `sudo -v` up-front consolidates password prompts so later `sudo cp` can't re-prompt mid-install; (3) `curl -m 15` hard timeout on the Lexend font download so a slow GitHub doesn't hang install forever. Runs cleanly as `FOCUSLOCK_HOMELAB=… bash installers/install-desktop-collar.sh --non-interactive`.
 - `docs/QA-v1.2.0-mesh.md` — manual QA script for the 1-lion + 3-slave mesh topology. Complements `docs/MANUAL-QA.md` (single-device fundamentals). Exercises pairing (incl. C5 fingerprint pin regression), order propagation, C1 signature gate + replay, messaging (incl. C4 mandatory-reply regression), per-device + target=all release, and the P2 paywall hardening regression sanity tour. Protocol-level 7-test vault driver + 9-test C1 gate driver both green against a throwaway local mesh as of 2026-04-21.
 - **Headless-start caveat** for Android 14+ FGS-location enforcement, now documented in both `docs/MANUAL-QA.md §1` and `docs/QA-v1.2.0-mesh.md §Pre-flight/On each device`. `adb shell am start-foreground-service com.focuslock/.ControlService` on a fresh Android-14+ install crashes with `SecurityException: Starting FGS with type location requires FOREGROUND_SERVICE_LOCATION` — the manifest does declare that permission (`android/slave/AndroidManifest.xml:24`), but Android 14 also requires at least one runtime `ACCESS_*_LOCATION` grant before a location-typed FGS can start. Mitigation: drive through `ConsentActivity` or pre-grant via `adb shell pm grant`. Verified empirically in Waydroid Android 13 that the crash is not reproducible there (Android-14-only rule, as expected).

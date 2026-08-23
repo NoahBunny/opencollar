@@ -518,7 +518,7 @@ class FocusLockTray:
         grid.attach(lbl_id, 0, 0, 1, 1)
         mesh_entry = Gtk.Entry()
         mesh_entry.set_text(cfg.get("mesh_id", "") or "")
-        mesh_entry.set_placeholder_text("e.g. qOZ8W6mGo2ZB")
+        mesh_entry.set_placeholder_text("e.g. Ab3dEf6hJ9kL")
         mesh_entry.set_hexpand(True)
         mesh_entry.set_activates_default(True)
         grid.attach(mesh_entry, 1, 0, 1, 1)
@@ -527,7 +527,12 @@ class FocusLockTray:
         lbl_url.set_xalign(0.0)
         grid.attach(lbl_url, 0, 1, 1, 1)
         url_entry = Gtk.Entry()
-        url_entry.set_text(cfg.get("mesh_url", "") or "https://collar.nunyabiznu.com")
+        # Prefill only what this machine is already configured with. This used to
+        # fall back to the author's own relay, so every fresh install offered a
+        # stranger's host as the default and one Enter accepted it. A placeholder
+        # shows the shape without putting a value in the field.
+        url_entry.set_text(cfg.get("mesh_url", "") or "")
+        url_entry.set_placeholder_text("https://collar.example.com")
         url_entry.set_hexpand(True)
         url_entry.set_activates_default(True)
         grid.attach(url_entry, 1, 1, 1, 1)

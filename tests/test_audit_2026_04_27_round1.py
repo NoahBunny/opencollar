@@ -148,7 +148,7 @@ class TestOperatorMeshIdValidator:
 
     def test_safe_mesh_id_static_accepts_legitimate_shapes(self, mail_module):
         # Real mesh IDs are base64url-unpadded sha256 prefixes, ≤ 16 chars
-        assert mail_module._safe_mesh_id_static("DNfs4xCZM-HY1234")
+        assert mail_module._safe_mesh_id_static("Cd5gHj8k-Nq31234")
         assert mail_module._safe_mesh_id_static("abc_def-123")
         assert mail_module._safe_mesh_id_static("a")
 

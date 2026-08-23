@@ -629,8 +629,11 @@ def show_first_run_config():
         (
             simpledialog.askstring(
                 "Mesh relay URL",
-                "Enter the Mesh relay URL:",
-                initialvalue="https://collar.nunyabiznu.com",
+                # The example belongs in the prompt, not in the field: an
+                # initialvalue is an answer the user can accept by pressing
+                # Enter, and this one used to be the author's own relay.
+                "Enter the Mesh relay URL\n(for example: https://collar.example.com):",
+                initialvalue="",
                 parent=root,
             )
             or ""

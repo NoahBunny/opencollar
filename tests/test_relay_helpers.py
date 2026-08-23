@@ -252,7 +252,7 @@ class TestSafeMeshIdStatic:
         assert mail_module._safe_mesh_id_static("abc_123") is True
 
     def test_mixed_accepted(self, mail_module):
-        assert mail_module._safe_mesh_id_static("DNfs4xCZM-HY") is True
+        assert mail_module._safe_mesh_id_static("Cd5gHj8k-Nq3") is True
 
     def test_empty_rejected(self, mail_module):
         assert mail_module._safe_mesh_id_static("") is False

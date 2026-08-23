@@ -9,7 +9,7 @@
 #     port 18435, state in /tmp/focuslock-staging, a mesh created minutes ago
 #     for QA against a disposable Waydroid container.
 #   * It is NOT the live relay. That one runs on the homelab VPS behind
-#     collar.nunyabiznu.com and is not reachable from here.
+#     collar.example.com and is not reachable from here.
 #   * It lowers no balance, clears no paywall and edits no orders. The relay
 #     holds its per-mesh ledgers and orders in memory, so code changes and
 #     seeded fixtures are only picked up at start — restarting is the only way

@@ -91,6 +91,6 @@ THE OVERLAY with a freeform 50-word gate even with `task_text` empty. Set
 `word_min: 0` relay-side if that is not wanted.
 
 ## Redeploy
-    sudo cp "/home/livv/Desktop/Scripts/Lion's Share + Bunny Tasker/focuslock-desktop.py" /opt/focuslock/focuslock-desktop.py
+    sudo cp "/home/<user>/Desktop/Scripts/Lion's Share + Bunny Tasker/focuslock-desktop.py" /opt/focuslock/focuslock-desktop.py
     systemctl --user restart focuslock-desktop.service
 Rollback stays at /opt/focuslock/focuslock-desktop.py.bak (pre-v1, pristine).

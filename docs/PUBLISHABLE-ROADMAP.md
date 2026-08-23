@@ -205,7 +205,7 @@ Also addressed this session: **consumer-install design pivot** — the `Settings
 
 Consent + release hygiene: **bunny-initiated pair-reset removed** (violated the *"only Lion or factory reset can release"* contract); **mutual admin re-activation nag wired** on both sides (high-priority full-screen-intent notification when peer admin is removed); **prior-launcher capture now uses `MATCH_DEFAULT_ONLY`** so Release Forever restores the user's actual launcher (Fossify etc.) instead of stock.
 
-Pegasus deploy verified live: `/api/pair/register` + `/api/pair/claim` correctly require `mesh_id`; consumer mesh `DNfs4xCZM-HY` has its own ntfy topic + payment ledger + desktop registry + pair state.
+Pegasus deploy verified live: `/api/pair/register` + `/api/pair/claim` correctly require `mesh_id`; consumer mesh `Cd5gHj8k-Nq3` has its own ntfy topic + payment ledger + desktop registry + pair state.
 
 The per-phase plan below is preserved as historical context. Everything in Phases 0–9 is shipped — search the CHANGELOG or commit log by keyword if You need to trace a specific item.
 
