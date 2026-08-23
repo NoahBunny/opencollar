@@ -164,9 +164,12 @@ public class MainActivity extends Activity {
                                                // late-failing order can't cancel a newer one
     private volatile String lastSnapshotJson = null; // last real runtime snapshot rendered
 
-    // Tab views
-    private View pageSimple, pageAdvanced, pageInbox;
-    private Button tabSimple, tabAdvanced, tabInbox;
+    // Tab views. Named after what the tab is FOR — the old page_simple /
+    // page_advanced pair was named after how dangerous its contents were,
+    // which is the naming problem this reorganisation exists to fix.
+    private View pageLock, pageRules, pageMoney, pageInbox;
+    private Button tabLock, tabRules, tabMoney, tabInbox;
+    private static final int TAB_INBOX = 3;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -245,16 +248,26 @@ public class MainActivity extends Activity {
         togglePinNotif = (ToggleButton) findViewById(getId("toggle_pin_notif"));
         balanceDisplay = (TextView) findViewById(getId("balance_display"));
 
-        // ── Tab switching (3 tabs) ──
-        pageSimple = findViewById(getId("page_simple"));
-        pageAdvanced = findViewById(getId("page_advanced"));
+        // ── Tab switching (Lock / Rules / Money / Inbox) ──
+        pageLock = findViewById(getId("page_lock"));
+        pageRules = findViewById(getId("page_rules"));
+        pageMoney = findViewById(getId("page_money"));
         pageInbox = findViewById(getId("page_inbox"));
-        tabSimple = (Button) findViewById(getId("tab_simple"));
-        tabAdvanced = (Button) findViewById(getId("tab_advanced"));
+        tabLock = (Button) findViewById(getId("tab_lock"));
+        tabRules = (Button) findViewById(getId("tab_rules"));
+        tabMoney = (Button) findViewById(getId("tab_money"));
         tabInbox = (Button) findViewById(getId("tab_inbox"));
-        tabSimple.setOnClickListener(v -> selectTab(0));
-        tabAdvanced.setOnClickListener(v -> selectTab(1));
-        tabInbox.setOnClickListener(v -> selectTab(2));
+        tabLock.setOnClickListener(v -> selectTab(0));
+        tabRules.setOnClickListener(v -> selectTab(1));
+        tabMoney.setOnClickListener(v -> selectTab(2));
+        tabInbox.setOnClickListener(v -> selectTab(TAB_INBOX));
+
+        // ── Kebab: setup, administration and teardown, off the tabs ──
+        findViewById(getId("btn_kebab")).setOnClickListener(this::showOverflow);
+
+        // ── Collapsible sections ──
+        wireSection("sec_pokes");
+        wireSection("sec_mods");
 
         // Toggle styling
         ToggleButton[] toggles = {toggleShame, togglePenalty, toggleVibrate, toggleDim, toggleMute, taskRandomize, togglePinNotif};
@@ -262,98 +275,23 @@ public class MainActivity extends Activity {
             if (tb != null) tb.setOnCheckedChangeListener((v, on) -> {
                 v.setBackgroundTintList(android.content.res.ColorStateList.valueOf(on ? 0xFF2a2510 : 0xFF1a1a2e));
                 v.setTextColor(on ? 0xFFDAA520 : 0xFF666666);
+                refreshModsSummary();
             });
         }
+        refreshModsSummary();
 
         // Mode spinner
         ArrayAdapter<String> modeAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, MODES);
         modeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         modeSpinner.setAdapter(modeAdapter);
 
-        // ── Control tab buttons ──
-        findViewById(getId("btn_lock")).setOnClickListener(v -> doLock());
-        findViewById(getId("btn_lock")).setOnLongClickListener(v -> { doSetCountdown(); return true; });
-        findViewById(getId("btn_unlock")).setOnClickListener(v -> doUnlock());
-        findViewById(getId("btn_unlock_device")).setOnClickListener(v -> doUnlockDevice());
-        findViewById(getId("btn_task")).setOnClickListener(v -> doTask());
-        findViewById(getId("btn_setup")).setOnClickListener(v -> doSetup());
-        // App PIN — protect from bunnies
-        View btnAppPin = findViewById(getId("btn_app_pin"));
-        if (btnAppPin != null) btnAppPin.setOnClickListener(v -> doSetAppPin());
-        findViewById(getId("btn_lock_15")).setOnClickListener(v -> doQuickLock(15));
-        findViewById(getId("btn_lock_30")).setOnClickListener(v -> doQuickLock(30));
-        findViewById(getId("btn_lock_60")).setOnClickListener(v -> doQuickLock(60));
-        findViewById(getId("btn_lock_120")).setOnClickListener(v -> doQuickLock(120));
-        findViewById(getId("btn_offer_accept")).setOnClickListener(v -> doOfferRespond("accept"));
-        findViewById(getId("btn_offer_decline")).setOnClickListener(v -> doOfferRespond("decline"));
-
-        // ── Advanced tab buttons ──
-        findViewById(getId("btn_entrap_adv")).setOnClickListener(v -> doEntrap());
-        findViewById(getId("btn_clear_paywall")).setOnClickListener(v -> doClearPaywall());
-        findViewById(getId("btn_gamble")).setOnClickListener(v -> doGamble());
-        findViewById(getId("btn_play_audio")).setOnClickListener(v -> doPlayAudio());
-        findViewById(getId("btn_speak")).setOnClickListener(v -> doSpeak());
-        findViewById(getId("btn_set_geofence")).setOnClickListener(v -> doSetGeofence());
-        btnConfineHome = (android.widget.Button) findViewById(getId("btn_confine_home"));
-        btnConfineHome.setOnClickListener(v -> {
-            // Toggle: if a geofence is currently active, release it; otherwise
-            // confine to current location. Saves a separate UI element while
-            // matching the user's mental model ("press once to confine, press
-            // again to release").
-            if (lastGeofenceActive) {
-                doReleaseConfinement();
-            } else {
-                doConfineHome();
-            }
-        });
-        findViewById(getId("btn_pin_message")).setOnClickListener(v -> doPinMessage());
-        findViewById(getId("btn_force_sub")).setOnClickListener(v -> doForceSub());
-        try { findViewById(getId("btn_deadline_task")).setOnClickListener(v -> doDeadlineTask()); } catch (Exception e) {}
-        try { findViewById(getId("btn_web_remote")).setOnClickListener(v -> doWebRemoteScan()); } catch (Exception e) {}
-        try { findViewById(getId("btn_payment_email")).setOnClickListener(v -> doPaymentEmail()); } catch (Exception e) {}
-        try { findViewById(getId("btn_vault_nodes")).setOnClickListener(v -> doVaultNodes()); } catch (Exception e) {}
-        try { findViewById(getId("btn_bunnies")).setOnClickListener(v -> doBunnies()); } catch (Exception e) {}
-        findViewById(getId("btn_start_fine")).setOnClickListener(v -> doStartFine());
-        findViewById(getId("btn_stop_fine")).setOnClickListener(v -> doStopFine());
-        try { findViewById(getId("btn_release_forever")).setOnClickListener(v -> doReleaseForever()); } catch (Exception e) {}
-
-        // ── Lovense buttons ──
-        findViewById(getId("btn_toy_pulse")).setOnClickListener(v -> doToy("vibrate", 5, 3));
-        findViewById(getId("btn_toy_reward")).setOnClickListener(v -> doToy("vibrate", 12, 10));
-        findViewById(getId("btn_toy_punish")).setOnClickListener(v -> doToy("vibrate", 20, 5));
-        findViewById(getId("btn_toy_stop")).setOnClickListener(v -> doToy("vibrate", 0, 0));
-
-        // ── Inbox tab buttons ──
-        findViewById(getId("btn_send_message")).setOnClickListener(v -> doSendInboxMessage());
-        findViewById(getId("btn_schedule_message")).setOnClickListener(v -> doScheduleMessage());
-
-        // Body check buttons
-        findViewById(getId("btn_body_check_start")).setOnClickListener(v -> doBodyCheckStart());
-        findViewById(getId("btn_body_check_now")).setOnClickListener(v -> doBodyCheckNow());
-        findViewById(getId("btn_body_check_baseline")).setOnClickListener(v -> doBodyCheckBaseline());
-        // Balance buttons
-        findViewById(getId("btn_clear_balance")).setOnClickListener(v -> doClearBalance());
-        findViewById(getId("btn_set_balance")).setOnClickListener(v -> doSetBalance());
-
-        // Quick add $ buttons. The optimistic balance display uses lastPaywall
-        // (the most recent confirmed value from the runtime poll), NOT the
-        // paywallInput field — that field stages amounts for the *next* Lock
-        // order and accumulates per-click for that purpose, so reading from
-        // it after a clear-paywall produced a "+50 → showed 250 → settled
-        // back to 50" UI flicker. The next runtime poll reconfirms the value
-        // (line 422-426).
-        for (int[] pair : new int[][]{{getId("btn_add_1"), 1}, {getId("btn_add_5"), 5}, {getId("btn_add_10"), 10}, {getId("btn_add_25"), 25}, {getId("btn_add_50"), 50}}) {
-            final int amount = pair[1];
-            findViewById(pair[0]).setOnClickListener(v -> {
-                int newVal = lastPaywall + amount;
-                final int og = beginOptimistic(false, false, 0, newVal);
-                executor.execute(() -> {
-                    String r = api("/api/add-paywall", "{\"amount\":\"" + amount + "\"}");
-                    if (r != null && r.contains("ok")) handler.post(() -> setStatus("Added $" + amount));
-                    else cancelOptimistic(og);
-                });
-            });
-        }
+        // Wiring mirrors the tabs, so "which screen is this control on?" is
+        // answerable by reading one method instead of scanning 90 lines of
+        // findViewById in the order they happened to be added.
+        wireLockTab();
+        wireRulesTab();
+        wireMoneyTab();
+        wireInboxTab();
 
         if (!meshId.isEmpty()) {
             setStatus("Mesh connected");
@@ -377,15 +315,175 @@ public class MainActivity extends Activity {
     }
 
     private void selectTab(int index) {
-        View[] pages = {pageSimple, pageAdvanced, pageInbox};
-        Button[] tabs = {tabSimple, tabAdvanced, tabInbox};
-        for (int i = 0; i < 3; i++) {
+        View[] pages = {pageLock, pageRules, pageMoney, pageInbox};
+        Button[] tabs = {tabLock, tabRules, tabMoney, tabInbox};
+        for (int i = 0; i < pages.length; i++) {
             pages[i].setVisibility(i == index ? View.VISIBLE : View.GONE);
             tabs[i].setBackgroundTintList(android.content.res.ColorStateList.valueOf(
                 i == index ? 0xFF2a2510 : 0xFF111118));
             tabs[i].setTextColor(i == index ? 0xFFDAA520 : 0xFF555555);
         }
-        if (index == 2) { refreshInbox(); markLionRead(); updateE2eeWarning(); fetchBunnyPubkey(); }
+        if (index == TAB_INBOX) { refreshInbox(); markLionRead(); updateE2eeWarning(); fetchBunnyPubkey(); }
+    }
+
+    /** LOCK — what is happening, and make it happen. */
+    private void wireLockTab() {
+        findViewById(getId("btn_lock")).setOnClickListener(v -> doLock());
+        findViewById(getId("btn_lock")).setOnLongClickListener(v -> { doSetCountdown(); return true; });
+        findViewById(getId("btn_unlock")).setOnClickListener(v -> doUnlock());
+        findViewById(getId("btn_unlock_device")).setOnClickListener(v -> doUnlockDevice());
+        findViewById(getId("btn_lock_15")).setOnClickListener(v -> doQuickLock(15));
+        findViewById(getId("btn_lock_30")).setOnClickListener(v -> doQuickLock(30));
+        findViewById(getId("btn_lock_60")).setOnClickListener(v -> doQuickLock(60));
+        findViewById(getId("btn_lock_120")).setOnClickListener(v -> doQuickLock(120));
+        findViewById(getId("btn_offer_accept")).setOnClickListener(v -> doOfferRespond("accept"));
+        findViewById(getId("btn_offer_decline")).setOnClickListener(v -> doOfferRespond("decline"));
+
+        // Live pokes — collapsed under sec_pokes until opened.
+        findViewById(getId("btn_play_audio")).setOnClickListener(v -> doPlayAudio());
+        findViewById(getId("btn_speak")).setOnClickListener(v -> doSpeak());
+        findViewById(getId("btn_toy_pulse")).setOnClickListener(v -> doToy("vibrate", 5, 3));
+        findViewById(getId("btn_toy_reward")).setOnClickListener(v -> doToy("vibrate", 12, 10));
+        findViewById(getId("btn_toy_punish")).setOnClickListener(v -> doToy("vibrate", 20, 5));
+        findViewById(getId("btn_toy_stop")).setOnClickListener(v -> doToy("vibrate", 0, 0));
+
+        // Body check — homelab-gated in applyHomelabGating().
+        findViewById(getId("btn_body_check_start")).setOnClickListener(v -> doBodyCheckStart());
+        findViewById(getId("btn_body_check_now")).setOnClickListener(v -> doBodyCheckNow());
+        findViewById(getId("btn_body_check_baseline")).setOnClickListener(v -> doBodyCheckBaseline());
+    }
+
+    /** RULES — what the bunny will have to do to get out. */
+    private void wireRulesTab() {
+        findViewById(getId("btn_task")).setOnClickListener(v -> doTask());
+        try { findViewById(getId("btn_deadline_task")).setOnClickListener(v -> doDeadlineTask()); } catch (Exception e) {}
+        findViewById(getId("btn_set_geofence")).setOnClickListener(v -> doSetGeofence());
+        btnConfineHome = (android.widget.Button) findViewById(getId("btn_confine_home"));
+        btnConfineHome.setOnClickListener(v -> {
+            // Toggle: if a geofence is currently active, release it; otherwise
+            // confine to current location. Saves a separate UI element while
+            // matching the user's mental model ("press once to confine, press
+            // again to release").
+            if (lastGeofenceActive) {
+                doReleaseConfinement();
+            } else {
+                doConfineHome();
+            }
+        });
+        findViewById(getId("btn_entrap_adv")).setOnClickListener(v -> doEntrap());
+    }
+
+    /** MONEY — what they owe. */
+    private void wireMoneyTab() {
+        findViewById(getId("btn_clear_balance")).setOnClickListener(v -> doClearBalance());
+        findViewById(getId("btn_set_balance")).setOnClickListener(v -> doSetBalance());
+        findViewById(getId("btn_clear_paywall")).setOnClickListener(v -> doClearPaywall());
+        findViewById(getId("btn_gamble")).setOnClickListener(v -> doGamble());
+        findViewById(getId("btn_force_sub")).setOnClickListener(v -> doForceSub());
+        findViewById(getId("btn_start_fine")).setOnClickListener(v -> doStartFine());
+        findViewById(getId("btn_stop_fine")).setOnClickListener(v -> doStopFine());
+
+        // Quick add $ buttons. The optimistic balance display uses lastPaywall
+        // (the most recent confirmed value from the runtime poll), NOT the
+        // paywallInput field — that field stages the balance for the *next*
+        // Lock order (see buildLockJson), so reading from it after a
+        // clear-paywall produced a "+50 → showed 250 → settled back to 50" UI
+        // flicker. The next runtime poll reconfirms the value.
+        for (int[] pair : new int[][]{{getId("btn_add_1"), 1}, {getId("btn_add_5"), 5}, {getId("btn_add_10"), 10}, {getId("btn_add_25"), 25}, {getId("btn_add_50"), 50}}) {
+            final int amount = pair[1];
+            findViewById(pair[0]).setOnClickListener(v -> {
+                int newVal = lastPaywall + amount;
+                final int og = beginOptimistic(false, false, 0, newVal);
+                executor.execute(() -> {
+                    String r = api("/api/add-paywall", "{\"amount\":\"" + amount + "\"}");
+                    if (r != null && r.contains("ok")) handler.post(() -> setStatus("Added $" + amount));
+                    else cancelOptimistic(og);
+                });
+            });
+        }
+    }
+
+    /** INBOX — what they have said. */
+    private void wireInboxTab() {
+        findViewById(getId("btn_send_message")).setOnClickListener(v -> doSendInboxMessage());
+        findViewById(getId("btn_schedule_message")).setOnClickListener(v -> doScheduleMessage());
+        findViewById(getId("btn_pin_message")).setOnClickListener(v -> doPinMessage());
+    }
+
+    /** The primary button says what will happen, not merely what it is.
+     *  It read "Lock all devices" in an identical style whether or not the
+     *  bunny was already locked — a state the Lion could learn only by reading
+     *  the status line above it and mapping that back onto the button. */
+    private void refreshLockButton(long timerMs) {
+        Button lock = (Button) findViewById(getId("btn_lock"));
+        if (lock == null) return;
+        if (!isLocked) {
+            lock.setText("Lock all devices");
+        } else if (timerMs > 0) {
+            long mins = Math.max(1, timerMs / 60000);
+            lock.setText("LOCKED \u2014 " + mins + "m left\nre-lock with these settings");
+        } else {
+            lock.setText("LOCKED \u2014 no timer\nre-lock with these settings");
+        }
+    }
+
+    /** A collapsed section must still say what is on inside it, or collapsing
+     *  it just hides state the Lion is about to act on. */
+    private void refreshModsSummary() {
+        TextView summary = (TextView) findViewById(getId("sec_mods_summary"));
+        if (summary == null) return;
+        StringBuilder on = new StringBuilder();
+        ToggleButton[] mods = {toggleShame, togglePenalty, toggleVibrate, toggleDim, toggleMute};
+        String[] names = {"Taunt", "+5m/esc", "Vibrate", "Dim", "Mute"};
+        for (int i = 0; i < mods.length; i++) {
+            if (mods[i] != null && mods[i].isChecked()) {
+                if (on.length() > 0) on.append(", ");
+                on.append(names[i]);
+            }
+        }
+        boolean any = on.length() > 0;
+        summary.setText(any ? on.toString() : "None");
+        summary.setTextColor(any ? 0xFFDAA520 : 0xFF555555);
+    }
+
+    /** Collapse/expand a section built as `<name>_head` (tappable row, holding
+     *  `<name>_chevron`) plus `<name>_body`. Collapsed is the default in the
+     *  layout: a section the Lion has not opened costs one line, not a screen.
+     *  Plain views and one listener — there is no androidx in this build. */
+    private void wireSection(String name) {
+        View head = findViewById(getId(name + "_head"));
+        View body = findViewById(getId(name + "_body"));
+        TextView chevron = (TextView) findViewById(getId(name + "_chevron"));
+        if (head == null || body == null) return;
+        head.setOnClickListener(v -> {
+            boolean opening = body.getVisibility() != View.VISIBLE;
+            body.setVisibility(opening ? View.VISIBLE : View.GONE);
+            if (chevron != null) chevron.setText(opening ? "\u25be" : "\u25b8");
+        });
+    }
+
+    /** The kebab. Built fresh on each tap so per-bunny gating (payment email
+     *  needs a homelab) is evaluated at the moment it is shown rather than
+     *  cached from whenever the Activity happened to start. */
+    private void showOverflow(View anchor) {
+        android.widget.PopupMenu menu = new android.widget.PopupMenu(this, anchor);
+        menu.getMenuInflater().inflate(
+            getResources().getIdentifier("overflow", "menu", getPackageName()), menu.getMenu());
+        android.view.MenuItem pe = menu.getMenu().findItem(getId("menu_payment_email"));
+        if (pe != null) pe.setVisible(homelabConfigured());
+        menu.setOnMenuItemClickListener(item -> {
+            int id = item.getItemId();
+            if (id == getId("menu_bunnies")) doBunnies();
+            else if (id == getId("menu_vault_nodes")) doVaultNodes();
+            else if (id == getId("menu_web_remote")) doWebRemoteScan();
+            else if (id == getId("menu_payment_email")) doPaymentEmail();
+            else if (id == getId("menu_setup")) doSetup();
+            else if (id == getId("menu_app_pin")) doSetAppPin();
+            else if (id == getId("menu_release_forever")) doReleaseForever();
+            else return false;
+            return true;
+        });
+        menu.show();
     }
 
     /** Show the inbox "not encrypted" banner when there's no bunny pubkey to
@@ -749,6 +847,7 @@ public class MainActivity extends Activity {
         // below — balance, tier badge, offer, geofence button — still updates.
         boolean waking = wakeDepth.get() > 0;
         if (!waking) statusView.setText(sb.toString());
+        refreshLockButton(timerMs);
 
         // Toggle the Confine button label based on whether a geofence is set.
         lastGeofenceActive = geofenceActive;
@@ -773,6 +872,8 @@ public class MainActivity extends Activity {
 
         // Lovense section visibility
         if (toySection != null) toySection.setVisibility(lovenseAvail ? View.VISIBLE : View.GONE);
+        TextView pokesSummary = (TextView) findViewById(getId("sec_pokes_summary"));
+        if (pokesSummary != null) pokesSummary.setText(lovenseAvail ? "Speak, Audio, Toy" : "Speak, Audio");
 
         // Fine status
         String fineActive = parseJsonNumStr(json, "fine_active");
@@ -1033,8 +1134,8 @@ public class MainActivity extends Activity {
      *  view wiring (onCreate) and whenever the active bunny changes. UI thread. */
     private void applyHomelabGating() {
         int vis = homelabConfigured() ? View.VISIBLE : View.GONE;
-        View pe = findViewById(getId("btn_payment_email"));
-        if (pe != null) pe.setVisibility(vis);
+        // Payment Email is no longer a view — showOverflow() gates that menu
+        // item at the moment the kebab opens.
         View bc = findViewById(getId("body_check_card"));
         if (bc != null) bc.setVisibility(vis);
     }
