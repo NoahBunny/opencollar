@@ -27,6 +27,27 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+
+def sanitize_log(value) -> str:
+    """Escape CR / LF / NUL in user-provided strings before substituting them
+    into log records.
+
+    Closes py/log-injection (CodeQL): a peer who sends a node_id or mesh_id
+    containing newlines could otherwise forge whole log entries — the first
+    line ends in an expected-format message, the next is attacker-chosen text
+    an operator reads as real.
+
+    Deliberately duplicated from ``_sanitize_log`` in focuslock-mail.py rather
+    than shared: that one already guards 143 call sites and is not worth
+    re-routing through an import to save three lines. tests/test_log_sanitizer.py
+    asserts the two stay identical in behaviour.
+    """
+    if value is None:
+        return "<none>"
+    s = value if isinstance(value, str) else str(value)
+    return s.replace("\r", "\\r").replace("\n", "\\n").replace("\x00", "\\0")
+
+
 # On Windows, subprocess calls need CREATE_NO_WINDOW to avoid console flashes
 _SUBPROCESS_FLAGS = {}
 if sys.platform == "win32":
@@ -237,7 +258,7 @@ class OrdersDocument:
                 for k in ORDER_KEYS:
                     if k in stored:
                         self.orders[k] = stored[k]
-                logger.info("Loaded orders v%s from %s", self.version, self.persist_path)
+                logger.info("Loaded orders v%s from %s", sanitize_log(self.version), sanitize_log(self.persist_path))
             except Exception as e:
                 logger.warning("Failed to load orders: %s", e)
 
@@ -278,10 +299,10 @@ class OrdersDocument:
         # permissive path so initial setup can complete.
         if lion_pubkey:
             if not remote_sig:
-                logger.warning("REJECTED orders v%s — unsigned (lion_pubkey configured)", remote_version)
+                logger.warning("REJECTED orders v%s — unsigned (lion_pubkey configured)", sanitize_log(remote_version))
                 return False
             if not verify_signature(remote_orders, remote_sig, lion_pubkey):
-                logger.warning("REJECTED orders v%s — invalid signature", remote_version)
+                logger.warning("REJECTED orders v%s — invalid signature", sanitize_log(remote_version))
                 return False
 
         with self.lock:
@@ -293,7 +314,7 @@ class OrdersDocument:
                     self.orders[k] = remote_orders[k]
             self.save()
 
-        logger.info("Applied orders v%s", self.version)
+        logger.info("Applied orders v%s", sanitize_log(self.version))
         return True
 
     def bump_version(self, privkey_pem: str = ""):
@@ -516,7 +537,7 @@ class PeerRegistry:
             if peer is None:
                 peer = PeerInfo(node_id)
                 self.peers[node_id] = peer
-                logger.info("Discovered new peer: %s", node_id)
+                logger.info("Discovered new peer: %s", sanitize_log(node_id))
             if node_type:
                 peer.node_type = node_type
             if addresses:

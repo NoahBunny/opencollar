@@ -624,7 +624,7 @@ def _admin_order_to_vault_blob(action, params, mesh_id=None):
     if action in _VAULT_BLOB_DENY_ACTIONS or (
         isinstance(params, dict) and any(k in _VAULT_BLOB_DENY_PARAM_KEYS for k in params)
     ):
-        logger.warning("vault blob REFUSED for sensitive action=%s (privacy isolation)", action)
+        logger.warning("vault blob REFUSED for sensitive action=%s (privacy isolation)", _sanitize_log(action))
         return
     if not RELAY_PRIVKEY_PEM:
         logger.info("vault blob write skipped: no relay keypair")
@@ -658,7 +658,7 @@ def _admin_order_to_vault_blob(action, params, mesh_id=None):
     if err:
         logger.warning("vault blob append error: %s", err)
     else:
-        logger.info("vault blob written: v%s action=%s (relay-signed)", ver, action)
+        logger.info("vault blob written: v%s action=%s (relay-signed)", ver, _sanitize_log(action))
 
 
 def on_mesh_orders_applied(orders_dict):
@@ -1357,7 +1357,7 @@ def mesh_apply_order(action, params, orders):
                     del devices[target]
                     with open(reg, "w") as f:
                         json.dump(devices, f)
-                    logger.info("Removed %s from device registry", target)
+                    logger.info("Removed %s from device registry", _sanitize_log(target))
             except Exception as e:
                 logger.debug("Device registry update for %s failed: %s", reg, e)
     elif action == "set-payment-email":
@@ -1926,7 +1926,7 @@ def _record_balance_change(mesh_id, action, params, before, after):
         # Never let bookkeeping fail the order it is describing: the charge
         # itself has already landed, and a missing history row is a smaller
         # harm than an enforcement action that reports failure.
-        logger.exception("ledger: could not record %s on %s", action, mesh_id)
+        logger.exception("ledger: could not record %s on %s", _sanitize_log(action), _sanitize_log(mesh_id))
 
 
 def _server_apply_order(mesh_id, action, params):
@@ -1941,21 +1941,23 @@ def _server_apply_order(mesh_id, action, params):
         result = mesh_apply_order(action, params, orders)
         orders.bump_version()
     except Exception:
-        logger.exception("server apply %s on %s failed", action, mesh_id)
+        logger.exception("server apply %s on %s failed", _sanitize_log(action), _sanitize_log(mesh_id))
         return None
     if action not in _SELF_LEDGERED_ACTIONS:
         _record_balance_change(mesh_id, action, params, balance_before, _paywall_of(orders))
     try:
         _admin_order_to_vault_blob(action, params, mesh_id)
     except Exception as e:
-        logger.warning("server apply %s on %s: vault blob write failed: %s", action, mesh_id, e)
+        logger.warning(
+            "server apply %s on %s: vault blob write failed: %s", _sanitize_log(action), _sanitize_log(mesh_id), e
+        )
     # Operator-mesh gossip to peers so plaintext consumers (desktop collars
     # pre-vault_only) also see the new state. No-op for non-operator meshes.
     if mesh_id == OPERATOR_MESH_ID:
         try:
             mesh.push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
         except Exception as e:
-            logger.warning("server apply %s: gossip push failed: %s", action, e)
+            logger.warning("server apply %s: gossip push failed: %s", _sanitize_log(action), e)
     if ntfy_fn:
         try:
             ntfy_fn(orders.version, mesh_id)
@@ -3689,7 +3691,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 return
             tier = data.get("tier", "unknown")
             amount = data.get("amount", 0)
-            logger.info("Subscription charge: $%s (%s)", amount, _sanitize_log(tier))
+            logger.info("Subscription charge: $%s (%s)", _sanitize_log(amount), _sanitize_log(tier))
             send_evidence(
                 f"Weekly subscription charge: ${amount} ({tier.upper()})\n"
                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -3791,7 +3793,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             reason = data.get("reason", "Desktop penalty")
             logger.warning(
                 "DESKTOP PENALTY: mesh=%s $%s%s — %s",
-                mesh_id,
+                _sanitize_log(mesh_id),
                 amount,
                 f" (tamper attempt #{tamper_attempt})" if tamper_attempt else "",
                 _sanitize_log(reason),
@@ -3930,7 +3932,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 return
             logger.warning(
                 "DESKTOP TASK: mesh=%s %r (deadline %sm, on_miss=%s) — %s",
-                mesh_id,
+                _sanitize_log(mesh_id),
                 _sanitize_log(text[:80]),
                 deadline_minutes,
                 on_miss,
@@ -4095,7 +4097,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     return
                 logger.info(
                     "Admin gamble: mesh=%s old=%s result=%s new=%s",
-                    target,
+                    _sanitize_log(target),
                     old_pw,
                     result_str,
                     new_pw,
@@ -4266,7 +4268,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 "Node joined mesh: %s (%s) mesh=%s",
                 _sanitize_log(node_id),
                 _sanitize_log(node_type),
-                account["mesh_id"],
+                _sanitize_log(account["mesh_id"]),
             )
             self.respond(
                 200,
@@ -4417,7 +4419,10 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
             except Exception as e:
                 logger.warning(
-                    "subscribe sig verify failed: mesh=%s node=%s err=%s", mesh_id, _sanitize_log(node_id), e
+                    "subscribe sig verify failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    e,
                 )
                 self.respond(403, {"error": "invalid signature"})
                 return
@@ -4431,7 +4436,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             charge = _server_apply_order(mesh_id, "subscribe-charge", {"tier": tier})
             logger.info(
                 "Bunny subscribe: mesh=%s node=%s tier=%s charged=%s",
-                mesh_id,
+                _sanitize_log(mesh_id),
                 _sanitize_log(node_id),
                 tier,
                 bool(charge),
@@ -4503,7 +4508,10 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
             except Exception as e:
                 logger.warning(
-                    "unsubscribe sig verify failed: mesh=%s node=%s err=%s", mesh_id, _sanitize_log(node_id), e
+                    "unsubscribe sig verify failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    e,
                 )
                 self.respond(403, {"error": "invalid signature"})
                 return
@@ -4516,7 +4524,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 return
             logger.info(
                 "Bunny unsubscribe: mesh=%s node=%s tier=%s fee=%s paywall=%s",
-                mesh_id,
+                _sanitize_log(mesh_id),
                 _sanitize_log(node_id),
                 result.get("tier"),
                 result.get("fee"),
@@ -4581,7 +4589,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 sig_bytes = _b64.b64decode(signature)
                 pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
             except Exception as e:
-                logger.warning("gamble sig verify failed: mesh=%s node=%s err=%s", mesh_id, _sanitize_log(node_id), e)
+                logger.warning(
+                    "gamble sig verify failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    e,
+                )
                 self.respond(403, {"error": "invalid signature"})
                 return
             # Read current paywall from the mesh's orders doc.
@@ -4605,7 +4618,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 return
             logger.info(
                 "Bunny gamble: mesh=%s node=%s old=%s result=%s new=%s",
-                mesh_id,
+                _sanitize_log(mesh_id),
                 _sanitize_log(node_id),
                 old_pw,
                 result_str,
@@ -4693,7 +4706,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 sig_bytes = _b64.b64decode(signature)
                 pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
             except Exception as e:
-                logger.warning("payments sig verify failed: mesh=%s node=%s err=%s", mesh_id, _sanitize_log(node_id), e)
+                logger.warning(
+                    "payments sig verify failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    e,
+                )
                 self.respond(403, {"error": "invalid signature"})
                 return
             # Per-mesh ledger — a Bunny on mesh X must not see a Bunny on
@@ -4791,7 +4809,10 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
             except Exception as e:
                 logger.warning(
-                    "escape-event sig verify failed: mesh=%s node=%s err=%s", mesh_id, _sanitize_log(node_id), e
+                    "escape-event sig verify failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    e,
                 )
                 self.respond(403, {"error": "invalid signature"})
                 return
@@ -4799,7 +4820,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 result = _server_apply_order(mesh_id, "escape-recorded", {})
                 logger.info(
                     "Escape event: mesh=%s node=%s lifetime_escapes=%s penalty=%s paywall=%s",
-                    mesh_id,
+                    _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
                     (result or {}).get("lifetime_escapes"),
                     (result or {}).get("penalty"),
@@ -4809,7 +4830,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 result = _server_apply_order(mesh_id, "geofence-breach-recorded", {})
                 logger.info(
                     "Geofence breach event: mesh=%s node=%s lifetime_breaches=%s paywall=%s details=%s",
-                    mesh_id,
+                    _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
                     (result or {}).get("lifetime_geofence_breaches"),
                     (result or {}).get("paywall"),
@@ -4823,7 +4844,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 result = _server_apply_order(mesh_id, "sit-boy-recorded", {"amount": amount})
                 logger.info(
                     "Sit-boy event: mesh=%s node=%s amount=%s applied=%s paywall=%s",
-                    mesh_id,
+                    _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
                     amount,
                     (result or {}).get("amount"),
@@ -4837,7 +4858,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     if now_ms - last < APP_LAUNCH_DEDUP_WINDOW_MS:
                         logger.info(
                             "App launch penalty dedup: mesh=%s node=%s dt_ms=%s",
-                            mesh_id,
+                            _sanitize_log(mesh_id),
                             _sanitize_log(node_id),
                             now_ms - last,
                         )
@@ -4847,7 +4868,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 result = _server_apply_order(mesh_id, "app-launch-penalty", {})
                 logger.info(
                     "App launch penalty: mesh=%s node=%s penalty=%s paywall=%s",
-                    mesh_id,
+                    _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
                     (result or {}).get("penalty"),
                     (result or {}).get("paywall"),
@@ -4868,7 +4889,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 result = _server_apply_order(mesh_id, "tamper-recorded", {"kind": kind})
                 logger.info(
                     "Tamper event: mesh=%s node=%s kind=%s lifetime_tamper=%s penalty=%s paywall=%s",
-                    mesh_id,
+                    _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
                     kind,
                     (result or {}).get("lifetime_tamper"),
@@ -5481,7 +5502,10 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
             except Exception as e:
                 logger.warning(
-                    "deadline-task-clear sig verify failed: mesh=%s node=%s err=%s", mesh_id, _sanitize_log(node_id), e
+                    "deadline-task-clear sig verify failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    e,
                 )
                 self.respond(403, {"error": "invalid signature"})
                 return
@@ -5505,7 +5529,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 return
             logger.info(
                 "Deadline task cleared: mesh=%s node=%s next_deadline=%s released_lock=%s",
-                mesh_id,
+                _sanitize_log(mesh_id),
                 _sanitize_log(node_id),
                 result.get("next_deadline_ms"),
                 result.get("released_lock"),
@@ -5680,8 +5704,8 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             except Exception as e:
                 logger.warning(
                     "messages/%s sig verify failed: mesh=%s node=%s from=%s err=%s",
-                    op,
-                    mesh_id,
+                    _sanitize_log(op),
+                    _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
                     from_who,
                     e,
@@ -5734,7 +5758,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 msg = store.add(entry)
                 logger.info(
                     "Message appended: mesh=%s node=%s from=%s id=%s pinned=%s mandatory=%s",
-                    mesh_id,
+                    _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
                     from_who,
                     msg.get("id"),
@@ -5809,7 +5833,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 logger.info(
                     "Message %s: mesh=%s node=%s from=%s id=%s",
                     status,
-                    mesh_id,
+                    _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
                     from_who,
                     _sanitize_log(message_id),
@@ -5881,8 +5905,8 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 _daily_blob_increment(mesh_id)
                 logger.info(
                     "Vault append: mesh=%s v=%s writer=%s:%s slots=%s ct_bytes=%s",
-                    mesh_id,
-                    version,
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(version),
                     writer_role,
                     writer_id,
                     len(blob.get("slots", {})),
@@ -5942,7 +5966,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 _vault_store.clear_rejection(mesh_id, node_pubkey)
                 logger.info(
                     "Vault register-node: mesh=%s node=%s (%s)",
-                    mesh_id,
+                    _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
                     _sanitize_log(node_type),
                 )
@@ -6199,7 +6223,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         # rather than retries.
                         logger.info(
                             "Vault penalty NOT ARMED (%s): mesh=%s node=%s count=%s",
-                            kind,
+                            _sanitize_log(kind),
                             _sanitize_log(mesh_id),
                             _sanitize_log(node_id),
                             count,
@@ -6234,7 +6258,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     "VAULT PENALTY: mesh=%s node=%s kind=%s count=%s $%s",
                     _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
-                    kind,
+                    _sanitize_log(kind),
                     count,
                     amount,
                 )
@@ -6357,7 +6381,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         balance_after=after_be,
                     )
                 except Exception:
-                    logger.exception("balance-event: ledger append failed for %s", mesh_id)
+                    logger.exception("balance-event: ledger append failed for %s", _sanitize_log(mesh_id))
                     self.respond(500, {"error": "ledger append failed"})
                     return
                 if add.get("error") == "duplicate":
@@ -6367,10 +6391,10 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     "Balance event: mesh=%s node=%s %s %s->%s (%s)",
                     _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
-                    applied,
+                    _sanitize_log(applied),
                     before_be,
                     after_be,
-                    description,
+                    _sanitize_log(description),
                 )
                 self.respond(200, {"ok": True, "recorded": True, "description": description})
                 return
@@ -6476,9 +6500,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     _vault_store.remove_pending_node(mesh_id, node_id)
                 logger.info(
                     "Vault reject-node-request: mesh=%s node=%s reason=%r",
-                    mesh_id,
+                    _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
-                    reason,
+                    _sanitize_log(reason),
                 )
                 self.respond(200, {"ok": True})
 
@@ -6819,7 +6843,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             with open(pair_file, "w") as f:
                 json.dump({"config": config, "expires_at": time.time() + expires_min * 60}, f)
             pair_url = f"{base_url}/api/pair/{code}"
-            logger.info("Pairing code created: %s (expires %smin)", code, expires_min)
+            logger.info("Pairing code created: %s (expires %smin)", code, _sanitize_log(expires_min))
             self.respond(200, {"ok": True, "code": code, "url": pair_url, "expires_minutes": expires_min})
 
         elif self.path in ("/api/web-session", "/admin/web-session"):
@@ -6887,7 +6911,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                             break
 
                 if matched_mesh_id is None:
-                    logger.warning("Web session approve DENIED (no mesh matched): %s...", session_id[:8])
+                    logger.warning("Web session approve DENIED (no mesh matched): %s...", _sanitize_log(session_id[:8]))
                     self.respond(403, {"error": "invalid signature — no Lion key matched"})
                     return
 
@@ -6897,7 +6921,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 session["mesh_id"] = matched_mesh_id
                 logger.info(
                     "Web session approved: session=%s... mesh=%s",
-                    session_id[:8],
+                    _sanitize_log(session_id[:8]),
                     _sanitize_log(matched_mesh_id or "(operator)"),
                 )
                 self.respond(200, {"ok": True, "status": "approved"})
@@ -6975,7 +6999,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     )
                     self.respond(403, {"error": "invalid signature"})
                     return
-            logger.debug("Desktop heartbeat: mesh=%s host=%s", mesh_id, _sanitize_log(hostname))
+            logger.debug("Desktop heartbeat: mesh=%s host=%s", _sanitize_log(mesh_id), _sanitize_log(hostname))
             try:
                 reg = _get_desktop_registry(mesh_id) if mesh_id else desktop_registry
                 reg.heartbeat(hostname, name=data.get("name", ""))
@@ -7595,7 +7619,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         os.remove(pair_file)
                         self.respond(410, {"error": "pairing code expired"})
                 except Exception as e:
-                    logger.warning("/api/pair/%s error: %s", code, e)
+                    logger.warning("/api/pair/%s error: %s", _sanitize_log(code), e)
                     self.respond(500, {"error": "internal error"})
             else:
                 self.respond(404, {"error": "invalid pairing code"})
