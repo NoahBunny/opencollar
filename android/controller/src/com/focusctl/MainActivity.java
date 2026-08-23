@@ -412,13 +412,18 @@ public class MainActivity extends Activity {
     private void refreshLockButton(long timerMs) {
         Button lock = (Button) findViewById(getId("btn_lock"));
         if (lock == null) return;
+        // Single line on purpose: a Button truncates rather than wraps when the
+        // label outgrows it, so a two-line "LOCKED — 42m left / re-lock with
+        // these settings" is one long bunny label away from reading "LOCKED —
+        // 42m lef…". "Re-lock" also states the current state and the action in
+        // one word, which the bare state alone would not.
         if (!isLocked) {
             lock.setText("Lock all devices");
         } else if (timerMs > 0) {
             long mins = Math.max(1, timerMs / 60000);
-            lock.setText("LOCKED \u2014 " + mins + "m left\nre-lock with these settings");
+            lock.setText("Re-lock \u00b7 " + mins + "m left");
         } else {
-            lock.setText("LOCKED \u2014 no timer\nre-lock with these settings");
+            lock.setText("Re-lock \u00b7 no timer");
         }
     }
 

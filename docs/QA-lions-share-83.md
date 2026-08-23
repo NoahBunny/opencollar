@@ -1,0 +1,107 @@
+# QA — Lion's Share 83 (tab reorganisation)
+
+Gate for publishing controller **83** to the OpenCollar F-Droid repo. The
+change moved every control in the app between tabs, pulled seven of them off
+the tabs entirely into a kebab, and extracted two logic cores out of
+`MainActivity`. Companion docs: `docs/USABILITY-AUDIT-2026-04-28.md` (why),
+`docs/MANUAL-QA.md` (single-device fundamentals).
+
+> **Why part of this is manual.** UI automation for these apps was spiked in
+> 2026-04 and shelved — `docs/UI-AUTOMATION-DECISION.md`. Everything that can
+> be checked without a device is automated below and runs in CI; §3 is the part
+> that needs hands, and **83 does not ship until §3 is walked.**
+
+---
+
+## 1. What is automated, and what each check actually protects
+
+| Check | Command | Result | Protects |
+|---|---|---|---|
+| Layout↔code id contract | `pytest tests/test_android_layout_ids.py` | ✅ 9 passed | Every string-based view lookup resolves. `MainActivity` uses `getResources().getIdentifier()`, so a moved id fails at *runtime* — and with ~20 null-guards and several `try{}catch(Exception){}` wrappers around those lookups, it fails **silently**. This is the single largest hazard in this change. |
+| Section convention | (same file) | ✅ | `wireSection()` builds `_head`/`_body`/`_chevron` ids by concatenation, where no static check can see them. A half-rename would leave a header that does not open. |
+| No orphan buttons | (same file) | ✅ | A button the Lion can see and press that no code reaches reads as a broken feature, not a missing one. |
+| Java ↔ Python wire conformance | `make qa-android` | ✅ 30 passed | 17 of these normally skip without the CLIs exported. Canonical JSON, orders signatures and the message pipe-payload still match the server byte-for-byte. |
+| JVM unit tests | `bash android/build-conformance.sh` | ✅ 104 passed (was 80) | +24 for the two extracted classes. |
+| Python suite | `pytest -q` | ✅ 1340 passed, 21 skipped | |
+| Gated mesh coverage | `make qa-cov-mesh` | ✅ floor holds | |
+| Lint / format / types | `ruff check`, `ruff format --check`, `mypy shared` | ✅ clean, 135 files | |
+| APK builds + signs | `android/controller/build.sh` + `apksigner verify` | ✅ 83/83.0, 206 KB | |
+| Signed commits | `scripts/sign-branch.sh` | ✅ 0 unsigned sensitive | |
+
+**Mutation-checked** (a test that cannot fail protects nothing):
+
+- id contract — a renamed id, a broken menu resource name, a half-renamed
+  section and a planted orphan button each fail, naming file and line.
+- `OptimisticState` — removing the timer slack, forcing the paywall direction,
+  and dropping the generation check each fail the suite.
+
+## 2. Static checks done by hand
+
+- **No stale tab index.** The inbox moved from index 2 to 3. `selectTab()` is
+  called from exactly four places, all four tab buttons; nothing opens a tab by
+  index from a notification or intent (no `putExtra` tab routing exists).
+- **Thread safety of the new UI writes.** `refreshLockButton()` and the section
+  summaries are only reached from `updateLiveStatus()`, which is invoked solely
+  via `handler.post(...)` at four call sites — UI thread throughout, the same
+  contract the code it replaced had.
+- **Resources are packaged**, not merely authored: `res/menu/overflow.xml` and
+  `res/drawable/danger_block.xml` are both present inside the built APK.
+- **Homelab gating survived the move.** `btn_payment_email` stopped being a View,
+  so `applyHomelabGating()` no longer touches it; `showOverflow()` builds the
+  menu fresh on each tap and hides that item per `homelabConfigured()`, which
+  evaluates it later than before rather than earlier.
+- **Wired-id diff is exactly the intended set**: the 7 kebab buttons became 7
+  menu items, the page/tab ids were renamed, and `btn_kebab` plus the two
+  section summaries are new. Nothing was dropped.
+
+## 3. Device walk — REQUIRED before publishing
+
+Run on the SM-S908 rig (`R5CT339K1ZL`; provisioning order in the
+`project_on_device_adb_qa` notes). Install with
+`adb install -r apks/focusctl-v83.apk`.
+
+Each row is "the thing the Lion actually does", not "the button exists".
+
+| # | Walk | Pass when |
+|---|---|---|
+| 3.1 | Open the app cold | Lands on **Lock**; the tab reads Lock/Rules/Money/Inbox; status bar renders |
+| 3.2 | Type a message + timer, press the primary button | Bunny locks; the button relabels to `Re-lock · Nm left` within one poll |
+| 3.3 | Watch the primary button while locked | Counts down; does **not** truncate at any timer value |
+| 3.4 | Press 15m / 30m / 1hr / 2hr | Each locks for that long |
+| 3.5 | Unlock All, then Release Device… | Both work; button returns to `Lock all devices` |
+| 3.6 | **Set a writing task and lock it without leaving Rules** | The whole compose-a-lock flow lives on one screen — this is the regression that motivated the change |
+| 3.7 | Open Modifiers, toggle Taunt + Mute, collapse it | Collapsed summary reads `Taunt, Mute` in gold, not `None` |
+| 3.8 | Open Live Pokes; Speak and Play Audio | Both fire; the toy row appears only with a Lovense reachable |
+| 3.9 | Money: +$5, Set, Clear | Balance moves; the reply shows the *new* balance, not `$0` |
+| 3.10 | Money: Start Fine / Stop Fine | Fine status line appears and clears |
+| 3.11 | Inbox: send a message, pin one, mark must-reply | All three land on the Collar |
+| 3.12 | Kebab → each of the 6 non-destructive entries | Each opens its dialog; **Payment Email is absent with no homelab attached, present with one** |
+| 3.13 | Kebab → Release Forever | Still reachable, still confirms before doing anything |
+| 3.14 | Entrap in the Rules danger block | Bordered block is visibly distinct; confirms before arming |
+| 3.15 | Switch bunny slot mid-lock | The previous bunny's lock/balance is **not** painted onto the new slot |
+| 3.16 | Rotate / narrow screen | 4 tab labels fit without clipping |
+
+Capture a screenshot of each tab into `docs/Screenshots/` when done — there is
+no before/after record of this app's UI newer than April.
+
+## 4. Publish
+
+Only after §3 is clean:
+
+```
+cp apks/focusctl-v83.apk "$HOME/Nextcloud/F-Droid Repos/F-Droid - OpenCollar/repo/"  # optional; the build script stages it
+bash "$HOME/Nextcloud/F-Droid Repos/build-collar-repo.sh"
+```
+
+Then confirm the fingerprint printed is unchanged
+(`C5D875B0094E06E5158788A7724B1B9753F4E71FA5ACCD9852344628B49E5D8E`) and that
+the live index offers 83:
+
+```
+curl -s https://fdroid.nunyabiznu.com/repo/index-v1.json | python3 -c "import json,sys; print([(a['packageName'],a.get('suggestedVersionCode')) for a in json.load(sys.stdin)['apps']])"
+```
+
+The build script's APK map still names `focusctl-v82.apk`; point it at
+`focusctl-v83.apk` first. Everything downstream (repo filename,
+`CurrentVersionCode`) now derives from the APK itself, so that one edit is the
+whole change.

@@ -151,7 +151,7 @@
             <!-- The one primary action on this screen. Its label is rewritten
                  from the live state in refreshLockButton() — it says what will
                  happen, not merely what it is. -->
-            <Button android:id="@+id/btn_lock" android:layout_width="match_parent" android:layout_height="60dp" android:text="Lock all devices" android:textSize="17sp" android:backgroundTint="#8B6914" android:textColor="#fff" android:layout_marginBottom="6dp" />
+            <Button android:id="@+id/btn_lock" android:layout_width="match_parent" android:layout_height="60dp" android:text="Lock all devices" android:textSize="17sp" android:singleLine="true" android:backgroundTint="#8B6914" android:textColor="#fff" android:layout_marginBottom="6dp" />
 
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="6dp">
                 <Button android:id="@+id/btn_lock_15" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="15m" android:textSize="13sp" android:backgroundTint="#6b5010" android:textColor="#FFD700" android:layout_marginRight="3dp" />
