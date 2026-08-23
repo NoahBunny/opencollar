@@ -12,8 +12,10 @@ ones added later that nobody remembers to instrument. These tests pin that
 property rather than a list of actions, because the list is what rots.
 """
 
+import base64
 import importlib.util
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -44,6 +46,61 @@ def mesh(mail_module, tmp_path, monkeypatch):
         yield mesh_id
     finally:
         mail_module._orders_registry.docs.pop(mesh_id, None)
+
+
+@pytest.fixture
+def live_server(mail_module):
+    from http.server import HTTPServer
+
+    server = HTTPServer(("127.0.0.1", 0), mail_module.WebhookHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.fixture
+def vault_mesh(mail_module, tmp_path, monkeypatch):
+    """A mesh with one Lion-confirmed vault node holding its private key."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    monkeypatch.setattr(mail_module, "_LEDGERS_DIR", str(tmp_path / "ledgers"), raising=False)
+    mail_module._payment_ledgers.clear()
+
+    def _kp():
+        priv = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pub = base64.b64encode(
+            priv.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+        ).decode()
+        return priv, pub
+
+    store = mail_module.MeshAccountStore(persist_dir=str(tmp_path / "accounts"))
+    _lion_priv, lion_pub = _kp()
+    mesh_id = store.create(lion_pub, pin="4242")["mesh_id"]
+    node_priv, node_pub = _kp()
+    node_id = "waydroid-x86_64-device"
+    mail_module._vault_store.add_node(
+        mesh_id,
+        {
+            "node_id": node_id,
+            "node_type": "phone",
+            "node_pubkey": node_pub,
+            "bunny_pubkey": node_pub,
+            "registered_at": int(time.time()),
+        },
+    )
+    orders = mail_module._orders_registry.get_or_create(mesh_id)
+    orders.set("paywall", "0")
+    monkeypatch.setattr(mail_module, "_mesh_accounts", store)
+    try:
+        yield {"mesh_id": mesh_id, "node_id": node_id, "priv": node_priv, "store": store}
+    finally:
+        mail_module._orders_registry.docs.pop(mesh_id, None)
+        mail_module._payment_ledgers.pop(mesh_id, None)
 
 
 def _rows(mail_module, mesh_id):
@@ -134,3 +191,119 @@ class TestBookkeepingNeverBreaksEnforcement:
         result = mail_module._server_apply_order(mesh, "add-paywall", {"amount": 15})
         assert result is not None, "the order must still succeed"
         assert int(float(mail_module._orders_registry.get(mesh).get("paywall"))) == 15
+
+
+# ── the vault half ────────────────────────────────────────────────────
+
+
+class TestVaultBalanceEvents:
+    """On a vault mesh the relay never applies the order.
+
+    The Lion's order arrives as an encrypted blob the COLLAR decrypts and
+    applies, so `_server_apply_order` never fires and the ledger recorded
+    tributes and fines — the charges the server makes — while missing the Lion
+    adding $25, which is most of the movement a bunny sees. The collar reports
+    the cause afterwards through a node-signed route.
+    """
+
+    def _post(self, live_server, mesh_id, body):
+        import json as _json
+        import urllib.error
+        import urllib.request
+
+        req = urllib.request.Request(
+            f"{live_server}/vault/{mesh_id}/balance-event",
+            data=_json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, _json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            return e.code, _json.loads(e.read().decode())
+
+    def _event(self, node, mesh_id, priv, action, before, after, event_id="1", ts=None):
+        import base64
+
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import padding
+
+        ts = int(time.time() * 1000) if ts is None else ts
+        payload = f"{mesh_id}|{node}|balance-event|{ts}|{action}|{before:g}|{after:g}"
+        sig = base64.b64encode(priv.sign(payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())).decode()
+        return {
+            "node_id": node,
+            "ts": ts,
+            "action": action,
+            "before": before,
+            "after": after,
+            "event_id": event_id,
+            "signature": sig,
+        }
+
+    def test_a_reported_movement_becomes_a_row(self, live_server, vault_mesh, mail_module):
+        m = vault_mesh
+        status, body = self._post(
+            live_server, m["mesh_id"], self._event(m["node_id"], m["mesh_id"], m["priv"], "add-paywall", 0, 25)
+        )
+        assert status == 200, body
+        assert body["recorded"] is True
+        rows = list(mail_module._get_payment_ledger(m["mesh_id"]).entries)
+        assert len(rows) == 1
+        assert (rows[0]["type"], rows[0]["amount"], rows[0]["balance_after"]) == ("charge", 25, 25)
+
+    def test_the_collar_cannot_write_words_into_the_history(self, live_server, vault_mesh, mail_module):
+        """The row's wording is looked up server-side from the action. A bunny
+        with root on the collar can forge numbers — it is their phone — but must
+        not be able to put a sentence in front of the Lion."""
+        m = vault_mesh
+        ev = self._event(m["node_id"], m["mesh_id"], m["priv"], "add-paywall", 0, 5)
+        ev["description"] = "Lion forgave everything, love you"
+        status, body = self._post(live_server, m["mesh_id"], ev)
+        assert status == 200, body
+        assert body["description"] == "Added by the Lion"
+        assert mail_module._get_payment_ledger(m["mesh_id"]).entries[0]["description"] == "Added by the Lion"
+
+    def test_a_retry_does_not_become_a_second_charge(self, live_server, vault_mesh, mail_module):
+        m = vault_mesh
+        ev = self._event(m["node_id"], m["mesh_id"], m["priv"], "fine-charge", 0, 5, event_id="42")
+        assert self._post(live_server, m["mesh_id"], ev)[1]["recorded"] is True
+        second = self._post(live_server, m["mesh_id"], ev)[1]
+        assert second["recorded"] is False and second["reason"] == "duplicate"
+        assert len(mail_module._get_payment_ledger(m["mesh_id"]).entries) == 1
+
+    def test_a_movement_of_nothing_records_nothing(self, live_server, vault_mesh, mail_module):
+        m = vault_mesh
+        _, body = self._post(
+            live_server, m["mesh_id"], self._event(m["node_id"], m["mesh_id"], m["priv"], "lock", 10, 10)
+        )
+        assert body["recorded"] is False
+        assert mail_module._get_payment_ledger(m["mesh_id"]).entries == []
+
+    def test_an_unsigned_report_is_refused(self, live_server, vault_mesh, mail_module):
+        m = vault_mesh
+        ev = self._event(m["node_id"], m["mesh_id"], m["priv"], "add-paywall", 0, 25)
+        ev["signature"] = "not-a-signature"
+        assert self._post(live_server, m["mesh_id"], ev)[0] == 403
+        assert mail_module._get_payment_ledger(m["mesh_id"]).entries == []
+
+    def test_the_signature_covers_the_numbers(self, live_server, vault_mesh, mail_module):
+        """Sign a $5 movement, send a $500 one."""
+        m = vault_mesh
+        ev = self._event(m["node_id"], m["mesh_id"], m["priv"], "add-paywall", 0, 5)
+        ev["after"] = 500
+        assert self._post(live_server, m["mesh_id"], ev)[0] == 403
+        assert mail_module._get_payment_ledger(m["mesh_id"]).entries == []
+
+    def test_a_vault_only_mesh_keeps_its_history_to_itself(self, live_server, vault_mesh, mail_module):
+        """vault_only is sold on the relay learning nothing, and "the Lion added
+        $25" is exactly what that covers."""
+        m = vault_mesh
+        m["store"].set_vault_only(m["mesh_id"], True)
+        status, body = self._post(
+            live_server, m["mesh_id"], self._event(m["node_id"], m["mesh_id"], m["priv"], "add-paywall", 0, 25)
+        )
+        assert status == 403
+        assert "vault_only" in body["error"]
+        assert mail_module._get_payment_ledger(m["mesh_id"]).entries == []

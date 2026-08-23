@@ -5777,7 +5777,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(
                     400,
                     {
-                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|confirm-node|lion-pubkey|standing-orders|penalty|since/{v}|nodes|nodes-pending}"
+                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|confirm-node|lion-pubkey|standing-orders|penalty|balance-event|since/{v}|nodes|nodes-pending}"
                     },
                 )
                 return
@@ -6170,6 +6170,102 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         "paywall": (applied or {}).get("paywall"),
                     },
                 )
+                return
+
+            elif action == "balance-event":
+                # Node-signed report of WHY the balance moved on a vault mesh.
+                # Body: {node_id, ts, signature, action, before, after, event_id}
+                # signature = SHA256withRSA over
+                #   "mesh_id|node_id|balance-event|ts|action|before|after"
+                #
+                # Why it exists: on a vault mesh the Lion's order is an
+                # encrypted blob the COLLAR decrypts and applies. The relay
+                # never runs mesh_apply_order, so _server_apply_order never
+                # fires and the balance history recorded nothing for the orders
+                # that cause most of the movement — leaving a ledger that knew
+                # about tributes and fines but not about the Lion adding $25.
+                #
+                # The collar reports which ACTION it applied and the balance
+                # either side. It does NOT get to write the description: that
+                # is looked up here, from the same table the server-side path
+                # uses, so a bunny with root can forge a row's numbers but
+                # cannot put words into the Lion's history.
+                node_id = data.get("node_id", "")
+                signature = data.get("signature", "")
+                applied = str(data.get("action", ""))
+                event_id = str(data.get("event_id", ""))[:64]
+                if not node_id or not signature or not applied:
+                    self.respond(400, {"error": "node_id, signature and action required"})
+                    return
+                try:
+                    ts_be = int(data.get("ts", 0) or 0)
+                    before_be = float(data.get("before", 0) or 0)
+                    after_be = float(data.get("after", 0) or 0)
+                except (ValueError, TypeError):
+                    self.respond(400, {"error": "ts/before/after must be numbers"})
+                    return
+                if abs(int(time.time() * 1000) - ts_be) > 5 * 60 * 1000:
+                    self.respond(403, {"error": "ts out of window"})
+                    return
+                if not _node_signing_keys(mesh_id, node_id):
+                    self.respond(403, {"error": "node not approved on this mesh"})
+                    return
+                payload_be = f"{mesh_id}|{node_id}|balance-event|{ts_be}|{applied}|{before_be:g}|{after_be:g}"
+                if not _verify_node_signature(mesh_id, node_id, signature, payload_be):
+                    logger.warning(
+                        "Vault balance-event DENIED (bad signature): mesh=%s node=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                    )
+                    self.respond(403, {"error": "signature verification failed"})
+                    return
+                vault_row_be = {}
+                for _vn in _vault_store.get_nodes(mesh_id):
+                    if _vn.get("node_id") == node_id:
+                        vault_row_be = _vn
+                        break
+                if self._reject_unconfirmed_node("Vault balance-event", mesh_id, node_id, vault_row_be):
+                    return
+                # A vault_only mesh is sold on the relay learning nothing. The
+                # balance already stays off it there (no state-mirror), and
+                # "the Lion added $25" is exactly the kind of thing that
+                # promise covers — so the history stays in the apps.
+                if mesh_id != OPERATOR_MESH_ID and _mesh_accounts.is_vault_only(mesh_id):
+                    self.respond(403, {"error": "vault_only mesh — balance history stays local"})
+                    return
+
+                delta_be = round(after_be - before_be, 2)
+                if not delta_be:
+                    self.respond(200, {"ok": True, "recorded": False, "reason": "no movement"})
+                    return
+                description = _LEDGER_DESCRIPTIONS.get(applied, applied.replace("-", " ").capitalize())
+                try:
+                    add = _get_payment_ledger(mesh_id).add_entry(
+                        entry_type="charge" if delta_be > 0 else "credit",
+                        amount=abs(delta_be),
+                        # Dedup key: the collar retries, and one order must not
+                        # become three rows.
+                        source=f"vault:{node_id}:{event_id}" if event_id else "",
+                        description=description,
+                        balance_after=after_be,
+                    )
+                except Exception:
+                    logger.exception("balance-event: ledger append failed for %s", mesh_id)
+                    self.respond(500, {"error": "ledger append failed"})
+                    return
+                if add.get("error") == "duplicate":
+                    self.respond(200, {"ok": True, "recorded": False, "reason": "duplicate"})
+                    return
+                logger.info(
+                    "Balance event: mesh=%s node=%s %s %s->%s (%s)",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    applied,
+                    before_be,
+                    after_be,
+                    description,
+                )
+                self.respond(200, {"ok": True, "recorded": True, "description": description})
                 return
 
             elif action == "standing-orders":

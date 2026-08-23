@@ -3148,6 +3148,12 @@ public class ControlService extends Service {
         String action = jval(body, "action");
         if (action == null || action.isEmpty()) return "{\"error\":\"action required\"}";
 
+        // On a vault mesh the relay never sees this order — it hands over an
+        // encrypted blob and we apply it here — so nothing server-side can
+        // record WHY the balance moved. Snapshot it either side of the
+        // dispatch and report the cause afterwards. See reportBalanceEvent.
+        double pwBefore = paywallNow();
+
         // Delegate to existing handlers
         String result;
         switch (action) {
@@ -3518,7 +3524,104 @@ public class ControlService extends Service {
         Settings.Global.putLong(getContentResolver(), "focus_lock_mesh_version", newVer);
         meshPushToPeers();
 
+        // Tell the relay why the balance moved, if it did. Fire-and-forget on a
+        // worker: the order has already been applied and the wearer is already
+        // being held to it — a history row that fails to send must never make
+        // an enforcement action look failed.
+        final double pwAfter = paywallNow();
+        if (pwAfter != pwBefore) {
+            final String appliedAction = action;
+            final long verForEvent = newVer;
+            new Thread(() -> reportBalanceEvent(appliedAction, pwBefore, pwAfter, verForEvent)).start();
+        }
+
         return "{\"ok\":true,\"action\":\"" + esc(action) + "\",\"orders_version\":" + newVer + "}";
+    }
+
+    /** The balance right now, as a number. */
+    private double paywallNow() {
+        try {
+            String v = gstr("focus_lock_paywall");
+            return (v == null || v.isEmpty()) ? 0d : Double.parseDouble(v);
+        } catch (Exception e) {
+            return 0d;
+        }
+    }
+
+    /**
+     * Report a balance movement and its cause to the relay.
+     *
+     * <p>On a vault mesh the Lion's order reaches us as an encrypted blob, so
+     * the relay never applies it and cannot know what it did. Its ledger
+     * therefore recorded tributes and fines — the charges the SERVER makes —
+     * and nothing at all for the Lion adding $25, which is most of the
+     * movement a bunny actually sees.
+     *
+     * <p>We send the ACTION and the balance either side. We deliberately do not
+     * send a description: the relay looks that up from its own table, so this
+     * device cannot put words into the Lion's history. It can still lie about
+     * numbers — it is the bunny's phone — but those are cross-checkable against
+     * the state-mirror the same device already sends.
+     *
+     * <p>Signed with the bunny key, same shape as state-mirror. Blocking; call
+     * off the main thread.
+     */
+    private void reportBalanceEvent(String appliedAction, double before, double after, long version) {
+        try {
+            String meshId = gstr("focus_lock_mesh_id");
+            String meshUrl = gstr("focus_lock_mesh_url");
+            String nodeId = gstr("focus_lock_mesh_node_id");
+            String bunnyPrivB64 = gstr("focus_lock_bunny_privkey");
+            if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty() || bunnyPrivB64.isEmpty()) return;
+
+            long ts = System.currentTimeMillis();
+            // %s of a double the way Python's :g renders it, so the signed
+            // string matches byte-for-byte on both sides.
+            String beforeStr = fmtAmount(before);
+            String afterStr = fmtAmount(after);
+            String payload = meshId + "|" + nodeId + "|balance-event|" + ts + "|"
+                + appliedAction + "|" + beforeStr + "|" + afterStr;
+
+            byte[] privBytes = android.util.Base64.decode(bunnyPrivB64, android.util.Base64.NO_WRAP);
+            java.security.PrivateKey priv = java.security.KeyFactory.getInstance("RSA")
+                .generatePrivate(new java.security.spec.PKCS8EncodedKeySpec(privBytes));
+            java.security.Signature sig = java.security.Signature.getInstance("SHA256withRSA");
+            sig.initSign(priv);
+            sig.update(payload.getBytes("UTF-8"));
+            String signature = android.util.Base64.encodeToString(sig.sign(), android.util.Base64.NO_WRAP);
+
+            // event_id dedups a retry to one row: the same applied order, not
+            // three identical charges an unlucky network produced.
+            String body = "{\"node_id\":\"" + esc(nodeId)
+                + "\",\"ts\":" + ts
+                + ",\"action\":\"" + esc(appliedAction) + "\""
+                + ",\"before\":" + beforeStr
+                + ",\"after\":" + afterStr
+                + ",\"event_id\":\"" + version + "\""
+                + ",\"signature\":\"" + signature + "\"}";
+
+            java.net.URL url = new java.net.URL(meshUrl + "/vault/" + meshId + "/balance-event");
+            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(10_000);
+            conn.setReadTimeout(10_000);
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.getOutputStream().write(body.getBytes("UTF-8"));
+            int code = conn.getResponseCode();
+            if (code != 200) Log.w(TAG, "balance-event POST returned " + code);
+            conn.disconnect();
+        } catch (Exception e) {
+            Log.w(TAG, "reportBalanceEvent: " + e.getMessage());
+        }
+    }
+
+    /** Render an amount the way Python's "{:g}" does, so a signed payload
+     *  built here matches the one rebuilt on the relay. */
+    private String fmtAmount(double v) {
+        if (v == Math.rint(v) && !Double.isInfinite(v)) return String.valueOf((long) v);
+        String out = String.valueOf(v);
+        return out;
     }
 
     /**
