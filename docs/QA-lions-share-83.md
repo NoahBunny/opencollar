@@ -50,6 +50,11 @@ the tabs entirely into a kebab, and extracted two logic cores out of
   so `applyHomelabGating()` no longer touches it; `showOverflow()` builds the
   menu fresh on each tap and hides that item per `homelabConfigured()`, which
   evaluates it later than before rather than earlier.
+- **A duplicate was found by the reorganisation itself.** `doClearBalance` and
+  `doClearPaywall` POSTed the identical body to the identical endpoint; the
+  only difference was that one confirmed first and one fired instantly. They
+  sat on separate tabs, so nothing made it visible. One clear survives, and it
+  is the confirming one — a mis-tap beside `+$1` forgives real money owed.
 - **Wired-id diff is exactly the intended set**: the 7 kebab buttons became 7
   menu items, the page/tab ids were renamed, and `btn_kebab` plus the two
   section summaries are new. Nothing was dropped.
@@ -72,7 +77,7 @@ Each row is "the thing the Lion actually does", not "the button exists".
 | 3.6 | **Set a writing task and lock it without leaving Rules** | The whole compose-a-lock flow lives on one screen — this is the regression that motivated the change |
 | 3.7 | Open Modifiers, toggle Taunt + Mute, collapse it | Collapsed summary reads `Taunt, Mute` in gold, not `None` |
 | 3.8 | Open Live Pokes; Speak and Play Audio | Both fire; the toy row appears only with a Lovense reachable |
-| 3.9 | Money: +$5, Set, Clear | Balance moves; the reply shows the *new* balance, not `$0` |
+| 3.9 | Money: +$5, Set, Clear | Balance moves; the reply shows the *new* balance, not `$0`. **Clear now asks first** — there is exactly one clear button, and it confirms |
 | 3.10 | Money: Start Fine / Stop Fine | Fine status line appears and clears |
 | 3.11 | Inbox: send a message, pin one, mark must-reply | All three land on the Collar |
 | 3.12 | Kebab → each of the 6 non-destructive entries | Each opens its dialog; **Payment Email is absent with no homelab attached, present with one** |

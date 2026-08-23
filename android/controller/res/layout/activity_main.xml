@@ -312,6 +312,8 @@
                 <TextView android:id="@+id/balance_display" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="$0" android:textColor="#FFD700" android:textSize="36sp" android:textStyle="bold" android:textAlignment="center" android:layout_marginBottom="12dp" />
 
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+                    <!-- Confirms before firing. The balance is money the Lion is owed, and
+                         this button sits a thumb-width from "+$1" — see doClearPaywall. -->
                     <Button android:id="@+id/btn_clear_balance" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="Clear" android:textSize="12sp" android:backgroundTint="#1a2a1a" android:textColor="#44cc44" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
                     <EditText android:id="@+id/balance_set_input" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:hint="Set $" android:textColor="#DAA520" android:textColorHint="#664400" android:textSize="13sp" android:textAlignment="center" android:background="#111118" android:inputType="numberDecimal" android:layout_marginRight="4dp" />
                     <Button android:id="@+id/btn_set_balance" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="Set" android:textSize="12sp" android:backgroundTint="#2a2510" android:textColor="#DAA520" android:minWidth="0dp" android:minHeight="0dp" />
@@ -355,10 +357,13 @@
             <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />
 
             <!-- ── CHANCE ── -->
+            <!-- Clear Paywall used to live here as well, POSTing the identical
+                 payload to the identical endpoint as the balance card's Clear.
+                 The two sat on different tabs, so nothing made the duplication
+                 visible. See the note on btn_clear_balance above. -->
             <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="🎲  CHANCE" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
-                <Button android:id="@+id/btn_clear_paywall" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Clear Paywall" android:textSize="12sp" android:backgroundTint="#1a2a1a" android:textColor="#44cc44" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
-                <Button android:id="@+id/btn_gamble" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Double or Nothing" android:textSize="12sp" android:backgroundTint="#2a2a0a" android:textColor="#cccc44" android:minWidth="0dp" android:minHeight="0dp" />
+                <Button android:id="@+id/btn_gamble" android:layout_width="match_parent" android:layout_height="42dp" android:text="Double or Nothing" android:textSize="12sp" android:backgroundTint="#2a2a0a" android:textColor="#cccc44" android:minWidth="0dp" android:minHeight="0dp" />
             </LinearLayout>
 
         </LinearLayout>

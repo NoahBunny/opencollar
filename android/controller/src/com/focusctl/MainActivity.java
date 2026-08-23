@@ -370,9 +370,10 @@ public class MainActivity extends Activity {
 
     /** MONEY — what they owe. */
     private void wireMoneyTab() {
-        findViewById(getId("btn_clear_balance")).setOnClickListener(v -> doClearBalance());
+        // Both clear buttons called the same endpoint with the same body; the
+        // only difference was that one asked first. Kept the one that asks.
+        findViewById(getId("btn_clear_balance")).setOnClickListener(v -> doClearPaywall());
         findViewById(getId("btn_set_balance")).setOnClickListener(v -> doSetBalance());
-        findViewById(getId("btn_clear_paywall")).setOnClickListener(v -> doClearPaywall());
         findViewById(getId("btn_gamble")).setOnClickListener(v -> doGamble());
         findViewById(getId("btn_force_sub")).setOnClickListener(v -> doForceSub());
         findViewById(getId("btn_start_fine")).setOnClickListener(v -> doStartFine());
@@ -3887,17 +3888,6 @@ public class MainActivity extends Activity {
 
     // -- Balance --
 
-    private void doClearBalance() {
-        final int og = beginOptimistic(false, false, 0, 0);
-        setStatus("Clearing balance...");
-        executor.execute(() -> {
-            String r = api("/api/clear-paywall", "{}");
-            meshOrder("clear-paywall", "{}");
-            if (r.contains("ok")) setStatus("Balance cleared");
-            else { cancelOptimistic(og); setStatus("Failed"); }
-        });
-    }
-
     private void doSetBalance() {
         EditText input = (EditText) findViewById(getId("balance_set_input"));
         if (input == null) return;
@@ -4199,10 +4189,19 @@ public class MainActivity extends Activity {
 
     // -- Power Tools --
 
+    /** Clear the balance owed — the only route to it, and it confirms first.
+     *
+     *  <p>There used to be two buttons for this on two different tabs, POSTing
+     *  the identical payload to the identical endpoint; the other one fired
+     *  instantly with no confirmation. Bringing money onto one screen made the
+     *  duplication visible. The confirming one survived because the balance is
+     *  real money owed to the Lion and the button sits a thumb-width from
+     *  "+$1": a mis-tap here forgives a debt, and the tie-breaker in CLAUDE.md
+     *  says an ambiguous choice goes the Lion's way. */
     private void doClearPaywall() {
         new AlertDialog.Builder(this)
-            .setTitle("Clear Paywall")
-            .setMessage("Remove the paywall entirely?")
+            .setTitle("Clear the balance?")
+            .setMessage("Sets what the bunny owes back to $0. This cannot be undone.")
             .setPositiveButton("CLEAR", (d, w) -> {
                 final int og = beginOptimistic(false, false, 0, 0);
                 setStatus("Clearing paywall...");
