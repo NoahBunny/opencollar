@@ -362,8 +362,12 @@
 
             <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />
 
-            <!-- ── PAYMENT HISTORY ── -->
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="💰  PAYMENT HISTORY" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
+            <!-- ── BALANCE HISTORY ──
+                 Not "payment history" any more: since 2026-08-23 this lists
+                 every movement — charges, fines, tributes and penalties as well
+                 as payments — so naming it after one direction described half
+                 of it. -->
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="💰  BALANCE HISTORY" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
             <LinearLayout android:id="@+id/lion_payment_history" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginBottom="16dp" />
 
             <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />

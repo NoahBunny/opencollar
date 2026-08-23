@@ -4900,7 +4900,7 @@ public class MainActivity extends Activity {
 
     // ── Inbox ──
 
-    /** Money tab: subscription state and payment history.
+    /** Money tab: subscription state and balance history.
      *
      *  <p>Both widgets used to live on the Inbox page, where refreshInbox()
      *  filled them. Moving them to Money in 83 left their only refresh trigger
@@ -5544,7 +5544,7 @@ public class MainActivity extends Activity {
             }
             if (historyContainer.getChildCount() == 0) {
                 TextView tv = new TextView(this);
-                tv.setText("No payment records yet");
+                tv.setText("Nothing on the balance yet");
                 tv.setTextColor(0xFF555555);
                 tv.setTextSize(11);
                 historyContainer.addView(tv);
@@ -5573,7 +5573,7 @@ public class MainActivity extends Activity {
         } catch (Exception e) { /* parsing error — skip */ }
     }
 
-    /** Long-press affordance from the payment history. Confirms with Lion
+    /** Long-press affordance from the balance history. Confirms with Lion
      *  ("Reverse $X $desc?"), captures the admin_token on first use, and
      *  POSTs to /admin/reverse-payment. The reversal does NOT touch the
      *  paywall — only the lifetime PAID counter — because the paywall has

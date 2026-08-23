@@ -724,7 +724,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="PAYMENT HISTORY"
+            android:text="BALANCE HISTORY"
             android:textColor="#5a4a6a"
             android:textSize="10sp"
             android:letterSpacing="0.15"
