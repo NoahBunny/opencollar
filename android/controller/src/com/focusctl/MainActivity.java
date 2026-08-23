@@ -1058,6 +1058,21 @@ public class MainActivity extends Activity {
         smsToken       = prefs.getString(bunnyKey(activeBunnyId, "sms_token"), "");
         homelabUrl     = prefs.getString(bunnyKey(activeBunnyId, "homelab_url"), "");
         homelabCaps    = prefs.getBoolean(bunnyKey(activeBunnyId, "homelab_caps"), false);
+
+        // A relay mesh is a vault mesh. The plaintext endpoints this toggle used
+        // to select between were removed in Phase D: /api/mesh/{id}/order and
+        // /mesh/status both answer 410 Gone, unconditionally. Leaving vaultMode
+        // false on a relay mesh therefore broke BOTH directions at once —
+        // orders posted to a dead endpoint, and currentStatusJson() read from
+        // another one while the vault poll that would have supplied the truth
+        // stayed switched off. That is why the Collar could hold a $50 balance
+        // while Lion's Share showed $0 and neither looked broken.
+        //
+        // Direct (LAN) pairing is untouched: it talks to the Collar itself and
+        // never involves the relay.
+        if (!meshId.isEmpty() && !"direct".equals(pairMode)) {
+            vaultMode = true;
+        }
     }
 
     /** A homelab (self-hosted server) uniquely powers IMAP payment auto-detect,
@@ -4904,7 +4919,7 @@ public class MainActivity extends Activity {
     private void refreshMoney() {
         executor.execute(() -> {
             String meshResp = currentStatusJson();
-            String ledgerResp = meshGet("/mesh/ledger?limit=20");
+            String ledgerResp = fetchLedger(20);
             handler.post(() -> {
                 updateSubStatus(meshResp);
                 updatePaymentHistory(ledgerResp);
@@ -4916,7 +4931,7 @@ public class MainActivity extends Activity {
         if (deviceCardsContainer == null) return;
         executor.execute(() -> {
             String meshResp = currentStatusJson();
-            String ledgerResp = meshGet("/mesh/ledger?limit=20");
+            String ledgerResp = fetchLedger(20);
             // Always fetch the chat thread from the server's signed message
             // store (/api/mesh/{id}/messages/fetch). In vault mode the runtime
             // body's "messages" array only carries the Collar's local
@@ -5872,6 +5887,35 @@ public class MainActivity extends Activity {
         } catch (Exception e) {
             android.util.Log.w("focusctl", "postLionMessage failed: " + e.getMessage());
             return false;
+        }
+    }
+
+    /** Signed fetch of this mesh's balance history.
+     *
+     *  <p>POSTs to /api/mesh/{id}/payments as the LION, signing with the
+     *  account key the same way fetchLionMessages does. The previous call went
+     *  to GET /mesh/ledger, which no relay handler has ever served — so the
+     *  Money tab's history was empty on every mesh relay, and an empty history
+     *  looks exactly like a 404 on screen. */
+    private String fetchLedger(int limit) {
+        if (meshUrl.isEmpty() || meshId.isEmpty()) return null;
+        String lionPriv = prefs.getString("lion_privkey", "");
+        if (lionPriv.isEmpty()) return null;
+        long ts = System.currentTimeMillis();
+        long since = 0;
+        String payload = meshId + "|controller|" + since + "|" + ts;
+        try {
+            org.json.JSONObject body = new org.json.JSONObject();
+            body.put("node_id", "controller");
+            body.put("from", "lion");
+            body.put("since", since);
+            body.put("limit", limit);
+            body.put("ts", ts);
+            body.put("signature", VaultCrypto.signString(payload, lionPriv));
+            return meshPost(meshUrl + "/api/mesh/" + meshId + "/payments", body.toString());
+        } catch (Exception e) {
+            android.util.Log.w("focusctl", "fetchLedger failed: " + e.getMessage());
+            return null;
         }
     }
 

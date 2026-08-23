@@ -4622,14 +4622,28 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if abs(now_ms - ts_i) > 5 * 60 * 1000:
                 self.respond(403, {"error": "ts out of window"})
                 return
-            node = account.get("nodes", {}).get(node_id)
-            if not node:
-                self.respond(403, {"error": "node not registered in mesh"})
-                return
-            bunny_pubkey = node.get("bunny_pubkey", "")
-            if not bunny_pubkey:
-                self.respond(403, {"error": "no bunny_pubkey on file for node"})
-                return
+            # Either party may read this mesh's ledger: the bunny signs with its
+            # node key, the Lion with the account key — same shape as
+            # /messages/fetch. Lion's Share used to fetch /mesh/ledger, which no
+            # handler has ever served, so the Lion's balance history rendered
+            # empty on every mesh relay. An empty history and a 404 look
+            # identical on screen, which is why it went unnoticed.
+            from_who = (data.get("from", "") or "").lower()
+            if from_who == "lion":
+                verifier_pub = account.get("lion_pubkey", "")
+                if not verifier_pub:
+                    self.respond(403, {"error": "no lion_pubkey on file for mesh"})
+                    return
+            else:
+                node = account.get("nodes", {}).get(node_id)
+                if not node:
+                    self.respond(403, {"error": "node not registered in mesh"})
+                    return
+                verifier_pub = node.get("bunny_pubkey", "")
+                if not verifier_pub:
+                    self.respond(403, {"error": "no bunny_pubkey on file for node"})
+                    return
+            bunny_pubkey = verifier_pub
             payload = f"{mesh_id}|{node_id}|{since_i}|{ts_i}"
             try:
                 import base64 as _b64
