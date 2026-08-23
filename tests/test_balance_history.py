@@ -103,6 +103,23 @@ def vault_mesh(mail_module, tmp_path, monkeypatch):
         mail_module._payment_ledgers.pop(mesh_id, None)
 
 
+def _mark_auto_accepted(mail_module, mesh):
+    """Stamp the node as auto-accepted and never confirmed.
+
+    Written back through add_node: get_nodes reads from disk each call, so
+    mutating what it returns changes nothing — a detail that silently made an
+    earlier version of these tests assert against a node that was still
+    confirmed.
+    """
+    for row in mail_module._vault_store.get_nodes(mesh["mesh_id"]):
+        if row["node_id"] == mesh["node_id"]:
+            row["auto_accepted"] = True
+            row.pop("lion_confirmed", None)
+            mail_module._vault_store.add_node(mesh["mesh_id"], row)
+            return
+    raise AssertionError("node row not found")
+
+
 def _rows(mail_module, mesh_id):
     return list(mail_module._get_payment_ledger(mesh_id).entries)
 
@@ -306,4 +323,41 @@ class TestVaultBalanceEvents:
         )
         assert status == 403
         assert "vault_only" in body["error"]
+        assert mail_module._get_payment_ledger(m["mesh_id"]).entries == []
+
+    def test_an_invite_code_member_may_report(self, live_server, vault_mesh, mail_module):
+        """An invite-code member came in through a code the Lion handed out, so
+        they are already vouched for — the same reasoning state-mirror uses.
+
+        This is not a nicety: requiring Confirm here meant a freshly paired
+        bunny's balance history stayed silently empty, with a 403 in the relay
+        log and nothing on either screen saying why. Being stricter than the
+        endpoint that writes the actual paywall was the wrong way round.
+        """
+        m = vault_mesh
+        # Join the account's nodes dict the way an invite-code join does, and
+        # leave the vault row auto-accepted and unconfirmed.
+        acct = m["store"].meshes[m["mesh_id"]]
+        acct.setdefault("nodes", {})[m["node_id"]] = {
+            "node_id": m["node_id"],
+            "bunny_pubkey": "invite-member",
+        }
+        _mark_auto_accepted(mail_module, m)
+        status, body = self._post(
+            live_server, m["mesh_id"], self._event(m["node_id"], m["mesh_id"], m["priv"], "add-paywall", 0, 25)
+        )
+        assert status == 200, body
+        assert body["recorded"] is True
+
+    def test_an_unvouched_auto_accepted_node_still_cannot(self, live_server, vault_mesh, mail_module):
+        """The other half stays shut: a node that walked in through the
+        auto-accept window and was never looked at is not a member the Lion
+        chose."""
+        m = vault_mesh
+        _mark_auto_accepted(mail_module, m)
+        status, body = self._post(
+            live_server, m["mesh_id"], self._event(m["node_id"], m["mesh_id"], m["priv"], "add-paywall", 0, 25)
+        )
+        assert status == 403
+        assert "awaiting lion confirmation" in body["error"]
         assert mail_module._get_payment_ledger(m["mesh_id"]).entries == []

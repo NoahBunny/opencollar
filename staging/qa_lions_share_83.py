@@ -254,6 +254,75 @@ def step_veneration(d: UiDevice) -> None:
     )
 
 
+def step_balance_history(d: UiDevice) -> None:
+    """A charge must leave a row saying what caused it.
+
+    On a vault mesh the relay never applies the Lion's order — the Collar does,
+    then reports the cause. Nothing recorded that until 2026-08-23, so the
+    history knew about tributes and fines and not about the Lion adding $25.
+    """
+    goto_tab(d, "tab_money")
+    before = d.find("id/balance_display")
+    before_txt = before["text"] if before else "?"
+    if not d.tap("id/btn_add_25", settle=5):
+        check("3.10d", "+$25 tappable", False)
+        return
+    time.sleep(16)  # collar applies -> reports -> relay records -> refreshMoney
+    after = d.find("id/balance_display")
+    after_txt = after["text"] if after else "?"
+    check("3.10d", "the charge lands", before_txt != after_txt, f"{before_txt} -> {after_txt}")
+
+    goto_tab(d, "tab_inbox")
+    goto_tab(d, "tab_money")
+    time.sleep(8)
+    rows = [n["text"] for n in d.nodes() if n["text"] and "\u2192" in n["text"]]
+    check("3.10d", "a history row appears", bool(rows), rows[0] if rows else "none")
+    check(
+        "3.10d",
+        "the row says what caused it",
+        any("Added by the Lion" in r for r in rows),
+        "the collar reports the action; the relay names it",
+    )
+    check(
+        "3.10d",
+        "the row carries the resulting balance",
+        any("\u2192 $" in r for r in rows),
+    )
+    check(
+        "3.10d",
+        "no second balance contradicting the card",
+        not any("Balance: $0" in n["text"] for n in d.nodes() if n["text"]),
+        "a screen that argues with itself",
+    )
+
+
+def step_veneration_applied(d: UiDevice) -> None:
+    """The drawn task must reach the writing field with its reps and randcaps."""
+    goto_tab(d, "tab_rules")
+    if not d.tap("id/btn_veneration", settle=4):
+        check("3.6a", "veneration picker opens", False)
+        return
+    if not d.tap("Devotion", settle=4):
+        check("3.6a", "a category is selectable", False)
+        d.back()
+        return
+    if not d.tap("Use it", settle=4):
+        check("3.6a", "accepting fills the task", False)
+        d.back()
+        return
+    task = d.find("id/task_input")
+    reps = d.find("id/task_reps")
+    rand = d.find("id/task_randomize")
+    check("3.6a", "the task text lands", task is not None and len(task["text"]) > 10, (task or {}).get("text", "")[:44])
+    check("3.6a", "the suggested reps land", reps is not None and reps["text"].strip().isdigit())
+    check(
+        "3.6a",
+        "random caps comes on with it",
+        rand is not None and rand["checked"],
+        "the catalogue's capitalisation IS the enforced form",
+    )
+
+
 def step_money_tab(d: UiDevice) -> None:
     goto_tab(d, "tab_money")
     present = ids_on_screen(d)
@@ -279,7 +348,10 @@ def step_money_tab(d: UiDevice) -> None:
     # has zero height and never appears in a uiautomator dump. Assert the
     # section header, which always renders, and prove the container itself
     # separately by putting a row in it (below).
-    check("3.9", "Money has the PAYMENT HISTORY section", d.find("PAYMENT HISTORY") is not None)
+    # Renamed from PAYMENT HISTORY: the section lists charges, fines and
+    # penalties as well as payments, so naming it after one direction described
+    # half of it.
+    check("3.9", "Money has the BALANCE HISTORY section", d.find("BALANCE HISTORY") is not None)
 
     check(
         "3.9",
@@ -382,9 +454,11 @@ STEPS = [
     ("rules", step_rules_tab),
     ("compliment", step_compliment_reveal),
     ("veneration", step_veneration),
+    ("veneration-applied", step_veneration_applied),
     ("money", step_money_tab),
     ("inbox", step_inbox_tab),
     ("kebab", step_kebab),
+    ("balance-history", step_balance_history),
 ]
 
 

@@ -1,6 +1,6 @@
 {
-  "passed": 87,
-  "failed": 2,
+  "passed": 97,
+  "failed": 0,
   "results": [
     {
       "row": "3.1",
@@ -258,7 +258,7 @@
       "row": "3.6a",
       "check": "draws a task with its id and suggested reps",
       "ok": true,
-      "detail": "ven-003  \u00b7  suggested 5 reps"
+      "detail": "ven-008  \u00b7  suggested 5 reps"
     },
     {
       "row": "3.6a",
@@ -270,13 +270,13 @@
       "row": "3.6a",
       "check": "drawing again gives a different task",
       "ok": true,
-      "detail": "ven-003  \u00b7  suggested 5 reps -> ven-010  \u00b7  suggested 3 reps"
+      "detail": "ven-008  \u00b7  suggested 5 reps -> ven-014  \u00b7  suggested 3 reps"
     },
     {
       "row": "3.6a",
       "check": "task text landed in the writing field",
       "ok": true,
-      "detail": "I am Theirs. My time is Theirs to spend, my "
+      "detail": "I am Their property in the only sense that m"
     },
     {
       "row": "3.6a",
@@ -287,6 +287,24 @@
     {
       "row": "3.6a",
       "check": "random caps switched on with it",
+      "ok": true,
+      "detail": "the catalogue's capitalisation IS the enforced form"
+    },
+    {
+      "row": "3.6a",
+      "check": "the task text lands",
+      "ok": true,
+      "detail": "I am His to keep and Theirs to command."
+    },
+    {
+      "row": "3.6a",
+      "check": "the suggested reps land",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6a",
+      "check": "random caps comes on with it",
       "ok": true,
       "detail": "the catalogue's capitalisation IS the enforced form"
     },
@@ -376,7 +394,7 @@
     },
     {
       "row": "3.9",
-      "check": "Money has the PAYMENT HISTORY section",
+      "check": "Money has the BALANCE HISTORY section",
       "ok": true,
       "detail": ""
     },
@@ -389,13 +407,13 @@
     {
       "row": "3.10d",
       "check": "charging $5 moves the balance",
-      "ok": false,
-      "detail": "$0 -> $0"
+      "ok": true,
+      "detail": "$35 -> $40"
     },
     {
       "row": "3.10d",
       "check": "payment history populates without leaving the tab",
-      "ok": false,
+      "ok": true,
       "detail": "this is what regressed: the widget moved to Money, its refresh stayed on Inbox"
     },
     {
@@ -505,6 +523,36 @@
       "check": "Release Forever confirms before doing anything",
       "ok": true,
       "detail": ""
+    },
+    {
+      "row": "3.10d",
+      "check": "the charge lands",
+      "ok": true,
+      "detail": "$40 -> $65"
+    },
+    {
+      "row": "3.10d",
+      "check": "a history row appears",
+      "ok": true,
+      "detail": "\u2191 $25.00  Added by the Lion   \u2192 $65.00  just now"
+    },
+    {
+      "row": "3.10d",
+      "check": "the row says what caused it",
+      "ok": true,
+      "detail": "the collar reports the action; the relay names it"
+    },
+    {
+      "row": "3.10d",
+      "check": "the row carries the resulting balance",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.10d",
+      "check": "no second balance contradicting the card",
+      "ok": true,
+      "detail": "a screen that argues with itself"
     },
     {
       "row": "3.17",

@@ -6238,7 +6238,23 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     if _vn.get("node_id") == node_id:
                         vault_row_be = _vn
                         break
-                if self._reject_unconfirmed_node("Vault balance-event", mesh_id, node_id, vault_row_be):
+                # Same bar as state-mirror, and for the same reason: an
+                # invite-code member came in through a code the Lion handed out,
+                # so they are already vouched for. Only a node that walked in
+                # through the auto-accept window and has never been looked at
+                # needs the Lion's Confirm.
+                #
+                # It would be wrong to be STRICTER here than state-mirror, which
+                # writes paywall straight into the registry the scanners bill
+                # from. This route only describes a movement that endpoint has
+                # already asserted — and being stricter meant a freshly paired
+                # bunny's history stayed silently empty, with a 403 in the
+                # relay log and nothing on either screen to say why.
+                _account_be = _mesh_accounts.get(mesh_id) or {}
+                _is_invite_member = bool((_account_be.get("nodes", {}).get(node_id) or {}).get("bunny_pubkey"))
+                if not _is_invite_member and self._reject_unconfirmed_node(
+                    "Vault balance-event", mesh_id, node_id, vault_row_be
+                ):
                     return
                 # A vault_only mesh is sold on the relay learning nothing. The
                 # balance already stays off it there (no state-mirror), and

@@ -166,7 +166,15 @@ class UiDevice:
         time.sleep(settle)
         return True
 
-    def type_into(self, needle: str, text: str, settle: float = 0.8) -> bool:
+    def type_into(self, needle: str, text: str, settle: float = 0.8, hide_ime: bool = True) -> bool:
+        """Tap a field and type into it, then put the keyboard away.
+
+        Dismissing matters more than it sounds: the IME compresses the layout,
+        so a view below it reports a height of 2 and drops out of the dump
+        entirely. That reads exactly like a control that failed to render — it
+        cost a round of chasing a message thread that was drawing correctly the
+        whole time, behind the keyboard.
+        """
         n = self.find(needle)
         if not n:
             return False
@@ -174,7 +182,16 @@ class UiDevice:
         time.sleep(0.4)
         self.adb("shell", "input", "text", escape_input_text(text))
         time.sleep(settle)
+        if hide_ime:
+            self.hide_keyboard()
         return True
+
+    def hide_keyboard(self, settle: float = 0.6) -> None:
+        """BACK closes the IME if it is up, and is a no-op for the Activity if
+        it is not — Android consumes it for the keyboard first."""
+        if "mInputShown=true" in self.adb("shell", "dumpsys", "input_method"):
+            self.adb("shell", "input", "keyevent", "KEYCODE_BACK")
+            time.sleep(settle)
 
     def clear_field(self, needle: str) -> bool:
         n = self.find(needle)

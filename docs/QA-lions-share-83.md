@@ -128,6 +128,42 @@ Collar bounced to the jail captioned *"BunnyTasker admin removed"* — over an
 admin that had never been granted, because nothing in either onboarding ever
 asked for it.
 
+
+## 2d. Full walk on a clean container — RUN 2026-08-23 (evening), 97/97 ✅
+
+Container reset with `installers/waydroid-reset.sh` (no download), all three
+APKs installed fresh, **zero active admins** at the start. Everything below was
+driven through the UI, not seeded.
+
+| | |
+|---|---|
+| Bunny Tasker onboarding, incl. the admin gate | ✅ 7/7 — opens the system screen, carries our explanation, releases only once granted |
+| Terms of Surrender handoff | ✅ |
+| **Sealed** Device Owner note | ✅ all five points, incl. that it needs a wipe to add later and that factory reset always remains |
+| Consent asks for the Collar's own admin | ✅ closing dialog reports a *held* cage once granted |
+| Mesh created + bunny paired by invite | ✅ relay logged the join and state-mirror |
+| Structural walk | ✅ **97 passed, 0 failed** |
+| Veneration picker → task, reps, randcaps | ✅ |
+| Balance history | ✅ `↑ $25.00 Added by the Lion → $65.00 just now` |
+| E2EE round trip | ✅ `you / Kneel when you read this.` — stored as `[e2ee]` with `encrypted_key_lion`, plaintext absent from relay state |
+| PWA pinning | ✅ `com.focuslock/.PinShortcutActivity` resolves for `CONFIRM_PIN_SHORTCUT` |
+
+**One real fix came out of the run.** The first pass failed the balance-history
+rows: `DENIED (auto-accepted node not confirmed by lion)`. The route copied the
+penalty route's confirmation gate, which is stricter than `state-mirror` — and
+state-mirror writes the actual paywall the scanners bill from, while this only
+describes a movement that endpoint already asserted. Worse, being stricter meant
+a freshly paired bunny's history stayed silently empty. Now aligned with
+state-mirror: an invite-code member is already vouched for (the Lion handed out
+the code); a node that walked in through the auto-accept window and was never
+looked at still needs Confirm. Both sides tested.
+
+**One harness fix.** `type_into` left the IME up, which compresses the layout so
+a view below it reports height 2 and drops out of the dump — indistinguishable
+from a control that failed to render. It cost a round of chasing a message
+thread that was drawing correctly the whole time. The driver puts the keyboard
+away now.
+
 ## 3. Device walk — the rows still owed
 
 Run on the SM-S908 rig (`R5CT339K1ZL`; provisioning order in the
