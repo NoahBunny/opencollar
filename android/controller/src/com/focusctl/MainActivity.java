@@ -623,6 +623,9 @@ public class MainActivity extends Activity {
                         }
                         return;
                     }
+                    // relay-exempt: direct mode only. The branch above returns for
+                    // every relay mesh, and meshGet short-circuits /mesh/status to
+                    // the Collar itself over LAN/Tailscale/.onion.
                     String resp = meshGet("/mesh/status");
                     if (resp != null) {
                         handler.post(() -> updateLiveStatus(resp));
@@ -3067,6 +3070,8 @@ public class MainActivity extends Activity {
         if (vaultMode && !"direct".equals(pairMode)) {
             return localSnapshot.currentRuntimeJson;
         }
+        // relay-exempt: direct mode only — see meshGet, which routes this to
+        // the Collar. A relay mesh never reaches here: vaultMode is implied.
         return meshGet("/mesh/status");
     }
 
