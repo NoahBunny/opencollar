@@ -283,6 +283,30 @@ def _safe_mesh_id_static(mesh_id):
     return all(c.isalnum() or c in "-_" for c in mesh_id)
 
 
+def _mesh_state_path(base_dir, mesh_id, suffix=".json"):
+    """Path of a per-mesh file (or directory, with suffix="") under base_dir.
+    Returns None if mesh_id could not safely name one.
+
+    Two independent locks, on purpose. _safe_mesh_id_static makes traversal
+    inexpressible in the first place — neither a dot nor a separator survives
+    its whitelist — and then the joined path is resolved and confirmed to still
+    sit inside base_dir, which is the check that still holds if that whitelist
+    is ever loosened. Several callers below previously had nothing but the
+    caller's word that mesh_id had been validated back at the route.
+
+    Resolving with realpath() is also the shape CodeQL's py/path-injection
+    recognises as a barrier; the resolved path names the same file, so callers
+    are unaffected by state directories that live behind a symlink.
+    """
+    if not _safe_mesh_id_static(mesh_id):
+        return None
+    base = os.path.realpath(base_dir)
+    candidate = os.path.realpath(os.path.join(base, f"{mesh_id}{suffix}"))
+    if candidate != base and not candidate.startswith(base + os.sep):
+        return None
+    return candidate
+
+
 class MeshOrdersRegistry:
     """Maps mesh_id -> OrdersDocument. Every mesh — including the operator's
     own — gets its own OrdersDocument persisted under base_dir. Prior to
@@ -310,10 +334,10 @@ class MeshOrdersRegistry:
 
     def get_or_create(self, mesh_id):
         # SECURITY: defense-in-depth — validate mesh_id before using in path
-        if not _safe_mesh_id_static(mesh_id):
+        path = _mesh_state_path(self.base_dir, mesh_id)
+        if path is None:
             raise ValueError(f"invalid mesh_id: {mesh_id!r}")
         if mesh_id not in self.docs:
-            path = os.path.join(self.base_dir, f"{mesh_id}.json")
             self.docs[mesh_id] = mesh.OrdersDocument(persist_path=path)
         return self.docs[mesh_id]
 
@@ -1419,7 +1443,9 @@ def _get_desktop_registry(mesh_id: str) -> "mesh.DesktopRegistry":
                 reg = desktop_registry  # legacy operator singleton
             else:
                 os.makedirs(_DESKTOP_REGISTRIES_DIR, exist_ok=True)
-                path = os.path.join(_DESKTOP_REGISTRIES_DIR, f"{mesh_id}.json")
+                path = _mesh_state_path(_DESKTOP_REGISTRIES_DIR, mesh_id)
+                if path is None:
+                    raise ValueError(f"invalid mesh_id: {mesh_id!r}")
                 reg = mesh.DesktopRegistry(persist_path=path)
             _desktop_registries[mesh_id] = reg
         return reg
@@ -1458,9 +1484,7 @@ _tamper_tiers_lock = threading.Lock()
 
 def _tamper_counter_path(mesh_id: str):
     """Per-mesh counter file, or None if mesh_id isn't path-safe."""
-    if not _safe_mesh_id_static(mesh_id):
-        return None
-    return os.path.join(_TAMPER_TIERS_DIR, f"{mesh_id}.json")
+    return _mesh_state_path(_TAMPER_TIERS_DIR, mesh_id)
 
 
 def _read_tamper_attempts(mesh_id: str) -> int:
@@ -1526,7 +1550,9 @@ def _get_payment_ledger(mesh_id: str) -> "mesh.PaymentLedger":
                 path = _LEDGER_PATH  # legacy operator ledger
             else:
                 os.makedirs(_LEDGERS_DIR, exist_ok=True)
-                path = os.path.join(_LEDGERS_DIR, f"{mesh_id}.json")
+                path = _mesh_state_path(_LEDGERS_DIR, mesh_id)
+                if path is None:
+                    raise ValueError(f"invalid mesh_id: {mesh_id!r}")
             ledger = mesh.PaymentLedger(persist_path=path)
             _payment_ledgers[mesh_id] = ledger
         return ledger
@@ -1554,7 +1580,9 @@ def _get_payment_identity(mesh_id: str) -> "mesh.PaymentIdentity":
         ident = _payment_identities.get(mesh_id)
         if ident is None:
             os.makedirs(_IDENTITIES_DIR, exist_ok=True)
-            path = os.path.join(_IDENTITIES_DIR, f"{mesh_id}.json")
+            path = _mesh_state_path(_IDENTITIES_DIR, mesh_id)
+            if path is None:
+                raise ValueError(f"invalid mesh_id: {mesh_id!r}")
             ident = mesh.PaymentIdentity(persist_path=path)
             _payment_identities[mesh_id] = ident
         return ident
@@ -1732,7 +1760,9 @@ def _get_message_store(mesh_id: str) -> "mesh.MessageStore":
     with _message_stores_lock:
         store = _message_stores.get(mesh_id)
         if store is None:
-            path = os.path.join(_MESSAGES_DIR, f"{mesh_id}.json")
+            path = _mesh_state_path(_MESSAGES_DIR, mesh_id)
+            if path is None:
+                raise ValueError(f"invalid mesh_id: {mesh_id!r}")
             store = mesh.MessageStore(persist_path=path)
             _message_stores[mesh_id] = store
         return store
@@ -2531,7 +2561,10 @@ class MeshAccountStore:
         account = self.meshes.get(mesh_id)
         if not account:
             return
-        path = os.path.join(self.persist_dir, f"{mesh_id}.json")
+        path = _mesh_state_path(self.persist_dir, mesh_id)
+        if path is None:
+            logger.warning("Refusing to persist mesh account under unsafe id")
+            return
         tmp = path + ".tmp"
         with open(tmp, "w") as f:
             json.dump(account, f, indent=2)
@@ -2815,9 +2848,7 @@ class VaultStore:
         self.lock = threading.Lock()
 
     def _mesh_dir(self, mesh_id):
-        if not _safe_mesh_id(mesh_id):
-            return None
-        return os.path.join(self.base_dir, mesh_id)
+        return _mesh_state_path(self.base_dir, mesh_id, "")
 
     def _ensure_mesh(self, mesh_id):
         d = self._mesh_dir(mesh_id)
@@ -6843,7 +6874,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             with open(pair_file, "w") as f:
                 json.dump({"config": config, "expires_at": time.time() + expires_min * 60}, f)
             pair_url = f"{base_url}/api/pair/{code}"
-            logger.info("Pairing code created: %s (expires %smin)", code, _sanitize_log(expires_min))
+            logger.info("Pairing code created: %s (expires %smin)", _sanitize_log(code), _sanitize_log(expires_min))
             self.respond(200, {"ok": True, "code": code, "url": pair_url, "expires_minutes": expires_min})
 
         elif self.path in ("/api/web-session", "/admin/web-session"):
