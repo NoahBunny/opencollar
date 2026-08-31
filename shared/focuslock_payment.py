@@ -221,6 +221,47 @@ def reduce_paywall(remaining, paid, adb, phone_url="", phone_pin=""):
 DEFAULT_SKIP_FOLDERS = ("trash", "spam", "junk", "drafts", "sent")
 
 
+def debit_balance(orders, amount_cents, clear=False):
+    """Subtract a confirmed payment from a mesh's balance. Returns the new
+    whole-dollar balance.
+
+    Debits `paywall_original` by the same amount as `paywall`, because
+    paywall_original is the principal compound interest accrues on
+    (check_compound_interest: compounded = paywall_original * rate**hours,
+    applied whenever it exceeds the current balance). Debiting only `paywall`
+    would let the next hourly tick recompute from the un-paid principal and
+    quietly undo the payment.
+
+    Balances are whole-dollar strings on both sides of the wire (several
+    call sites parse them with int(), so a "12.50" here throws downstream),
+    so the remainder rounds UP: a fraction of a dollar still owed is still
+    owed, and rounding down would credit more than was actually sent.
+
+    `clear=True` forces the balance to zero regardless of the amount.
+
+    Shared by the server's payment-received handler (focuslock-mail.py) and
+    the legacy bridge-only scan path below, so the two can't drift.
+    """
+    amount_cents = max(0, int(amount_cents or 0))
+
+    def _debited(key):
+        try:
+            cents = round(float(orders.get(key, "0") or 0) * 100)
+        except (TypeError, ValueError):
+            cents = 0
+        left = max(0, cents - amount_cents)
+        return -(-left // 100)  # ceil division
+
+    new_paywall = 0 if clear else _debited("paywall")
+    if new_paywall <= 0:
+        orders.set("paywall", "0")
+        orders.set("paywall_original", "0")
+        return 0
+    orders.set("paywall", str(new_paywall))
+    orders.set("paywall_original", str(_debited("paywall_original")))
+    return new_paywall
+
+
 def walk_imap_folders(mail, since_date, skip_patterns=DEFAULT_SKIP_FOLDERS):
     """Walk INBOX + all subfolders, returning (folder, num, raw_bytes) tuples.
 
@@ -465,35 +506,51 @@ def _scan_mesh_imap_once(
             # Notify Lion via mesh pinned message
             mesh_orders.set("pinned_message", f"Payment received: ${amount:.2f} via {best_provider['name']}")
 
-            amount_cents = int(amount * 100)
-            clear_paywall = amount >= paywall
+            amount_cents = round(amount * 100)
 
             # Server-authoritative propagation (2026-04-15 migration).
             # When apply_fn is wired (from focuslock-mail.py's
             # _server_apply_order), the payment-received action bumps
-            # total_paid_cents, optionally zeroes paywall, bumps version,
-            # and writes a vault blob. Falling back to direct mutation
-            # keeps the legacy bridge-only deployment path working but
-            # loses vault propagation — vault_only meshes require apply_fn.
+            # total_paid_cents, debits the balance, bumps version, and writes
+            # a vault blob. Falling back to direct mutation keeps the legacy
+            # bridge-only deployment path working but loses vault propagation
+            # — vault_only meshes require apply_fn.
+            #
+            # `clear_paywall` is deliberately NOT sent: `paywall` was read once
+            # at the top of this scan cycle, so with two payment emails in the
+            # same batch the second would test `amount >= paywall` against a
+            # balance the first one already reduced, and zero out a balance that
+            # was only partly paid. The debit works off live orders and clears
+            # the balance itself once it reaches zero.
             if apply_fn is not None:
+                result = None
                 try:
-                    apply_fn(
-                        "payment-received",
-                        {
-                            "amount_cents": amount_cents,
-                            "clear_paywall": clear_paywall,
-                        },
-                    )
+                    result = apply_fn("payment-received", {"amount_cents": amount_cents})
                 except Exception as e:
                     logger.warning("%spayment-received apply_fn failed: %s", tag, e)
+                if isinstance(result, dict) and "paywall" in result:
+                    remaining = float(result.get("paywall", 0) or 0)
+                else:
+                    # apply_fn failed or is an older/foreign implementation —
+                    # fall back to the local estimate for logging + ADB only.
+                    remaining = max(0.0, paywall - amount)
             else:
                 try:
                     cur_cents = int(mesh_orders.get("total_paid_cents", 0) or 0)
                 except (ValueError, TypeError):
                     cur_cents = 0
                 mesh_orders.set("total_paid_cents", cur_cents + amount_cents)
-                if clear_paywall:
-                    mesh_orders.set("paywall", "0")
+                remaining = float(debit_balance(mesh_orders, amount_cents))
+            clear_paywall = remaining <= 0
+
+            # Backfill what the balance became. The ledger row above had to be
+            # written before the credit (its Message-ID is the dedup key that
+            # stops this email being re-credited on every 30s poll), so it is
+            # only now that there is a balance to record.
+            try:
+                payment_ledger.stamp_balance_after(msg_id, remaining)
+            except AttributeError:
+                pass  # older PaymentLedger without the backfill helper
 
             if clear_paywall:
                 logger.info("%sFULL PAYMENT — clearing paywall!", tag)
@@ -501,7 +558,6 @@ def _scan_mesh_imap_once(
                     adb.put("focus_lock_paywall", "0")
                     unlock_phone(adb)
             else:
-                remaining = paywall - amount
                 logger.info("%sPartial: $%.2f, remaining: $%.2f", tag, amount, remaining)
                 if adb is not None:
                     reduce_paywall(remaining, amount, adb, phone_url, phone_pin)

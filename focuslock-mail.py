@@ -909,22 +909,51 @@ def mesh_apply_order(action, params, orders):
         return {"applied": action, "due": due}
     elif action == "payment-received":
         # IMAP-confirmed payment. Additively stamps total_paid_cents (lifetime
-        # counter, server-authoritative) and optionally zeroes paywall.
+        # counter, server-authoritative) and DEBITS the balance by what was paid.
         # Migrated 2026-04-15 from direct ADB writes so the lifetime total
         # survives device swap.
+        #
+        # Pre-fix — the "paid twice, balance never moved" bug: only a payment
+        # that covered the WHOLE balance touched `paywall`. Anything short of it
+        # bumped the lifetime counter and left the balance exactly where it was,
+        # so a bunny paying $20 a week against $100 watched it sit at $100
+        # forever. A partial branch did exist (focuslock_payment.reduce_paywall)
+        # but it only ran on homelab deployments and wrote straight to the phone
+        # over ADB, which the next vault sync overwrote from this doc anyway.
+        # Vault-mode meshes have no ADB at all, so nothing debited the balance.
+        #
+        # The debit itself (including paywall_original, the principal compound
+        # interest accrues on) lives in focuslock_payment.debit_balance so this
+        # handler and the legacy bridge-only scan path share one implementation.
         try:
             amount_cents = int(params.get("amount_cents", 0) or 0)
         except (ValueError, TypeError):
             amount_cents = 0
+        amount_cents = max(0, amount_cents)
         if amount_cents > 0:
             try:
                 cur = int(orders.get("total_paid_cents", 0) or 0)
             except (ValueError, TypeError):
                 cur = 0
             orders.set("total_paid_cents", cur + amount_cents)
-        if params.get("clear_paywall"):
-            orders.set("paywall", "0")
-        return {"applied": action, "amount_cents": amount_cents, "cleared": bool(params.get("clear_paywall"))}
+
+        new_paywall = debit_balance(orders, amount_cents, clear=bool(params.get("clear_paywall")))
+
+        # Stamp the authoritative result back into `params` — _server_apply_order
+        # hands this same dict to _admin_order_to_vault_blob, so the Collar
+        # applies the number the server computed instead of re-deriving it from
+        # whatever balance that device last managed to sync.
+        cleared = new_paywall <= 0
+        if isinstance(params, dict):
+            params["new_paywall"] = new_paywall
+            params["clear_paywall"] = cleared
+        return {
+            "applied": action,
+            "amount_cents": amount_cents,
+            "paywall": new_paywall,
+            "cleared": cleared,
+        }
+
     elif action == "gamble-resolved":
         # Server-driven coin flip outcome. Action is a dumb setter — the RNG +
         # math live in the /api/mesh/{id}/gamble endpoint so the handler stays
@@ -1414,6 +1443,7 @@ desktop_registry = mesh.DesktopRegistry(persist_path=DESKTOP_REGISTRY_FILE)
 
 from focuslock_payment import (
     check_payment_emails_multi,
+    debit_balance,
     load_iso_codes,
     load_payment_providers,
 )
@@ -4759,6 +4789,24 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 total_paid_cents = int(orders.get("total_paid_cents", 0) or 0) if orders else 0
             except (ValueError, TypeError):
                 total_paid_cents = 0
+            # Whether payment detection is actually wired up, as three
+            # booleans. No addresses or credentials cross this boundary — the
+            # bunny still cannot read Lion's inbox and the Lion still cannot
+            # read the payer allowlist — but "I paid and nothing happened" now
+            # has an answer on screen instead of only in the relay's log:
+            # payee_configured false means the Lion never connected the inbox
+            # to scan, payer_configured false means the scanner is failing
+            # closed because it can't tell which payments are the bunny's.
+            ident = _get_payment_identity(mesh_id)
+            detection = {}
+            try:
+                detection = {
+                    "payee_configured": bool(ident.payee_summary().get("imap_configured")),
+                    "payer_configured": ident.payer_configured(),
+                    "payer_effective": ident.has_effective_payer(),
+                }
+            except Exception:
+                logger.exception("payments: payment-identity summary failed")
             self.respond(
                 200,
                 {
@@ -4766,6 +4814,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     "entries": entries,
                     "total_paid_cents": total_paid_cents,
                     "since": since_i,
+                    **detection,
                 },
             )
 

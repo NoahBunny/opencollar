@@ -3177,8 +3177,15 @@ public class ControlService extends Service {
             case "clear-paywall": result = doClearPaywall(); break;
             case "payment-received": {
                 // Server-confirmed IMAP payment. Bumps total_paid_cents
-                // (lifetime counter, server-authoritative mirror) and
-                // optionally clears paywall + unlocks.
+                // (lifetime counter, server-authoritative mirror) and applies
+                // the balance the relay computed.
+                //
+                // Pre-fix this acted on clear_paywall and nothing else, so a
+                // payment that didn't cover the WHOLE balance left the lock
+                // screen showing the same number as before — the bunny paid and
+                // watched nothing move. The relay is the single writer for the
+                // balance and now sends its result as `new_paywall`;
+                // amount_cents is the fallback for a relay predating it.
                 int amountCents = 0;
                 try { amountCents = Integer.parseInt(jval(body, "amount_cents")); } catch (Exception e) {}
                 if (amountCents > 0) {
@@ -3189,16 +3196,51 @@ public class ControlService extends Service {
                 }
                 boolean clearPaywall = "true".equals(jval(body, "clear_paywall"))
                     || "1".equals(jval(body, "clear_paywall"));
-                if (clearPaywall) {
+                int newPaywall = -1;
+                String npRaw = jval(body, "new_paywall");
+                if (npRaw != null && !npRaw.isEmpty()) {
+                    try { newPaywall = (int) Math.ceil(Double.parseDouble(npRaw)); } catch (Exception e) {}
+                }
+                if (newPaywall < 0 && amountCents > 0) {
+                    // Older relay: derive the remainder locally. Rounds UP, the
+                    // same way the server does — a fraction of a dollar still
+                    // owed is still owed, and rounding down would credit the
+                    // bunny more than they actually sent.
+                    long owedCents = Math.round(paywallNow() * 100d);
+                    newPaywall = (int) Math.ceil(Math.max(0L, owedCents - amountCents) / 100d);
+                }
+                if (clearPaywall || newPaywall == 0) {
+                    newPaywall = 0;
                     Settings.Global.putString(getContentResolver(), "focus_lock_paywall", "0");
                     Settings.Global.putString(getContentResolver(), "focus_lock_paywall_original", "0");
                     Settings.Global.putInt(getContentResolver(), "focus_lock_active", 0);
                     Settings.Global.putLong(getContentResolver(), "focus_lock_unlock_at", 0);
                     Settings.Global.putString(getContentResolver(), "focus_lock_message",
                         "Payment received. Good boy.");
+                } else if (newPaywall > 0) {
+                    Settings.Global.putString(getContentResolver(), "focus_lock_paywall",
+                        String.valueOf(newPaywall));
+                    // paywall_original is the principal compound interest
+                    // accrues on, so it takes the same debit — leaving it whole
+                    // would let the next interest tick recompute from the
+                    // un-paid principal and undo the payment. Untouched when
+                    // it was never seeded (0 = interest off for this lock).
+                    long origCents = 0L;
+                    try {
+                        String o = gstr("focus_lock_paywall_original");
+                        if (o != null && !o.isEmpty()) origCents = Math.round(Double.parseDouble(o) * 100d);
+                    } catch (Exception e) {}
+                    if (origCents > 0) {
+                        int newOrig = (int) Math.ceil(Math.max(0L, origCents - amountCents) / 100d);
+                        Settings.Global.putString(getContentResolver(),
+                            "focus_lock_paywall_original", String.valueOf(newOrig));
+                    }
+                    Settings.Global.putString(getContentResolver(), "focus_lock_message",
+                        "Payment received. $" + newPaywall + " remaining.");
                 }
                 result = "{\"ok\":true,\"action\":\"payment-received\",\"amount_cents\":"
-                    + amountCents + ",\"cleared\":" + clearPaywall + "}";
+                    + amountCents + ",\"paywall\":" + Math.max(newPaywall, 0)
+                    + ",\"cleared\":" + (newPaywall == 0) + "}";
                 break;
             }
             case "pin-message": result = doPinMessage(body); break;

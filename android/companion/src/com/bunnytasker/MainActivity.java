@@ -57,7 +57,7 @@ public class MainActivity extends Activity {
     private View messagesBody;
     private android.widget.ImageView qrCodeView;
     private EditText messageInput;
-    private Button btnPay, btnSend, btnFreeUnlock, btnShowQr, btnPrepay, btnSetupImap, btnSetupPayerIdentity;
+    private Button btnPay, btnSend, btnFreeUnlock, btnShowQr, btnPrepay, btnSetupPayerIdentity;
     private TextView balanceAmount, balanceDetail, imapStatus, tierBadge, messagesHeader, payerIdentityStatus;
     // Collapsed by default — the messaging block runs to ~440dp (input row +
     // 380dp scroll) and was overwhelming the home view. User flips it open
@@ -214,14 +214,11 @@ public class MainActivity extends Activity {
         balanceCard = findViewById(fid("balance_card"));
         paymentHistory = (LinearLayout) findViewById(fid("payment_history"));
         imapStatus = (TextView) findViewById(fid("imap_status"));
-        btnSetupImap = (Button) findViewById(fid("btn_setup_imap"));
-        btnSetupImap.setOnClickListener(v -> doSetupImap());
 
         payerIdentityStatus = (TextView) findViewById(fid("payer_identity_status"));
         btnSetupPayerIdentity = (Button) findViewById(fid("btn_setup_payer_identity"));
         btnSetupPayerIdentity.setOnClickListener(v -> doSetupPayerIdentity());
         refreshPayerIdentityStatus();
-        applyHomelabGating();
         tierBadge = (TextView) findViewById(fid("tier_badge"));
         messagesHeader = (TextView) findViewById(fid("messages_header"));
         messagesExpanded = prefs.getBoolean("messages_expanded", false);
@@ -291,7 +288,6 @@ public class MainActivity extends Activity {
 
         // Start polling
         poller = () -> {
-            applyHomelabGating();  // UI-thread re-eval each tick (cheap; handles host set mid-session)
             executor.execute(() -> refreshStats());
             executor.execute(this::drainEvidenceOutbox);  // serverless evidence → Lion's inbox
             executor.execute(this::maybeSendPendingPayerIdentity);  // deferred onboarding payer identity
@@ -721,14 +717,6 @@ public class MainActivity extends Activity {
                 sectionSelflock.setVisibility(hasSub ? View.VISIBLE : View.GONE);
                 sectionMessages.setVisibility(hasSub ? View.VISIBLE : View.GONE);
                 noSubPrompt.setVisibility(hasSub ? View.GONE : View.VISIBLE);
-
-                // IMAP status
-                String savedEmail = prefs.getString("imap_email", "");
-                if (!savedEmail.isEmpty()) {
-                    imapStatus.setText("Connected: " + savedEmail);
-                    imapStatus.setTextColor(0xFF44aa44);
-                    btnSetupImap.setText("Update Email");
-                }
 
                 // Payment history + messages: refresh every 2nd poll (~10s).
                 // Was a flaky `% 25000 < 5000` time-of-day gate that fired ~20%
@@ -2133,18 +2121,40 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** IMAP credentials and payer-identity setup only do anything when a
-     *  homelab/server (webhook host) is configured — without one they POST into
-     *  an empty HOMELAB_URLS and silently no-op. Hide them so the companion UI
-     *  is honest; they reappear once a server is attached. Shared via the
-     *  Collar's Settings.Global focus_lock_webhook_host. */
-    private void applyHomelabGating() {
-        boolean homelab = !gstr("focus_lock_webhook_host").isEmpty();
-        int vis = homelab ? View.VISIBLE : View.GONE;
-        if (btnSetupImap != null) btnSetupImap.setVisibility(vis);
-        if (imapStatus != null) imapStatus.setVisibility(vis);
-        if (btnSetupPayerIdentity != null) btnSetupPayerIdentity.setVisibility(vis);
-        if (payerIdentityStatus != null) payerIdentityStatus.setVisibility(vis);
+    /** Render whether payments can be detected at all, from the relay's own
+     *  view of it (the three booleans on /api/mesh/{id}/payments).
+     *
+     *  Both halves have to be configured before one payment is ever credited:
+     *  the Lion connects the inbox the bank notifications land in (Lion's
+     *  Share -> Payment Email), and the bunny sets the payer identity that
+     *  tells the scanner which of those notifications are theirs. With either
+     *  half missing the scanner fails closed and credits nothing — which,
+     *  until this line existed, looked from here exactly like paying your Lion
+     *  and being ignored.
+     *
+     *  This replaces applyHomelabGating(), which hid this whole section — and
+     *  the payer-identity setup with it — whenever no homelab was configured.
+     *  Neither one talks to the homelab: payer identity is a signed POST to
+     *  the relay. On a vault mesh with no homelab (the normal setup) that
+     *  meant a bunny could never set the identity their payments are matched
+     *  by, so the scanner fail-closed on every payment they made, invisibly.
+     *  UI thread. */
+    private void renderDetectionStatus(boolean payeeOk, boolean payerOk, boolean payerEffective) {
+        if (imapStatus == null) return;
+        if (!payeeOk) {
+            imapStatus.setText("Your Lion hasn't connected the inbox payments arrive in \u2014 "
+                + "nothing can be credited until they do");
+            imapStatus.setTextColor(0xFFcc4444);
+        } else if (!payerOk) {
+            imapStatus.setText("Set your payer identity so the scanner knows which payments are yours");
+            imapStatus.setTextColor(0xFFaa6644);
+        } else if (!payerEffective) {
+            imapStatus.setText("\u26a0 Your payer identity is too generic to match anything");
+            imapStatus.setTextColor(0xFFcc4444);
+        } else {
+            imapStatus.setText("\u2713 Payment detection active");
+            imapStatus.setTextColor(0xFF44aa44);
+        }
     }
 
     private void refreshPayerIdentityStatus() {
@@ -2172,60 +2182,24 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void doSetupImap() {
-        View v = getLayoutInflater().inflate(android.R.layout.simple_list_item_1, null);
-        // Build a simple dialog with email + password fields
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(48, 24, 48, 24);
-
-        EditText emailInput = new EditText(this);
-        emailInput.setHint("Email address");
-        emailInput.setInputType(android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
-        String savedEmail = prefs.getString("imap_email", "");
-        if (!savedEmail.isEmpty()) emailInput.setText(savedEmail);
-        layout.addView(emailInput);
-
-        EditText passInput = new EditText(this);
-        passInput.setHint("App password");
-        passInput.setInputType(android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        layout.addView(passInput);
-
-        EditText hostInput = new EditText(this);
-        hostInput.setHint("IMAP host (default: imap.migadu.com)");
-        String savedHost = prefs.getString("imap_host", "imap.migadu.com");
-        hostInput.setText(savedHost);
-        layout.addView(hostInput);
-
-        new android.app.AlertDialog.Builder(this)
-            .setTitle("Connect Payment Email")
-            .setMessage("Sign in so your Lion's system can detect e-Transfer payments.\n\nAll past payments will be invalidated — only future payments count.")
-            .setView(layout)
-            .setPositiveButton("Connect", (d, w) -> {
-                String email = emailInput.getText().toString().trim();
-                String pass = passInput.getText().toString();
-                String host = hostInput.getText().toString().trim();
-                if (email.isEmpty() || pass.isEmpty()) {
-                    statusText.setText("Email and password required");
-                    return;
-                }
-                if (host.isEmpty()) host = "imap.migadu.com";
-                prefs.edit().putString("imap_email", email).putString("imap_host", host).apply();
-                final String fHost = host;
-                executor.execute(() -> {
-                    String json = "{\"user\":\"" + escJson(email) + "\",\"password\":\"" + escJson(pass)
-                        + "\",\"host\":\"" + escJson(fHost) + "\"}";
-                    sendWebhook("/mesh/set-imap-creds", json);
-                    handler.post(() -> {
-                        imapStatus.setText("Connected: " + email);
-                        imapStatus.setTextColor(0xFF44aa44);
-                        btnSetupImap.setText("Update Email");
-                    });
-                });
-            })
-            .setNegativeButton("Cancel", null)
-            .show();
-    }
+    // doSetupImap() was removed here. It POSTed the bunny's own IMAP
+    // credentials to /mesh/set-imap-creds — an endpoint that exists in no
+    // server in this repo, so every "Connected: <email>" it printed was a lie
+    // (it never read the response code either). Two things were wrong with it
+    // beyond the dead route:
+    //
+    //   1. The mailbox the scanner reads is the LION's. "You received $40"
+    //      landing in the payee's inbox is what proves an incoming transfer;
+    //      a confirmation in the payer's own mailbox proves only that the
+    //      payer's mailbox says so. Lion's Share -> Payment Email is the one
+    //      place it is configured (relay: set-payee-identity, Lion-signed).
+    //   2. Wiring it up would have handed the bunny the ability to point the
+    //      scanner at a mailbox they control, and mint their own payment
+    //      confirmations straight off the balance.
+    //
+    // What the bunny legitimately owns on this screen is the payer identity
+    // (doSetupPayerIdentity), which is kept. Detection state is reported
+    // read-only by renderDetectionStatus.
 
     private void refreshPaymentHistory() {
         // Roadmap #2 — bunny-authed payment history fetch. Signs a read
@@ -2267,6 +2241,14 @@ public class MainActivity extends Activity {
                 conn.disconnect();
 
                 JSONObject resp = new JSONObject(sb.toString());
+
+                // Is payment detection actually wired up? Defaults to true so
+                // a relay predating these fields doesn't cry wolf.
+                final boolean payeeOk = resp.optBoolean("payee_configured", true);
+                final boolean payerOk = resp.optBoolean("payer_configured", true);
+                final boolean payerEff = resp.optBoolean("payer_effective", true);
+                handler.post(() -> renderDetectionStatus(payeeOk, payerOk, payerEff));
+
                 JSONArray entries = resp.optJSONArray("entries");
                 if (entries == null) return;
 

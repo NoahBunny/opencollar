@@ -493,15 +493,24 @@ public class MainActivity extends Activity {
         });
     }
 
-    /** The kebab. Built fresh on each tap so per-bunny gating (payment email
-     *  needs a homelab) is evaluated at the moment it is shown rather than
-     *  cached from whenever the Activity happened to start. */
+    /** The kebab. Built fresh on each tap so per-bunny gating is evaluated at
+     *  the moment it is shown rather than cached from whenever the Activity
+     *  happened to start. */
     private void showOverflow(View anchor) {
         android.widget.PopupMenu menu = new android.widget.PopupMenu(this, anchor);
         menu.getMenuInflater().inflate(
             getResources().getIdentifier("overflow", "menu", getPackageName()), menu.getMenu());
+        // Payment Email used to be hidden behind homelabConfigured(), but it
+        // has nothing to do with the homelab: doPaymentEmail posts the payee
+        // identity to the RELAY (/api/mesh/{id}/set-payee-identity), which is
+        // what the IMAP scanner reads. On a vault mesh with no homelab — the
+        // normal setup — that hid the only post-onboarding way to connect the
+        // inbox payments are detected in, so a Lion who skipped the IMAP step
+        // in onboarding, changed inbox, or rotated an app password had no way
+        // back in, and every payment the bunny made went uncredited. Gate it
+        // on what it actually needs: a mesh to post to.
         android.view.MenuItem pe = menu.getMenu().findItem(getId("menu_payment_email"));
-        if (pe != null) pe.setVisible(homelabConfigured());
+        if (pe != null) pe.setVisible(!meshUrl.isEmpty() && !meshId.isEmpty());
         menu.setOnMenuItemClickListener(item -> {
             int id = item.getItemId();
             if (id == getId("menu_bunnies")) doBunnies();

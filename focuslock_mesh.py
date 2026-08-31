@@ -1551,6 +1551,23 @@ class PaymentLedger:
             self.save()
             return {"ok": True, "entry": entry}
 
+    def stamp_balance_after(self, source: str, balance_after: float) -> bool:
+        """Backfill `balance_after` on an already-appended entry.
+
+        The IMAP scanner has to write its ledger row BEFORE crediting the
+        payment — the row's Message-ID is the dedup key that stops the same
+        email being credited on every 30s poll — so at write time it cannot
+        know what the balance became. Without this the bunny's history showed
+        every charge with a running balance and every payment without one.
+        Returns False when no entry has that source."""
+        with self.lock:
+            for e in self.entries:
+                if e.get("source") == source:
+                    e["balance_after"] = round(float(balance_after), 2)
+                    self.save()
+                    return True
+            return False
+
     def set_imap_epoch(self, epoch: int):
         with self.lock:
             self.imap_epoch = epoch

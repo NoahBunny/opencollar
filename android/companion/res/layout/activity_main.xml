@@ -774,11 +774,15 @@
             android:minHeight="0dp"
             android:layout_marginBottom="12dp" />
 
-        <!-- Email Setup (for payment detection) -->
+        <!-- Payment detection status. Read-only on purpose: the mailbox the
+             scanner reads is the LION's, connected from Lion's Share. A bunny
+             who could point the scanner at a mailbox they control could
+             manufacture their own payment confirmations, so this side only
+             ever reports whether detection is wired up. -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="PAYMENT EMAIL"
+            android:text="PAYMENT DETECTION"
             android:textColor="#5a4a6a"
             android:textSize="10sp"
             android:letterSpacing="0.15"
@@ -788,21 +792,9 @@
             android:id="@+id/imap_status"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Not configured"
+            android:text="Checking\u2026"
             android:textColor="#555"
             android:textSize="11sp"
-            android:layout_marginBottom="8dp" />
-
-        <Button
-            android:id="@+id/btn_setup_imap"
-            android:layout_width="match_parent"
-            android:layout_height="42dp"
-            android:text="Connect Email"
-            android:textSize="13sp"
-            android:backgroundTint="#0e0c16"
-            android:textColor="#aa88cc"
-            android:minWidth="0dp"
-            android:minHeight="0dp"
             android:layout_marginBottom="12dp" />
 
         </LinearLayout> <!-- end section_main_content -->

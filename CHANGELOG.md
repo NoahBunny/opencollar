@@ -8,6 +8,61 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-09-01 the balance would not come down ───────── -->
+
+### Fixed — two payments, and the balance never moved
+
+Reported from the bunny's side: paid twice, balance unchanged. Both halves of
+the payment pipeline were broken independently, and either one alone was enough
+to produce exactly that.
+
+- **A partial payment did not debit the balance.** `payment-received` touched
+  `paywall` only when the payment covered it in full; anything short of that
+  bumped the lifetime `total_paid_cents` counter and left the balance where it
+  started. Pay $20 a week against $100 and it sits at $100 forever. A partial
+  branch did exist (`reduce_paywall`) but it wrote straight to the phone over
+  ADB — homelab-only, and overwritten by the next vault sync from the orders
+  doc anyway. Vault-mode meshes had nothing debiting the balance at all.
+- **The debit takes the principal too.** `paywall_original` is what compound
+  interest accrues on (`compounded = paywall_original * rate**hours`, applied
+  whenever it exceeds the current balance), so debiting only `paywall` would
+  have let the next hourly tick recompute from the un-paid principal and hand
+  the payment straight back. The arithmetic lives in one place
+  (`focuslock_payment.debit_balance`) rather than once per caller.
+- **The scanner no longer decides clearing.** It read `paywall` once per cycle,
+  so two payment emails in one batch tested the second against a balance the
+  first had already reduced, and could zero a balance that was only partly
+  paid. The relay debits from live orders and clears when the debit reaches
+  zero; the number it computed rides the vault blob as `new_paywall` so every
+  device applies the relay's answer instead of re-deriving its own.
+- **Remainders round up, and the lifetime total keeps its cents.** Balances are
+  whole-dollar strings on both sides of the wire; rounding a remainder down
+  would credit more than was sent.
+
+### Fixed — neither side could configure payment detection after pairing
+
+Crediting needs both halves set, and both were unreachable on a mesh with no
+homelab — which is the normal vault-mode setup. With no payer allowlist the
+scanner fails closed and skips every payment, silently.
+
+- **Lion's Share ⋮ → Payment Email** was hidden behind `homelabConfigured()`.
+  It posts the payee identity to the *relay* (`set-payee-identity`) and has
+  nothing to do with the homelab. A Lion who skipped the IMAP step in
+  onboarding, changed inbox, or rotated an app password had no way back in.
+- **Bunny Tasker's payer identity** was hidden behind the same check, and is
+  likewise a signed POST to the relay. Both now gate on what they actually
+  need: a mesh to post to.
+- **Removed Bunny Tasker's "Connect Payment Email".** It POSTed to
+  `/mesh/set-imap-creds`, an endpoint no server in this repo serves, and never
+  read the response — every "Connected ✓" it printed was a lie. Wiring it up
+  would have been worse: the scanned mailbox is the *Lion's* (a received-payment
+  notice in the payee's inbox is what proves a transfer), so a bunny who could
+  point the scanner at a mailbox they control could mint their own payment
+  confirmations. That section is now a read-only detection status fed by three
+  booleans on `/api/mesh/{id}/payments` — no address or credential crosses the
+  boundary, but "I paid and nothing happened" now names the missing half on
+  screen instead of only in the relay log.
+
 <!-- ───────── 2026-08-23 operator identifiers out of a public repo ───────── -->
 
 ### Changed — the operator's own infrastructure is no longer in the tree
