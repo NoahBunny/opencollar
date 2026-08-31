@@ -63,6 +63,22 @@ scanner fails closed and skips every payment, silently.
   boundary, but "I paid and nothing happened" now names the missing half on
   screen instead of only in the relay log.
 
+### Released — The Collar 85, Bunny Tasker 65, Lion's Share 84
+
+- All three apps changed, so all three bumped. F-Droid keys on the versionCode:
+  rebuilding under the code already in the repo changes content nobody is
+  offered.
+- **Signing certificates verified against their predecessors** before staging —
+  each app has its own key, and all three match, so these install as upgrades
+  rather than being refused.
+- **Installer pins synced** in `re-enslave-lib.sh` (85 / 84 / 65) and the
+  F-Droid publish map pointed at the new APKs, the two literals that drift
+  every release for the same reason.
+- **The server half does not ship via F-Droid.** The debit and the detection
+  booleans are in `focuslock-mail.py` + `shared/focuslock_payment.py`; without
+  a relay deploy the APKs alone fix nothing.
+
+
 <!-- ───────── 2026-08-23 operator identifiers out of a public repo ───────── -->
 
 ### Changed — the operator's own infrastructure is no longer in the tree
