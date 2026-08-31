@@ -8,6 +8,67 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-09-01 Bunny Tasker, first pass ───────── -->
+
+### Changed — Bunny Tasker was one long scroll
+
+- **Four tabs, named for what the bunny is doing:** Now (self-lock, stats),
+  Owe (balance, trend, the flip, history), Talk (messages), Me (subscription,
+  payer identity, detection). Same regroup Lion's Share got, and for the same
+  reason: six sections stacked in one 815-line layout meant "what do I owe" and
+  "what did my Lion say" were the same act of scrolling. The status card,
+  pinned message and deadline task stay ABOVE the tab bar — what the Lion is
+  saying right now does not belong behind a tab. Last tab is remembered.
+
+### Added — the bunny can take the bet they could already be made to take
+
+- **Double or nothing, in the bunny's own app.** `/api/mesh/{id}/gamble` has
+  always been bunny-signed, but the only button anywhere was in Lion's Share,
+  which drives it through the Collar's local `/api/gamble` — so the bunny could
+  be made to flip and could not choose to.
+- **Bounded on the relay, because that is the half that matters.** Heads halves
+  the balance, tails doubles it: +25% EV to the Lion per flip, which is what
+  makes the bet safe to offer. Unlimited flips are a different game — the bunny
+  is not playing the average, they are buying tickets against a balance that
+  only has to reach zero once, and enough attempts clears any balance. A
+  cooldown (1h) and a rolling daily cap (3) now live in a server-only file, the
+  one a bunny with root would otherwise delete. The window is rolling rather
+  than calendar so midnight is not a fresh allowance.
+- **Fails closed.** Unreadable or unwritable limit state refuses the flip: an
+  unreadable file is what a half-deleted one looks like, and "I cannot tell how
+  many times you have flipped" must not mean "go on". The paywall check runs
+  first, so "nothing to gamble" never burns one of the day's attempts.
+
+### Added — numbers the bunny already had, finally shown
+
+- **What it costs to wait.** Every input was on the device (`paywall`,
+  `paywall_original`, `sub_tier`, `locked_at`) and the relay's interest tick
+  uses exactly this arithmetic. The balance said what was owed now; nothing
+  said what it becomes by tomorrow. Silent at no balance and on Gold, where a
+  line reading "+$0" would only teach people to stop reading it.
+- **Balance trend.** A dependency-free sparkline over the ledger's
+  `balance_after` values — data the app already fetched and rendered as a list
+  of numbers nobody adds up. Rising is the Lion's colour, falling is green.
+
+### Fixed — the STREAK tile had never shown anything
+
+- It read `prefs.getInt("streak_days")`, a key **nothing in any of the three
+  apps has ever written**, so it rendered "0d" on every device, forever. The
+  real streak was already there: the relay's `start-streak` stamps
+  `streak_start` + `streak_escapes_at_start`, and `streak-break` clears
+  `streak_enabled` the moment lifetime escapes pass that baseline.
+- Now derived from that state, and given the half that gives a streak weight —
+  it can read **broken**, and shows the next unclaimed 7d/30d bonus it is
+  heading for. Days come from the start timestamp rather than a counter, so
+  nothing drifts while the app is closed.
+
+### Released — Bunny Tasker 66
+
+- 65 was published minutes earlier with different content, so this bumps
+  rather than rebuilding under a code F-Droid has already offered. Signing
+  certificate verified against 65 before staging.
+
+
 <!-- ───────── 2026-09-01 the balance would not come down ───────── -->
 
 ### Fixed — two payments, and the balance never moved

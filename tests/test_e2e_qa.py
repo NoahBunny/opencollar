@@ -22,6 +22,7 @@ bunny/lion-signed event the Android apps fire:
 import base64
 import importlib.util
 import json
+import os
 import sys
 import threading
 import time
@@ -130,6 +131,13 @@ def seeded_mesh(mail_module):
         mail_module._orders_registry.docs.pop(mesh_id, None)
 
 
+def _clear_gamble_budget(mail_module, mesh_id):
+    """Drop the relay's cooldown/daily-cap record for one mesh."""
+    path = mail_module._gamble_state_path(mesh_id)
+    if path and os.path.exists(path):
+        os.remove(path)
+
+
 # ── /api/mesh/{id}/gamble — bunny-signed, Collar's proxy path ──
 
 
@@ -185,11 +193,18 @@ class TestGambleSignedE2E:
 
     def test_valid_signed_gamble_applies_and_returns_outcome(self, live_server, seeded_mesh, mail_module):
         """Walks a few flips to force both heads and tails, pins the
-        response shape and the applied-state round-trip."""
+        response shape and the applied-state round-trip.
+
+        The relay caps real bunnies at a cooldown plus a few flips a day, so
+        the budget is cleared between iterations: this test is about the coin,
+        and TestGambleIsBounded below is about the budget. Without the reset
+        this loop would be testing the rate limiter forty times over.
+        """
         mesh = seeded_mesh["mesh_id"]
         node = seeded_mesh["node_id"]
         seen = set()
         for _ in range(40):
+            _clear_gamble_budget(mail_module, mesh)
             mail_module._orders_registry.get(mesh).set("paywall", "100")
             ts = int(time.time() * 1000)
             payload = f"{mesh}|{node}|gamble|{ts}"
@@ -209,6 +224,53 @@ class TestGambleSignedE2E:
             if seen >= {"heads", "tails"}:
                 break
         assert seen == {"heads", "tails"}
+
+
+class TestGambleIsBounded:
+    """One flip is +25% EV for the Lion, which is what makes the bet safe to
+    offer. Unlimited flips are not: the bunny is buying tickets against a
+    balance that only has to reach zero once. The bound is server-side
+    precisely because the client asking for it is the one who benefits from
+    ignoring it."""
+
+    def test_a_second_flip_straight_after_is_refused_over_http(self, live_server, seeded_mesh, mail_module):
+        mesh = seeded_mesh["mesh_id"]
+        node = seeded_mesh["node_id"]
+        _clear_gamble_budget(mail_module, mesh)
+        mail_module._orders_registry.get(mesh).set("paywall", "100")
+
+        def _flip():
+            ts = int(time.time() * 1000)
+            sig = _sign(seeded_mesh["bunny_priv"], f"{mesh}|{node}|gamble|{ts}")
+            return _http_post(
+                f"{live_server}/api/mesh/{mesh}/gamble",
+                {"node_id": node, "ts": ts, "signature": sig},
+            )
+
+        status, _ = _flip()
+        assert status == 200
+
+        mail_module._orders_registry.get(mesh).set("paywall", "100")
+        status, body = _flip()
+        assert status == 429
+        assert body.get("retry_after", 0) > 0
+        assert body.get("gamble_max_per_day") >= 1
+
+    def test_nothing_to_gamble_does_not_burn_an_attempt(self, live_server, seeded_mesh, mail_module):
+        """The paywall check runs before the budget check, so being told
+        'no paywall to gamble' must leave the day's allowance intact."""
+        mesh = seeded_mesh["mesh_id"]
+        node = seeded_mesh["node_id"]
+        _clear_gamble_budget(mail_module, mesh)
+        mail_module._orders_registry.get(mesh).set("paywall", "0")
+        ts = int(time.time() * 1000)
+        sig = _sign(seeded_mesh["bunny_priv"], f"{mesh}|{node}|gamble|{ts}")
+        status, _ = _http_post(
+            f"{live_server}/api/mesh/{mesh}/gamble",
+            {"node_id": node, "ts": ts, "signature": sig},
+        )
+        assert status == 409
+        assert mail_module._gamble_status(mesh)["gamble_remaining_today"] == mail_module.GAMBLE_MAX_PER_DAY
 
 
 # ── /api/mesh/{id}/escape-event — central P2 paywall write path ──

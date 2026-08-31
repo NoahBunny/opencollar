@@ -58,6 +58,13 @@ public class MainActivity extends Activity {
     private android.widget.ImageView qrCodeView;
     private EditText messageInput;
     private Button btnPay, btnSend, btnFreeUnlock, btnShowQr, btnPrepay, btnSetupPayerIdentity;
+    private Button btnGamble, tabNow, tabOwe, tabTalk, tabMe;
+    private View pageNow, pageOwe, pageTalk, pageMe;
+    private TextView gambleStatus, costToWait;
+    private Sparkline balanceSpark;
+    private int currentTab = 0;
+    /** Flip budget from the relay; -1 until a /payments read fills it in. */
+    private int gambleCooldownS = -1, gambleRemainingToday = -1;
     private TextView balanceAmount, balanceDetail, imapStatus, tierBadge, messagesHeader, payerIdentityStatus;
     // Collapsed by default — the messaging block runs to ~440dp (input row +
     // 380dp scroll) and was overwhelming the home view. User flips it open
@@ -219,6 +226,28 @@ public class MainActivity extends Activity {
         btnSetupPayerIdentity = (Button) findViewById(fid("btn_setup_payer_identity"));
         btnSetupPayerIdentity.setOnClickListener(v -> doSetupPayerIdentity());
         refreshPayerIdentityStatus();
+
+        // ── Tabs (Now / Owe / Talk / Me) ──
+        pageNow = findViewById(fid("page_now"));
+        pageOwe = findViewById(fid("page_owe"));
+        pageTalk = findViewById(fid("page_talk"));
+        pageMe = findViewById(fid("page_me"));
+        tabNow = (Button) findViewById(fid("tab_now"));
+        tabOwe = (Button) findViewById(fid("tab_owe"));
+        tabTalk = (Button) findViewById(fid("tab_talk"));
+        tabMe = (Button) findViewById(fid("tab_me"));
+        if (tabNow != null) tabNow.setOnClickListener(v -> selectTab(0));
+        if (tabOwe != null) tabOwe.setOnClickListener(v -> selectTab(1));
+        if (tabTalk != null) tabTalk.setOnClickListener(v -> selectTab(2));
+        if (tabMe != null) tabMe.setOnClickListener(v -> selectTab(3));
+        selectTab(prefs.getInt("last_tab", 0));
+
+        // ── Owe tab extras ──
+        costToWait = (TextView) findViewById(fid("cost_to_wait"));
+        balanceSpark = (Sparkline) findViewById(fid("balance_spark"));
+        gambleStatus = (TextView) findViewById(fid("gamble_status"));
+        btnGamble = (Button) findViewById(fid("btn_gamble"));
+        if (btnGamble != null) btnGamble.setOnClickListener(v -> doGamble());
         tierBadge = (TextView) findViewById(fid("tier_badge"));
         messagesHeader = (TextView) findViewById(fid("messages_header"));
         messagesExpanded = prefs.getBoolean("messages_expanded", false);
@@ -288,6 +317,13 @@ public class MainActivity extends Activity {
 
         // Start polling
         poller = () -> {
+            // Cost-to-wait is pure local arithmetic over Settings.Global, so
+            // it is cheap enough to recompute each tick — but only while the
+            // tab showing it is actually open.
+            if (currentTab == 1) {
+                refreshCostToWait();
+                renderGambleBudget();
+            }
             executor.execute(() -> refreshStats());
             executor.execute(this::drainEvidenceOutbox);  // serverless evidence → Lion's inbox
             executor.execute(this::maybeSendPendingPayerIdentity);  // deferred onboarding payer identity
@@ -380,6 +416,222 @@ public class MainActivity extends Activity {
 
     private int fid(String name) {
         return getResources().getIdentifier(name, "id", getPackageName());
+    }
+
+    /** Show one page, style its tab, and refresh what that page shows.
+     *
+     *  Messages already refresh on their own 10s cadence, so Talk needs no
+     *  kick; Owe pulls the ledger because the sparkline and history are only
+     *  worth a round-trip when someone is looking at them. */
+    private void selectTab(int index) {
+        if (pageNow == null) return;  // pre-inflate call, or an older layout
+        if (index < 0 || index > 3) index = 0;
+        currentTab = index;
+        View[] pages = {pageNow, pageOwe, pageTalk, pageMe};
+        Button[] tabs = {tabNow, tabOwe, tabTalk, tabMe};
+        for (int i = 0; i < pages.length; i++) {
+            if (pages[i] != null) pages[i].setVisibility(i == index ? View.VISIBLE : View.GONE);
+            if (tabs[i] == null) continue;
+            tabs[i].setBackgroundTintList(android.content.res.ColorStateList.valueOf(
+                i == index ? 0xFF241a33 : 0xFF0e0c16));
+            tabs[i].setTextColor(i == index ? 0xFFcc99ee : 0xFF555555);
+        }
+        prefs.edit().putInt("last_tab", index).apply();
+        if (index == 1) {
+            refreshCostToWait();
+            renderGambleBudget();
+            refreshPaymentHistory();  // already hops to the executor itself
+        }
+    }
+
+    /** What waiting costs, in the only unit that matters.
+     *
+     *  Every input is already on the device — `paywall`, `paywall_original`,
+     *  `sub_tier`, `locked_at` — and the relay's compound-interest tick uses
+     *  exactly this arithmetic (compounded = paywall_original * rate**hours,
+     *  applied when it exceeds the current balance). It was simply never put
+     *  in front of the bunny as a number they could act on: the balance said
+     *  what they owed now and nothing said what it becomes by tomorrow.
+     *
+     *  Silent when there is no balance, or when the tier earns no interest —
+     *  a line that always says "+$0" trains people to stop reading it. */
+    private void refreshCostToWait() {
+        if (costToWait == null) return;
+        double pw = parseD(gstr("focus_lock_paywall"));
+        double orig = parseD(gstr("focus_lock_paywall_original"));
+        long lockedAt = Settings.Global.getLong(getContentResolver(), "focus_lock_locked_at", 0L);
+        String tier = gstr("focus_lock_sub_tier").toLowerCase();
+        double rate = "gold".equals(tier) ? 1.0 : "silver".equals(tier) ? 1.05 : "bronze".equals(tier) ? 1.08 : 1.10;
+        if (pw <= 0 || orig <= 0 || lockedAt <= 0 || rate <= 1.0) {
+            costToWait.setVisibility(View.GONE);
+            return;
+        }
+        double hours = (System.currentTimeMillis() - lockedAt) / 3600000.0;
+        if (hours < 0) hours = 0;
+        double in24 = Math.floor(orig * Math.pow(rate, hours + 24));
+        double delta = in24 - pw;
+        if (delta < 1) {
+            costToWait.setVisibility(View.GONE);
+            return;
+        }
+        costToWait.setText("$" + (long) pw + " clears it today. Leave it 24h and it is $"
+            + (long) in24 + " \u2014 " + Math.round((rate - 1) * 100) + "%/hr adds $" + (long) delta + ".");
+        costToWait.setVisibility(View.VISIBLE);
+    }
+
+    private double parseD(String s) {
+        try {
+            return (s == null || s.isEmpty()) ? 0d : Double.parseDouble(s);
+        } catch (Exception e) {
+            return 0d;
+        }
+    }
+
+    /** Double or nothing, bunny-signed straight to the relay.
+     *
+     *  The endpoint has always been bunny-authed (payload
+     *  mesh|node|gamble|ts, verified against bunny_pubkey), but the only
+     *  button anywhere was in Lion's Share, which drives it through the
+     *  Collar's local /api/gamble. So the bunny could be made to flip and
+     *  could not choose to.
+     *
+     *  Heads halves the balance, tails doubles it: +25% EV to the Lion per
+     *  flip. That edge is only meaningful if the number of flips is bounded
+     *  — over enough attempts variance clears any balance, which would turn
+     *  a Lion-favourable bet into an escape hatch — so the relay enforces a
+     *  cooldown and a daily cap and answers 429 with how long is left. The
+     *  client mirrors that state to grey the button out, but never decides
+     *  it. */
+    private void doGamble() {
+        double pw = parseD(gstr("focus_lock_paywall"));
+        if (pw <= 0) {
+            statusText.setText("Nothing to gamble");
+            return;
+        }
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Flip for it?")
+            .setMessage("Heads: your $" + (long) pw + " becomes $" + (long) Math.ceil(pw / 2) + ".\n"
+                + "Tails: it becomes $" + (long) (pw * 2) + ".\n\n"
+                + "Even odds. Your Lion keeps the edge.")
+            .setPositiveButton("FLIP", (d, w) -> executor.execute(this::postGamble))
+            .setNegativeButton("Keep my balance", null)
+            .show();
+    }
+
+    /** Blocking — call from an executor thread. */
+    private void postGamble() {
+        String meshId = gstr("focus_lock_mesh_id");
+        String meshUrl = gstr("focus_lock_mesh_url");
+        String nodeId = gstr("focus_lock_mesh_node_id");
+        if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty()) {
+            handler.post(() -> statusText.setText("Mesh not configured"));
+            return;
+        }
+        long ts = System.currentTimeMillis();
+        String signature = PairingManager.sign(getContentResolver(), meshId + "|" + nodeId + "|gamble|" + ts);
+        if (signature == null || signature.isEmpty()) {
+            handler.post(() -> statusText.setText("Sign failed \u2014 pairing key missing"));
+            return;
+        }
+        handler.post(() -> {
+            if (gambleStatus != null) gambleStatus.setText("Flipping\u2026");
+            if (btnGamble != null) btnGamble.setEnabled(false);
+        });
+        try {
+            JSONObject body = new JSONObject();
+            body.put("node_id", nodeId);
+            body.put("ts", ts);
+            body.put("signature", signature);
+            URL url = new URL(meshUrl + "/api/mesh/" + meshId + "/gamble");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(10000);
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.getOutputStream().write(body.toString().getBytes("UTF-8"));
+            int code = conn.getResponseCode();
+            java.io.InputStream is = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
+            StringBuilder sb = new StringBuilder();
+            if (is != null) {
+                BufferedReader r = new BufferedReader(new InputStreamReader(is));
+                String line;
+                while ((line = r.readLine()) != null) sb.append(line);
+                r.close();
+            }
+            conn.disconnect();
+            JSONObject resp = sb.length() > 0 ? new JSONObject(sb.toString()) : new JSONObject();
+            applyGambleBudget(resp);
+
+            if (code == 200 && resp.optBoolean("ok", false)) {
+                final boolean heads = "heads".equals(resp.optString("result"));
+                final int newPw = resp.optInt("new_paywall", 0);
+                handler.post(() -> {
+                    if (gambleStatus != null) {
+                        gambleStatus.setText(heads
+                            ? "\u2713 Heads \u2014 halved to $" + newPw
+                            : "\u2717 Tails \u2014 doubled to $" + newPw);
+                        gambleStatus.setTextColor(heads ? 0xFF66aa66 : 0xFFcc4444);
+                    }
+                    statusText.setText(heads ? "Heads. Balance halved." : "Tails. Balance doubled.");
+                    renderGambleBudget();
+                });
+                // The relay wrote the new balance through gamble-resolved; pull
+                // it rather than guessing locally.
+                refreshStats();
+                refreshPaymentHistory();
+            } else {
+                final String err = resp.optString("error", "HTTP " + code);
+                handler.post(() -> {
+                    if (gambleStatus != null) {
+                        gambleStatus.setText(err);
+                        gambleStatus.setTextColor(0xFFaa6644);
+                    }
+                    renderGambleBudget();
+                });
+            }
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "gamble failed", e);
+            handler.post(() -> {
+                if (gambleStatus != null) gambleStatus.setText("Could not reach the relay");
+                renderGambleBudget();
+            });
+        }
+    }
+
+    /** Absorb whatever flip budget a response carried. Both /gamble and
+     *  /payments report it, so the button knows its state without having to
+     *  be refused first. */
+    private void applyGambleBudget(JSONObject resp) {
+        if (resp == null) return;
+        if (resp.has("gamble_cooldown_s")) gambleCooldownS = resp.optInt("gamble_cooldown_s", 0);
+        if (resp.has("gamble_remaining_today")) gambleRemainingToday = resp.optInt("gamble_remaining_today", 0);
+    }
+
+    /** UI thread. */
+    private void renderGambleBudget() {
+        if (btnGamble == null) return;
+        double pw = parseD(gstr("focus_lock_paywall"));
+        if (pw <= 0) {
+            btnGamble.setEnabled(false);
+            btnGamble.setText("Nothing To Flip For");
+            return;
+        }
+        if (gambleCooldownS > 0) {
+            btnGamble.setEnabled(false);
+            long m = gambleCooldownS / 60;
+            btnGamble.setText(m >= 60 ? "Again in " + (m / 60) + "h" : "Again in " + Math.max(1, m) + "m");
+            return;
+        }
+        if (gambleRemainingToday == 0) {
+            btnGamble.setEnabled(false);
+            btnGamble.setText("No Flips Left Today");
+            return;
+        }
+        btnGamble.setEnabled(true);
+        btnGamble.setText(gambleRemainingToday > 0
+            ? "Flip For It (" + gambleRemainingToday + " left)"
+            : "Flip For It");
     }
 
     private void refreshStats() {
@@ -536,7 +788,24 @@ public class MainActivity extends Activity {
             long todayLockedMs = prefs.getLong("today_locked_ms", 0);
             long weekLockedMs = prefs.getLong("week_locked_ms", 0);
             long totalPaid = Settings.Global.getLong(getContentResolver(), "focus_lock_total_paid_cents", prefs.getLong("total_paid_cents", 0));
-            int streakDays = prefs.getInt("streak_days", 0);
+            // Streak, read from the state that actually tracks one.
+            //
+            // This tile used to read prefs "streak_days" — a key NOTHING in
+            // any of the three apps has ever written, so it rendered "0d" on
+            // every device forever. The real streak lives in the Collar's
+            // Settings.Global, driven by the relay: `start-streak` stamps
+            // streak_start + streak_escapes_at_start, and the server clears
+            // streak_enabled via the `streak-break` order the moment lifetime
+            // escapes exceed that baseline. Days are derived from the start
+            // timestamp rather than counted, so nothing drifts if the app is
+            // closed.
+            boolean streakOn = Settings.Global.getInt(getContentResolver(), "focus_lock_streak_enabled", 0) == 1;
+            long streakStart = Settings.Global.getLong(getContentResolver(), "focus_lock_streak_start", 0L);
+            int streakDays = (streakOn && streakStart > 0)
+                ? (int) ((System.currentTimeMillis() - streakStart) / 86400000L)
+                : 0;
+            boolean streak7 = Settings.Global.getInt(getContentResolver(), "focus_lock_streak_7d_claimed", 0) == 1;
+            boolean streak30 = Settings.Global.getInt(getContentResolver(), "focus_lock_streak_30d_claimed", 0) == 1;
             long lastTrackTime = prefs.getLong("last_track_time", 0);
 
             // Track current session
@@ -566,6 +835,9 @@ public class MainActivity extends Activity {
             final long fWeekMs = weekLockedMs;
             final long fTotalPaid = totalPaid;
             final int fStreak = streakDays;
+            final boolean fStreakOn = streakOn;
+            final boolean fStreak7 = streak7;
+            final boolean fStreak30 = streak30;
             final boolean hasGeofence = !geofenceLat.isEmpty();
             final String fMode = mode;
             final long fUnlockAt = unlockAt;
@@ -615,7 +887,22 @@ public class MainActivity extends Activity {
                 statPaid.setText("$" + (fTotalPaid / 100));
                 statPaid.setTextColor(0xFFaa88cc);
                 statInterest.setText(fInterest > 0 ? String.format("+$%.0f", fInterest) : "+$0");
-                statStreak.setText(fStreak + "d");
+                // A number that only ever goes up is wallpaper. Show the
+                // streak as something with a state: running (and how close to
+                // the next bonus), or broken and needing the Lion to restart
+                // it — which is the half that gives it any weight.
+                if (!fStreakOn) {
+                    statStreak.setText(fStreak > 0 ? "broken" : "off");
+                    statStreak.setTextColor(fStreak > 0 ? 0xFFcc4444 : 0xFF555555);
+                } else {
+                    int nextMilestone = !fStreak7 ? 7 : !fStreak30 ? 30 : 0;
+                    if (nextMilestone > 0 && fStreak < nextMilestone) {
+                        statStreak.setText(fStreak + "d \u2192 " + nextMilestone);
+                    } else {
+                        statStreak.setText(fStreak + "d");
+                    }
+                    statStreak.setTextColor(0xFF66aa66);
+                }
                 statGeofence.setText(hasGeofence ? "active" : "off");
                 statGeofence.setTextColor(hasGeofence ? 0xFFaa88cc : 0xFF555555);
 
@@ -2249,10 +2536,33 @@ public class MainActivity extends Activity {
                 final boolean payerEff = resp.optBoolean("payer_effective", true);
                 handler.post(() -> renderDetectionStatus(payeeOk, payerOk, payerEff));
 
+                // Flip budget rides this response too, so the gamble button
+                // renders its real state on load instead of after a refusal.
+                applyGambleBudget(resp);
+                handler.post(this::renderGambleBudget);
+
                 JSONArray entries = resp.optJSONArray("entries");
                 if (entries == null) return;
 
+                // Balance trend. `entries` is newest-first and only some rows
+                // carry balance_after (older ones predate it), so walk
+                // backwards and keep the ones that do — oldest-first is what
+                // the sparkline wants.
+                java.util.List<Float> trend = new java.util.ArrayList<>();
+                for (int i = entries.length() - 1; i >= 0; i--) {
+                    JSONObject e = entries.optJSONObject(i);
+                    if (e != null && e.has("balance_after")) {
+                        trend.add((float) e.optDouble("balance_after", 0));
+                    }
+                }
+                final float[] spark = new float[trend.size()];
+                for (int i = 0; i < trend.size(); i++) spark[i] = trend.get(i);
+
                 handler.post(() -> {
+                    if (balanceSpark != null) {
+                        balanceSpark.setValues(spark);
+                        balanceSpark.setVisibility(spark.length >= 2 ? View.VISIBLE : View.GONE);
+                    }
                     paymentHistory.removeAllViews();
                     int shown = Math.min(entries.length(), 20);
                     for (int i = 0; i < shown; i++) {

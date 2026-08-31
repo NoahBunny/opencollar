@@ -333,6 +333,305 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical">
+        <!-- ═══ TAB BAR ═══
+             Bunny Tasker was one long scroll: six sections stacked in a single
+             815-line layout, so "what do I owe" and "what did my Lion say" were
+             the same act of scrolling. Same regroup Lion's Share got, named for
+             what the bunny is doing rather than for the subsystem behind it.
+             The status card, pinned message and deadline task stay ABOVE this
+             bar on purpose — they are what the Lion is saying right now, and
+             they should not be behind a tab. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="14dp">
+
+            <Button android:id="@+id/tab_now" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="Now" android:textSize="13sp" android:backgroundTint="#241a33" android:textColor="#cc99ee" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
+            <Button android:id="@+id/tab_owe" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="Owe" android:textSize="13sp" android:backgroundTint="#0e0c16" android:textColor="#555" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
+            <Button android:id="@+id/tab_talk" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="Talk" android:textSize="13sp" android:backgroundTint="#0e0c16" android:textColor="#555" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
+            <Button android:id="@+id/tab_me" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="Me" android:textSize="13sp" android:backgroundTint="#0e0c16" android:textColor="#555" android:minWidth="0dp" android:minHeight="0dp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/page_now"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+        <!-- Self-Lock (Bronze+) -->
+        <LinearLayout
+            android:id="@+id/section_selflock"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="SELF-DISCIPLINE"
+            android:textColor="#5a4a6a"
+            android:textSize="10sp"
+            android:letterSpacing="0.15"
+            android:layout_marginBottom="8dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="4dp">
+            <Button android:id="@+id/btn_selflock_15" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="15m" android:textSize="13sp" android:backgroundTint="#2a1a2a" android:textColor="#aa88cc" android:layout_marginRight="3dp" />
+            <Button android:id="@+id/btn_selflock_30" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="30m" android:textSize="13sp" android:backgroundTint="#2a1a2a" android:textColor="#aa88cc" android:layout_marginRight="3dp" />
+            <Button android:id="@+id/btn_selflock_60" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="1hr" android:textSize="13sp" android:backgroundTint="#2a1a2a" android:textColor="#aa88cc" android:layout_marginRight="3dp" />
+            <Button android:id="@+id/btn_selflock_120" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="2hr" android:textSize="13sp" android:backgroundTint="#2a1a2a" android:textColor="#aa88cc" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Lock yourself for a set time. Only the Lion can extend or make it permanent."
+            android:textColor="#3a3a4a"
+            android:textSize="10sp"
+            android:layout_marginBottom="16dp" />
+
+        </LinearLayout> <!-- end section_selflock -->
+
+        <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1028" android:layout_marginBottom="12dp" />
+
+        <!-- Stats Section (Bronze+) -->
+        <LinearLayout
+            android:id="@+id/section_stats"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="STATS"
+            android:textColor="#5a4a6a"
+            android:textSize="10sp"
+            android:letterSpacing="0.15"
+            android:layout_marginBottom="8dp" />
+
+        <!-- Stats Grid -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="4dp">
+
+            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0c16" android:padding="12dp" android:layout_marginRight="4dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="TODAY" android:textColor="#5a4a6a" android:textSize="9sp" android:letterSpacing="0.1" />
+                <TextView android:id="@+id/stat_today" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0h" android:textColor="#d0c0e0" android:textSize="20sp" />
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0c16" android:padding="12dp" android:layout_marginRight="4dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="THIS WEEK" android:textColor="#5a4a6a" android:textSize="9sp" android:letterSpacing="0.1" />
+                <TextView android:id="@+id/stat_week" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0h" android:textColor="#d0c0e0" android:textSize="20sp" />
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0c16" android:padding="12dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="ALL TIME" android:textColor="#5a4a6a" android:textSize="9sp" android:letterSpacing="0.1" />
+                <TextView android:id="@+id/stat_total" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0h" android:textColor="#d0c0e0" android:textSize="20sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="4dp">
+
+            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0c16" android:padding="12dp" android:layout_marginRight="4dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="ESCAPES" android:textColor="#5a4a6a" android:textSize="9sp" android:letterSpacing="0.1" />
+                <TextView android:id="@+id/stat_escapes" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0" android:textColor="#cc6666" android:textSize="20sp" />
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0c16" android:padding="12dp" android:layout_marginRight="4dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="PAYWALL" android:textColor="#5a4a6a" android:textSize="9sp" android:letterSpacing="0.1" />
+                <TextView android:id="@+id/stat_paywall" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="$0" android:textColor="#cc9900" android:textSize="20sp" />
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0c16" android:padding="12dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="PAID" android:textColor="#5a4a6a" android:textSize="9sp" android:letterSpacing="0.1" />
+                <TextView android:id="@+id/stat_paid" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="$0" android:textColor="#66aa66" android:textSize="20sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="16dp">
+
+            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0c16" android:padding="12dp" android:layout_marginRight="4dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="INTEREST" android:textColor="#5a4a6a" android:textSize="9sp" android:letterSpacing="0.1" />
+                <TextView android:id="@+id/stat_interest" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="+$0" android:textColor="#cc6644" android:textSize="20sp" />
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0c16" android:padding="12dp" android:layout_marginRight="4dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="STREAK" android:textColor="#5a4a6a" android:textSize="9sp" android:letterSpacing="0.1" />
+                <TextView android:id="@+id/stat_streak" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0d" android:textColor="#66aadd" android:textSize="20sp" />
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0c16" android:padding="12dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="GEOFENCE" android:textColor="#5a4a6a" android:textSize="9sp" android:letterSpacing="0.1" />
+                <TextView android:id="@+id/stat_geofence" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="--" android:textColor="#888" android:textSize="16sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        </LinearLayout> <!-- end section_stats -->
+
+        </LinearLayout> <!-- end page_now -->
+
+        <LinearLayout
+            android:id="@+id/page_owe"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+        <!-- Balance Card — prominent -->
+        <LinearLayout
+            android:id="@+id/balance_card"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="#1a1008"
+            android:padding="16dp"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="12dp">
+
+            <TextView
+                android:id="@+id/balance_header"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="BALANCE"
+                android:textColor="#c8a84e"
+                android:textSize="10sp"
+                android:letterSpacing="0.15"
+                android:layout_marginBottom="4dp" />
+
+            <TextView
+                android:id="@+id/balance_amount"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="$0"
+                android:textColor="#cc9900"
+                android:textSize="32sp" />
+
+            <TextView
+                android:id="@+id/balance_detail"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="No outstanding balance"
+                android:textColor="#5a4a3a"
+                android:textSize="11sp"
+                android:layout_marginTop="2dp" />
+
+            <Button
+                android:id="@+id/btn_pay"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:text="Pay Balance ($0)"
+                android:textSize="14sp"
+                android:backgroundTint="#2a1a0a"
+                android:textColor="#cc9900"
+                android:layout_marginTop="10dp" />
+
+            <TextView
+                android:id="@+id/pay_hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Opens your banking app to send payment"
+                android:textColor="#3a3a4a"
+                android:textSize="10sp"
+                android:layout_marginTop="2dp" />
+        </LinearLayout>
+
+        <!-- What it costs to wait. Everything here is already on the device
+             (paywall, paywall_original, sub_tier, locked_at) — it was just
+             never put in front of the bunny as a number they could act on. -->
+        <TextView
+            android:id="@+id/cost_to_wait"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#cc7755"
+            android:textSize="12sp"
+            android:layout_marginBottom="10dp"
+            android:visibility="gone" />
+
+        <!-- Balance trend, drawn from the ledger's balance_after values. -->
+        <com.bunnytasker.Sparkline
+            android:id="@+id/balance_spark"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:layout_marginBottom="14dp"
+            android:visibility="gone" />
+
+        <!-- Double or nothing. Heads halves the balance, tails doubles it —
+             +25% EV to the Lion per flip, bounded by a relay-side cooldown
+             and daily cap so it cannot be farmed for variance. -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="DOUBLE OR NOTHING"
+            android:textColor="#5a4a6a"
+            android:textSize="10sp"
+            android:letterSpacing="0.15"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:id="@+id/gamble_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Heads halves it. Tails doubles it."
+            android:textColor="#7a6a8a"
+            android:textSize="11sp"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/btn_gamble"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:text="Flip For It"
+            android:textSize="13sp"
+            android:backgroundTint="#1a0e22"
+            android:textColor="#cc88cc"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:layout_marginBottom="14dp" />
+
+        <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1028" android:layout_marginBottom="12dp" />
+
+        <!-- Payment History -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="BALANCE HISTORY"
+            android:textColor="#5a4a6a"
+            android:textSize="10sp"
+            android:letterSpacing="0.15"
+            android:layout_marginBottom="8dp" />
+
+        <LinearLayout
+            android:id="@+id/payment_history"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginBottom="12dp" />
+
+
+        </LinearLayout> <!-- end page_owe -->
+
+        <LinearLayout
+            android:id="@+id/page_talk"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
 
         <!-- Messages (Bronze+) — front and center -->
         <LinearLayout
@@ -447,154 +746,14 @@
 
         </LinearLayout> <!-- end section_messages -->
 
-        <!-- Balance Card — prominent -->
+        </LinearLayout> <!-- end page_talk -->
+
         <LinearLayout
-            android:id="@+id/balance_card"
+            android:id="@+id/page_me"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:background="#1a1008"
-            android:padding="16dp"
-            android:layout_marginTop="12dp"
-            android:layout_marginBottom="12dp">
-
-            <TextView
-                android:id="@+id/balance_header"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="BALANCE"
-                android:textColor="#c8a84e"
-                android:textSize="10sp"
-                android:letterSpacing="0.15"
-                android:layout_marginBottom="4dp" />
-
-            <TextView
-                android:id="@+id/balance_amount"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="$0"
-                android:textColor="#cc9900"
-                android:textSize="32sp" />
-
-            <TextView
-                android:id="@+id/balance_detail"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="No outstanding balance"
-                android:textColor="#5a4a3a"
-                android:textSize="11sp"
-                android:layout_marginTop="2dp" />
-
-            <Button
-                android:id="@+id/btn_pay"
-                android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:text="Pay Balance ($0)"
-                android:textSize="14sp"
-                android:backgroundTint="#2a1a0a"
-                android:textColor="#cc9900"
-                android:layout_marginTop="10dp" />
-
-            <TextView
-                android:id="@+id/pay_hint"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Opens your banking app to send payment"
-                android:textColor="#3a3a4a"
-                android:textSize="10sp"
-                android:layout_marginTop="2dp" />
-        </LinearLayout>
-
-        <!-- Divider -->
-        <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1028" android:layout_marginBottom="12dp" />
-
-        <!-- Stats Section (Bronze+) -->
-        <LinearLayout
-            android:id="@+id/section_stats"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical">
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="STATS"
-            android:textColor="#5a4a6a"
-            android:textSize="10sp"
-            android:letterSpacing="0.15"
-            android:layout_marginBottom="8dp" />
-
-        <!-- Stats Grid -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginBottom="4dp">
-
-            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0c16" android:padding="12dp" android:layout_marginRight="4dp">
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="TODAY" android:textColor="#5a4a6a" android:textSize="9sp" android:letterSpacing="0.1" />
-                <TextView android:id="@+id/stat_today" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0h" android:textColor="#d0c0e0" android:textSize="20sp" />
-            </LinearLayout>
-
-            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0c16" android:padding="12dp" android:layout_marginRight="4dp">
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="THIS WEEK" android:textColor="#5a4a6a" android:textSize="9sp" android:letterSpacing="0.1" />
-                <TextView android:id="@+id/stat_week" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0h" android:textColor="#d0c0e0" android:textSize="20sp" />
-            </LinearLayout>
-
-            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0c16" android:padding="12dp">
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="ALL TIME" android:textColor="#5a4a6a" android:textSize="9sp" android:letterSpacing="0.1" />
-                <TextView android:id="@+id/stat_total" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0h" android:textColor="#d0c0e0" android:textSize="20sp" />
-            </LinearLayout>
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginBottom="4dp">
-
-            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0c16" android:padding="12dp" android:layout_marginRight="4dp">
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="ESCAPES" android:textColor="#5a4a6a" android:textSize="9sp" android:letterSpacing="0.1" />
-                <TextView android:id="@+id/stat_escapes" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0" android:textColor="#cc6666" android:textSize="20sp" />
-            </LinearLayout>
-
-            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0c16" android:padding="12dp" android:layout_marginRight="4dp">
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="PAYWALL" android:textColor="#5a4a6a" android:textSize="9sp" android:letterSpacing="0.1" />
-                <TextView android:id="@+id/stat_paywall" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="$0" android:textColor="#cc9900" android:textSize="20sp" />
-            </LinearLayout>
-
-            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0c16" android:padding="12dp">
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="PAID" android:textColor="#5a4a6a" android:textSize="9sp" android:letterSpacing="0.1" />
-                <TextView android:id="@+id/stat_paid" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="$0" android:textColor="#66aa66" android:textSize="20sp" />
-            </LinearLayout>
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginBottom="16dp">
-
-            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0c16" android:padding="12dp" android:layout_marginRight="4dp">
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="INTEREST" android:textColor="#5a4a6a" android:textSize="9sp" android:letterSpacing="0.1" />
-                <TextView android:id="@+id/stat_interest" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="+$0" android:textColor="#cc6644" android:textSize="20sp" />
-            </LinearLayout>
-
-            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0c16" android:padding="12dp" android:layout_marginRight="4dp">
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="STREAK" android:textColor="#5a4a6a" android:textSize="9sp" android:letterSpacing="0.1" />
-                <TextView android:id="@+id/stat_streak" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="0d" android:textColor="#66aadd" android:textSize="20sp" />
-            </LinearLayout>
-
-            <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0c16" android:padding="12dp">
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="GEOFENCE" android:textColor="#5a4a6a" android:textSize="9sp" android:letterSpacing="0.1" />
-                <TextView android:id="@+id/stat_geofence" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="--" android:textColor="#888" android:textSize="16sp" />
-            </LinearLayout>
-        </LinearLayout>
-
-        </LinearLayout> <!-- end section_stats -->
-
-        <!-- Divider -->
-        <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1028" android:layout_marginBottom="12dp" />
+            android:visibility="gone">
 
         <!-- Subscription -->
         <TextView
@@ -673,71 +832,7 @@
             android:minWidth="0dp"
             android:minHeight="0dp" />
 
-        <!-- (Quick Pay moved into Balance Card above) -->
 
-        <!-- Divider -->
-        <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1028" android:layout_marginBottom="12dp" />
-
-        <!-- Self-Lock (Bronze+) -->
-        <LinearLayout
-            android:id="@+id/section_selflock"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical">
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="SELF-DISCIPLINE"
-            android:textColor="#5a4a6a"
-            android:textSize="10sp"
-            android:letterSpacing="0.15"
-            android:layout_marginBottom="8dp" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginBottom="4dp">
-            <Button android:id="@+id/btn_selflock_15" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="15m" android:textSize="13sp" android:backgroundTint="#2a1a2a" android:textColor="#aa88cc" android:layout_marginRight="3dp" />
-            <Button android:id="@+id/btn_selflock_30" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="30m" android:textSize="13sp" android:backgroundTint="#2a1a2a" android:textColor="#aa88cc" android:layout_marginRight="3dp" />
-            <Button android:id="@+id/btn_selflock_60" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="1hr" android:textSize="13sp" android:backgroundTint="#2a1a2a" android:textColor="#aa88cc" android:layout_marginRight="3dp" />
-            <Button android:id="@+id/btn_selflock_120" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="2hr" android:textSize="13sp" android:backgroundTint="#2a1a2a" android:textColor="#aa88cc" />
-        </LinearLayout>
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Lock yourself for a set time. Only the Lion can extend or make it permanent."
-            android:textColor="#3a3a4a"
-            android:textSize="10sp"
-            android:layout_marginBottom="16dp" />
-
-        </LinearLayout> <!-- end section_selflock -->
-
-        <!-- (Messages section moved to top of main content) -->
-
-        <!-- Divider -->
-        <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1028" android:layout_marginBottom="12dp" />
-
-        <!-- Payment History -->
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="BALANCE HISTORY"
-            android:textColor="#5a4a6a"
-            android:textSize="10sp"
-            android:letterSpacing="0.15"
-            android:layout_marginBottom="8dp" />
-
-        <LinearLayout
-            android:id="@+id/payment_history"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:layout_marginBottom="12dp" />
-
-        <!-- Divider -->
         <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1028" android:layout_marginBottom="12dp" />
 
         <!-- Payer Identity (lets the scanner verify incoming payment emails
@@ -796,6 +891,9 @@
             android:textColor="#555"
             android:textSize="11sp"
             android:layout_marginBottom="12dp" />
+
+
+        </LinearLayout> <!-- end page_me -->
 
         </LinearLayout> <!-- end section_main_content -->
 

@@ -1554,6 +1554,124 @@ def _bump_tamper_attempts(mesh_id: str, at_least: int = 0) -> int:
         return attempt
 
 
+# ── Per-mesh gamble limits (server-authoritative) ──
+# The coin flip halves the balance on heads and doubles it on tails, so a
+# single flip is +25% EV for the Lion. Unlimited flips are a different game:
+# the bunny is not trying to win on average, they are buying lottery tickets
+# against a balance that only has to hit zero once. Enough attempts and
+# variance clears any balance, which turns a Lion-favourable bet into an
+# escape hatch.
+#
+# Both limits therefore live on the relay, not the device: this is the file
+# a bunny with root would otherwise delete. Same reasoning (and shape) as
+# the tamper ratchet above.
+GAMBLE_COOLDOWN_S = int(_cfg.get("gamble", {}).get("cooldown_seconds", 3600))
+GAMBLE_MAX_PER_DAY = int(_cfg.get("gamble", {}).get("max_per_day", 3))
+_GAMBLE_LIMITS_DIR = os.path.join(os.path.dirname(MESH_ORDERS_FILE), "gamble_limits")
+_gamble_limits_lock = threading.Lock()
+
+
+def _gamble_state_path(mesh_id: str):
+    return _mesh_state_path(_GAMBLE_LIMITS_DIR, mesh_id)
+
+
+def _gamble_check_and_record(mesh_id: str) -> dict:
+    """Consume one gamble attempt for this mesh.
+
+    Returns {"ok": True, ...} when the flip may proceed — the attempt is
+    recorded before returning, so a crash mid-flip costs the attempt rather
+    than granting a free one. Returns {"ok": False, "error", "retry_after"}
+    when the cooldown or the daily cap blocks it.
+
+    Fails CLOSED: if the limits file cannot be read the attempt is refused
+    rather than allowed. An unreadable limits file is exactly what deleting
+    it looks like, and the safe reading of "I cannot tell how many times you
+    have already flipped" is "not again right now".
+    """
+    now = int(time.time())
+    with _gamble_limits_lock:
+        path = _gamble_state_path(mesh_id)
+        if not path:
+            return {"ok": False, "error": "invalid mesh_id", "retry_after": 0}
+        state = {"last_ms": 0, "day_start": 0, "day_count": 0}
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                state["last_ms"] = int(raw.get("last_ms", 0) or 0)
+                state["day_start"] = int(raw.get("day_start", 0) or 0)
+                state["day_count"] = int(raw.get("day_count", 0) or 0)
+            except (OSError, json.JSONDecodeError, ValueError, TypeError):
+                logger.warning("gamble limits unreadable for mesh=%s — refusing", _sanitize_log(mesh_id))
+                return {"ok": False, "error": "gamble state unavailable", "retry_after": GAMBLE_COOLDOWN_S}
+
+        elapsed = now - (state["last_ms"] // 1000)
+        if state["last_ms"] and elapsed < GAMBLE_COOLDOWN_S:
+            return {
+                "ok": False,
+                "error": "cooling down",
+                "retry_after": GAMBLE_COOLDOWN_S - elapsed,
+            }
+
+        # Rolling 24h window, anchored on the first flip of the window rather
+        # than on midnight — a calendar day would hand out a fresh allowance
+        # at 00:00 to anyone willing to wait up for it.
+        if not state["day_start"] or (now - state["day_start"]) >= 86400:
+            state["day_start"] = now
+            state["day_count"] = 0
+        if state["day_count"] >= GAMBLE_MAX_PER_DAY:
+            return {
+                "ok": False,
+                "error": f"daily limit reached ({GAMBLE_MAX_PER_DAY})",
+                "retry_after": 86400 - (now - state["day_start"]),
+            }
+
+        state["last_ms"] = now * 1000
+        state["day_count"] += 1
+        try:
+            os.makedirs(_GAMBLE_LIMITS_DIR, exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(state, f)
+            os.replace(tmp, path)
+        except OSError as e:
+            # Cannot record it -> cannot bound it. Refuse.
+            logger.warning("gamble limits unwritable for mesh=%s: %s — refusing", _sanitize_log(mesh_id), e)
+            return {"ok": False, "error": "gamble state unavailable", "retry_after": GAMBLE_COOLDOWN_S}
+        return {
+            "ok": True,
+            "remaining_today": max(0, GAMBLE_MAX_PER_DAY - state["day_count"]),
+            "cooldown_s": GAMBLE_COOLDOWN_S,
+        }
+
+
+def _gamble_status(mesh_id: str) -> dict:
+    """Read-only view for clients: when the next flip is allowed and how many
+    remain in the window. Never consumes an attempt."""
+    now = int(time.time())
+    path = _gamble_state_path(mesh_id)
+    state = {"last_ms": 0, "day_start": 0, "day_count": 0}
+    if path and os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            state["last_ms"] = int(raw.get("last_ms", 0) or 0)
+            state["day_start"] = int(raw.get("day_start", 0) or 0)
+            state["day_count"] = int(raw.get("day_count", 0) or 0)
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            pass
+    if state["day_start"] and (now - state["day_start"]) >= 86400:
+        state["day_count"] = 0
+    cooldown_left = 0
+    if state["last_ms"]:
+        cooldown_left = max(0, GAMBLE_COOLDOWN_S - (now - state["last_ms"] // 1000))
+    return {
+        "gamble_cooldown_s": cooldown_left,
+        "gamble_remaining_today": max(0, GAMBLE_MAX_PER_DAY - state["day_count"]),
+        "gamble_max_per_day": GAMBLE_MAX_PER_DAY,
+    }
+
+
 # ── Per-mesh payment ledger ──
 # Legacy singleton (focus.example.com's operator mesh and nothing else) is
 # kept at _LEDGER_PATH for backward compat on read; new per-mesh ledgers
@@ -4667,6 +4785,23 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if old_pw <= 0:
                 self.respond(409, {"error": "no paywall to gamble"})
                 return
+
+            # Cooldown + daily cap, consumed here so a refused flip costs
+            # nothing and an allowed one is recorded before the coin is
+            # tossed. Checked after the paywall test on purpose: "nothing to
+            # gamble" should not burn one of the day's attempts.
+            gate = _gamble_check_and_record(mesh_id)
+            if not gate.get("ok"):
+                self.respond(
+                    429,
+                    {
+                        "error": gate.get("error", "gamble not allowed right now"),
+                        "retry_after": gate.get("retry_after", 0),
+                        **_gamble_status(mesh_id),
+                    },
+                )
+                return
+
             import math as _math
             import secrets as _secrets
 
@@ -4692,6 +4827,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     "result": result_str,
                     "old_paywall": old_pw,
                     "new_paywall": new_pw,
+                    # So the client can grey the button out and say why,
+                    # instead of finding out by being refused.
+                    **_gamble_status(mesh_id),
                 },
             )
 
@@ -4815,6 +4953,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     "total_paid_cents": total_paid_cents,
                     "since": since_i,
                     **detection,
+                    # Flip budget, so the gamble button can render its own
+                    # state on load rather than after a refusal.
+                    **_gamble_status(mesh_id),
                 },
             )
 
