@@ -448,9 +448,11 @@ public class MainActivity extends Activity {
     // a rank rather than a dollar.
 
     private VenerationTasks catalogue;
-    private String devotionRank = "";
-    private int devotionPoints = -1, devotionWeekUsed = 0, devotionWeekCap = 0;
-    private boolean devotionAvailable = false;
+    private String devotionRank = "", devotionNextRank = "";
+    private int devotionPoints = -1, devotionWeekUsed = 0, devotionWeekCap = 0, devotionToNext = 0;
+    private int devotionStreak = 0, devotionBestStreak = 0, devotionBrokeFrom = 0, devotionFreezes = 0;
+    private boolean devotionAvailable = false, devotionAtRisk = false;
+    private JSONArray devotionClaims = null;
 
     /** Lazily parsed; the resource ships with the app so this cannot fail at
      *  runtime for any reason a retry would fix. */
@@ -473,9 +475,80 @@ public class MainActivity extends Activity {
         if (resp == null || !resp.has("devotion_points")) return;
         devotionPoints = resp.optInt("devotion_points", 0);
         devotionRank = resp.optString("devotion_rank", "");
+        devotionNextRank = resp.optString("devotion_next_rank", "");
+        devotionToNext = resp.optInt("devotion_to_next", 0);
         devotionWeekUsed = resp.optInt("devotion_week_used", 0);
         devotionWeekCap = resp.optInt("devotion_week_cap", 0);
         devotionAvailable = resp.optBoolean("devotion_available", false);
+        devotionStreak = resp.optInt("devotion_streak", 0);
+        devotionBestStreak = resp.optInt("devotion_best_streak", 0);
+        devotionBrokeFrom = resp.optInt("devotion_broke_from", 0);
+        devotionFreezes = resp.optInt("devotion_freezes", 0);
+        devotionAtRisk = resp.optBoolean("devotion_streak_at_risk", false);
+        devotionClaims = resp.optJSONArray("devotion_claims");
+    }
+
+    private String weeks(int n) {
+        return n + (n == 1 ? " week" : " weeks");
+    }
+
+    /** The streak line, and what it says when it ends.
+     *
+     *  Deliberately never a bare "0". A zero counter after a long run reads as
+     *  a quit moment rather than a restart — the documented response is shame
+     *  and abandonment — so a break names what ended and invites the next one
+     *  instead of displaying a hole where the number was. UI thread. */
+    private void renderDevotionStreak() {
+        TextView t = (TextView) findViewById(fid("devotion_streak_text"));
+        if (t == null) return;
+        StringBuilder s = new StringBuilder();
+        int colour = 0xFF8a7a9a;
+        if (devotionStreak > 0) {
+            s.append(weeks(devotionStreak)).append(" running");
+            if (devotionAtRisk) {
+                s.append(" \u00b7 nothing offered this week yet");
+                colour = 0xFFffaa66;
+            } else {
+                colour = 0xFF66aa66;
+            }
+        } else if (devotionBrokeFrom > 0) {
+            s.append("A run of ").append(weeks(devotionBrokeFrom)).append(" ended. Start another.");
+        } else {
+            s.append("No run yet.");
+        }
+        if (devotionBestStreak > devotionStreak && devotionBestStreak > 0) {
+            s.append("  \u00b7  best ").append(weeks(devotionBestStreak));
+        }
+        // Freezes are granted, never bought and never earned, so they are
+        // stated plainly rather than dangled.
+        if (devotionFreezes > 0) {
+            s.append("\n").append(devotionFreezes == 1 ? "1 missed week covered" : devotionFreezes + " missed weeks covered");
+        }
+        t.setText(s.toString());
+        t.setTextColor(colour);
+    }
+
+    /** What the Lion actually said. UI thread. */
+    private void renderCommendations() {
+        LinearLayout box = (LinearLayout) findViewById(fid("devotion_commends"));
+        if (box == null) return;
+        box.removeAllViews();
+        if (devotionClaims == null) return;
+        int shown = 0;
+        for (int i = 0; i < devotionClaims.length() && shown < 3; i++) {
+            JSONObject c = devotionClaims.optJSONObject(i);
+            if (c == null || !c.optBoolean("commended", false)) continue;
+            String note = c.optString("note", "");
+            TextView tv = new TextView(this);
+            tv.setText(note.isEmpty()
+                ? "\u2713 Your Lion marked one of these seen."
+                : "\u201c" + note + "\u201d");
+            tv.setTextColor(0xFFc8a84e);
+            tv.setTextSize(12);
+            tv.setPadding(0, 3, 0, 3);
+            box.addView(tv);
+            shown++;
+        }
     }
 
     /** UI thread. */
@@ -485,8 +558,14 @@ public class MainActivity extends Activity {
             return;
         }
         show("section_devotion", true);
-        setText("devotion_rank_text", devotionRank + "  \u00b7  " + devotionPoints
-            + (devotionPoints == 1 ? " point" : " points"));
+        // Goal gradient: the next rung and the distance to it move people more
+        // than the total behind them does.
+        String rankLine = devotionRank + "  \u00b7  " + devotionPoints
+            + (devotionPoints == 1 ? " point" : " points");
+        if (!devotionNextRank.isEmpty() && devotionToNext > 0) {
+            rankLine += "  \u00b7  " + devotionToNext + " to " + devotionNextRank;
+        }
+        setText("devotion_rank_text", rankLine);
         String sub;
         if (devotionWeekCap == 0) {
             sub = "A subscription opens this. Bronze 3/week, Silver 7, Gold unlimited.";
@@ -503,6 +582,8 @@ public class MainActivity extends Activity {
             b.setText(devotionWeekCap == 0 ? "Subscribers Only"
                 : devotionAvailable ? "Offer Devotion" : "Nothing Left This Week");
         }
+        renderDevotionStreak();
+        renderCommendations();
     }
 
     /** Draw a task, then make them type it. */

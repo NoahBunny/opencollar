@@ -41,6 +41,7 @@ It is **not** for: monitoring children, partners without consent, employees, or 
 | [`docs/THREAT-MODEL.md`](THREAT-MODEL.md) | What this defends against, what it doesn't, and out-of-scope adversaries |
 | [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) | Sanitized code map and sequence diagrams for new contributors |
 | [`docs/VAULT-DESIGN.md`](VAULT-DESIGN.md) | Full cryptographic design rationale |
+| [`docs/GAMIFICATION-ETHICS.md`](GAMIFICATION-ETHICS.md) | The evidence behind the engagement mechanics, what we declined to build, and why |
 | [`docs/QA-CHECKLIST.md`](QA-CHECKLIST.md) | Manual + scripted regression matrix |
 | [`docs/STAGING.md`](STAGING.md) | Spin up an isolated mesh for testing |
 | [`docs/MANUAL-LION.md`](MANUAL-LION.md) | Controller manual (cheeky) |

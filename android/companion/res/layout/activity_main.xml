@@ -380,6 +380,28 @@
             android:text=""
             android:textColor="#7a6a8a"
             android:textSize="11sp"
+            android:layout_marginBottom="6dp" />
+
+        <!-- Weekly streak. Never a daily one: a daily streak here would be
+             broken by the Lion's own ordinary authority, so the bunny would
+             lose standing through no choice of theirs. -->
+        <TextView
+            android:id="@+id/devotion_streak_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#8a7a9a"
+            android:textSize="11sp"
+            android:layout_marginBottom="10dp" />
+
+        <!-- What the Lion said. This is the actual reward — points accrue
+             deterministically and go inert on their own; the variable term is
+             a person deciding whether, when, and what to say. -->
+        <LinearLayout
+            android:id="@+id/devotion_commends"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
             android:layout_marginBottom="10dp" />
         <Button
             android:id="@+id/btn_devotion"

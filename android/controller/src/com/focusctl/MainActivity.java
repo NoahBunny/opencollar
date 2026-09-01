@@ -516,6 +516,7 @@ public class MainActivity extends Activity {
             if (id == getId("menu_bunnies")) doBunnies();
             else if (id == getId("menu_vault_nodes")) doVaultNodes();
             else if (id == getId("menu_web_remote")) doWebRemoteScan();
+            else if (id == getId("menu_devotion")) doDevotionReview();
             else if (id == getId("menu_payment_email")) doPaymentEmail();
             else if (id == getId("menu_setup")) doSetup();
             else if (id == getId("menu_app_pin")) doSetAppPin();
@@ -3120,6 +3121,145 @@ public class MainActivity extends Activity {
     // is. Null until the first draw, and again if the resource is unreadable.
     private VenerationTasks venerations;
     private final Random venerationRng = new Random();
+
+    // ── Devotion: reviewing what the bunny offered, and answering it ──
+    //
+    // Voluntary tasks accrue points deterministically on the relay, which
+    // means the points alone go inert: a fully predicted reward produces no
+    // prediction error, and prediction error is what dopamine actually
+    // encodes. The variable term is meant to be a person rather than an RNG —
+    // whether a commendation comes, when, and what it says is the Lion's to
+    // decide. That keeps the loop alive without a slot machine in it, and
+    // routes the payoff through the relationship instead of around it.
+    //
+    // Which is only true if this screen exists. An endpoint with no button is
+    // a feature nobody has.
+
+    /** Look up a claimed task's text so the Lion sees what was typed, not an
+     *  id. Both apps ship the same catalogue, byte-identical by test. */
+    private String venerationTextFor(String taskId) {
+        VenerationTasks cat = loadVenerations();
+        if (cat == null || taskId == null || taskId.isEmpty()) return taskId;
+        for (VenerationTasks.Task t : cat.inCategory(VenerationTasks.ANY)) {
+            if (t.id.equals(taskId)) return t.text;
+        }
+        return taskId;
+    }
+
+    private void doDevotionReview() {
+        setStatus("Loading devotion…");
+        executor.execute(() -> {
+            String raw = fetchLedger(50);
+            org.json.JSONArray claims = null;
+            String rank = "";
+            int points = 0, streak = 0;
+            if (raw != null) {
+                try {
+                    org.json.JSONObject o = new org.json.JSONObject(raw);
+                    claims = o.optJSONArray("devotion_claims");
+                    rank = o.optString("devotion_rank", "");
+                    points = o.optInt("devotion_points", 0);
+                    streak = o.optInt("devotion_streak", 0);
+                } catch (Exception e) {
+                    android.util.Log.w("focusctl", "devotion parse failed", e);
+                }
+            }
+            final org.json.JSONArray fClaims = claims;
+            final String header = rank.isEmpty()
+                ? "Nothing offered yet."
+                : rank + " · " + points + (points == 1 ? " point" : " points")
+                    + (streak > 0 ? " · " + streak + (streak == 1 ? " week running" : " weeks running") : "");
+            runOnUiThread(() -> showDevotionDialog(fClaims, header));
+        });
+    }
+
+    private void showDevotionDialog(org.json.JSONArray claims, String header) {
+        setStatus("");
+        if (claims == null || claims.length() == 0) {
+            new AlertDialog.Builder(this)
+                .setTitle("Devotion")
+                .setMessage(header + "\n\nNothing to answer yet. Voluntary tasks are a "
+                    + "subscriber perk — they appear here once they are offered.")
+                .setPositiveButton("Close", null)
+                .show();
+            return;
+        }
+        final int n = claims.length();
+        final String[] labels = new String[n];
+        final String[] ids = new String[n];
+        for (int i = 0; i < n; i++) {
+            org.json.JSONObject c = claims.optJSONObject(i);
+            if (c == null) { labels[i] = "—"; ids[i] = ""; continue; }
+            ids[i] = c.optString("id", "");
+            String text = venerationTextFor(c.optString("task_id", ""));
+            if (text.length() > 60) text = text.substring(0, 57) + "…";
+            boolean done = c.optBoolean("commended", false);
+            labels[i] = (done ? "✓  " : "•  ") + text;
+        }
+        new AlertDialog.Builder(this)
+            .setTitle(header)
+            .setItems(labels, (d, which) -> {
+                if (ids[which].isEmpty()) return;
+                org.json.JSONObject c = claims.optJSONObject(which);
+                showCommendDialog(ids[which],
+                    venerationTextFor(c == null ? "" : c.optString("task_id", "")),
+                    c == null ? "" : c.optString("note", ""));
+            })
+            .setNegativeButton("Close", null)
+            .show();
+    }
+
+    private void showCommendDialog(String claimId, String taskText, String existingNote) {
+        final EditText input = new EditText(this);
+        input.setHint("Say something, or nothing");
+        input.setTextColor(0xFFe0e0e0);
+        input.setHintTextColor(0xFF555555);
+        input.setBackgroundColor(0xFF111118);
+        input.setPadding(24, 16, 24, 16);
+        input.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+            | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        if (existingNote != null && !existingNote.isEmpty()) input.setText(existingNote);
+
+        new AlertDialog.Builder(this)
+            .setTitle("Commend")
+            .setMessage(taskText + "\n\nThey chose this. A word from You is the only reward "
+                + "here that is worth anything — the points are just a record.")
+            .setView(input)
+            .setPositiveButton("Commend", (d, w) -> {
+                String note = input.getText().toString().trim();
+                setStatus("Sending…");
+                executor.execute(() -> {
+                    String r = postCommend(claimId, note);
+                    boolean ok = r != null && r.contains("\"ok\":true");
+                    setStatus(ok ? "Commended" : "Failed: " + r);
+                });
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    /** Lion → relay signed commendation.
+     *    payload = mesh|lion|commend|claim_id|ts
+     *  Lion-only by construction: the bunny does not hold this key, so they
+     *  cannot commend themselves. */
+    private String postCommend(String claimId, String note) {
+        if (meshUrl.isEmpty() || meshId.isEmpty()) return null;
+        String lionPriv = prefs.getString("lion_privkey", "");
+        if (lionPriv.isEmpty()) return null;
+        long ts = System.currentTimeMillis();
+        String payload = meshId + "|lion|commend|" + claimId + "|" + ts;
+        try {
+            org.json.JSONObject body = new org.json.JSONObject();
+            body.put("claim_id", claimId);
+            body.put("note", note == null ? "" : note);
+            body.put("ts", ts);
+            body.put("signature", VaultCrypto.signString(payload, lionPriv));
+            return meshPost(meshUrl + "/api/mesh/" + meshId + "/commend", body.toString());
+        } catch (Exception e) {
+            android.util.Log.w("focusctl", "postCommend failed: " + e.getMessage());
+            return null;
+        }
+    }
 
     /** Load the shipped veneration catalogue, or null with the reason shown. */
     private VenerationTasks loadVenerations() {

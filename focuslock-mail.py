@@ -1689,6 +1689,22 @@ def _gamble_status(mesh_id: str) -> dict:
 # the gamble budget do: on the relay, in a file the bunny cannot reach. The
 # typing discipline in the app is client-side and a tampered client can always
 # lie about it — which is exactly why what it buys is a rank and not a dollar.
+#
+# WHERE THE UNCERTAINTY COMES FROM (see docs/GAMIFICATION-ETHICS.md)
+# Dopamine encodes reward PREDICTION ERROR, not pleasure: a fully predicted
+# reward produces no phasic response at all. A flat +1 per task is exactly
+# that, and goes inert within weeks. The usual fix is a variable-ratio payout,
+# which is also the slot-machine schedule and the documented driver of
+# compulsion — and this system already has one variable-ratio mechanic wired
+# to real money (the gamble), which is capped for that reason.
+#
+# So the uncertainty is supplied by a PERSON instead of an RNG: points accrue
+# deterministically, and the Lion's `commend` is the unpredictable reward —
+# unpredictable in timing, in wording, and in whether it comes at all. That
+# keeps the prediction error, removes the gambling structure, and routes the
+# payoff through the relationship rather than around it. It also inverts the
+# documented failure mode where the points displace the thing they were meant
+# to serve, because here the payoff IS the thing.
 DEVOTION_WEEKLY_CAP = {"": 0, "bronze": 3, "silver": 7, "gold": -1}  # -1 = uncapped
 DEVOTION_RANKS = [
     (0, "Unproven"),
@@ -1697,8 +1713,21 @@ DEVOTION_RANKS = [
     (50, "Devoted"),
     (100, "Exemplary"),
 ]
+# Endowed progress (Nunes & Drèze 2006): a pre-stamped card was completed by
+# 34% against 19% for an empty one needing identical purchases. Given openly,
+# as a gift, and recorded as real points rather than a padded display — the
+# car-wash effect held with the head start disclosed, and an inflated bar the
+# bunny cannot audit would be a lie told for engagement.
+DEVOTION_OPENING_CREDIT = 2
+# One a month, granted automatically, capped at two held. Streak freeze cut
+# at-risk churn 21% in Duolingo's data and users holding one kept streaks 4.5x
+# longer by day 21 — it is structural, not a courtesy, so it is never sold and
+# never a reward.
+DEVOTION_FREEZE_CAP = 2
 _DEVOTION_DIR = os.path.join(os.path.dirname(MESH_ORDERS_FILE), "devotion")
 _devotion_lock = threading.Lock()
+
+_WEEK_S = 604800
 
 
 def _devotion_path(mesh_id: str):
@@ -1713,40 +1742,158 @@ def devotion_rank(points: int) -> str:
     return name
 
 
+def devotion_next_rank(points: int):
+    """(label, points_needed) for the next rung, or (None, 0) at the top.
+
+    Goal gradient: people accelerate as a goal comes into view, so the next
+    rung and the distance to it are worth more than the current total."""
+    for threshold, label in DEVOTION_RANKS:
+        if points < threshold:
+            return label, threshold - points
+    return None, 0
+
+
+def _devotion_blank() -> dict:
+    return {
+        "points": 0,
+        "week_start": 0,
+        "week_count": 0,
+        "last_ms": 0,
+        "claims": [],
+        "seq": 0,
+        "streak": 0,
+        "best_streak": 0,
+        "streak_week": 0,
+        "broke_from": 0,
+        "freezes": 0,
+        "freeze_month": "",
+        "endowed": False,
+    }
+
+
 def _devotion_read(mesh_id: str) -> dict:
-    state = {"points": 0, "week_start": 0, "week_count": 0, "last_ms": 0, "recent": []}
+    state = _devotion_blank()
     path = _devotion_path(mesh_id)
-    if path and os.path.exists(path):
+    if not path or not os.path.exists(path):
+        return state
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        logger.warning("devotion state unreadable for mesh=%s", _sanitize_log(mesh_id))
+        return state
+    for key, cast in (
+        ("points", int),
+        ("week_start", int),
+        ("week_count", int),
+        ("last_ms", int),
+        ("seq", int),
+        ("streak", int),
+        ("best_streak", int),
+        ("streak_week", int),
+        ("broke_from", int),
+        ("freezes", int),
+    ):
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-            state["points"] = max(0, int(raw.get("points", 0) or 0))
-            state["week_start"] = int(raw.get("week_start", 0) or 0)
-            state["week_count"] = max(0, int(raw.get("week_count", 0) or 0))
-            state["last_ms"] = int(raw.get("last_ms", 0) or 0)
-            recent = raw.get("recent", []) or []
-            if isinstance(recent, list):
-                state["recent"] = [str(x) for x in recent][-20:]
-        except (OSError, json.JSONDecodeError, ValueError, TypeError):
-            logger.warning("devotion state unreadable for mesh=%s", _sanitize_log(mesh_id))
+            state[key] = max(0, cast(raw.get(key, 0) or 0))
+        except (ValueError, TypeError):
+            pass
+    state["freeze_month"] = str(raw.get("freeze_month", "") or "")
+    state["endowed"] = bool(raw.get("endowed", False))
+    claims = raw.get("claims", []) or []
+    if isinstance(claims, list):
+        clean = []
+        for c in claims[-20:]:
+            # Pre-commend state stored "task_id@ts" strings. Keep them readable
+            # rather than dropping the record of work already done.
+            if isinstance(c, str):
+                task_id, _, ts = c.partition("@")
+                clean.append({"id": "", "task_id": task_id, "ts": int(ts or 0), "commended": False, "note": ""})
+            elif isinstance(c, dict):
+                clean.append(
+                    {
+                        "id": str(c.get("id", "") or ""),
+                        "task_id": str(c.get("task_id", "") or ""),
+                        "ts": int(c.get("ts", 0) or 0),
+                        "commended": bool(c.get("commended", False)),
+                        "note": str(c.get("note", "") or ""),
+                    }
+                )
+        state["claims"] = clean
+    elif isinstance(raw.get("recent"), list):  # oldest layout
+        state["claims"] = []
     return state
 
 
-def devotion_status(mesh_id: str, tier: str = "") -> dict:
-    """Read-only view. Never records anything."""
-    state = _devotion_read(mesh_id)
+def _devotion_write(mesh_id: str, state: dict) -> bool:
+    path = _devotion_path(mesh_id)
+    if not path:
+        return False
+    try:
+        os.makedirs(_DEVOTION_DIR, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+        os.replace(tmp, path)
+        return True
+    except OSError as e:
+        logger.warning("devotion unwritable for mesh=%s: %s", _sanitize_log(mesh_id), e)
+        return False
+
+
+def _devotion_grant_monthly_freeze(state: dict, now: int) -> None:
+    """One freeze a month, capped. Mutates in place; caller persists."""
+    month = time.strftime("%Y%m", time.gmtime(now))
+    if state["freeze_month"] == month:
+        return
+    # First contact gets the full allowance rather than one: the evidence for
+    # freezes is strongest exactly at the start, before the habit has formed.
+    grant = DEVOTION_FREEZE_CAP if not state["freeze_month"] else 1
+    state["freezes"] = min(DEVOTION_FREEZE_CAP, state["freezes"] + grant)
+    state["freeze_month"] = month
+
+
+def _devotion_view(state: dict, tier: str) -> dict:
     now = int(time.time())
     week_count = state["week_count"]
-    if state["week_start"] and (now - state["week_start"]) >= 604800:
+    if state["week_start"] and (now - state["week_start"]) >= _WEEK_S:
         week_count = 0
     cap = DEVOTION_WEEKLY_CAP.get((tier or "").lower(), 0)
+    nxt, need = devotion_next_rank(state["points"])
+
+    # A streak whose week has already lapsed is shown as at risk rather than
+    # silently still standing — the honest number, and the one worth acting on.
+    this_week = now // _WEEK_S
+    at_risk = bool(state["streak"] and state["streak_week"] and this_week > state["streak_week"])
     return {
         "devotion_points": state["points"],
         "devotion_rank": devotion_rank(state["points"]),
+        "devotion_next_rank": nxt or "",
+        "devotion_to_next": need,
         "devotion_week_used": week_count,
         "devotion_week_cap": cap,
         "devotion_available": cap != 0 and (cap < 0 or week_count < cap),
+        "devotion_streak": state["streak"],
+        "devotion_best_streak": state["best_streak"],
+        "devotion_streak_at_risk": at_risk,
+        "devotion_broke_from": state["broke_from"],
+        "devotion_freezes": state["freezes"],
+        "devotion_claims": list(reversed(state["claims"]))[:10],
     }
+
+
+def devotion_status(mesh_id: str, tier: str = "") -> dict:
+    """Read-only view. Never records a claim.
+
+    It does grant the monthly freeze if one is due, because a freeze that only
+    materialises when you claim is no use to the week you missed."""
+    with _devotion_lock:
+        state = _devotion_read(mesh_id)
+        before = (state["freezes"], state["freeze_month"])
+        _devotion_grant_monthly_freeze(state, int(time.time()))
+        if (state["freezes"], state["freeze_month"]) != before:
+            _devotion_write(mesh_id, state)
+        return _devotion_view(state, tier)
 
 
 def devotion_claim(mesh_id: str, tier: str, task_id: str) -> dict:
@@ -1757,6 +1904,13 @@ def devotion_claim(mesh_id: str, tier: str, task_id: str) -> dict:
     first claim of the week rather than calendar-anchored, same as the gamble
     budget — a calendar week hands out a fresh allowance at a predictable
     moment, which turns "how much did you choose to do" into "who stayed up".
+
+    The STREAK is weekly, and deliberately not daily. A daily streak here would
+    be broken by the Lion's own ordinary authority — an imposed lock, a fine,
+    a confiscated evening — so the bunny would lose accumulated standing
+    through no choice of theirs. Loss aversion only motivates while the loss is
+    yours to prevent; a streak someone else can take teaches helplessness
+    instead. Weekly also matches the allowance the tier already grants.
     """
     tier = (tier or "").lower()
     cap = DEVOTION_WEEKLY_CAP.get(tier, 0)
@@ -1765,48 +1919,120 @@ def devotion_claim(mesh_id: str, tier: str, task_id: str) -> dict:
     now = int(time.time())
     with _devotion_lock:
         state = _devotion_read(mesh_id)
-        if not state["week_start"] or (now - state["week_start"]) >= 604800:
+        _devotion_grant_monthly_freeze(state, now)
+
+        if not state["week_start"] or (now - state["week_start"]) >= _WEEK_S:
             state["week_start"] = now
             state["week_count"] = 0
         if cap > 0 and state["week_count"] >= cap:
             return {
                 "error": f"weekly limit reached ({cap})",
-                "retry_after": 604800 - (now - state["week_start"]),
+                "retry_after": _WEEK_S - (now - state["week_start"]),
             }
+
+        # Opening credit, given openly and only once.
+        if not state["endowed"]:
+            state["endowed"] = True
+            state["points"] += DEVOTION_OPENING_CREDIT
+
         state["week_count"] += 1
         state["points"] += 1
         state["last_ms"] = now * 1000
-        state["recent"] = (state["recent"] + [f"{task_id}@{now}"])[-20:]
 
-        path = _devotion_path(mesh_id)
-        if not path:
-            return {"error": "invalid mesh_id"}
-        try:
-            os.makedirs(_DEVOTION_DIR, exist_ok=True)
-            tmp = path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(state, f)
-            os.replace(tmp, path)
-        except OSError as e:
+        # ── Weekly streak ──
+        this_week = now // _WEEK_S
+        last_week = state["streak_week"]
+        broke = 0
+        if not last_week or state["streak"] == 0:
+            state["streak"] = 1
+        elif this_week == last_week:
+            pass  # already counted this week
+        elif this_week == last_week + 1:
+            state["streak"] += 1
+        elif this_week == last_week + 2 and state["freezes"] > 0:
+            # Exactly one week missed, and a freeze to cover it.
+            state["freezes"] -= 1
+            state["streak"] += 1
+        else:
+            # Broken. Remember what it was: a bare 0 after a long run is a quit
+            # moment rather than a restart, so the app is given the number it
+            # needs to say "your 6-week run ended" instead of showing nothing.
+            broke = state["streak"]
+            state["broke_from"] = broke
+            state["streak"] = 1
+        state["streak_week"] = this_week
+        state["best_streak"] = max(state["best_streak"], state["streak"])
+
+        state["seq"] += 1
+        claim_id = f"c{state['seq']}"
+        state["claims"] = (
+            state["claims"] + [{"id": claim_id, "task_id": task_id, "ts": now, "commended": False, "note": ""}]
+        )[-20:]
+
+        if not _devotion_write(mesh_id, state):
             # The gamble budget refuses on an unwritable store because an
             # unbounded flip is an escape hatch. Here the risk points the other
             # way: the harm is a claim that silently does not count, which is
             # effort the Lion never sees. So report the failure plainly rather
             # than returning a success the record does not back.
-            logger.warning("devotion unwritable for mesh=%s: %s", _sanitize_log(mesh_id), e)
             return {"error": "could not record devotion"}
 
+        view = _devotion_view(state, tier)
+
     logger.info(
-        "devotion claimed: mesh=%s task=%s points=%s week=%s/%s",
+        "devotion claimed: mesh=%s task=%s points=%s week=%s/%s streak=%s%s",
         _sanitize_log(mesh_id),
         _sanitize_log(task_id),
         state["points"],
         state["week_count"],
-        cap if cap > 0 else "\u221e",
+        cap if cap > 0 else "∞",
+        state["streak"],
+        f" (broke a run of {broke})" if broke else "",
     )
-    out = devotion_status(mesh_id, tier)
-    out["ok"] = True
-    return out
+    view["ok"] = True
+    view["claim_id"] = claim_id
+    return view
+
+
+def devotion_commend(mesh_id: str, claim_id: str, note: str = "") -> dict:
+    """The Lion acknowledges one claim. This is the actual reward.
+
+    Points accrue deterministically and therefore stop meaning anything on
+    their own; a fully predicted reward produces no prediction error, which is
+    what dopamine actually encodes. The variable term in this system is meant
+    to be a person, not an RNG: whether a commend comes, when, and what it says
+    is the Lion's to decide, which keeps the uncertainty that makes the loop
+    live while keeping the slot machine out of it.
+
+    Lion-only, enforced by the caller's signature check. Idempotent-ish: a
+    second commend on the same claim updates the note rather than erroring, so
+    the Lion can amend what They said.
+    """
+    note = (note or "").strip()[:200]
+    with _devotion_lock:
+        state = _devotion_read(mesh_id)
+        target = None
+        for c in state["claims"]:
+            if c.get("id") and c["id"] == claim_id:
+                target = c
+                break
+        if target is None:
+            return {"error": "no such claim"}
+        already = target["commended"]
+        target["commended"] = True
+        target["note"] = note
+        if not _devotion_write(mesh_id, state):
+            return {"error": "could not record commendation"}
+        view = _devotion_view(state, "")
+    logger.info(
+        "devotion commended: mesh=%s claim=%s%s",
+        _sanitize_log(mesh_id),
+        _sanitize_log(claim_id),
+        " (amended)" if already else "",
+    )
+    view["ok"] = True
+    view["amended"] = already
+    return view
 
 
 # ── Per-mesh payment ledger ──
@@ -4857,6 +5083,64 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         # heads halves (rounded up), tails doubles. The Collar's local doGamble()
         # was the previous RNG site; moving it here closes the "tampered Collar
         # always rolls heads" loophole. Returns {result, old_paywall, new_paywall}.
+        # ── Lion-authed commendation ──
+        # Path: /api/mesh/{mesh_id}/commend
+        # Body: {claim_id, note?, ts, signature}
+        # signature = SHA256withRSA over "mesh_id|lion|commend|claim_id|ts"
+        # against account.lion_pubkey. Lion-only by construction: the bunny
+        # does not hold that key, so they cannot commend themselves — which is
+        # the whole point of routing the variable reward through a person.
+        elif self.path.startswith("/api/mesh/") and self.path.endswith("/commend"):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 4 or parts[3] != "commend":
+                self.respond(400, {"error": "bad path — expected /api/mesh/{mesh_id}/commend"})
+                return
+            mesh_id = parts[2]
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            account = _mesh_accounts.get(mesh_id)
+            if not account:
+                self.respond(404, {"error": "mesh not found"})
+                return
+            claim_id = str(data.get("claim_id", "") or "").strip()[:32]
+            note = str(data.get("note", "") or "")
+            signature = data.get("signature", "")
+            if not claim_id or not all(c.isalnum() for c in claim_id):
+                self.respond(400, {"error": "claim_id required"})
+                return
+            if not signature:
+                self.respond(400, {"error": "signature required"})
+                return
+            try:
+                ts_i = int(data.get("ts", 0) or 0)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            if abs(int(time.time() * 1000) - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+            lion_pub = account.get("lion_pubkey", "")
+            if not lion_pub:
+                self.respond(403, {"error": "no lion_pubkey on file for mesh"})
+                return
+            payload = f"{mesh_id}|lion|commend|{claim_id}|{ts_i}"
+            try:
+                import base64 as _b64c
+
+                from cryptography.hazmat.primitives import hashes, serialization
+                from cryptography.hazmat.primitives.asymmetric import padding
+
+                pub = serialization.load_der_public_key(_b64c.b64decode(lion_pub))
+                pub.verify(_b64c.b64decode(signature), payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
+            except Exception as e:
+                logger.warning("commend sig verify failed: mesh=%s err=%s", _sanitize_log(mesh_id), e)
+                self.respond(403, {"error": "invalid signature"})
+                return
+
+            result = devotion_commend(mesh_id, claim_id, note)
+            self.respond(404 if result.get("error") == "no such claim" else 200 if result.get("ok") else 500, result)
+
         # ── Bunny-authed voluntary task claim (devotion) ──
         # Path: /api/mesh/{mesh_id}/devotion
         # Body: {node_id, task_id, ts, signature}

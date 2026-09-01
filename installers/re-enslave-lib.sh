@@ -9,10 +9,10 @@
 # all sub-scripts read from here so there's exactly one place to change.
 TARGET_SLAVE_VERSIONCODE=85
 TARGET_SLAVE_APK="focuslock-v85.apk"
-TARGET_CONTROLLER_VERSIONCODE=84
-TARGET_CONTROLLER_APK="focusctl-v84.apk"
-TARGET_COMPANION_VERSIONCODE=68
-TARGET_COMPANION_APK="bunnytasker-v68.apk"
+TARGET_CONTROLLER_VERSIONCODE=85
+TARGET_CONTROLLER_APK="focusctl-v85.apk"
+TARGET_COMPANION_VERSIONCODE=69
+TARGET_COMPANION_APK="bunnytasker-v69.apk"
 
 # Server-side files that re-enslave-server.sh deploys
 SERVER_FILES=(

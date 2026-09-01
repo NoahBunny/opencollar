@@ -8,6 +8,59 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-09-01 the variable reward is a person ───────── -->
+
+### Added — commendation, and a streak that cannot be taken from you
+
+Researched before built; the evidence and the decisions it drove are recorded
+in [docs/GAMIFICATION-ETHICS.md](docs/GAMIFICATION-ETHICS.md), including a
+table of what was declined and why.
+
+- **The flat +1 was the bug.** Dopamine encodes reward *prediction error*, not
+  pleasure — a fully predicted reward produces no phasic response at all, so a
+  fixed point-per-task goes inert within weeks. The usual fix is a
+  variable-ratio payout, which is the slot-machine schedule and the documented
+  driver of compulsion. This system already has exactly one variable-ratio
+  mechanic wired to real money (the gamble), which is capped for that reason,
+  and we did not add a second.
+- **So the uncertainty is a person.** Points accrue deterministically; the
+  Lion's `commend` is the unpredictable reward — unpredictable in timing, in
+  wording, and in whether it comes at all. It keeps the prediction error,
+  removes the gambling structure, and routes the payoff through the
+  relationship instead of around it. It is also the only design that cannot
+  become a self-service loop: the bunny does not hold the key that signs one.
+- **Lion's Share got the button in the same change.** An endpoint with no UI is
+  a feature nobody has, which is a bug this repo has shipped before. ⋮ →
+  Devotion lists what was offered, resolves each task id to the line the bunny
+  actually typed, and commends with an optional note.
+- **The streak is weekly, and that is not stylistic.** A daily streak here
+  would be breakable by the Lion's own ordinary authority — an imposed lock, a
+  fine, a confiscated evening — so the bunny would lose accumulated standing
+  through no choice of theirs. Loss aversion motivates only while the loss is
+  yours to prevent; a streak someone else can take teaches helplessness. Weekly
+  also matches the allowance the tier already grants.
+- **A break is never a bare zero.** The documented response to a zeroed counter
+  after a long run is shame and abandonment, not renewed effort, so the app
+  says "a run of 6 weeks ended" and keeps the number.
+- **Two freezes, granted not sold.** Streak freeze cut at-risk churn ~21% in
+  Duolingo's data and holders kept streaks 4.5x longer by day 21 — structural,
+  so it is never a purchase and never a reward. One a month after that, capped.
+- **An opening credit of 2 points, disclosed.** Endowed progress: a pre-stamped
+  card was completed by 34% against 19% for an empty one needing identical
+  purchases. Given as real points rather than a padded bar, because an
+  unauditable progress display is a lie told for engagement.
+
+### Not built, deliberately
+
+Random bonuses, a daily streak, any leaderboard, bunny-convertible points, and
+streak-loss notifications — each individually evidenced as harmful, and this
+system already carries its pressure load in real money and device lockouts.
+The gamification is the one part with no teeth. `TestPointsAreNotMoney` and
+`TestCommend` pin that boundary in code so it cannot rot quietly.
+
+### Released — Bunny Tasker 69, Lion's Share 85
+
+
 <!-- ───────── 2026-09-01 devotion ───────── -->
 
 ### Added — Devotion: voluntary tasks, as a subscriber perk
