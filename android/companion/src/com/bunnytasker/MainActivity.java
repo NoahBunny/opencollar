@@ -251,6 +251,9 @@ public class MainActivity extends Activity {
 
         View btnOffer = findViewById(fid("btn_make_offer"));
         if (btnOffer != null) btnOffer.setOnClickListener(v -> doMakeOffer());
+
+        View btnDev = findViewById(fid("btn_devotion"));
+        if (btnDev != null) btnDev.setOnClickListener(v -> doDevotion());
         tierBadge = (TextView) findViewById(fid("tier_badge"));
         messagesHeader = (TextView) findViewById(fid("messages_header"));
         messagesExpanded = prefs.getBoolean("messages_expanded", false);
@@ -426,6 +429,230 @@ public class MainActivity extends Activity {
         return getResources().getIdentifier(name, "id", getPackageName());
     }
 
+    // ── Devotion: voluntary tasks, a subscriber perk ──
+    //
+    // Everything up to here is state the bunny is SUBJECT to. This is the one
+    // thing they can choose to do. They draw from the same 144-line veneration
+    // catalogue the Lion imposes from, type it out, and earn a rank.
+    //
+    // The reward is points and never money. A voluntary task that took money
+    // off the balance would be a discount the bunny writes for themselves,
+    // which is the one thing this system exists not to hand over — they
+    // already hold the device, the root and the drive. Points are a record of
+    // effort they chose; the Lion may reward it, convert it, or ignore it.
+    // Standing is earnable, a discount is not.
+    //
+    // The weekly cap and the counter live on the relay, in a file this device
+    // cannot reach. The typing discipline below is client-side and a tampered
+    // client can always lie about it — which is precisely why what it buys is
+    // a rank rather than a dollar.
+
+    private VenerationTasks catalogue;
+    private String devotionRank = "";
+    private int devotionPoints = -1, devotionWeekUsed = 0, devotionWeekCap = 0;
+    private boolean devotionAvailable = false;
+
+    /** Lazily parsed; the resource ships with the app so this cannot fail at
+     *  runtime for any reason a retry would fix. */
+    private VenerationTasks catalogue() {
+        if (catalogue != null) return catalogue;
+        try (java.io.InputStream in = getResources().openRawResource(
+                getResources().getIdentifier("veneration_tasks", "raw", getPackageName()))) {
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            catalogue = VenerationTasks.parse(new String(out.toByteArray(), "UTF-8"));
+        } catch (Exception e) {
+            android.util.Log.e("BunnyTasker", "veneration catalogue unreadable", e);
+        }
+        return catalogue;
+    }
+
+    private void applyDevotionStatus(JSONObject resp) {
+        if (resp == null || !resp.has("devotion_points")) return;
+        devotionPoints = resp.optInt("devotion_points", 0);
+        devotionRank = resp.optString("devotion_rank", "");
+        devotionWeekUsed = resp.optInt("devotion_week_used", 0);
+        devotionWeekCap = resp.optInt("devotion_week_cap", 0);
+        devotionAvailable = resp.optBoolean("devotion_available", false);
+    }
+
+    /** UI thread. */
+    private void refreshDevotion() {
+        if (devotionPoints < 0) {
+            show("section_devotion", false);  // relay has not answered yet
+            return;
+        }
+        show("section_devotion", true);
+        setText("devotion_rank_text", devotionRank + "  \u00b7  " + devotionPoints
+            + (devotionPoints == 1 ? " point" : " points"));
+        String sub;
+        if (devotionWeekCap == 0) {
+            sub = "A subscription opens this. Bronze 3/week, Silver 7, Gold unlimited.";
+        } else if (devotionWeekCap < 0) {
+            sub = devotionWeekUsed + " offered this week \u00b7 unlimited";
+        } else {
+            int left = Math.max(0, devotionWeekCap - devotionWeekUsed);
+            sub = left + " of " + devotionWeekCap + " left this week";
+        }
+        setText("devotion_sub_text", sub);
+        Button b = (Button) findViewById(fid("btn_devotion"));
+        if (b != null) {
+            b.setEnabled(devotionAvailable);
+            b.setText(devotionWeekCap == 0 ? "Subscribers Only"
+                : devotionAvailable ? "Offer Devotion" : "Nothing Left This Week");
+        }
+    }
+
+    /** Draw a task, then make them type it. */
+    private void doDevotion() {
+        VenerationTasks cat = catalogue();
+        if (cat == null) {
+            statusText.setText("Task catalogue unavailable");
+            return;
+        }
+        java.util.List<VenerationTasks.Category> cats = cat.categories();
+        final String[] labels = new String[cats.size() + 1];
+        final String[] keys = new String[cats.size() + 1];
+        labels[0] = "Anything";
+        keys[0] = VenerationTasks.ANY;
+        for (int i = 0; i < cats.size(); i++) {
+            labels[i + 1] = cats.get(i).title;
+            keys[i + 1] = cats.get(i).key;
+        }
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Offer what?")
+            .setItems(labels, (d, which) -> showDevotionTask(keys[which]))
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    private void showDevotionTask(String categoryKey) {
+        VenerationTasks cat = catalogue();
+        if (cat == null) return;
+        final VenerationTasks.Task task = cat.draw(categoryKey, new java.util.Random());
+        if (task == null) {
+            statusText.setText("Nothing in that category");
+            return;
+        }
+
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(48, 24, 48, 24);
+
+        TextView prompt = new TextView(this);
+        prompt.setText(task.text);
+        prompt.setTextColor(0xFFe0d0f0);
+        prompt.setTextSize(15);
+        prompt.setPadding(0, 0, 0, 16);
+        layout.addView(prompt);
+
+        final EditText input = new EditText(this);
+        input.setHint("Type it exactly");
+        input.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+            | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        input.setMinLines(2);
+        // Typing is the task. Pasting it is not doing it — the desktop collar
+        // takes the same line on enforced veneration, and blocks unconditionally
+        // there. Here there is no penalty to apply (this is voluntary), so the
+        // paste is simply refused rather than charged.
+        input.setCustomSelectionActionModeCallback(new android.view.ActionMode.Callback() {
+            public boolean onCreateActionMode(android.view.ActionMode m, android.view.Menu menu) { return false; }
+            public boolean onPrepareActionMode(android.view.ActionMode m, android.view.Menu menu) { return false; }
+            public boolean onActionItemClicked(android.view.ActionMode m, android.view.MenuItem i) { return false; }
+            public void onDestroyActionMode(android.view.ActionMode m) { }
+        });
+        input.setLongClickable(false);
+        input.setTextIsSelectable(false);
+        layout.addView(input);
+
+        final TextView note = new TextView(this);
+        note.setText("Type it. Pasting is not typing.");
+        note.setTextColor(0xFF5a4a6a);
+        note.setTextSize(10);
+        note.setPadding(0, 12, 0, 0);
+        layout.addView(note);
+
+        android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(this)
+            .setTitle("Offer devotion")
+            .setView(layout)
+            .setPositiveButton("Offer", null)   // wired below so it can refuse
+            .setNeutralButton("Another", (d, w) -> showDevotionTask(categoryKey))
+            .setNegativeButton("Cancel", null)
+            .create();
+        dlg.setOnShowListener(dd -> dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE)
+            .setOnClickListener(v -> {
+                String typed = input.getText().toString().trim();
+                // Exact match, capitals included. The catalogue strings are the
+                // enforced form everywhere else in this system; accepting a
+                // near-miss here would make devotion the one place Their
+                // pronouns are optional.
+                if (!typed.equals(task.text.trim())) {
+                    note.setText("Not exactly it \u2014 capitals and punctuation count.");
+                    note.setTextColor(0xFFcc4444);
+                    return;
+                }
+                dlg.dismiss();
+                executor.execute(() -> postDevotion(task.id));
+            }));
+        dlg.show();
+    }
+
+    /** Blocking — call from an executor thread. */
+    private void postDevotion(String taskId) {
+        String meshId = gstr("focus_lock_mesh_id");
+        String meshUrl = gstr("focus_lock_mesh_url");
+        String nodeId = gstr("focus_lock_mesh_node_id");
+        if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty()) {
+            handler.post(() -> statusText.setText("Mesh not configured"));
+            return;
+        }
+        long ts = System.currentTimeMillis();
+        String signature = PairingManager.sign(getContentResolver(),
+            meshId + "|" + nodeId + "|devotion|" + taskId + "|" + ts);
+        if (signature == null || signature.isEmpty()) {
+            handler.post(() -> statusText.setText("Sign failed \u2014 pairing key missing"));
+            return;
+        }
+        try {
+            JSONObject body = new JSONObject();
+            body.put("node_id", nodeId);
+            body.put("task_id", taskId);
+            body.put("ts", ts);
+            body.put("signature", signature);
+            URL url = new URL(meshUrl + "/api/mesh/" + meshId + "/devotion");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(10000);
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.getOutputStream().write(body.toString().getBytes("UTF-8"));
+            int code = conn.getResponseCode();
+            java.io.InputStream is = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
+            StringBuilder sb = new StringBuilder();
+            if (is != null) {
+                BufferedReader r = new BufferedReader(new InputStreamReader(is));
+                String line;
+                while ((line = r.readLine()) != null) sb.append(line);
+                r.close();
+            }
+            conn.disconnect();
+            JSONObject resp = sb.length() > 0 ? new JSONObject(sb.toString()) : new JSONObject();
+            applyDevotionStatus(resp);
+            final boolean ok = code == 200 && resp.optBoolean("ok", false);
+            final String err = resp.optString("error", "HTTP " + code);
+            handler.post(() -> {
+                statusText.setText(ok ? "Offered. " + devotionRank + ", " + devotionPoints + "." : err);
+                refreshDevotion();
+            });
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "devotion post failed", e);
+            handler.post(() -> statusText.setText("Could not reach the relay"));
+        }
+    }
+
     // ── Live state the Collar tracks and this app never showed ──
     //
     // Every value below already existed in Settings.Global, written by the
@@ -455,6 +682,67 @@ public class MainActivity extends Activity {
         if (t != null) t.setText(text);
     }
 
+    /** What the lock is actually doing to the phone right now.
+     *
+     *  Nine modes and a stack of modifiers, and the bunny's own app never said
+     *  which were switched on — so "why is my screen dim" or "why did that
+     *  vibrate" had no answer on the device it was happening to. */
+    private void refreshModifiers() {
+        StringBuilder s = new StringBuilder();
+        if (gint("focus_lock_active") == 1) {
+            String mode = gstr("focus_lock_mode");
+            if (!mode.isEmpty()) s.append(mode.substring(0, 1).toUpperCase()).append(mode.substring(1)).append(" lock");
+        }
+        java.util.List<String> on = new java.util.ArrayList<>();
+        if (gint("focus_lock_shame") == 1) on.add("shame");
+        if (gint("focus_lock_dim") == 1) on.add("dimmed");
+        if (gint("focus_lock_mute") == 1) on.add("muted");
+        if (gint("focus_lock_vibrate") == 1) on.add("vibrate");
+        if (gint("focus_lock_penalty") == 1) on.add("penalties");
+        if (gint("focus_lock_lovense_available") == 1) on.add("toy connected");
+        if (!on.isEmpty()) {
+            if (s.length() > 0) s.append("\n");
+            s.append(String.join(" \u00b7 ", on));
+        }
+        // A geofence breach is a thing that HAPPENED, so it stays on screen
+        // afterwards; the stats tile only ever said whether a fence exists.
+        long breach = glong("focus_lock_geofence_breach_at");
+        if (breach > 0) {
+            long agoH = (System.currentTimeMillis() - breach) / 3600000L;
+            if (agoH < 72) {
+                if (s.length() > 0) s.append("\n");
+                s.append("Geofence breached ").append(agoH < 1 ? "under an hour ago" : agoH + "h ago");
+            }
+        }
+        boolean any = s.length() > 0;
+        show("section_modifiers", any);
+        if (any) setText("modifiers_text", s.toString());
+    }
+
+    /** Tamper the system noticed.
+     *
+     *  Consent runs both ways: if device admin came off and the Collar logged
+     *  it, the bunny should see that it was seen rather than find out from a
+     *  friction re-lock they cannot explain. Admin tamper is costly-exit by
+     *  design — no financial penalty, a re-lock and a note to the Lion — and
+     *  saying so plainly is part of that being honest rather than a trap. */
+    private void refreshTamper() {
+        boolean adminTamper = gint("focus_lock_admin_tamper") == 1;
+        boolean adminRemoved = gint("focus_lock_admin_removed") == 1;
+        boolean btRemoved = gint("focus_lock_bt_admin_removed") == 1;
+        if (!adminTamper && !adminRemoved && !btRemoved) {
+            show("section_tamper", false);
+            return;
+        }
+        java.util.List<String> what = new java.util.ArrayList<>();
+        if (adminRemoved) what.add("the Collar's device admin was removed");
+        if (btRemoved) what.add("Bunny Tasker's device admin was removed");
+        if (adminTamper && what.isEmpty()) what.add("a device-admin change");
+        show("section_tamper", true);
+        setText("tamper_text", "Your Lion has been told " + String.join(", and ", what)
+            + ".\nNo charge for it \u2014 it re-locks, that is all.");
+    }
+
     /** Everything on the Now tab that is derived from local state. Cheap
      *  (Settings.Global reads + arithmetic), so it runs on the poller while
      *  that tab is open. UI thread. */
@@ -465,6 +753,9 @@ public class MainActivity extends Activity {
         refreshSchedule();
         refreshBodyCheck();
         refreshOffer();
+        refreshModifiers();
+        refreshTamper();
+        refreshDevotion();
     }
 
     /** How much of today is left.
@@ -2891,7 +3182,11 @@ public class MainActivity extends Activity {
                 // Flip budget rides this response too, so the gamble button
                 // renders its real state on load instead of after a refusal.
                 applyGambleBudget(resp);
-                handler.post(this::renderGambleBudget);
+                applyDevotionStatus(resp);
+                handler.post(() -> {
+                    renderGambleBudget();
+                    refreshDevotion();
+                });
 
                 JSONArray entries = resp.optJSONArray("entries");
                 if (entries == null) return;

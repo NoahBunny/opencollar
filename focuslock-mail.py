@@ -1672,6 +1672,143 @@ def _gamble_status(mesh_id: str) -> dict:
     }
 
 
+# ── Per-mesh devotion (voluntary tasks) ──
+# A bunny can ask for work. The 144-task veneration catalogue already ships to
+# both apps; this is the same catalogue drawn from voluntarily rather than
+# imposed, and it is a subscription perk — the tier decides how much of it
+# counts in a week.
+#
+# The reward is deliberately POINTS AND NOT MONEY. A voluntary task that took
+# money off the balance would be a discount the bunny writes themselves, which
+# is the one thing this system must never hand over: they already hold the
+# device, the root and the drive. Points are a record of effort they chose,
+# and the Lion may reward it, convert it, or ignore it. Standing is earnable;
+# a discount is not.
+#
+# The counter and the cap live here for the same reason the tamper ratchet and
+# the gamble budget do: on the relay, in a file the bunny cannot reach. The
+# typing discipline in the app is client-side and a tampered client can always
+# lie about it — which is exactly why what it buys is a rank and not a dollar.
+DEVOTION_WEEKLY_CAP = {"": 0, "bronze": 3, "silver": 7, "gold": -1}  # -1 = uncapped
+DEVOTION_RANKS = [
+    (0, "Unproven"),
+    (10, "Attentive"),
+    (25, "Dutiful"),
+    (50, "Devoted"),
+    (100, "Exemplary"),
+]
+_DEVOTION_DIR = os.path.join(os.path.dirname(MESH_ORDERS_FILE), "devotion")
+_devotion_lock = threading.Lock()
+
+
+def _devotion_path(mesh_id: str):
+    return _mesh_state_path(_DEVOTION_DIR, mesh_id)
+
+
+def devotion_rank(points: int) -> str:
+    name = DEVOTION_RANKS[0][1]
+    for threshold, label in DEVOTION_RANKS:
+        if points >= threshold:
+            name = label
+    return name
+
+
+def _devotion_read(mesh_id: str) -> dict:
+    state = {"points": 0, "week_start": 0, "week_count": 0, "last_ms": 0, "recent": []}
+    path = _devotion_path(mesh_id)
+    if path and os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            state["points"] = max(0, int(raw.get("points", 0) or 0))
+            state["week_start"] = int(raw.get("week_start", 0) or 0)
+            state["week_count"] = max(0, int(raw.get("week_count", 0) or 0))
+            state["last_ms"] = int(raw.get("last_ms", 0) or 0)
+            recent = raw.get("recent", []) or []
+            if isinstance(recent, list):
+                state["recent"] = [str(x) for x in recent][-20:]
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            logger.warning("devotion state unreadable for mesh=%s", _sanitize_log(mesh_id))
+    return state
+
+
+def devotion_status(mesh_id: str, tier: str = "") -> dict:
+    """Read-only view. Never records anything."""
+    state = _devotion_read(mesh_id)
+    now = int(time.time())
+    week_count = state["week_count"]
+    if state["week_start"] and (now - state["week_start"]) >= 604800:
+        week_count = 0
+    cap = DEVOTION_WEEKLY_CAP.get((tier or "").lower(), 0)
+    return {
+        "devotion_points": state["points"],
+        "devotion_rank": devotion_rank(state["points"]),
+        "devotion_week_used": week_count,
+        "devotion_week_cap": cap,
+        "devotion_available": cap != 0 and (cap < 0 or week_count < cap),
+    }
+
+
+def devotion_claim(mesh_id: str, tier: str, task_id: str) -> dict:
+    """Record one voluntary task. Returns the post-claim status, or an error.
+
+    Tier gates it: without a subscription the perk simply is not there, and
+    each tier buys a bigger weekly allowance. The window is rolling from the
+    first claim of the week rather than calendar-anchored, same as the gamble
+    budget — a calendar week hands out a fresh allowance at a predictable
+    moment, which turns "how much did you choose to do" into "who stayed up".
+    """
+    tier = (tier or "").lower()
+    cap = DEVOTION_WEEKLY_CAP.get(tier, 0)
+    if cap == 0:
+        return {"error": "devotion is a subscriber perk", "tier": tier}
+    now = int(time.time())
+    with _devotion_lock:
+        state = _devotion_read(mesh_id)
+        if not state["week_start"] or (now - state["week_start"]) >= 604800:
+            state["week_start"] = now
+            state["week_count"] = 0
+        if cap > 0 and state["week_count"] >= cap:
+            return {
+                "error": f"weekly limit reached ({cap})",
+                "retry_after": 604800 - (now - state["week_start"]),
+            }
+        state["week_count"] += 1
+        state["points"] += 1
+        state["last_ms"] = now * 1000
+        state["recent"] = (state["recent"] + [f"{task_id}@{now}"])[-20:]
+
+        path = _devotion_path(mesh_id)
+        if not path:
+            return {"error": "invalid mesh_id"}
+        try:
+            os.makedirs(_DEVOTION_DIR, exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(state, f)
+            os.replace(tmp, path)
+        except OSError as e:
+            # The gamble budget refuses on an unwritable store because an
+            # unbounded flip is an escape hatch. Here the risk points the other
+            # way: the harm is a claim that silently does not count, which is
+            # effort the Lion never sees. So report the failure plainly rather
+            # than returning a success the record does not back.
+            logger.warning("devotion unwritable for mesh=%s: %s", _sanitize_log(mesh_id), e)
+            return {"error": "could not record devotion"}
+
+    logger.info(
+        "devotion claimed: mesh=%s task=%s points=%s week=%s/%s",
+        _sanitize_log(mesh_id),
+        _sanitize_log(task_id),
+        state["points"],
+        state["week_count"],
+        cap if cap > 0 else "\u221e",
+    )
+    out = devotion_status(mesh_id, tier)
+    out["ok"] = True
+    return out
+
+
 # ── Per-mesh payment ledger ──
 # Legacy singleton (focus.example.com's operator mesh and nothing else) is
 # kept at _LEDGER_PATH for backward compat on read; new per-mesh ledgers
@@ -4720,6 +4857,88 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         # heads halves (rounded up), tails doubles. The Collar's local doGamble()
         # was the previous RNG site; moving it here closes the "tampered Collar
         # always rolls heads" loophole. Returns {result, old_paywall, new_paywall}.
+        # ── Bunny-authed voluntary task claim (devotion) ──
+        # Path: /api/mesh/{mesh_id}/devotion
+        # Body: {node_id, task_id, ts, signature}
+        # signature = SHA256withRSA over "mesh_id|node_id|devotion|task_id|ts"
+        # with the bunny's registered key. ±5min replay window, same shape as
+        # /gamble. The tier is read from the mesh's own orders — the client
+        # does not get to declare which perk level it is on.
+        elif self.path.startswith("/api/mesh/") and self.path.endswith("/devotion"):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 4 or parts[3] != "devotion":
+                self.respond(400, {"error": "bad path — expected /api/mesh/{mesh_id}/devotion"})
+                return
+            mesh_id = parts[2]
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            account = _mesh_accounts.get(mesh_id)
+            if not account:
+                self.respond(404, {"error": "mesh not found"})
+                return
+            node_id = data.get("node_id", "")
+            signature = data.get("signature", "")
+            task_id = str(data.get("task_id", "") or "").strip()[:32]
+            if not node_id or not signature:
+                self.respond(400, {"error": "node_id and signature required"})
+                return
+            # Plain character check rather than a regex: `re` is imported
+            # locally further down this same handler, which shadows the module
+            # for the whole scope. task_id lands in a log line and a state
+            # file, so keep it to an unmistakable alphabet.
+            if not task_id or not all(c.isalnum() or c in "._-" for c in task_id):
+                self.respond(400, {"error": "task_id required"})
+                return
+            try:
+                ts_i = int(data.get("ts", 0) or 0)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            if abs(int(time.time() * 1000) - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+            node = account.get("nodes", {}).get(node_id)
+            if not node:
+                self.respond(403, {"error": "node not registered in mesh"})
+                return
+            bunny_pubkey = node.get("bunny_pubkey", "")
+            if not bunny_pubkey:
+                for _vn in _vault_store.get_nodes(mesh_id):
+                    if _vn.get("node_id") == node_id and _vn.get("bunny_pubkey"):
+                        bunny_pubkey = _vn["bunny_pubkey"]
+                        break
+            if not bunny_pubkey:
+                self.respond(403, {"error": "no bunny_pubkey on file for node"})
+                return
+            payload = f"{mesh_id}|{node_id}|devotion|{task_id}|{ts_i}"
+            try:
+                import base64 as _b64d
+
+                from cryptography.hazmat.primitives import hashes, serialization
+                from cryptography.hazmat.primitives.asymmetric import padding
+
+                pub = serialization.load_der_public_key(_b64d.b64decode(bunny_pubkey))
+                pub.verify(_b64d.b64decode(signature), payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
+            except Exception as e:
+                logger.warning(
+                    "devotion sig verify failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    e,
+                )
+                self.respond(403, {"error": "invalid signature"})
+                return
+
+            orders = _orders_registry.get(mesh_id)
+            tier = (orders.get("sub_tier", "") or "").lower() if orders else ""
+            result = devotion_claim(mesh_id, tier, task_id)
+            if result.get("error"):
+                status = 402 if "perk" in result["error"] else 429
+                self.respond(status, {**result, **devotion_status(mesh_id, tier)})
+                return
+            self.respond(200, result)
+
         elif self.path.startswith("/api/mesh/") and self.path.endswith("/gamble"):
             parts = self.path.strip("/").split("/")
             if len(parts) != 4 or parts[3] != "gamble":
@@ -4956,6 +5175,13 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     # Flip budget, so the gamble button can render its own
                     # state on load rather than after a refusal.
                     **_gamble_status(mesh_id),
+                    # Devotion rides this read because BOTH sides already call
+                    # it (from: "lion" is accepted above), so the Lion sees what
+                    # the bunny chose to do without a second endpoint.
+                    **devotion_status(
+                        mesh_id,
+                        (orders.get("sub_tier", "") or "").lower() if orders else "",
+                    ),
                 },
             )
 

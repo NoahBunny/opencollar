@@ -8,6 +8,55 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-09-01 devotion ───────── -->
+
+### Added — Devotion: voluntary tasks, as a subscriber perk
+
+The bunny draws from the same 144-line veneration catalogue the Lion imposes
+from, types it out exactly, and earns a rank. Everything else in Bunny Tasker
+is state the bunny is subject to; this is the one thing they can choose.
+
+- **The reward is points and never money.** A voluntary task that took money
+  off the balance would be a discount the bunny writes for themselves — the one
+  thing this system exists not to hand over, since they already hold the
+  device, the root and the drive. Points record effort they chose; the Lion may
+  reward it, convert it, or ignore it. Standing is earnable, a discount is not.
+  A test asserts no balance-shaped key can appear in a claim response.
+- **The tier is the perk.** Bronze 3/week, Silver 7, Gold unlimited, none
+  without a subscription. The window rolls from the first claim rather than
+  anchoring to a calendar week, which would turn "how much did you choose to
+  do" into "who stayed up for the reset". The tier is read from the mesh's own
+  orders — the client does not declare its own perk level.
+- **Cap and counter live on the relay**, in a file the device cannot reach,
+  same as the tamper ratchet and the flip budget. The typing discipline is
+  client-side and a tampered client can always lie about it, which is precisely
+  why what it buys is a rank rather than a dollar.
+- **Typing is the task.** Paste is refused outright (no penalty — this is
+  voluntary), and the match is exact, capitals included. The catalogue strings
+  are the enforced form everywhere else in this system; accepting a near-miss
+  would make devotion the one place Their pronouns are optional.
+- **Both apps ship the same catalogue.** `make-veneration-md.py` now emits the
+  companion's copy too, and a test asserts the two resources are byte-identical
+  — a line offered from one picker and enforced from the other would differ by
+  a capital and be unsatisfiable.
+- **The Lion sees it for free.** Devotion status rides `/payments`, which both
+  sides already read, so no second endpoint and no second auth path.
+
+### Added — the last of the Collar state worth showing
+
+- **In force.** The lock mode plus which modifiers are actually on (shame, dim,
+  mute, vibrate, penalties, toy connected). "Why is my screen dim" had no
+  answer on the device it was happening to.
+- **Geofence breaches persist.** The stats tile only ever said whether a fence
+  existed; a breach is a thing that happened, and now stays visible for 72h.
+- **Noticed.** If device admin came off and the Collar logged it, the bunny
+  sees that it was seen — and that it carries no charge, only a re-lock. Admin
+  tamper is costly-exit by design, and saying so plainly is what keeps that
+  honest rather than a trap.
+
+### Released — Bunny Tasker 68
+
+
 <!-- ───────── 2026-09-01 Bunny Tasker, second pass ───────── -->
 
 ### Added — the state the bunny was being held to, and could not see

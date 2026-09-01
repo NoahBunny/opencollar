@@ -343,6 +343,113 @@
             android:layout_height="wrap_content"
             android:orientation="vertical">
 
+
+        <!-- Devotion — voluntary tasks, a subscriber perk.
+             The bunny draws from the same 144-line catalogue the Lion
+             imposes from, types it out, and earns a rank. The reward is
+             POINTS and never money: a voluntary task that took money off
+             the balance would be a discount the bunny writes themselves,
+             which is the one thing this system must not hand over. -->
+        <LinearLayout
+            android:id="@+id/section_devotion"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="DEVOTION"
+            android:textColor="#5a4a6a"
+            android:textSize="10sp"
+            android:letterSpacing="0.15"
+            android:layout_marginBottom="8dp" />
+        <TextView
+            android:id="@+id/devotion_rank_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#cc99ee"
+            android:textSize="15sp"
+            android:layout_marginBottom="4dp" />
+        <TextView
+            android:id="@+id/devotion_sub_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#7a6a8a"
+            android:textSize="11sp"
+            android:layout_marginBottom="10dp" />
+        <Button
+            android:id="@+id/btn_devotion"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:text="Offer Devotion"
+            android:textSize="13sp"
+            android:backgroundTint="#1a0e22"
+            android:textColor="#cc88cc"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:layout_marginBottom="14dp" />
+
+        </LinearLayout>
+
+
+        <!-- Modifiers actually in force, and whether the system has
+             noticed a tamper. Both were Collar-side only. -->
+        <LinearLayout
+            android:id="@+id/section_modifiers"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="IN FORCE"
+            android:textColor="#5a4a6a"
+            android:textSize="10sp"
+            android:letterSpacing="0.15"
+            android:layout_marginBottom="8dp" />
+        <TextView
+            android:id="@+id/modifiers_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#8a7a9a"
+            android:textSize="12sp"
+            android:layout_marginBottom="12dp" />
+
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/section_tamper"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="NOTICED"
+            android:textColor="#5a4a6a"
+            android:textSize="10sp"
+            android:letterSpacing="0.15"
+            android:layout_marginBottom="8dp" />
+        <TextView
+            android:id="@+id/tamper_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#cc4444"
+            android:textSize="12sp"
+            android:layout_marginBottom="12dp" />
+
+        </LinearLayout>
+
         <!-- ═══ Live state the Collar already tracks and this app never showed.
              Each block hides itself when the feature is off, so the tab shows
              what is actually being enforced rather than a list of dormant

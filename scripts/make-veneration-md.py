@@ -31,6 +31,11 @@ DEST = ROOT / "veneration-tasks.md"
 # task the Lion sets from one and the lockscreen enforces from the other, and
 # with randcaps on "slightly different" is a task the bunny cannot satisfy.
 APP_DEST = ROOT / "android" / "controller" / "res" / "raw" / "veneration_tasks.json"
+# Bunny Tasker reads the SAME derived file to offer voluntary tasks. Same
+# reasoning as above, one step further: if the bunny's picker and the Lion's
+# picker disagree by a single capital, a task offered from one and enforced
+# from the other is unsatisfiable — so both read a file neither app can edit.
+COMPANION_DEST = ROOT / "android" / "companion" / "res" / "raw" / "veneration_tasks.json"
 
 # Display names for the category keys, in the order they appear in the document.
 SECTIONS = [
@@ -106,7 +111,8 @@ def render(doc):
 
 def main():
     doc = json.loads(SRC.read_text(encoding="utf-8"))
-    outputs = [(DEST, render(doc)), (APP_DEST, render_app(doc))]
+    app_view = render_app(doc)
+    outputs = [(DEST, render(doc)), (APP_DEST, app_view), (COMPANION_DEST, app_view)]
 
     if "--check" in sys.argv:
         stale = [d.name for d, want in outputs if (d.read_text(encoding="utf-8") if d.exists() else "") != want]

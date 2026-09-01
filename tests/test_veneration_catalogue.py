@@ -4,6 +4,7 @@
 
   * `veneration-tasks.md`                              — the Lion's reading view
   * `android/controller/res/raw/veneration_tasks.json` — what Lion's Share ships
+  * `android/companion/res/raw/veneration_tasks.json`  — what Bunny Tasker ships
 
 `scripts/make-veneration-md.py --check` has existed since the markdown view was
 added, and nothing ran it. That is a drift guard that does not guard: the whole
@@ -27,6 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC = REPO_ROOT / "veneration-tasks.json"
 MD = REPO_ROOT / "veneration-tasks.md"
 APP = REPO_ROOT / "android" / "controller" / "res" / "raw" / "veneration_tasks.json"
+COMPANION_APP = REPO_ROOT / "android" / "companion" / "res" / "raw" / "veneration_tasks.json"
 GENERATOR = REPO_ROOT / "scripts" / "make-veneration-md.py"
 
 
@@ -70,3 +72,11 @@ def test_the_suggested_reps_are_sane():
         assert t["reps"] * words <= 400, (
             f"{t['id']} suggests {t['reps']} reps of {words} words — {t['reps'] * words} words to type"
         )
+
+
+def test_both_apps_ship_byte_identical_catalogues():
+    """Voluntary tasks let the bunny draw from the same 144 the Lion draws
+    from. If the two copies drift by a single capital, a task offered from one
+    picker and enforced from the other is unsatisfiable — the exact failure the
+    derived-file rule exists to prevent, now with two consumers instead of one."""
+    assert COMPANION_APP.read_bytes() == APP.read_bytes()
