@@ -254,6 +254,9 @@ public class MainActivity extends Activity {
 
         View btnDev = findViewById(fid("btn_devotion"));
         if (btnDev != null) btnDev.setOnClickListener(v -> doDevotion());
+
+        View btnTighten = findViewById(fid("btn_tighten"));
+        if (btnTighten != null) btnTighten.setOnClickListener(v -> doTighten());
         tierBadge = (TextView) findViewById(fid("tier_badge"));
         messagesHeader = (TextView) findViewById(fid("messages_header"));
         messagesExpanded = prefs.getBoolean("messages_expanded", false);
@@ -763,6 +766,66 @@ public class MainActivity extends Activity {
         if (t != null) t.setText(text);
     }
 
+    /** The cage ceiling, and how much of it the Lion has given back.
+     *
+     *  Read-only on this side. The ceiling lives in the Collar's app-private
+     *  SharedPreferences — the one store the Lion's ADB bridge cannot write —
+     *  which is exactly what makes "They can loosen but never tighten"
+     *  enforceable. Letting this app write it, or routing a request through
+     *  Settings.Global for the Collar to pick up, would hand that capability
+     *  straight back to a `settings put global`. So the button launches the
+     *  Collar's own screen and the write happens over there. UI thread. */
+    private void refreshCage() {
+        TextView t = (TextView) findViewById(fid("cage_text"));
+        View btn = findViewById(fid("btn_tighten"));
+        int ceiling = gint("focus_lock_cage_ceiling");
+        int effective = gint("focus_lock_cage_level_effective");
+        int lionReq = Settings.Global.getInt(getContentResolver(), "focus_lock_cage_level_lion", -1);
+        boolean collared = isCollarInstalled();
+        show("section_cage", collared);
+        if (t == null) return;
+        StringBuilder s = new StringBuilder();
+        s.append("Your ceiling: ").append(cageName(ceiling));
+        if (lionReq >= 0 && effective < ceiling) {
+            s.append("\nYour Lion has loosened it to ").append(cageName(effective))
+             .append(" \u2014 They can put it back to your ceiling, never past it.");
+        } else {
+            s.append("\nIn force: ").append(cageName(effective));
+        }
+        if (ceiling >= 2) {
+            s.append("\nSealed is the tightest there is.");
+        }
+        t.setText(s.toString());
+        if (btn != null) btn.setEnabled(ceiling < 2);
+    }
+
+    private String cageName(int level) {
+        return level >= 2 ? "Sealed" : level == 1 ? "Collar" : "Leash";
+    }
+
+    private boolean isCollarInstalled() {
+        try {
+            getPackageManager().getPackageInfo("com.focuslock", 0);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Hand off to the Collar's own screen, which owns the boundary. */
+    private void doTighten() {
+        try {
+            android.content.Intent i = new android.content.Intent();
+            i.setComponent(new android.content.ComponentName(
+                "com.focuslock", "com.focuslock.TightenActivity"));
+            i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "tighten launch failed", e);
+            statusText.setText("Could not open the Collar");
+        }
+    }
+
     /** What the lock is actually doing to the phone right now.
      *
      *  Nine modes and a stack of modifiers, and the bunny's own app never said
@@ -836,6 +899,7 @@ public class MainActivity extends Activity {
         refreshOffer();
         refreshModifiers();
         refreshTamper();
+        refreshCage();
         refreshDevotion();
     }
 
@@ -3675,6 +3739,7 @@ public class MainActivity extends Activity {
                 body.put("ciphertext", enc.ciphertext);
                 body.put("encrypted_key", enc.encryptedKey);
                 body.put("iv", enc.iv);
+                if (enc.encryptedKeySelf != null) body.put("encrypted_key_bunny", enc.encryptedKeySelf);
             }
             body.put("ts", ts);
             if (clientMsgId != null && !clientMsgId.isEmpty()) body.put("client_msg_id", clientMsgId);
@@ -3859,7 +3924,10 @@ public class MainActivity extends Activity {
             String lionPubKey = gstr("focus_lock_lion_pubkey");
             E2EEHelper.EncryptedMessage enc = null;
             if (E2EEHelper.canEncrypt(lionPubKey)) {
-                enc = E2EEHelper.encrypt(msg, lionPubKey);
+                // Wrap the same AES key a second time for ourselves, so our own
+                // side of the thread survives a cache eviction, a reinstall or
+                // a new device. Same fix Lion's Share already carries.
+                enc = E2EEHelper.encrypt(msg, lionPubKey, ownBunnyPub());
             }
             // Bounded retry. Reuse ts + clientMsgId every attempt so the
             // signature stays valid and the server dedups to one message.
@@ -4032,13 +4100,30 @@ public class MainActivity extends Activity {
                                 text = "[encrypted — missing key]";
                             }
                         } else if (m.optBoolean("encrypted", false) && fromBunny) {
-                            // The bunny encrypted this to Lion's pubkey, so
-                            // they can't decrypt it themselves. Use the local
-                            // plaintext cache (keyed by ts) — the bubble
-                            // shown right after send put it there, so refresh
-                            // doesn't replace the visible text with a stub.
+                            // Our own copy, wrapped for us at send time. The
+                            // local plaintext cache is now only a fast path:
+                            // it is per-device and evictable, so it was never
+                            // able to survive a reinstall or a device change.
+                            // Messages sent before the second wrap existed
+                            // carry no encrypted_key_bunny and stay unreadable
+                            // — say so plainly rather than implying the whole
+                            // feature is broken.
                             String cached = lookupSentPlaintext(ts);
-                            text = cached != null ? cached : "[encrypted — sent by you]";
+                            if (cached != null) {
+                                text = cached;
+                            } else {
+                                String ekSelf = m.optString("encrypted_key_bunny", "");
+                                if (!ekSelf.isEmpty() && E2EEHelper.canDecrypt(bunnyPrivKey)) {
+                                    String dec = E2EEHelper.decrypt(
+                                        m.optString("ciphertext", ""), ekSelf,
+                                        m.optString("iv", ""), bunnyPrivKey);
+                                    text = dec != null ? dec : "[encrypted — could not read your own copy]";
+                                    // Re-seed the cache so the next render is free.
+                                    if (dec != null) cacheSentPlaintext(ts, dec);
+                                } else {
+                                    text = "[encrypted — sent before your copy was kept]";
+                                }
+                            }
                         }
                         boolean isMandatory = m.optBoolean("mandatory_reply", false)
                             && !m.optBoolean("replied", false) && !deleted;
@@ -4155,6 +4240,17 @@ public class MainActivity extends Activity {
      *  plaintext on the bunny's own device adds no new exposure surface —
      *  the bunny already authored it. */
     private static final int SENT_PLAINTEXT_CAP = 200;
+
+    /** Our own public key, in the same form the mesh registered us with, so a
+     *  self-wrap is readable by the private key PairingManager already holds. */
+    private String ownBunnyPub() {
+        try {
+            return PairingManager.getPublicKey(getContentResolver());
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "own pubkey unavailable for self-wrap", e);
+            return null;
+        }
+    }
 
     private void cacheSentPlaintext(long ts, String plaintext) {
         if (plaintext == null) return;

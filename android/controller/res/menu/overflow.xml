@@ -21,6 +21,7 @@
 
     <group android:id="@+id/menu_group_setup">
         <item android:id="@+id/menu_web_remote" android:title="📱  Web Remote…" />
+        <item android:id="@+id/menu_cage" android:title="🔓  Loosen Cage…" />
         <item android:id="@+id/menu_devotion" android:title="🕯  Devotion…" />
         <item android:id="@+id/menu_payment_email" android:title="📧  Payment Email…" />
         <item android:id="@+id/menu_setup" android:title="⚙  Setup…" />

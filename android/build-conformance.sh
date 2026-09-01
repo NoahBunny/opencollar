@@ -59,8 +59,10 @@ echo "== compiling Android src (controller + slave + companion) + shims + tests 
     "$SCRIPT_DIR/controller/test/com/focusctl/VenerationTasksTest.java" \
     "$SCRIPT_DIR/slave/src/com/focuslock/VaultCrypto.java" \
     "$SCRIPT_DIR/slave/src/com/focuslock/MeshOrderApply.java" \
+    "$SCRIPT_DIR/slave/src/com/focuslock/CageRule.java" \
     "$SCRIPT_DIR/slave/test/com/focuslock/ConformanceCli.java" \
     "$SCRIPT_DIR/slave/test/com/focuslock/MeshOrderApplyTest.java" \
+    "$SCRIPT_DIR/slave/test/com/focuslock/CageRuleTest.java" \
     "$SCRIPT_DIR/test-support/android/content/ContentResolver.java" \
     "$SCRIPT_DIR/test-support/android/provider/Settings.java" \
     "$SCRIPT_DIR/slave/src/com/focuslock/SigVerifier.java" \

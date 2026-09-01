@@ -114,6 +114,10 @@ ORDER_KEYS = {
     "mode": "basic",
     "paywall": "0",
     "paywall_original": "0",
+    # The Lion's requested cage tier (-1 = no request). Only ever loosens: the
+    # Collar clamps it against the wearer's ceiling, which is stored where no
+    # order can reach it. See ShadeGuardService.effectiveCageLevel.
+    "cage_level_lion": -1,
     "compliment": "",
     "word_min": 50,
     "exercise": "Do 20 pushups",

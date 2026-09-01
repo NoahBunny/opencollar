@@ -103,6 +103,32 @@ final class ConsentStore {
         if (level < 0) level = 0;
         if (level > 2) level = 2;
         prefs(ctx).edit().putInt(K_CAGE_LEVEL, level).apply();
+        mirrorForDisplay(ctx, level);
+    }
+
+    /**
+     * Copy the ceiling into Settings.Global so Bunny Tasker can SHOW it.
+     *
+     * <p>Display only, and never read back as authority:
+     * {@link ShadeGuardService#effectiveCageLevel} takes the ceiling from the
+     * private prefs above and nowhere else. That distinction is the whole
+     * security property — Settings.Global is writable by the Lion's ADB
+     * bridge, so a mirror that anything trusted would re-open exactly the hole
+     * keeping the ceiling app-private was meant to close.
+     *
+     * <p>Worst case for a tampered mirror is therefore a companion screen
+     * showing the wrong number, not a cage that tightened without consent.
+     */
+    static void mirrorForDisplay(Context ctx, int level) {
+        try {
+            android.provider.Settings.Global.putInt(
+                ctx.getContentResolver(), "focus_lock_cage_ceiling", level);
+            android.provider.Settings.Global.putInt(
+                ctx.getContentResolver(), "focus_lock_cage_level_effective",
+                ShadeGuardService.effectiveCageLevel(ctx));
+        } catch (Exception e) {
+            android.util.Log.w("FocusLock", "cage mirror failed (display only)", e);
+        }
     }
 
     /** The bunny's chosen cage ceiling, or -1 if never set (caller defaults to

@@ -516,6 +516,7 @@ public class MainActivity extends Activity {
             if (id == getId("menu_bunnies")) doBunnies();
             else if (id == getId("menu_vault_nodes")) doVaultNodes();
             else if (id == getId("menu_web_remote")) doWebRemoteScan();
+            else if (id == getId("menu_cage")) doCageLoosen();
             else if (id == getId("menu_devotion")) doDevotionReview();
             else if (id == getId("menu_payment_email")) doPaymentEmail();
             else if (id == getId("menu_setup")) doSetup();
@@ -736,6 +737,19 @@ public class MainActivity extends Activity {
         handler.post(() -> updateLiveStatus(s));
     }
 
+    /** Cage tiers from the Collar's status: the wearer's ceiling, what is in
+     *  force, and this app's own standing request. -1 means "not reported yet"
+     *  for the request; the others default to Leash. */
+    private int cageCeiling = 0, cageEffective = 0, cageLionRequest = -1;
+
+    private static int parseIntOr(String s, int fallback) {
+        try {
+            return (s == null || s.isEmpty()) ? fallback : Integer.parseInt(s.trim());
+        } catch (Exception e) {
+            return fallback;
+        }
+    }
+
     private void updateLiveStatus(String json) {
         // Remember the last REAL snapshot so an optimistic re-render (which may
         // pass a synthetic "{}") can reuse it without clobbering other fields.
@@ -876,6 +890,12 @@ public class MainActivity extends Activity {
         if (toySection != null) toySection.setVisibility(lovenseAvail ? View.VISIBLE : View.GONE);
         TextView pokesSummary = (TextView) findViewById(getId("sec_pokes_summary"));
         if (pokesSummary != null) pokesSummary.setText(lovenseAvail ? "Speak, Audio, Toy" : "Speak, Audio");
+
+        // Cage tiers, cached for the loosen dialog. The ceiling is the wearer's
+        // and is only ever reported here — nothing this app sends can raise it.
+        cageCeiling = parseIntOr(JsonScan.numStr(json, "cage_ceiling"), cageCeiling);
+        cageEffective = parseIntOr(JsonScan.numStr(json, "cage_effective"), cageEffective);
+        cageLionRequest = parseIntOr(JsonScan.numStr(json, "cage_lion_request"), cageLionRequest);
 
         // Fine status
         String fineActive = JsonScan.numStr(json, "fine_active");
@@ -3121,6 +3141,71 @@ public class MainActivity extends Activity {
     // is. Null until the first draw, and again if the resource is unreadable.
     private VenerationTasks venerations;
     private final Random venerationRng = new Random();
+
+    // ── Loosening the cage ──
+    //
+    // The tightness tier is the one control in this system You cannot turn up.
+    // The wearer sets a ceiling on the Terms-of-Surrender screen, and raises it
+    // themselves if they choose; it lives in the Collar's app-private
+    // SharedPreferences, which is the one store the ADB bridge cannot write.
+    // Everything You send here is clamped by min() against that ceiling on the
+    // device, so a tighter number is not refused, it is simply inert.
+    //
+    // What You can do is give some of it back — and take that back again, up to
+    // their ceiling and no further.
+
+    private static String cageName(int level) {
+        return level >= 2 ? "Sealed" : level == 1 ? "Collar" : "Leash";
+    }
+
+    private void doCageLoosen() {
+        final int ceiling = cageCeiling;
+        final int effective = cageEffective;
+        final int request = cageLionRequest;
+
+        java.util.List<String> labels = new java.util.ArrayList<>();
+        final java.util.List<Integer> levels = new java.util.ArrayList<>();
+        for (int lvl = 0; lvl < ceiling; lvl++) {
+            labels.add("Loosen to " + cageName(lvl)
+                + (request == lvl ? "   (current)" : ""));
+            levels.add(lvl);
+        }
+        // Handing the ceiling back is its own act, and worth naming as one.
+        labels.add(request >= 0
+            ? "Return them to their own ceiling (" + cageName(ceiling) + ")"
+            : "At their ceiling already (" + cageName(ceiling) + ")");
+        levels.add(-1);
+
+        String header = "Their ceiling: " + cageName(ceiling)
+            + "\nIn force: " + cageName(effective)
+            + "\n\nYou can loosen this. You cannot tighten it — that is theirs to give.";
+
+        if (ceiling == 0) {
+            new AlertDialog.Builder(this)
+                .setTitle("Cage")
+                .setMessage(header + "\n\nLeash is already the loosest tier there is.")
+                .setPositiveButton("Close", null)
+                .show();
+            return;
+        }
+
+        final String[] items = labels.toArray(new String[0]);
+        new AlertDialog.Builder(this)
+            .setTitle(header)
+            .setItems(items, (d, which) -> {
+                int lvl = levels.get(which);
+                setStatus("Sending…");
+                executor.execute(() -> {
+                    String r = api("/api/set-cage-level", "{\"level\":\"" + lvl + "\"}");
+                    boolean ok = r != null && r.contains("ok");
+                    setStatus(ok
+                        ? (lvl < 0 ? "Returned to their ceiling" : "Loosened to " + cageName(lvl))
+                        : "Failed: " + r);
+                });
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
 
     // ── Devotion: reviewing what the bunny offered, and answering it ──
     //

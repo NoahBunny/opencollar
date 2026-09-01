@@ -344,6 +344,49 @@
             android:orientation="vertical">
 
 
+        <LinearLayout
+            android:id="@+id/section_cage"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+        <!-- The cage ceiling. Read-only here on purpose: the write happens in
+             the Collar (TightenActivity), because the ceiling is stored in that
+             app's private prefs — the one place the Lion's ADB bridge cannot
+             reach. Routing it through here would hand that capability back. -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="HOW TIGHT"
+            android:textColor="#5a4a6a"
+            android:textSize="10sp"
+            android:letterSpacing="0.15"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:id="@+id/cage_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#8a7a9a"
+            android:textSize="12sp"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/btn_tighten"
+            android:layout_width="match_parent"
+            android:layout_height="42dp"
+            android:text="Tighten"
+            android:textSize="13sp"
+            android:backgroundTint="#0e0c16"
+            android:textColor="#aa88cc"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:layout_marginBottom="14dp" />
+
+        </LinearLayout>
+
         <!-- Devotion — voluntary tasks, a subscriber perk.
              The bunny draws from the same 144-line catalogue the Lion
              imposes from, types it out, and earns a rank. The reward is

@@ -8,6 +8,67 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-09-01 the ratchet, and the bunny's own copy ───────── -->
+
+### Added — tightness moves one way per party, and now it can move at all
+
+The rule was already written and enforced: `min(ceiling, lion_request)` in
+`ShadeGuardService.effectiveCageLevel`, with the wearer's ceiling in the
+Collar's app-private SharedPreferences — the one store the Lion's ADB bridge
+cannot write, which is what makes "loosen but never tighten" enforceable rather
+than merely stated. What was missing was any way to move it.
+
+- **`focus_lock_cage_level_lion` was read and never written by anything.** The
+  Lion's half of the mechanism has never been reachable.
+- **`setCageLevel` was only ever called from the Terms-of-Surrender screen.**
+  The ceiling was writable exactly once, at the least informed moment there is —
+  before wearing the thing — and the only way further was a factory reset.
+
+Both halves now exist, in the direction each party owns:
+
+- **The wearer tightens, in the Collar.** A new `TightenActivity`, launched from
+  Bunny Tasker, offering strictly tighter tiers than the current ceiling and
+  nothing else, behind a confirmation that names what is being given up. It
+  lives in the Collar and not the companion on purpose: routing a "tighten
+  request" through Settings.Global so the companion could write it would hand
+  a `settings put global` exactly the capability that keeping the ceiling
+  app-private was meant to deny.
+- **The Lion loosens, by order.** ⋮ → Loosen Cage in Lion's Share, via a new
+  `set-cage-level` action that rides the vault like every other order. A tighter
+  number is not refused — it is inert, because the clamp happens on the device
+  where the ceiling lives. Choosing "return them to their own ceiling" clears
+  the request.
+- **The Collar reports both numbers** (`cage_ceiling`, `cage_effective`,
+  `cage_lion_request`) so the Lion can loosen meaningfully, and mirrors the
+  ceiling to Settings.Global for the companion to *display* — never to read as
+  authority, so a tampered mirror shows a wrong number rather than tightening a
+  cage.
+
+### Changed — the rule is now a unit test, not a comment
+
+- Extracted `CageRule`, free of any Android type, so the most safety-critical
+  arithmetic in the system can be tested without a device. `CageRuleTest` pins
+  it as a property over the whole input space: **no combination of ceiling and
+  request can produce a tier tighter than the ceiling.** An unset ceiling reads
+  as Leash, never Sealed.
+
+### Fixed — the bunny could not read what they sent
+
+- Bunny Tasker encrypted messages to the Lion's key alone and papered over its
+  own unreadable half with a per-device plaintext cache, so the bunny's side of
+  the thread read `[encrypted — sent by you]` after any eviction, reinstall or
+  device change. Lion's Share fixed the mirror image of this in 83 by wrapping a
+  second copy of the AES key; this is the same fix in the same shape
+  (`encrypted_key_bunny`). The cache is now a fast path rather than the only
+  path, and re-seeds itself from the wrapped key.
+- The body is still encrypted exactly once, so the relay learns nothing new —
+  two wrapped copies of one AES key, both opaque to it. Messages sent before the
+  second wrap existed stay unreadable and say so plainly; the key was never
+  wrapped for the sender, so nothing can recover them.
+
+### Released — The Collar 86, Bunny Tasker 70, Lion's Share 86
+
+
 <!-- ───────── 2026-09-01 the variable reward is a person ───────── -->
 
 ### Added — commendation, and a streak that cannot be taken from you

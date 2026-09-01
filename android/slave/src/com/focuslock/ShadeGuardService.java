@@ -43,9 +43,12 @@ public class ShadeGuardService extends AccessibilityService {
     private static final String TAG = "FocusLock";
 
     // Cage tightness tiers (the bunny's chosen ceiling). Higher = tighter.
-    static final int LEVEL_LEASH  = 0; // watchdog off — home-button only, apps usable
-    static final int LEVEL_COLLAR = 1; // watchdog on — bounce other apps; calls allowed
-    static final int LEVEL_SEALED = 2; // watchdog on — minimal allowlist; no calls
+    // Defined in CageRule, which holds the clamp rule itself so it can be unit
+    // tested without a device; these are aliases so existing call sites read
+    // the same as they always did.
+    static final int LEVEL_LEASH  = CageRule.LEVEL_LEASH;   // home-button only, apps usable
+    static final int LEVEL_COLLAR = CageRule.LEVEL_COLLAR;  // bounce other apps; calls allowed
+    static final int LEVEL_SEALED = CageRule.LEVEL_SEALED;  // minimal allowlist; no calls
 
     // Framework packages that must NEVER be re-jailed at any tier — they carry
     // the IME host, status bar, volume dialog, telephony service, and the
@@ -241,18 +244,18 @@ public class ShadeGuardService extends AccessibilityService {
     /** Static form so other components (e.g. ControlService's tamper check) can
      *  ask the same question. See the instance-doc above for the consent rule. */
     static int effectiveCageLevel(android.content.Context ctx) {
-        int ceiling = ConsentStore.getCageLevel(ctx);
-        if (ceiling < LEVEL_LEASH) ceiling = LEVEL_LEASH;   // -1 (unset) or invalid → LEASH
-        if (ceiling > LEVEL_SEALED) ceiling = LEVEL_SEALED;
         int lion;
         try {
             lion = Settings.Global.getInt(ctx.getContentResolver(), "focus_lock_cage_level_lion", -1);
         } catch (Exception e) {
-            lion = -1;
+            lion = -1;   // unreadable request is no request; the ceiling stands
         }
-        if (lion < 0) return ceiling;              // no Lion request → the bunny's ceiling stands
-        if (lion > LEVEL_SEALED) lion = LEVEL_SEALED;
-        return Math.min(ceiling, lion);            // Lion can only loosen, never exceed the ceiling
+        // The rule itself lives in CageRule so it is testable off-device. This
+        // method's only job is choosing WHERE each number is read from, which
+        // is the other half of the guarantee: the ceiling from app-private
+        // prefs the bridge cannot write, the request from Settings.Global it
+        // can.
+        return CageRule.effective(ConsentStore.getCageLevel(ctx), lion);
     }
 
     /** True if this accessibility service is currently enabled — the watchdog

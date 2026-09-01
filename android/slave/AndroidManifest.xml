@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.focuslock"
-    android:versionCode="85"
-    android:versionName="8.42">
+    android:versionCode="86"
+    android:versionName="8.43">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
 
@@ -33,6 +33,17 @@
 
         <activity
             android:name=".ConsentActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:theme="@android:style/Theme.Material.NoActionBar" />
+
+        <!-- Exported so Bunny Tasker can launch it. Safe to export: it writes
+             the ceiling only behind an on-screen confirmation, and only ever
+             upward — a bridge that can start an activity still cannot tap
+             through a dialog, and tightening is the wearer's own direction. -->
+        <activity
+            android:name=".TightenActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"

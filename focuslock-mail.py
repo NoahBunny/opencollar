@@ -954,6 +954,23 @@ def mesh_apply_order(action, params, orders):
             "cleared": cleared,
         }
 
+    elif action == "set-cage-level":
+        # The Lion loosening the cage. Server-side this is only a relay: the
+        # value lands on the Collar as `focus_lock_cage_level_lion`, and the
+        # Collar clamps it with min() against the wearer's ceiling — which
+        # lives in the Collar's app-private prefs precisely so no order, no
+        # relay and no ADB bridge can raise it.
+        #
+        # So a "tighter" number here is not an error, it is inert. The rule is
+        # enforced where the boundary is stored, not where the request is made.
+        # -1 clears the request and returns the wearer their own ceiling.
+        try:
+            level = int(params.get("level", -1))
+        except (ValueError, TypeError):
+            level = -1
+        level = max(-1, min(2, level))
+        orders.set("cage_level_lion", level)
+        return {"applied": action, "level": level}
     elif action == "gamble-resolved":
         # Server-driven coin flip outcome. Action is a dumb setter — the RNG +
         # math live in the /api/mesh/{id}/gamble endpoint so the handler stays
@@ -6472,12 +6489,17 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 # E2EE passthrough (server stores opaquely; signature binds `text`)
                 if data.get("encrypted"):
                     entry["encrypted"] = True
-                    # encrypted_key_lion is the same AES key wrapped for the
-                    # SENDER, so the Lion can re-read what they sent. Opaque to
-                    # the relay exactly like the others, and outside the signed
-                    # payload (which binds `text`) — dropping it would only cost
-                    # the Lion their own history, never the bunny their message.
-                    for k in ("ciphertext", "encrypted_key", "encrypted_key_lion", "iv"):
+                    # encrypted_key_lion / encrypted_key_bunny are the same AES
+                    # key wrapped for the SENDER, so each side can re-read what
+                    # they sent. Opaque to the relay exactly like the others, and
+                    # outside the signed payload (which binds `text`) — dropping
+                    # one would only cost that sender their own history, never
+                    # the recipient their message.
+                    #
+                    # The bunny's half arrived later than the Lion's: Bunny
+                    # Tasker papered over the gap with a per-device plaintext
+                    # cache, which worked until it evicted or the device changed.
+                    for k in ("ciphertext", "encrypted_key", "encrypted_key_lion", "encrypted_key_bunny", "iv"):
                         v = data.get(k, "")
                         if isinstance(v, str) and v:
                             entry[k] = v

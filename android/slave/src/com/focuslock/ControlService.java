@@ -1043,6 +1043,12 @@ public class ControlService extends Service {
             + ",\"desktops\":\"" + esc(gstr("focus_lock_desktops")) + "\""
             + ",\"desktop_locked\":" + (Settings.Global.getInt(getContentResolver(), "focus_lock_desktop_active", 0) == 1)
             + ",\"desktop_locked_devices\":\"" + esc(gstr("focus_lock_desktop_locked_devices")) + "\""
+            // The wearer's ceiling and what is actually in force. The Lion needs
+            // both to loosen meaningfully: the ceiling says what They may never
+            // exceed, the effective tier says what They have already given back.
+            + ",\"cage_ceiling\":" + Math.max(0, ConsentStore.getCageLevel(this))
+            + ",\"cage_lion_request\":" + Settings.Global.getInt(getContentResolver(), "focus_lock_cage_level_lion", -1)
+            + ",\"cage_effective\":" + ShadeGuardService.effectiveCageLevel(this)
             + ",\"fine_active\":" + Settings.Global.getInt(getContentResolver(), "focus_lock_fine_active", 0)
             + ",\"fine_amount\":" + Settings.Global.getInt(getContentResolver(), "focus_lock_fine_amount", 0)
             + ",\"fine_interval_m\":" + Settings.Global.getInt(getContentResolver(), "focus_lock_fine_interval_m", 0)
@@ -3241,6 +3247,26 @@ public class ControlService extends Service {
                 result = "{\"ok\":true,\"action\":\"payment-received\",\"amount_cents\":"
                     + amountCents + ",\"paywall\":" + Math.max(newPaywall, 0)
                     + ",\"cleared\":" + (newPaywall == 0) + "}";
+                break;
+            }
+            case "set-cage-level": {
+                // The Lion's requested tier, which effectiveCageLevel() clamps
+                // with min() against the wearer's ceiling — so this can only
+                // ever LOOSEN. Writing a tighter number here is not rejected,
+                // it is simply inert, because the ceiling is in this app's
+                // private prefs where an order cannot reach it.
+                //
+                // -1 clears the request and hands the wearer their own ceiling
+                // back, which is how the Lion returns what They lent.
+                int lvl;
+                try { lvl = Integer.parseInt(jval(body, "level")); } catch (Exception e) { lvl = -1; }
+                if (lvl < -1) lvl = -1;
+                if (lvl > 2) lvl = 2;
+                Settings.Global.putInt(getContentResolver(), "focus_lock_cage_level_lion", lvl);
+                int eff = ShadeGuardService.effectiveCageLevel(this);
+                Settings.Global.putInt(getContentResolver(), "focus_lock_cage_level_effective", eff);
+                result = "{\"ok\":true,\"action\":\"set-cage-level\",\"requested\":" + lvl
+                    + ",\"effective\":" + eff + "}";
                 break;
             }
             case "pin-message": result = doPinMessage(body); break;
