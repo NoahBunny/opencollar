@@ -8,6 +8,52 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-09-01 Bunny Tasker, second pass ───────── -->
+
+### Added — the state the bunny was being held to, and could not see
+
+A sweep of the `Settings.Global` keys the Collar writes against the keys
+Bunny Tasker reads turned up **83 it never touched** — the same class of gap
+as the STREAK tile that read a pref nothing wrote. These are the ones the
+bunny is actually measured by. Every section hides when its feature is off,
+so the tab shows what is being enforced rather than a menu of dormant
+subsystems. 83 unread keys down to 46, the remainder being plumbing (keys,
+ports, saved volumes).
+
+- **Screen time.** The Collar accumulates `screen_time_used_today` whenever
+  the phone is unlocked and auto-locks at the quota — it even reports both in
+  its own state JSON. The one number the bunny is measured against was
+  invisible right up to the moment the leash pulled. Now a bar, minutes left,
+  and the reset hour, which matters most exactly when the quota is spent.
+- **The unlock condition.** Nine lock modes exist and only the deadline task
+  was ever surfaced: the bunny could see THAT they were locked, not what would
+  end it. Now shows the task, reps done, photo hint, exercise or compliment.
+- **Locking soon.** `countdown_lock_at` armed a delayed lock and the warnings
+  went to a notification that could be dismissed. This is the standing version.
+- **Bedtime and curfew.** Hour windows the Collar enforces on its own poll —
+  bedtime locks the phone, curfew drops a geofence. Neither was visible from
+  this side, so the bunny did not know when they turn into a pumpkin.
+- **Body check.** A whole subsystem with its own cadence and its own streak,
+  invisible here until now.
+- **Negotiation, from the side that negotiates.** Lion's Share has had
+  accept/decline for offers all along; the bunny had no way to make one. Writes
+  the same three keys the Collar's `doOffer` sets, and the 60-second minimum
+  before an accept stays enforced Collar-side.
+- **What is still coming.** Fines, tribute cadence and `sub_total_owed` — the
+  balance was visible, what was scheduled to grow it was not.
+- **Desktop collars.** Their own machines are collared and the app never said
+  which, or whether they were locked.
+
+### Removed — a pairing fallback that never existed
+
+- `pairing_code_text` and `pairing_code_hint` sat permanently GONE, referenced
+  by nothing, promising a manual code that was never generated. The button
+  above them was also labelled "Generate Pairing Code" in XML and rewritten to
+  "Join Mesh" in `onCreate`, so a slow inflate flashed the wrong word.
+
+### Released — Bunny Tasker 67
+
+
 <!-- ───────── 2026-09-01 Bunny Tasker, first pass ───────── -->
 
 ### Changed — Bunny Tasker was one long scroll

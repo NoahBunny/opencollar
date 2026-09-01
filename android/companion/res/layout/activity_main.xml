@@ -253,34 +253,18 @@
                 android:id="@+id/btn_show_qr"
                 android:layout_width="match_parent"
                 android:layout_height="44dp"
-                android:text="Generate Pairing Code"
+                android:text="Join Mesh"
                 android:textSize="13sp"
                 android:backgroundTint="#1a1a0e"
                 android:textColor="#c8a84e"
                 android:minWidth="0dp"
                 android:minHeight="0dp" />
 
-            <TextView
-                android:id="@+id/pairing_code_text"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text=""
-                android:textColor="#c8a84e"
-                android:textSize="16sp"
-                android:gravity="center"
-                android:textIsSelectable="true"
-                android:layout_marginTop="10dp"
-                android:visibility="gone" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Or tell your Lion to type this code manually"
-                android:textColor="#3a3a4a"
-                android:textSize="9sp"
-                android:gravity="center"
-                android:id="@+id/pairing_code_hint"
-                android:visibility="gone" />
+            <!-- pairing_code_text + pairing_code_hint were removed here. They
+                 were the manual-entry fallback for a pairing flow that no
+                 longer exists: nothing in the app has ever referenced either
+                 id, so both sat permanently GONE promising a code that was
+                 never generated. Pairing goes through Join Mesh below. -->
         </LinearLayout>
 
         <!-- Paired status -->
@@ -358,6 +342,195 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical">
+
+        <!-- ═══ Live state the Collar already tracks and this app never showed.
+             Each block hides itself when the feature is off, so the tab shows
+             what is actually being enforced rather than a list of dormant
+             subsystems. ═══ -->
+
+        <LinearLayout
+            android:id="@+id/section_screentime"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="SCREEN TIME"
+            android:textColor="#5a4a6a"
+            android:textSize="10sp"
+            android:letterSpacing="0.15"
+            android:layout_marginBottom="8dp" />
+        <TextView
+            android:id="@+id/screentime_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#cc99ee"
+            android:textSize="13sp"
+            android:layout_marginBottom="6dp" />
+        <ProgressBar
+            android:id="@+id/screentime_bar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="6dp"
+            android:max="100"
+            android:progress="0"
+            android:layout_marginBottom="12dp" />
+
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/section_task"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="TO GET OUT"
+            android:textColor="#5a4a6a"
+            android:textSize="10sp"
+            android:letterSpacing="0.15"
+            android:layout_marginBottom="8dp" />
+        <TextView
+            android:id="@+id/task_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#e0d0f0"
+            android:textSize="14sp"
+            android:layout_marginBottom="6dp" />
+        <TextView
+            android:id="@+id/task_progress"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#8a7a9a"
+            android:textSize="11sp"
+            android:layout_marginBottom="12dp" />
+
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/section_countdown"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="LOCKING SOON"
+            android:textColor="#5a4a6a"
+            android:textSize="10sp"
+            android:letterSpacing="0.15"
+            android:layout_marginBottom="8dp" />
+        <TextView
+            android:id="@+id/countdown_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#ffaa66"
+            android:textSize="13sp"
+            android:layout_marginBottom="12dp" />
+
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/section_schedule"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="YOUR HOURS"
+            android:textColor="#5a4a6a"
+            android:textSize="10sp"
+            android:letterSpacing="0.15"
+            android:layout_marginBottom="8dp" />
+        <TextView
+            android:id="@+id/schedule_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#8a7a9a"
+            android:textSize="12sp"
+            android:layout_marginBottom="12dp" />
+
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/section_bodycheck"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="BODY CHECK"
+            android:textColor="#5a4a6a"
+            android:textSize="10sp"
+            android:letterSpacing="0.15"
+            android:layout_marginBottom="8dp" />
+        <TextView
+            android:id="@+id/bodycheck_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#8a7a9a"
+            android:textSize="12sp"
+            android:layout_marginBottom="12dp" />
+
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/section_offer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="NEGOTIATION"
+            android:textColor="#5a4a6a"
+            android:textSize="10sp"
+            android:letterSpacing="0.15"
+            android:layout_marginBottom="8dp" />
+        <TextView
+            android:id="@+id/offer_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#8a7a9a"
+            android:textSize="12sp"
+            android:layout_marginBottom="8dp" />
+        <Button
+            android:id="@+id/btn_make_offer"
+            android:layout_width="match_parent"
+            android:layout_height="42dp"
+            android:text="Make an Offer"
+            android:textSize="13sp"
+            android:backgroundTint="#0e0c16"
+            android:textColor="#aa88cc"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:layout_marginBottom="12dp" />
+
+        </LinearLayout>
+
 
         <!-- Self-Lock (Bronze+) -->
         <LinearLayout
@@ -570,6 +743,35 @@
             android:layout_height="40dp"
             android:layout_marginBottom="14dp"
             android:visibility="gone" />
+
+
+        <!-- Recurring charges. The bunny could see the balance but never what
+             was scheduled to grow it next. -->
+        <LinearLayout
+            android:id="@+id/section_charges"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="WHAT IS STILL COMING"
+            android:textColor="#5a4a6a"
+            android:textSize="10sp"
+            android:letterSpacing="0.15"
+            android:layout_marginBottom="8dp" />
+        <TextView
+            android:id="@+id/charges_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#cc7755"
+            android:textSize="12sp"
+            android:layout_marginBottom="12dp" />
+
+        </LinearLayout>
 
         <!-- Double or nothing. Heads halves the balance, tails doubles it —
              +25% EV to the Lion per flip, bounded by a relay-side cooldown
@@ -892,6 +1094,35 @@
             android:textSize="11sp"
             android:layout_marginBottom="12dp" />
 
+
+
+        <!-- Desktop collars. Their own computers are collared and this app
+             never said which, or whether. -->
+        <LinearLayout
+            android:id="@+id/section_desktops"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="YOUR DESKTOPS"
+            android:textColor="#5a4a6a"
+            android:textSize="10sp"
+            android:letterSpacing="0.15"
+            android:layout_marginBottom="8dp" />
+        <TextView
+            android:id="@+id/desktops_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#8a7a9a"
+            android:textSize="12sp"
+            android:layout_marginBottom="12dp" />
+
+        </LinearLayout>
 
         </LinearLayout> <!-- end page_me -->
 

@@ -248,6 +248,9 @@ public class MainActivity extends Activity {
         gambleStatus = (TextView) findViewById(fid("gamble_status"));
         btnGamble = (Button) findViewById(fid("btn_gamble"));
         if (btnGamble != null) btnGamble.setOnClickListener(v -> doGamble());
+
+        View btnOffer = findViewById(fid("btn_make_offer"));
+        if (btnOffer != null) btnOffer.setOnClickListener(v -> doMakeOffer());
         tierBadge = (TextView) findViewById(fid("tier_badge"));
         messagesHeader = (TextView) findViewById(fid("messages_header"));
         messagesExpanded = prefs.getBoolean("messages_expanded", false);
@@ -320,9 +323,14 @@ public class MainActivity extends Activity {
             // Cost-to-wait is pure local arithmetic over Settings.Global, so
             // it is cheap enough to recompute each tick — but only while the
             // tab showing it is actually open.
-            if (currentTab == 1) {
+            if (currentTab == 0) {
+                refreshLiveState();
+            } else if (currentTab == 1) {
                 refreshCostToWait();
+                refreshCharges();
                 renderGambleBudget();
+            } else if (currentTab == 3) {
+                refreshDesktops();
             }
             executor.execute(() -> refreshStats());
             executor.execute(this::drainEvidenceOutbox);  // serverless evidence → Lion's inbox
@@ -418,6 +426,345 @@ public class MainActivity extends Activity {
         return getResources().getIdentifier(name, "id", getPackageName());
     }
 
+    // ── Live state the Collar tracks and this app never showed ──
+    //
+    // Every value below already existed in Settings.Global, written by the
+    // Collar or projected there by the relay. A sweep of the keys the Collar
+    // writes against the keys this app reads turned up 83 it never touched —
+    // the same class of gap as the STREAK tile that read a pref nobody wrote.
+    // These are the ones the bunny is actually being held to.
+    //
+    // Every section hides when its feature is off, so the tab shows what is
+    // being enforced rather than a menu of dormant subsystems.
+
+    private int gint(String key) {
+        return Settings.Global.getInt(getContentResolver(), key, 0);
+    }
+
+    private long glong(String key) {
+        return Settings.Global.getLong(getContentResolver(), key, 0L);
+    }
+
+    private void show(String sectionId, boolean visible) {
+        View v = findViewById(fid(sectionId));
+        if (v != null) v.setVisibility(visible ? View.VISIBLE : View.GONE);
+    }
+
+    private void setText(String viewId, String text) {
+        TextView t = (TextView) findViewById(fid(viewId));
+        if (t != null) t.setText(text);
+    }
+
+    /** Everything on the Now tab that is derived from local state. Cheap
+     *  (Settings.Global reads + arithmetic), so it runs on the poller while
+     *  that tab is open. UI thread. */
+    private void refreshLiveState() {
+        refreshScreenTime();
+        refreshActiveTask();
+        refreshCountdown();
+        refreshSchedule();
+        refreshBodyCheck();
+        refreshOffer();
+    }
+
+    /** How much of today is left.
+     *
+     *  The Collar accumulates `screen_time_used_today` in minutes whenever the
+     *  phone is UNLOCKED and auto-locks at `screen_time_quota_minutes` — it
+     *  even reports both in its own state JSON. The bunny's app never showed
+     *  the one number they are being measured against, so the leash was
+     *  invisible right up to the moment it pulled. */
+    private void refreshScreenTime() {
+        int quota = gint("focus_lock_screen_time_quota_minutes");
+        if (quota <= 0) {
+            show("section_screentime", false);
+            return;
+        }
+        int used = Math.max(0, gint("focus_lock_screen_time_used_today"));
+        int left = Math.max(0, quota - used);
+        // The reset hour matters most exactly when the quota is spent, which
+        // is when "until reset" would otherwise mean nothing.
+        int resetHour = gint("focus_lock_screen_time_reset_hour");
+        String resetAt = " \u00b7 resets " + hh(resetHour);
+        show("section_screentime", true);
+        setText("screentime_text", left > 0
+            ? left + " min left of " + quota + " today" + resetAt
+            : "Quota spent \u2014 locked until" + resetAt.replace(" \u00b7 resets", ""));
+        TextView t = (TextView) findViewById(fid("screentime_text"));
+        if (t != null) t.setTextColor(left == 0 ? 0xFFcc4444 : left <= quota / 5 ? 0xFFffaa66 : 0xFFcc99ee);
+        android.widget.ProgressBar bar =
+            (android.widget.ProgressBar) findViewById(fid("screentime_bar"));
+        if (bar != null) bar.setProgress(Math.min(100, (int) (used * 100L / quota)));
+    }
+
+    /** The unlock condition, in the app that has to satisfy it.
+     *
+     *  Nine lock modes exist and only the deadline task was ever surfaced
+     *  here: the bunny could see THAT they were locked and not what would
+     *  end it. task_text/reps/done cover task + exercise modes, and the
+     *  mode-specific keys cover the rest. */
+    private void refreshActiveTask() {
+        if (gint("focus_lock_active") != 1) {
+            show("section_task", false);
+            return;
+        }
+        String mode = gstr("focus_lock_mode");
+        String task = gstr("focus_lock_task_text");
+        if (task.isEmpty()) task = gstr("focus_lock_photo_task");
+        if (task.isEmpty()) task = gstr("focus_lock_exercise");
+        if (task.isEmpty()) {
+            String c = gstr("focus_lock_compliment");
+            if (!c.isEmpty()) task = "Say it, and mean it: " + c;
+        }
+        if (task.isEmpty()) {
+            // Basic/timer locks have no condition to state; the countdown and
+            // balance already say what ends them.
+            show("section_task", false);
+            return;
+        }
+        show("section_task", true);
+        setText("task_text", task);
+
+        StringBuilder sub = new StringBuilder();
+        int reps = gint("focus_lock_task_reps");
+        int done = gint("focus_lock_task_done");
+        if (reps > 0) sub.append(done).append(" of ").append(reps).append(" done");
+        String hint = gstr("focus_lock_photo_hint");
+        if (!hint.isEmpty()) {
+            if (sub.length() > 0) sub.append("  \u00b7  ");
+            sub.append(hint);
+        }
+        if (sub.length() == 0 && !mode.isEmpty()) sub.append(mode).append(" lock");
+        setText("task_progress", sub.toString());
+    }
+
+    /** A lock is scheduled and nothing said so.
+     *
+     *  `countdown_lock_at` is set when the Lion arms a delayed lock; the
+     *  Collar warns at tiers as it approaches and then locks. The warnings
+     *  went to a notification the bunny may have dismissed — this is the
+     *  standing version. */
+    private void refreshCountdown() {
+        long at = glong("focus_lock_countdown_lock_at");
+        long now = System.currentTimeMillis();
+        if (at <= 0 || at <= now) {
+            show("section_countdown", false);
+            return;
+        }
+        long left = at - now;
+        long h = left / 3600000L;
+        long m = (left % 3600000L) / 60000L;
+        String when = h > 0 ? h + "h " + m + "m" : m + "m";
+        String msg = gstr("focus_lock_countdown_message");
+        show("section_countdown", true);
+        setText("countdown_text", "Locking in " + when + (msg.isEmpty() ? "" : " \u2014 " + msg));
+    }
+
+    /** Bedtime and curfew, so the bunny knows when they turn into a pumpkin.
+     *
+     *  Both are hour-of-day windows the Collar enforces on its own poll:
+     *  bedtime locks the phone, curfew drops a geofence around wherever they
+     *  are (or a configured point). Neither was visible from this side. */
+    private void refreshSchedule() {
+        boolean bed = gint("focus_lock_bedtime_enabled") == 1;
+        boolean cur = gint("focus_lock_curfew_enabled") == 1;
+        if (!bed && !cur) {
+            show("section_schedule", false);
+            return;
+        }
+        StringBuilder s = new StringBuilder();
+        if (bed) {
+            int lh = Settings.Global.getInt(getContentResolver(), "focus_lock_bedtime_lock_hour", -1);
+            int uh = Settings.Global.getInt(getContentResolver(), "focus_lock_bedtime_unlock_hour", -1);
+            boolean locked = gint("focus_lock_bedtime_locked") == 1;
+            if (lh >= 0 && uh >= 0) {
+                s.append("Bedtime ").append(hh(lh)).append("\u2013").append(hh(uh));
+                if (locked) s.append(" \u00b7 active now");
+            }
+        }
+        if (cur) {
+            int ch = Settings.Global.getInt(getContentResolver(), "focus_lock_curfew_confine_hour", -1);
+            int rh = Settings.Global.getInt(getContentResolver(), "focus_lock_curfew_release_hour", -1);
+            if (ch >= 0 && rh >= 0) {
+                if (s.length() > 0) s.append("\n");
+                s.append("Curfew ").append(hh(ch)).append("\u2013").append(hh(rh));
+                if (!gstr("focus_lock_geofence_lat").isEmpty()) s.append(" \u00b7 confined now");
+            }
+        }
+        if (s.length() == 0) {
+            show("section_schedule", false);
+            return;
+        }
+        show("section_schedule", true);
+        setText("schedule_text", s.toString());
+    }
+
+    private String hh(int hour) {
+        return (hour < 10 ? "0" : "") + hour + ":00";
+    }
+
+    /** Body check: its own cadence, its own streak, invisible here until now. */
+    private void refreshBodyCheck() {
+        if (gint("focus_lock_body_check_active") != 1) {
+            show("section_bodycheck", false);
+            return;
+        }
+        int intervalH = gint("focus_lock_body_check_interval_h");
+        long last = glong("focus_lock_body_check_last");
+        int streak = gint("focus_lock_body_check_streak");
+        String area = gstr("focus_lock_body_check_area");
+        String result = gstr("focus_lock_body_check_last_result");
+        StringBuilder s = new StringBuilder();
+        s.append(area.isEmpty() ? "Body" : area);
+        if (intervalH > 0) s.append(" \u00b7 every ").append(intervalH).append("h");
+        if (last > 0 && intervalH > 0) {
+            long due = last + intervalH * 3600000L;
+            long left = due - System.currentTimeMillis();
+            s.append(left > 0 ? "\nNext in " + (left / 3600000L) + "h" + ((left % 3600000L) / 60000L) + "m" : "\nDue now");
+        }
+        if (streak > 0) s.append("\nStreak: ").append(streak);
+        if (!result.isEmpty()) s.append(" \u00b7 last: ").append(result);
+        show("section_bodycheck", true);
+        setText("bodycheck_text", s.toString());
+    }
+
+    /** Negotiation, from the side that does the negotiating.
+     *
+     *  Lion's Share has had accept/decline buttons for offers all along; the
+     *  bunny had no way to make one. The Collar's doOffer sets exactly these
+     *  three keys, and its 60-second minimum before an accept is enforced
+     *  Collar-side, so writing them here is the same act by a different door. */
+    private void refreshOffer() {
+        String offer = gstr("focus_lock_offer");
+        String status = gstr("focus_lock_offer_status");
+        boolean locked = gint("focus_lock_active") == 1;
+        if (offer.isEmpty() && !locked) {
+            show("section_offer", false);
+            return;
+        }
+        show("section_offer", true);
+        Button b = (Button) findViewById(fid("btn_make_offer"));
+        if (offer.isEmpty()) {
+            setText("offer_text", "Nothing on the table. You can put something there.");
+            if (b != null) { b.setEnabled(true); b.setText("Make an Offer"); }
+            return;
+        }
+        String pretty = "pending".equals(status) ? "Waiting on your Lion"
+            : "accepted".equals(status) ? "Accepted"
+            : "declined".equals(status) ? "Declined"
+            : status;
+        String response = gstr("focus_lock_offer_response");
+        setText("offer_text", "\u201c" + offer + "\u201d\n" + pretty
+            + (response.isEmpty() ? "" : " \u2014 " + response));
+        if (b != null) {
+            boolean pending = "pending".equals(status);
+            b.setEnabled(!pending);
+            b.setText(pending ? "Offer Pending" : "Make Another Offer");
+        }
+    }
+
+    private void doMakeOffer() {
+        final EditText input = new EditText(this);
+        input.setHint("What are you offering?");
+        input.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+            | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        input.setMinLines(2);
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Make an offer")
+            .setMessage("Your Lion decides. An accepted offer cannot be acted on for "
+                + "60 seconds after you make it.")
+            .setView(input)
+            .setPositiveButton("Offer", (d, w) -> {
+                String text = input.getText().toString().trim();
+                if (text.isEmpty()) return;
+                if (text.length() > 300) text = text.substring(0, 300);
+                try {
+                    Settings.Global.putString(getContentResolver(), "focus_lock_offer", text);
+                    Settings.Global.putString(getContentResolver(), "focus_lock_offer_status", "pending");
+                    Settings.Global.putLong(getContentResolver(), "focus_lock_offer_time",
+                        System.currentTimeMillis());
+                    statusText.setText("Offer sent");
+                } catch (Exception e) {
+                    android.util.Log.w("BunnyTasker", "offer write failed", e);
+                    statusText.setText("Could not send the offer");
+                }
+                refreshOffer();
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    /** What is scheduled to grow the balance next.
+     *
+     *  Fines and tributes are recurring server-side charges; sub_total_owed is
+     *  what the subscription has run up. The bunny could see the balance and
+     *  never what was queued to raise it. UI thread. */
+    private void refreshCharges() {
+        int fineActive = gint("focus_lock_fine_active");
+        int fineAmt = gint("focus_lock_fine_amount");
+        int fineIntervalM = gint("focus_lock_fine_interval_m");
+        long subOwed = glong("focus_lock_sub_total_owed");
+        String tier = gstr("focus_lock_sub_tier");
+        long subDue = glong("focus_lock_sub_due");
+
+        StringBuilder s = new StringBuilder();
+        if (fineActive == 1 && fineAmt > 0) {
+            s.append("Fine: $").append(fineAmt);
+            if (fineIntervalM > 0) {
+                s.append(fineIntervalM % 60 == 0
+                    ? " every " + (fineIntervalM / 60) + "h"
+                    : " every " + fineIntervalM + "m");
+            }
+            long lastFine = glong("focus_lock_fine_last_applied");
+            if (lastFine > 0 && fineIntervalM > 0) {
+                long next = lastFine + fineIntervalM * 60000L - System.currentTimeMillis();
+                if (next > 0) s.append(" \u00b7 next in ").append(Math.max(1, next / 60000L)).append("m");
+            }
+        }
+        if (!tier.isEmpty()) {
+            if (s.length() > 0) s.append("\n");
+            int amt = "bronze".equals(tier) ? 25 : "silver".equals(tier) ? 35 : 50;
+            s.append(tier.toUpperCase()).append(": $").append(amt).append("/wk");
+            if (subDue > 0) {
+                long left = subDue - System.currentTimeMillis();
+                s.append(left > 0
+                    ? " \u00b7 next in " + Math.max(1, left / 86400000L) + "d"
+                    : " \u00b7 due now");
+            }
+        }
+        if (subOwed > 0) {
+            if (s.length() > 0) s.append("\n");
+            s.append("Subscription has cost you $").append(subOwed).append(" so far.");
+        }
+        boolean any = s.length() > 0;
+        show("section_charges", any);
+        if (any) setText("charges_text", s.toString());
+    }
+
+    /** Which of their own machines are collared, and which are locked. */
+    private void refreshDesktops() {
+        String desktops = gstr("focus_lock_desktops");
+        String lockedDevices = gstr("focus_lock_desktop_locked_devices");
+        boolean anyLocked = gint("focus_lock_desktop_active") == 1;
+        if (desktops.isEmpty() && !anyLocked) {
+            show("section_desktops", false);
+            return;
+        }
+        StringBuilder s = new StringBuilder();
+        if (!desktops.isEmpty()) s.append(desktops.replace(",", ", "));
+        else s.append("Collared");
+        if (anyLocked) {
+            s.append("\nLocked");
+            if (!lockedDevices.isEmpty()) s.append(": ").append(lockedDevices.replace(",", ", "));
+        } else {
+            s.append("\nUnlocked");
+        }
+        String dmsg = gstr("focus_lock_desktop_message");
+        if (!dmsg.isEmpty()) s.append("\n\u201c").append(dmsg).append("\u201d");
+        show("section_desktops", true);
+        setText("desktops_text", s.toString());
+    }
+
     /** Show one page, style its tab, and refresh what that page shows.
      *
      *  Messages already refresh on their own 10s cadence, so Talk needs no
@@ -437,10 +784,15 @@ public class MainActivity extends Activity {
             tabs[i].setTextColor(i == index ? 0xFFcc99ee : 0xFF555555);
         }
         prefs.edit().putInt("last_tab", index).apply();
-        if (index == 1) {
+        if (index == 0) {
+            refreshLiveState();
+        } else if (index == 1) {
             refreshCostToWait();
+            refreshCharges();
             renderGambleBudget();
             refreshPaymentHistory();  // already hops to the executor itself
+        } else if (index == 3) {
+            refreshDesktops();
         }
     }
 
