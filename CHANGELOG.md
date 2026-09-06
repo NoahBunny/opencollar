@@ -8,6 +8,96 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-09-06 two chargers, a stranded key, and a folder nobody opened ───────── -->
+
+### Fixed — a $50 subscription billed $100 a week
+
+- **Two chargers were running against the same balance.**
+  `check_subscription_charges()` scans every mesh carrying a `sub_tier`,
+  homelab or not, bumps the paywall and pushes a `subscribe-charge` blob. The
+  Collar's own serverless driver, `maybeFireLocalSubscriptionCharge()`, stood
+  down only when a *homelab* webhook host was configured — so on an ordinary
+  vault mesh (`mesh_url` set, no webhook host) the relay charged $50, the
+  Collar's 30s gossip tick charged $50 again, and state-mirror carried the
+  doubled figure back up to the relay as the new truth.
+- **The guard now covers any server-side charger**, not just a homelab.
+  Serverless means no webhook host *and* no relay; testing the homelab alone
+  described a deployment that had stopped being the only one with a server in
+  it.
+- **And the order is now idempotent.** The relay stamps the authoritative
+  post-charge `paywall` / `sub_due` / `sub_total_owed` into the params and the
+  Collar SETS them, instead of re-deriving with `paywall += amt` — so a
+  replayed or re-delivered blob lands on the same balance rather than charging
+  again. Same shape as `payment-received`. An older relay sending tier alone
+  still gets the local increment.
+- The desktop collars only display `sub_tier`, so there was no third charger.
+
+### Fixed — the relay held the bunny's messaging key and never handed it over
+
+- **Lion's Share showed "not encrypted" forever on meshes that had a perfectly
+  good key.** It reads the bunny's E2EE pubkey from `GET /vault/{id}/nodes`,
+  and for the ordinary one-bunny pairing — a slot with no `node_id` — the
+  mesh-level `bunny_pubkey` is the whole path.
+- **That field was built only from the mesh account store**, which
+  `/api/mesh/join` populates. A Collar that enrolled through
+  `register-node-request` carries its key on the *vault node row* and never
+  calls join, so there was no account node to harvest and the field came back
+  absent — with the key sitting in the same response, on a row the handler was
+  already iterating.
+- **The relay now falls back to the vault rows**, most-recently-registered
+  winning, matching the rule the account side already used. One bunny with two
+  collars legitimately has two keys, so "they must all agree" would have
+  refused the common case.
+- **An account key also backfills a bare vault row**, never the reverse: the
+  vault row is what the Lion approved, the account row is what an invite-code
+  holder self-asserted, and a mismatch must not silently swap the vouched-for
+  key.
+- **Lion's Share recovers against an older relay** by scanning `nodes[]` — but
+  adopts a key only when every row carrying one agrees. With no `node_id` and
+  several bunnies present, guessing is how a message gets encrypted to the
+  wrong reader; it declines and leaves the banner up instead.
+
+### Fixed — every mail folder with a space in its name went unscanned
+
+- **`walk_imap_folders` truncated mailbox names at the last space.** It took
+  the LIST line's name as `rsplit(" ", 1)[-1]`, so `"Interac e-Transfer"`
+  became `e-Transfer` and `"[Gmail]/All Mail"` became `Mail`. Neither exists,
+  SELECT answered NO, and the per-folder `except` swallowed it — so the folder
+  a bank filter files the e-Transfer notice into, the one thing this scanner
+  exists to read, was never opened. Only single-word folders were ever
+  scanned.
+- **It cut the other way too:** `Deleted Messages` parsed as `Messages`,
+  matched no skip pattern, and got scanned as though it were not a
+  Trash-alike.
+- **`parse_list_line` replaces it**, covering the three shapes a server can
+  answer with: quoted names (including `\"` and `\\` escapes), bare atoms,
+  and the literal form — which imaplib returns as a `(prefix, payload)` tuple
+  that `str(raw)` was rendering as the repr of a Python tuple. The name is
+  returned exactly as the server spelled it, because that is what SELECT sends
+  back.
+- Every existing test used single-word folder names, which is how this survived
+  a suite that otherwise covers the walk well.
+
+### Released — The Collar 87, Lion's Share 87
+
+- **Bunny Tasker was not bumped.** No companion source changed in this pass,
+  and 70 is already the published build — a bump with nothing behind it is an
+  upgrade prompt that costs a download and delivers nothing.
+- **Signing certificates verified against their v86 predecessors** before
+  staging; both match, so these install as upgrades rather than being refused.
+  Repo fingerprint unchanged (`C5D875B0…B49E5D8E`), so existing QR codes and
+  subscribed devices keep working.
+- **Verified the new code is actually in the APKs**, not just the version
+  number: both v87 files came out byte-identical in *size* to their v86
+  predecessors, which is exactly what a version-bump-only rebuild looks like.
+  They differ in content — the dex carries `jlong` and the ambiguous-key log
+  line, and v86's does not.
+- **Installer pins synced** in `re-enslave-lib.sh` (87 / 87 / 70) and the
+  F-Droid publish map pointed at the new APKs.
+- **The server half does not ship via F-Droid.** The relay owns the
+  subscribe-charge stamp, the `/vault/nodes` key fallback and the whole IMAP
+  scanner; without a relay deploy the APKs alone fix one guard and one banner.
+
 <!-- ───────── 2026-09-01 the ratchet, and the bunny's own copy ───────── -->
 
 ### Added — tightness moves one way per party, and now it can move at all
