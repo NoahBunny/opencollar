@@ -8,6 +8,140 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-09-06 the screen that priced waiting quoted it low ───────── -->
+
+### Fixed — Bunny Tasker under-quoted every bronze subscriber
+
+- **`refreshCostToWait()` hardcoded bronze at `1.08`** while
+  `COMPOUND_INTEREST_RATE_BY_TIER` — the table the relay's
+  `check_compound_interest()` actually charges from — says `1.10`. The one
+  screen that exists to tell a bunny what waiting costs told them less than
+  they would be billed, on the tier most likely to be carrying a balance. A
+  $100 balance two hours in reads ~$700 at 1.08 against ~$1191 at the real
+  rate.
+- The rates cannot be imported into Java, so they stay retyped — but
+  `tests/test_android_conformance.py` now parses the ternary chain out of the
+  source and holds it to the Python table: every tier the relay prices must
+  appear with a matching rate, Java may not price a tier the relay does not,
+  and the default branch may not be cheaper than `compound_interest_rate()`
+  gives an unknown tier. Mutation-checked: restoring `1.08` and inventing a
+  `platinum` tier each fail it.
+- Found while building the desktop companion, which reads
+  `compound_interest_rate()` directly and so could never have drifted this way.
+
+### Released — Bunny Tasker 71
+
+- **Rebuilt at versionCode 71 / versionName 2.38.** F-Droid keys on the
+  versionCode, so the corrected rate cannot reach anyone under 70.
+- **Signing certificate verified against v70** (`1fb0aec5…cfd45449`, identical),
+  so this installs as an upgrade rather than being refused.
+- **Content verified, not assumed.** v71 came out within 20 bytes of v70's dex
+  and identical in APK size — the version-bump-only signature. Searched both
+  dexes for the IEEE-754 encodings of the constants: `1.08` is **present in
+  v70 and absent from v71**, while `1.05` and `1.10` are in both. The fix is
+  in the binary, not just the manifest.
+- Installer pin moved to 71 in `re-enslave-lib.sh`.
+- **Not yet published.** The APK is staged in `apks/`; pushing it to the
+  OpenCollar F-Droid repo is a separate step.
+
+<!-- ───────── 2026-09-06 the tray wore the wrong colour on Windows ───────── -->
+
+### Changed — the desktop tray is a bunny now: purple when held, gray when not
+
+- **The rule, unchanged from what Linux already enforced:** the icon is
+  coloured only when the device is **both** claimed by a Lion (Their pubkey is
+  on file) **and** connected (recent mesh heartbeat). Gray covers *unclaimed or
+  disconnected* — deliberately two states in one colour, because a machine
+  nobody has claimed must never wear the colour that means "held". Right-click
+  says which it is: "Not paired — waiting for your Lion" vs "Paired ·
+  disconnected".
+- **Windows was getting this wrong.** `get_icon()` was `state.connected` alone,
+  with no pairing check, so a registered-but-unclaimed Windows collar wore the
+  "held" colour while no Lion had approved it — the display asserting a state
+  the system was not in, the same shape as the F-Droid index advertising 81
+  while holding 82. `_is_paired()` now mirrors the Linux helper, and the tray's
+  redraw loop keys on the combined signal instead of connectivity alone, or the
+  icon would never repaint on the pairing that is supposed to change it.
+- **`#8A5CD9` purple / `#8A8A8A` gray, chosen by measurement rather than
+  taste.** The brand lavender `#A18BC4` sits 21 luma from the old crown gray and
+  the two were indistinguishable at 22px on a dark panel, which makes a state
+  indicator decorative. The shipped pair was checked against dark, light and mid
+  tray backgrounds.
+- **The art is trimmed.** `bunny-tasker-icon.svg` puts the glyph in 27% of its
+  canvas; rendered as-is it was an unreadable blob at tray size. Both assets are
+  rendered at 1024, trimmed, and re-squared to 512 with a 4% margin so SNI hosts
+  that crop slightly do not clip the ears.
+- **Two rename hazards found and fixed rather than shipped:** the Windows
+  installer chose an icon's destination with `"crown" in icon_name`, which after
+  the rename matched nothing and would have filed both bunnies in `CONFIG_DIR`
+  where the tray never looks; and `install-desktop-collar.sh`'s passwordless
+  sudoers grant was scoped to `crown-*.png`, so a fresh `/opt` install could not
+  place the new art without a password. (Existing machines are unaffected for
+  the tray: `re-enslave-desktops.sh` copies tray art to
+  `~/.config/focuslock/icons` with plain `cp`.)
+- **The .exe icon stays the crown.** `crown-gold.ico` is the app's identity in
+  Explorer and the taskbar, not a state indicator; the bunny is the thing that
+  changes colour. `crown-gold.png` is still shipped for that reason.
+- Consent copy updated too — it promised "a crown icon in your system tray",
+  which is a statement about what the software does and has to stay true.
+- `tests/test_tray_icon_assets.py`, 7 tests, pinning that every icon basename
+  either collar references exists on disk (the failure mode here is silent: a
+  missing asset renders nothing rather than raising), that purple requires
+  pairing on both collars, and that one state is chromatic while the other is
+  neutral. Mutation-checked four ways. An earlier draft asserted a *luminance*
+  gap of 25, which the shipped icons fail at 18 while being perfectly legible —
+  chroma is what separates them, so chroma is what is measured.
+
+<!-- ───────── 2026-09-06 the machine they work on all day said nothing ───────── -->
+
+### Added — Bunny Tasker's everyday surface, on the desktop collars
+
+- **The phone got four tabs; the desktops got a five-item tray menu.** Balance,
+  what waiting costs, tier, the Lion's pinned note — all of it lived on the
+  phone, while the machine the bunny actually sits at all day showed a tooltip
+  and, when locked, a wallpaper. `shared/focuslock_companion.py` puts the
+  read-only half of that on both collars at `/companion`.
+- **No account token was handed to a laptop to do it.** The companion reads
+  `/api/mesh/{id}/…`, every route gated on `validate_auth(mesh_id, auth_token)`
+  — a credential for the whole mesh account. Desktop collars are vault nodes
+  and deliberately hold none. So this shows only what the collar already
+  decrypts for itself, and makes no network call at all: it cannot leak a
+  credential it was never given, and it renders with the relay unreachable,
+  which is the state a bunny is most likely to be checking it from.
+- **Loopback only, parsed rather than prefix-matched.** The mesh server binds
+  `0.0.0.0` so peers can gossip to it, and this surface carries the balance and
+  the Lion's private messages. A non-local request gets `404`, not `403` — a
+  peer scanning the mesh port does not learn there is a companion here worth
+  coming back for. The check is `ipaddress.ip_address(...).is_loopback`, because
+  `127.` also prefixes a hostname somebody else controls; `client_address[0]` is
+  numeric off a socket, so that is theoretical, but the check is shared code.
+- **Written once, not twice.** Windows is pystray with no window toolkit
+  in-process, Linux is GTK4 — building this against both produces two
+  half-finished companions. Both collars already run an HTTP server and the
+  Linux lock screen already renders generated HTML in a WebView, so it is one
+  page served off the server that was already there. Reachable from the tray on
+  both: "Open companion" on Windows (also the double-click default), "Open
+  Companion" in `focuslock-tray.py` on Linux.
+- **Cost-to-wait reads the canonical rate table**, not a copy of it. Bunny
+  Tasker's own `refreshCostToWait()` hardcodes bronze at `1.08` while
+  `COMPOUND_INTEREST_RATE_BY_TIER` — what the relay's compound tick actually
+  charges — says `1.10`. The phone therefore under-quotes a bronze subscriber.
+  Not fixed here (it needs a companion versionCode bump and a republish) but
+  the desktop reads `compound_interest_rate()` directly so it cannot drift the
+  same way, and an unknown tier falls back to the *most* expensive assumption
+  rather than the cheapest.
+- **Clock skew is not a discount.** A `locked_at` in the future clamps to zero
+  elapsed hours instead of compounding over a negative exponent, which would
+  have quoted ~$556 where the honest floor is ~$985.
+- `tests/test_companion_surface.py`, 29 tests, mutation-checked three ways: an
+  always-open loopback gate fails 10, a hardcoded 1.08 fails the rate test, and
+  a removed skew clamp fails the clamp test. The first draft of that last one
+  asserted `delta >= 1`, which passed with the clamp gone — it was rewritten to
+  pin the figure.
+- Deployment: rides the `shared/focuslock_*.py` glob both desktop installers
+  already use, so Linux needs no list edit; `build-win.py` gained the hidden
+  import and the Windows .exe needs a rebuild.
+
 <!-- ───────── 2026-09-06 two chargers, a stranded key, and a folder nobody opened ───────── -->
 
 ### Fixed — a $50 subscription billed $100 a week
