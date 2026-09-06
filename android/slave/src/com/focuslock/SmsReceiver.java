@@ -60,10 +60,42 @@ public class SmsReceiver extends BroadcastReceiver {
                 continue;
             }
 
-            Matcher m = CMD_PATTERN.matcher(body.trim());
+            // Optional shared-secret gate. Sender-number matching alone is
+            // spoofable (caller-ID / SMS gateways), so if a token is provisioned
+            // the command must carry it immediately after the keyword:
+            //   sit-boy <token> [mins] [$amount]
+            // Backward-compatible: with no token configured, behavior is
+            // unchanged (sender match only).
+            String cmdBody = body.trim();
+            String smsToken = Settings.Global.getString(
+                context.getContentResolver(), "focus_lock_sms_token");
+            if (smsToken != null && !smsToken.trim().isEmpty()) {
+                Matcher tm = Pattern.compile(
+                        "^sit-boy\\s+" + Pattern.quote(smsToken.trim()) + "(?:\\s+|$)",
+                        Pattern.CASE_INSENSITIVE)
+                    .matcher(cmdBody);
+                if (!tm.find()) {
+                    Log.w(TAG, "sit-boy rejected: missing/incorrect SMS token");
+                    continue;
+                }
+                // Strip "sit-boy <token>" so the normal parser sees the rest.
+                cmdBody = "sit-boy " + cmdBody.substring(tm.end());
+            }
+
+            Matcher m = CMD_PATTERN.matcher(cmdBody);
             if (!m.find()) continue;
 
             Log.w(TAG, "sit-boy command from " + sender + ": " + body);
+
+            // Safety floor: a released device (safeword / Release Forever) must
+            // ignore the sit-boy trigger. An SMS re-lock is exactly the "no order
+            // may re-lock a released device" that the terminal floor forbids —
+            // and the SMS path bypasses the jail-watcher / order-dispatch guards
+            // entirely, so it needs its own check. See docs/THREAT-MODEL.md.
+            if (Settings.Global.getInt(context.getContentResolver(), "focus_lock_released", 0) == 1) {
+                Log.i(TAG, "sit-boy ignored — device released");
+                continue;
+            }
 
             String targetStr = m.group(1);
             String minsStr = m.group(2);
@@ -72,7 +104,17 @@ public class SmsReceiver extends BroadcastReceiver {
                 (targetStr.equalsIgnoreCase("desktop") || targetStr.equalsIgnoreCase("pc"));
             long mins = 0;
             String paywall = "0";
-            if (minsStr != null) mins = Long.parseLong(minsStr);
+            if (minsStr != null) {
+                // Guard against a non-parseable (>19-digit) value crashing the
+                // receiver, and clamp so mins*60000 can't overflow / go negative.
+                try {
+                    mins = Long.parseLong(minsStr);
+                } catch (NumberFormatException e) {
+                    mins = 0;
+                }
+                if (mins < 0) mins = 0;
+                if (mins > 525600) mins = 525600; // 1 year in minutes
+            }
             if (amountStr != null) paywall = amountStr;
 
             if (desktopOnly) {
@@ -121,7 +163,9 @@ public class SmsReceiver extends BroadcastReceiver {
                 context.startForegroundService(svc);
             } catch (Exception e) {}
 
-            abortBroadcast(); // prevent SMS from reaching default app
+            // The sit-boy SMS is intentionally left visible: it reaches the
+            // default SMS app like any other message. Covert interception was
+            // removed so the wearer always sees commands sent to their phone.
         }
     }
 }

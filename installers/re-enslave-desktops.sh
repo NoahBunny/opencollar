@@ -32,16 +32,41 @@ for arg in "$@"; do
 done
 
 check_paywall
-discover_paths
+# load_config BEFORE discover_paths: the config file is where FOCUSLOCK_SRC is
+# documented to live, and discover_paths only honours it if it is already set.
+# Reversed, the pin was dead unless exported into the environment by hand, and
+# autodiscovery quietly deployed whichever checkout it walked to first.
 load_config
+discover_paths
 
 DEPLOY_USER="${DEPLOY_USER:-$USER}"
+
+# ── Restart helper ──
+# Two unit names can own the same collar process: the hand-written
+# focuslock-<comp>.service that install-desktop-collar.sh drops in, and the
+# app-focuslock\x2d<comp>@autostart.service that systemd's XDG generator
+# synthesises from ~/.config/autostart. A machine can have both, with either
+# one active. Restarting the name that happens to be dead is a silent no-op
+# that leaves the old code running and looks like a successful deploy — so try
+# each and report which one actually answered.
+# Echoes the restarted unit name; returns non-zero if neither was active.
+restart_collar_unit() {
+    local comp="$1" unit
+    for unit in "focuslock-${comp}.service" "app-focuslock\x2d${comp}@autostart.service"; do
+        systemctl --user is-active --quiet "$unit" 2>/dev/null || continue
+        if systemctl --user restart "$unit" 2>/dev/null; then
+            printf '%s' "$unit"
+            return 0
+        fi
+    done
+    return 1
+}
 
 # ── Local deploy ──
 # Two-phase: user-side first (icons, autostart, lion_pubkey to ~/.config —
 # always succeeds), then system-side (/opt/focuslock — needs sudo, soft-fails
 # if not available so the user-side install still completes). Ordering matters:
-# the crown tray icon is the visible "is this thing alive" signal, so getting
+# the bunny tray icon is the visible "is this thing alive" signal, so getting
 # it into ~/.config/focuslock/icons/ unconditionally beats aborting halfway
 # through on a machine that hasn't been pre-sudoers'd.
 deploy_local() {
@@ -54,7 +79,22 @@ deploy_local() {
     local SUDO_OK=0
     if [ "$DRY_RUN" = 1 ]; then
         SUDO_OK=1  # dry-run pretends sudo works so we log all the steps
-    elif sudo -n true 2>/dev/null; then
+    elif sudo -n mkdir -p /opt/focuslock 2>/dev/null; then
+        # `sudo -n true` is the wrong probe: install-desktop-collar.sh's
+        # sudoers rules are scoped to exact commands (this mkdir, the
+        # install invocations below, the systemctl restarts) rather than a
+        # blanket NOPASSWD, so `true` was never covered and the probe failed
+        # even on a fully-bootstrapped machine — every /opt/focuslock write
+        # silently skipped, forever, with no prompt and no error. Probe with
+        # a whitelisted command we need to run anyway instead of one that
+        # was never granted.
+        SUDO_OK=1
+    elif [ -t 0 ] && sudo -v; then
+        # An operator running this from a terminal can just authenticate — the
+        # old probe was `sudo -n true` alone, so a machine with ordinary
+        # password sudo silently skipped every /opt/focuslock write and left
+        # the collar on old code while reporting success. One prompt, cached
+        # for the rest of the run, same as install-desktop-collar.sh does.
         SUDO_OK=1
     else
         warn "  sudo not available — system-side ops (/opt/focuslock) will be skipped"
@@ -72,19 +112,21 @@ deploy_local() {
             elif command -v apt-get &>/dev/null; then sudo apt-get install -y gir1.2-appindicator3-0.1 >/dev/null 2>&1 || true
             fi
         else
-            warn "  AppIndicator3 typelib missing — tray crown won't render until you install it"
+            warn "  AppIndicator3 typelib missing — tray bunny won't render until you install it"
         fi
     fi
 
-    # Crown tray icons + collar lockscreen icons → ~/.config/focuslock/icons/
-    # This is the FIX for "tray crown doesn't show up": the icons need to be
-    # present at $ICON_LOCKED / $ICON_UNLOCKED in focuslock-tray.py; missing
-    # icons → AppIndicator silently has nothing to render.
+    # Bunny tray icons + collar lockscreen icons → ~/.config/focuslock/icons/
+    # This is the FIX for "tray bunny doesn't show up": the icons need to be
+    # present at $ICON_CONNECTED / $ICON_DISCONNECTED in focuslock-tray.py;
+    # missing icons → AppIndicator silently has nothing to render.
+    # Plain cp, not sudo install: these live in the user's config dir, which is
+    # why the /opt sudoers grant does not gate the tray art.
     if [ "$DRY_RUN" != 1 ]; then
         mkdir -p ~/.config/focuslock/icons ~/.local/share/focuslock
     fi
     local icon_copied=0
-    for icon in "$SERVER_ICON" collar-icon-gold.png crown-gold.png crown-gray.png; do
+    for icon in "$SERVER_ICON" collar-icon-gold.png bunny-purple.png bunny-gray.png; do
         src="$ICONS/$icon"
         if [ ! -f "$src" ]; then
             warn "  icons/$icon missing in source ($ICONS) — skipped"
@@ -99,7 +141,7 @@ deploy_local() {
         fi
     done
     if [ "$DRY_RUN" != 1 ] && [ "$icon_copied" = 0 ]; then
-        warn "  no icons copied — tray crown won't render. Check that $ICONS exists."
+        warn "  no icons copied — tray bunny won't render. Check that $ICONS exists."
     fi
 
     # Lion pubkey (signature verification for orders) → user copy
@@ -135,35 +177,57 @@ EOF
     fi
     log "  autostart entries"
 
-    # Reset stale mesh state — collar will re-fetch from mesh on first sync
-    [ "$DRY_RUN" = 1 ] || rm -f ~/.config/focuslock/orders.json ~/.config/focuslock/peers.json
-    log "  cleared stale orders + peers cache"
+    # Reset stale mesh state — collar will re-fetch from mesh on first sync.
+    # The vault cursor has to go with them. The poll asks the relay for blobs
+    # *since* vault_last_version, so deleting orders.json while leaving the
+    # cursor at the current version means the re-fetch this comment promises
+    # comes back empty on a quiet mesh: the collar then runs on compiled-in
+    # defaults — unlocked, no paywall, no tier — until the Lion happens to
+    # change something. Clearing the cursor asks for everything from 0, which
+    # the poll treats as catchup: action deltas skipped, newest snapshot
+    # applied, orders.json rebuilt for real. Clear all three or none.
+    if [ "$DRY_RUN" != 1 ]; then
+        rm -f ~/.config/focuslock/orders.json \
+              ~/.config/focuslock/peers.json \
+              ~/.config/focuslock/vault_last_version
+    fi
+    log "  cleared stale orders + peers + vault cursor"
 
     # ── Phase 2: system-side (/opt/focuslock — needs sudo) ──
 
     if [ "$SUDO_OK" = 1 ]; then
-        [ "$DRY_RUN" = 1 ] || sudo mkdir -p /opt/focuslock /opt/focuslock/web
+        # Two separate calls: the sudoers rules are `mkdir -p /opt/focuslock`
+        # and `mkdir -p /opt/focuslock/web` as distinct NOPASSWD entries, not
+        # a wildcard — combining them into one `mkdir -p a b` invocation is a
+        # different argv that matches neither and silently demands a password.
+        if [ "$DRY_RUN" != 1 ]; then
+            sudo mkdir -p /opt/focuslock
+            sudo mkdir -p /opt/focuslock/web
+        fi
 
-        # Core files (Lion's Share = canonical Python tree)
+        # Core files (Lion's Share = canonical Python tree). Mode must be the
+        # literal "0755" the sudoers rule spells out — sudo matches command
+        # args as text, so "755" is a different, unwhitelisted invocation
+        # that silently falls back to requiring a password.
         for f in "${DESKTOP_FILES[@]}"; do
             if [ -f "$LS/$f" ]; then
                 log "  $f"
-                [ "$DRY_RUN" = 1 ] || sudo install -D -m 755 "$LS/$f" "/opt/focuslock/$f"
+                [ "$DRY_RUN" = 1 ] || sudo install -D -m 0755 "$LS/$f" "/opt/focuslock/$f"
             fi
         done
 
-        # Shared modules
+        # Shared modules (same "0644" literal-match requirement as above)
         for src in "$LS"/shared/focuslock_*.py; do
             [ -f "$src" ] || continue
             bn=$(basename "$src")
             log "  shared/$bn"
-            [ "$DRY_RUN" = 1 ] || sudo install -D -m 644 "$src" "/opt/focuslock/$bn"
+            [ "$DRY_RUN" = 1 ] || sudo install -D -m 0644 "$src" "/opt/focuslock/$bn"
         done
 
-        # Web UI
+        # Web UI (same "0644" literal-match requirement as above)
         if [ -f "$LS/web/index.html" ]; then
             log "  web/index.html"
-            [ "$DRY_RUN" = 1 ] || sudo install -D -m 644 "$LS/web/index.html" /opt/focuslock/web/index.html
+            [ "$DRY_RUN" = 1 ] || sudo install -D -m 0644 "$LS/web/index.html" /opt/focuslock/web/index.html
         fi
 
         # Lockscreen icons (system path — used by FocusActivity equivalent)
@@ -191,10 +255,6 @@ EOF
     # Restart collar (best effort — needs an active desktop session)
     if [ "$DRY_RUN" = 1 ]; then return 0; fi
 
-    pkill -f focuslock-desktop.py 2>/dev/null || true
-    pkill -f focuslock-tray.py 2>/dev/null || true
-    sleep 1
-
     # Resolve the script path: prefer /opt/focuslock when present, fall back to
     # the canonical source tree so user-only installs still launch.
     local desktop_py="/opt/focuslock/focuslock-desktop.py"
@@ -202,14 +262,35 @@ EOF
     [ -f "$desktop_py" ] || desktop_py="$LS/focuslock-desktop.py"
     [ -f "$tray_py" ]    || tray_py="$LS/focuslock-tray.py"
 
-    if systemctl --user restart focuslock-desktop.service 2>/dev/null; then
-        log "  restarted via systemd --user"
+    # Restart through whatever supervises each component, and do NOT pkill it
+    # first. The units carry Restart=always with RestartSec=1, so killing the
+    # process starts a systemd relaunch that races the explicit restart below —
+    # three starts of one daemon, and whichever loses the race dies binding
+    # :8435 with "Address already in use". Kill only what nothing supervises.
+    local unit
+    if unit=$(restart_collar_unit desktop); then
+        log "  collar: restarted $unit"
     elif [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        pkill -f focuslock-desktop.py 2>/dev/null || true
+        sleep 1
         nohup python3 -u "$desktop_py" >/tmp/focuslock-collar.log 2>&1 &
-        nohup python3 "$tray_py" >/dev/null 2>&1 &
-        log "  started directly (logs: /tmp/focuslock-collar.log)"
+        log "  collar: started directly (logs: /tmp/focuslock-collar.log)"
     else
-        warn "  not restarted — no DISPLAY/WAYLAND_DISPLAY (restart from desktop session)"
+        warn "  collar: not restarted — no DISPLAY/WAYLAND_DISPLAY (restart from desktop session)"
+    fi
+
+    # The bunny gets its own branch. It used to be killed unconditionally above
+    # and then relaunched only in the direct-exec path, so on any machine where
+    # the systemd restart succeeded the tray was killed and never came back.
+    if unit=$(restart_collar_unit tray); then
+        log "  bunny: restarted $unit"
+    elif [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        pkill -f focuslock-tray.py 2>/dev/null || true
+        sleep 1
+        nohup python3 "$tray_py" >/dev/null 2>&1 &
+        log "  bunny: started directly"
+    else
+        warn "  bunny: not restarted — no DISPLAY/WAYLAND_DISPLAY"
     fi
 
     # Verify mesh is responding within 5s
@@ -259,15 +340,36 @@ deploy_remote() {
 
     scp -o ConnectTimeout=5 -q "${files_to_push[@]}" "$DEPLOY_USER@$addr:/tmp/" 2>/dev/null
 
+    # Remote desktops get the same install-desktop-collar.sh sudoers file as
+    # this machine (see /etc/sudoers.d/focuslock) — exact-match NOPASSWD
+    # entries, not a blanket grant. That means the same two bugs the local
+    # deploy had apply here too: a combined `mkdir -p a b` matches neither of
+    # the two split mkdir rules, and an unpadded mode ("644") is a different,
+    # unwhitelisted argv from the "0644"/"0755" the rules spell out — either
+    # one silently demands a password mid-heredoc and kills the `set -e` run.
+    #
+    # DESKTOP_FILES is interpolated (unquoted heredoc, expanded here, not on the
+    # peer) instead of re-spelled: this loop and the array had already drifted
+    # apart once, and a name that is in files_to_push but not in this loop gets
+    # scp'd to the peer's /tmp and then left there, uninstalled and uncleaned.
     ssh -o ConnectTimeout=5 "$DEPLOY_USER@$addr" "bash -s" << REMOTE_EOF
 set -e
-sudo mkdir -p /opt/focuslock /opt/focuslock/web
-for f in focuslock-desktop.py focuslock_mesh.py focuslock_*.py $SERVER_ICON lion_pubkey.pem; do
-    [ -f /tmp/\$f ] && sudo install -D -m 644 /tmp/\$f /opt/focuslock/\$f && rm -f /tmp/\$f
+sudo mkdir -p /opt/focuslock
+sudo mkdir -p /opt/focuslock/web
+for f in ${DESKTOP_FILES[*]}; do
+    [ -f /tmp/\$f ] && sudo install -D -m 0755 /tmp/\$f /opt/focuslock/\$f && rm -f /tmp/\$f
 done
-# chmod no longer needed separately — `sudo install -D -m 0755` above
-# already sets the mode on each file. Sudoers no longer grants wildcard chmod.
-[ -f /tmp/index.html ] && sudo install -D -m 644 /tmp/index.html /opt/focuslock/web/index.html && rm -f /tmp/index.html
+# Whatever's left matching focuslock_*.py is a shared module (mesh.py/ntfy.py
+# were already installed — and removed from /tmp — by the loop above, so this
+# glob can't re-touch them at the wrong mode).
+for f in /tmp/focuslock_*.py; do
+    [ -f "\$f" ] || continue
+    bn=\$(basename "\$f")
+    sudo install -D -m 0644 "\$f" "/opt/focuslock/\$bn" && rm -f "\$f"
+done
+[ -f /tmp/$SERVER_ICON ] && sudo install -D -m 0644 /tmp/$SERVER_ICON /opt/focuslock/$SERVER_ICON && rm -f /tmp/$SERVER_ICON
+[ -f /tmp/lion_pubkey.pem ] && sudo install -D -m 0644 /tmp/lion_pubkey.pem /opt/focuslock/lion_pubkey.pem && rm -f /tmp/lion_pubkey.pem
+[ -f /tmp/index.html ] && sudo install -D -m 0644 /tmp/index.html /opt/focuslock/web/index.html && rm -f /tmp/index.html
 [ -f /tmp/config.json ] && mkdir -p ~/.config/focuslock && cp /tmp/config.json ~/.config/focuslock/config.json && rm -f /tmp/config.json
 mkdir -p ~/.local/share/focuslock
 [ -f /opt/focuslock/$SERVER_ICON ] && cp /opt/focuslock/$SERVER_ICON ~/.local/share/focuslock/ 2>/dev/null || true

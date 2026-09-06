@@ -14,6 +14,11 @@
 #   LION_DEVICE_IP   — IP of Lion's phone (for controller deploy, discovered from mesh)
 #   HOMELAB_ADDR     — homelab SSH address
 #   DEPLOY_USER      — SSH user (default: $USER)
+#   FOCUSLOCK_ADMIN_TOKEN — relay admin token, required to resolve the Lion's
+#                    controller address from the mesh. GET /controller became
+#                    admin-gated on 2026-08-17 (it returns the Lion's address on
+#                    the mesh, and the relay is on public HTTPS). Without it this
+#                    script falls back to LION_DEVICE_IP, same as before.
 set -e
 
 TOOLS=~/android-build-tools
@@ -111,8 +116,16 @@ if [[ "$ACTION" == "deploy" || "$ACTION" == "deploy-phone" ]]; then
     echo "=== Deploying Lion's Share to Lion's phone ==="
     LION_IP=""
     # Try mesh controller registry on homelab
-    if [ -n "$HOMELAB" ]; then
-        CTRL_JSON=$(curl -s --connect-timeout 3 "http://$HOMELAB:8434/controller" 2>/dev/null)
+    if [ -n "$HOMELAB" ] && [ -z "$FOCUSLOCK_ADMIN_TOKEN" ]; then
+        echo "  FOCUSLOCK_ADMIN_TOKEN unset — skipping mesh controller lookup"
+        echo "  (GET /controller is admin-gated; set the token or use LION_DEVICE_IP)"
+    fi
+    if [ -n "$HOMELAB" ] && [ -n "$FOCUSLOCK_ADMIN_TOKEN" ]; then
+        # Bearer header, not ?admin_token= — a query string lands in the
+        # relay's access log, and this token is the whole admin API.
+        CTRL_JSON=$(curl -s --connect-timeout 3 \
+            -H "Authorization: Bearer $FOCUSLOCK_ADMIN_TOKEN" \
+            "http://$HOMELAB:8434/controller" 2>/dev/null)
         if echo "$CTRL_JSON" | grep -q tailscale_ip; then
             LION_IP=$(echo "$CTRL_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('tailscale_ip',''))" 2>/dev/null)
             echo "  Mesh reports controller at: $LION_IP"

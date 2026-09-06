@@ -8,6 +8,1966 @@ starting with v1.0.0.
 
 ## [Unreleased]
 
+<!-- ───────── 2026-09-06 the screen that priced waiting quoted it low ───────── -->
+
+### Fixed — Bunny Tasker under-quoted every bronze subscriber
+
+- **`refreshCostToWait()` hardcoded bronze at `1.08`** while
+  `COMPOUND_INTEREST_RATE_BY_TIER` — the table the relay's
+  `check_compound_interest()` actually charges from — says `1.10`. The one
+  screen that exists to tell a bunny what waiting costs told them less than
+  they would be billed, on the tier most likely to be carrying a balance. A
+  $100 balance two hours in reads ~$700 at 1.08 against ~$1191 at the real
+  rate.
+- The rates cannot be imported into Java, so they stay retyped — but
+  `tests/test_android_conformance.py` now parses the ternary chain out of the
+  source and holds it to the Python table: every tier the relay prices must
+  appear with a matching rate, Java may not price a tier the relay does not,
+  and the default branch may not be cheaper than `compound_interest_rate()`
+  gives an unknown tier. Mutation-checked: restoring `1.08` and inventing a
+  `platinum` tier each fail it.
+- Found while building the desktop companion, which reads
+  `compound_interest_rate()` directly and so could never have drifted this way.
+
+### Released — Bunny Tasker 71
+
+- **Rebuilt at versionCode 71 / versionName 2.38.** F-Droid keys on the
+  versionCode, so the corrected rate cannot reach anyone under 70.
+- **Signing certificate verified against v70** (`1fb0aec5…cfd45449`, identical),
+  so this installs as an upgrade rather than being refused.
+- **Content verified, not assumed.** v71 came out within 20 bytes of v70's dex
+  and identical in APK size — the version-bump-only signature. Searched both
+  dexes for the IEEE-754 encodings of the constants: `1.08` is **present in
+  v70 and absent from v71**, while `1.05` and `1.10` are in both. The fix is
+  in the binary, not just the manifest.
+- Installer pin moved to 71 in `re-enslave-lib.sh`.
+- **Not yet published.** The APK is staged in `apks/`; pushing it to the
+  OpenCollar F-Droid repo is a separate step.
+
+<!-- ───────── 2026-09-06 the tray wore the wrong colour on Windows ───────── -->
+
+### Changed — the desktop tray is a bunny now: purple when held, gray when not
+
+- **The rule, unchanged from what Linux already enforced:** the icon is
+  coloured only when the device is **both** claimed by a Lion (Their pubkey is
+  on file) **and** connected (recent mesh heartbeat). Gray covers *unclaimed or
+  disconnected* — deliberately two states in one colour, because a machine
+  nobody has claimed must never wear the colour that means "held". Right-click
+  says which it is: "Not paired — waiting for your Lion" vs "Paired ·
+  disconnected".
+- **Windows was getting this wrong.** `get_icon()` was `state.connected` alone,
+  with no pairing check, so a registered-but-unclaimed Windows collar wore the
+  "held" colour while no Lion had approved it — the display asserting a state
+  the system was not in, the same shape as the F-Droid index advertising 81
+  while holding 82. `_is_paired()` now mirrors the Linux helper, and the tray's
+  redraw loop keys on the combined signal instead of connectivity alone, or the
+  icon would never repaint on the pairing that is supposed to change it.
+- **`#8A5CD9` purple / `#8A8A8A` gray, chosen by measurement rather than
+  taste.** The brand lavender `#A18BC4` sits 21 luma from the old crown gray and
+  the two were indistinguishable at 22px on a dark panel, which makes a state
+  indicator decorative. The shipped pair was checked against dark, light and mid
+  tray backgrounds.
+- **The art is trimmed.** `bunny-tasker-icon.svg` puts the glyph in 27% of its
+  canvas; rendered as-is it was an unreadable blob at tray size. Both assets are
+  rendered at 1024, trimmed, and re-squared to 512 with a 4% margin so SNI hosts
+  that crop slightly do not clip the ears.
+- **Two rename hazards found and fixed rather than shipped:** the Windows
+  installer chose an icon's destination with `"crown" in icon_name`, which after
+  the rename matched nothing and would have filed both bunnies in `CONFIG_DIR`
+  where the tray never looks; and `install-desktop-collar.sh`'s passwordless
+  sudoers grant was scoped to `crown-*.png`, so a fresh `/opt` install could not
+  place the new art without a password. (Existing machines are unaffected for
+  the tray: `re-enslave-desktops.sh` copies tray art to
+  `~/.config/focuslock/icons` with plain `cp`.)
+- **The .exe icon stays the crown.** `crown-gold.ico` is the app's identity in
+  Explorer and the taskbar, not a state indicator; the bunny is the thing that
+  changes colour. `crown-gold.png` is still shipped for that reason.
+- Consent copy updated too — it promised "a crown icon in your system tray",
+  which is a statement about what the software does and has to stay true.
+- `tests/test_tray_icon_assets.py`, 7 tests, pinning that every icon basename
+  either collar references exists on disk (the failure mode here is silent: a
+  missing asset renders nothing rather than raising), that purple requires
+  pairing on both collars, and that one state is chromatic while the other is
+  neutral. Mutation-checked four ways. An earlier draft asserted a *luminance*
+  gap of 25, which the shipped icons fail at 18 while being perfectly legible —
+  chroma is what separates them, so chroma is what is measured.
+
+<!-- ───────── 2026-09-06 the machine they work on all day said nothing ───────── -->
+
+### Added — Bunny Tasker's everyday surface, on the desktop collars
+
+- **The phone got four tabs; the desktops got a five-item tray menu.** Balance,
+  what waiting costs, tier, the Lion's pinned note — all of it lived on the
+  phone, while the machine the bunny actually sits at all day showed a tooltip
+  and, when locked, a wallpaper. `shared/focuslock_companion.py` puts the
+  read-only half of that on both collars at `/companion`.
+- **No account token was handed to a laptop to do it.** The companion reads
+  `/api/mesh/{id}/…`, every route gated on `validate_auth(mesh_id, auth_token)`
+  — a credential for the whole mesh account. Desktop collars are vault nodes
+  and deliberately hold none. So this shows only what the collar already
+  decrypts for itself, and makes no network call at all: it cannot leak a
+  credential it was never given, and it renders with the relay unreachable,
+  which is the state a bunny is most likely to be checking it from.
+- **Loopback only, parsed rather than prefix-matched.** The mesh server binds
+  `0.0.0.0` so peers can gossip to it, and this surface carries the balance and
+  the Lion's private messages. A non-local request gets `404`, not `403` — a
+  peer scanning the mesh port does not learn there is a companion here worth
+  coming back for. The check is `ipaddress.ip_address(...).is_loopback`, because
+  `127.` also prefixes a hostname somebody else controls; `client_address[0]` is
+  numeric off a socket, so that is theoretical, but the check is shared code.
+- **Written once, not twice.** Windows is pystray with no window toolkit
+  in-process, Linux is GTK4 — building this against both produces two
+  half-finished companions. Both collars already run an HTTP server and the
+  Linux lock screen already renders generated HTML in a WebView, so it is one
+  page served off the server that was already there. Reachable from the tray on
+  both: "Open companion" on Windows (also the double-click default), "Open
+  Companion" in `focuslock-tray.py` on Linux.
+- **Cost-to-wait reads the canonical rate table**, not a copy of it. Bunny
+  Tasker's own `refreshCostToWait()` hardcodes bronze at `1.08` while
+  `COMPOUND_INTEREST_RATE_BY_TIER` — what the relay's compound tick actually
+  charges — says `1.10`. The phone therefore under-quotes a bronze subscriber.
+  Not fixed here (it needs a companion versionCode bump and a republish) but
+  the desktop reads `compound_interest_rate()` directly so it cannot drift the
+  same way, and an unknown tier falls back to the *most* expensive assumption
+  rather than the cheapest.
+- **Clock skew is not a discount.** A `locked_at` in the future clamps to zero
+  elapsed hours instead of compounding over a negative exponent, which would
+  have quoted ~$556 where the honest floor is ~$985.
+- `tests/test_companion_surface.py`, 29 tests, mutation-checked three ways: an
+  always-open loopback gate fails 10, a hardcoded 1.08 fails the rate test, and
+  a removed skew clamp fails the clamp test. The first draft of that last one
+  asserted `delta >= 1`, which passed with the clamp gone — it was rewritten to
+  pin the figure.
+- Deployment: rides the `shared/focuslock_*.py` glob both desktop installers
+  already use, so Linux needs no list edit; `build-win.py` gained the hidden
+  import and the Windows .exe needs a rebuild.
+
+<!-- ───────── 2026-09-06 two chargers, a stranded key, and a folder nobody opened ───────── -->
+
+### Fixed — a $50 subscription billed $100 a week
+
+- **Two chargers were running against the same balance.**
+  `check_subscription_charges()` scans every mesh carrying a `sub_tier`,
+  homelab or not, bumps the paywall and pushes a `subscribe-charge` blob. The
+  Collar's own serverless driver, `maybeFireLocalSubscriptionCharge()`, stood
+  down only when a *homelab* webhook host was configured — so on an ordinary
+  vault mesh (`mesh_url` set, no webhook host) the relay charged $50, the
+  Collar's 30s gossip tick charged $50 again, and state-mirror carried the
+  doubled figure back up to the relay as the new truth.
+- **The guard now covers any server-side charger**, not just a homelab.
+  Serverless means no webhook host *and* no relay; testing the homelab alone
+  described a deployment that had stopped being the only one with a server in
+  it.
+- **And the order is now idempotent.** The relay stamps the authoritative
+  post-charge `paywall` / `sub_due` / `sub_total_owed` into the params and the
+  Collar SETS them, instead of re-deriving with `paywall += amt` — so a
+  replayed or re-delivered blob lands on the same balance rather than charging
+  again. Same shape as `payment-received`. An older relay sending tier alone
+  still gets the local increment.
+- The desktop collars only display `sub_tier`, so there was no third charger.
+
+### Fixed — the relay held the bunny's messaging key and never handed it over
+
+- **Lion's Share showed "not encrypted" forever on meshes that had a perfectly
+  good key.** It reads the bunny's E2EE pubkey from `GET /vault/{id}/nodes`,
+  and for the ordinary one-bunny pairing — a slot with no `node_id` — the
+  mesh-level `bunny_pubkey` is the whole path.
+- **That field was built only from the mesh account store**, which
+  `/api/mesh/join` populates. A Collar that enrolled through
+  `register-node-request` carries its key on the *vault node row* and never
+  calls join, so there was no account node to harvest and the field came back
+  absent — with the key sitting in the same response, on a row the handler was
+  already iterating.
+- **The relay now falls back to the vault rows**, most-recently-registered
+  winning, matching the rule the account side already used. One bunny with two
+  collars legitimately has two keys, so "they must all agree" would have
+  refused the common case.
+- **An account key also backfills a bare vault row**, never the reverse: the
+  vault row is what the Lion approved, the account row is what an invite-code
+  holder self-asserted, and a mismatch must not silently swap the vouched-for
+  key.
+- **Lion's Share recovers against an older relay** by scanning `nodes[]` — but
+  adopts a key only when every row carrying one agrees. With no `node_id` and
+  several bunnies present, guessing is how a message gets encrypted to the
+  wrong reader; it declines and leaves the banner up instead.
+
+### Fixed — every mail folder with a space in its name went unscanned
+
+- **`walk_imap_folders` truncated mailbox names at the last space.** It took
+  the LIST line's name as `rsplit(" ", 1)[-1]`, so `"Interac e-Transfer"`
+  became `e-Transfer` and `"[Gmail]/All Mail"` became `Mail`. Neither exists,
+  SELECT answered NO, and the per-folder `except` swallowed it — so the folder
+  a bank filter files the e-Transfer notice into, the one thing this scanner
+  exists to read, was never opened. Only single-word folders were ever
+  scanned.
+- **It cut the other way too:** `Deleted Messages` parsed as `Messages`,
+  matched no skip pattern, and got scanned as though it were not a
+  Trash-alike.
+- **`parse_list_line` replaces it**, covering the three shapes a server can
+  answer with: quoted names (including `\"` and `\\` escapes), bare atoms,
+  and the literal form — which imaplib returns as a `(prefix, payload)` tuple
+  that `str(raw)` was rendering as the repr of a Python tuple. The name is
+  returned exactly as the server spelled it, because that is what SELECT sends
+  back.
+- Every existing test used single-word folder names, which is how this survived
+  a suite that otherwise covers the walk well.
+
+### Released — The Collar 87, Lion's Share 87
+
+- **Bunny Tasker was not bumped.** No companion source changed in this pass,
+  and 70 is already the published build — a bump with nothing behind it is an
+  upgrade prompt that costs a download and delivers nothing.
+- **Signing certificates verified against their v86 predecessors** before
+  staging; both match, so these install as upgrades rather than being refused.
+  Repo fingerprint unchanged (`C5D875B0…B49E5D8E`), so existing QR codes and
+  subscribed devices keep working.
+- **Verified the new code is actually in the APKs**, not just the version
+  number: both v87 files came out byte-identical in *size* to their v86
+  predecessors, which is exactly what a version-bump-only rebuild looks like.
+  They differ in content — the dex carries `jlong` and the ambiguous-key log
+  line, and v86's does not.
+- **Installer pins synced** in `re-enslave-lib.sh` (87 / 87 / 70) and the
+  F-Droid publish map pointed at the new APKs.
+- **The server half does not ship via F-Droid.** The relay owns the
+  subscribe-charge stamp, the `/vault/nodes` key fallback and the whole IMAP
+  scanner; without a relay deploy the APKs alone fix one guard and one banner.
+
+<!-- ───────── 2026-09-01 the ratchet, and the bunny's own copy ───────── -->
+
+### Added — tightness moves one way per party, and now it can move at all
+
+The rule was already written and enforced: `min(ceiling, lion_request)` in
+`ShadeGuardService.effectiveCageLevel`, with the wearer's ceiling in the
+Collar's app-private SharedPreferences — the one store the Lion's ADB bridge
+cannot write, which is what makes "loosen but never tighten" enforceable rather
+than merely stated. What was missing was any way to move it.
+
+- **`focus_lock_cage_level_lion` was read and never written by anything.** The
+  Lion's half of the mechanism has never been reachable.
+- **`setCageLevel` was only ever called from the Terms-of-Surrender screen.**
+  The ceiling was writable exactly once, at the least informed moment there is —
+  before wearing the thing — and the only way further was a factory reset.
+
+Both halves now exist, in the direction each party owns:
+
+- **The wearer tightens, in the Collar.** A new `TightenActivity`, launched from
+  Bunny Tasker, offering strictly tighter tiers than the current ceiling and
+  nothing else, behind a confirmation that names what is being given up. It
+  lives in the Collar and not the companion on purpose: routing a "tighten
+  request" through Settings.Global so the companion could write it would hand
+  a `settings put global` exactly the capability that keeping the ceiling
+  app-private was meant to deny.
+- **The Lion loosens, by order.** ⋮ → Loosen Cage in Lion's Share, via a new
+  `set-cage-level` action that rides the vault like every other order. A tighter
+  number is not refused — it is inert, because the clamp happens on the device
+  where the ceiling lives. Choosing "return them to their own ceiling" clears
+  the request.
+- **The Collar reports both numbers** (`cage_ceiling`, `cage_effective`,
+  `cage_lion_request`) so the Lion can loosen meaningfully, and mirrors the
+  ceiling to Settings.Global for the companion to *display* — never to read as
+  authority, so a tampered mirror shows a wrong number rather than tightening a
+  cage.
+
+### Changed — the rule is now a unit test, not a comment
+
+- Extracted `CageRule`, free of any Android type, so the most safety-critical
+  arithmetic in the system can be tested without a device. `CageRuleTest` pins
+  it as a property over the whole input space: **no combination of ceiling and
+  request can produce a tier tighter than the ceiling.** An unset ceiling reads
+  as Leash, never Sealed.
+
+### Fixed — the bunny could not read what they sent
+
+- Bunny Tasker encrypted messages to the Lion's key alone and papered over its
+  own unreadable half with a per-device plaintext cache, so the bunny's side of
+  the thread read `[encrypted — sent by you]` after any eviction, reinstall or
+  device change. Lion's Share fixed the mirror image of this in 83 by wrapping a
+  second copy of the AES key; this is the same fix in the same shape
+  (`encrypted_key_bunny`). The cache is now a fast path rather than the only
+  path, and re-seeds itself from the wrapped key.
+- The body is still encrypted exactly once, so the relay learns nothing new —
+  two wrapped copies of one AES key, both opaque to it. Messages sent before the
+  second wrap existed stay unreadable and say so plainly; the key was never
+  wrapped for the sender, so nothing can recover them.
+
+### Released — The Collar 86, Bunny Tasker 70, Lion's Share 86
+
+
+<!-- ───────── 2026-09-01 the variable reward is a person ───────── -->
+
+### Added — commendation, and a streak that cannot be taken from you
+
+Researched before built; the evidence and the decisions it drove are recorded
+in [docs/GAMIFICATION-ETHICS.md](docs/GAMIFICATION-ETHICS.md), including a
+table of what was declined and why.
+
+- **The flat +1 was the bug.** Dopamine encodes reward *prediction error*, not
+  pleasure — a fully predicted reward produces no phasic response at all, so a
+  fixed point-per-task goes inert within weeks. The usual fix is a
+  variable-ratio payout, which is the slot-machine schedule and the documented
+  driver of compulsion. This system already has exactly one variable-ratio
+  mechanic wired to real money (the gamble), which is capped for that reason,
+  and we did not add a second.
+- **So the uncertainty is a person.** Points accrue deterministically; the
+  Lion's `commend` is the unpredictable reward — unpredictable in timing, in
+  wording, and in whether it comes at all. It keeps the prediction error,
+  removes the gambling structure, and routes the payoff through the
+  relationship instead of around it. It is also the only design that cannot
+  become a self-service loop: the bunny does not hold the key that signs one.
+- **Lion's Share got the button in the same change.** An endpoint with no UI is
+  a feature nobody has, which is a bug this repo has shipped before. ⋮ →
+  Devotion lists what was offered, resolves each task id to the line the bunny
+  actually typed, and commends with an optional note.
+- **The streak is weekly, and that is not stylistic.** A daily streak here
+  would be breakable by the Lion's own ordinary authority — an imposed lock, a
+  fine, a confiscated evening — so the bunny would lose accumulated standing
+  through no choice of theirs. Loss aversion motivates only while the loss is
+  yours to prevent; a streak someone else can take teaches helplessness. Weekly
+  also matches the allowance the tier already grants.
+- **A break is never a bare zero.** The documented response to a zeroed counter
+  after a long run is shame and abandonment, not renewed effort, so the app
+  says "a run of 6 weeks ended" and keeps the number.
+- **Two freezes, granted not sold.** Streak freeze cut at-risk churn ~21% in
+  Duolingo's data and holders kept streaks 4.5x longer by day 21 — structural,
+  so it is never a purchase and never a reward. One a month after that, capped.
+- **An opening credit of 2 points, disclosed.** Endowed progress: a pre-stamped
+  card was completed by 34% against 19% for an empty one needing identical
+  purchases. Given as real points rather than a padded bar, because an
+  unauditable progress display is a lie told for engagement.
+
+### Not built, deliberately
+
+Random bonuses, a daily streak, any leaderboard, bunny-convertible points, and
+streak-loss notifications — each individually evidenced as harmful, and this
+system already carries its pressure load in real money and device lockouts.
+The gamification is the one part with no teeth. `TestPointsAreNotMoney` and
+`TestCommend` pin that boundary in code so it cannot rot quietly.
+
+### Released — Bunny Tasker 69, Lion's Share 85
+
+
+<!-- ───────── 2026-09-01 devotion ───────── -->
+
+### Added — Devotion: voluntary tasks, as a subscriber perk
+
+The bunny draws from the same 144-line veneration catalogue the Lion imposes
+from, types it out exactly, and earns a rank. Everything else in Bunny Tasker
+is state the bunny is subject to; this is the one thing they can choose.
+
+- **The reward is points and never money.** A voluntary task that took money
+  off the balance would be a discount the bunny writes for themselves — the one
+  thing this system exists not to hand over, since they already hold the
+  device, the root and the drive. Points record effort they chose; the Lion may
+  reward it, convert it, or ignore it. Standing is earnable, a discount is not.
+  A test asserts no balance-shaped key can appear in a claim response.
+- **The tier is the perk.** Bronze 3/week, Silver 7, Gold unlimited, none
+  without a subscription. The window rolls from the first claim rather than
+  anchoring to a calendar week, which would turn "how much did you choose to
+  do" into "who stayed up for the reset". The tier is read from the mesh's own
+  orders — the client does not declare its own perk level.
+- **Cap and counter live on the relay**, in a file the device cannot reach,
+  same as the tamper ratchet and the flip budget. The typing discipline is
+  client-side and a tampered client can always lie about it, which is precisely
+  why what it buys is a rank rather than a dollar.
+- **Typing is the task.** Paste is refused outright (no penalty — this is
+  voluntary), and the match is exact, capitals included. The catalogue strings
+  are the enforced form everywhere else in this system; accepting a near-miss
+  would make devotion the one place Their pronouns are optional.
+- **Both apps ship the same catalogue.** `make-veneration-md.py` now emits the
+  companion's copy too, and a test asserts the two resources are byte-identical
+  — a line offered from one picker and enforced from the other would differ by
+  a capital and be unsatisfiable.
+- **The Lion sees it for free.** Devotion status rides `/payments`, which both
+  sides already read, so no second endpoint and no second auth path.
+
+### Added — the last of the Collar state worth showing
+
+- **In force.** The lock mode plus which modifiers are actually on (shame, dim,
+  mute, vibrate, penalties, toy connected). "Why is my screen dim" had no
+  answer on the device it was happening to.
+- **Geofence breaches persist.** The stats tile only ever said whether a fence
+  existed; a breach is a thing that happened, and now stays visible for 72h.
+- **Noticed.** If device admin came off and the Collar logged it, the bunny
+  sees that it was seen — and that it carries no charge, only a re-lock. Admin
+  tamper is costly-exit by design, and saying so plainly is what keeps that
+  honest rather than a trap.
+
+### Released — Bunny Tasker 68
+
+
+<!-- ───────── 2026-09-01 Bunny Tasker, second pass ───────── -->
+
+### Added — the state the bunny was being held to, and could not see
+
+A sweep of the `Settings.Global` keys the Collar writes against the keys
+Bunny Tasker reads turned up **83 it never touched** — the same class of gap
+as the STREAK tile that read a pref nothing wrote. These are the ones the
+bunny is actually measured by. Every section hides when its feature is off,
+so the tab shows what is being enforced rather than a menu of dormant
+subsystems. 83 unread keys down to 46, the remainder being plumbing (keys,
+ports, saved volumes).
+
+- **Screen time.** The Collar accumulates `screen_time_used_today` whenever
+  the phone is unlocked and auto-locks at the quota — it even reports both in
+  its own state JSON. The one number the bunny is measured against was
+  invisible right up to the moment the leash pulled. Now a bar, minutes left,
+  and the reset hour, which matters most exactly when the quota is spent.
+- **The unlock condition.** Nine lock modes exist and only the deadline task
+  was ever surfaced: the bunny could see THAT they were locked, not what would
+  end it. Now shows the task, reps done, photo hint, exercise or compliment.
+- **Locking soon.** `countdown_lock_at` armed a delayed lock and the warnings
+  went to a notification that could be dismissed. This is the standing version.
+- **Bedtime and curfew.** Hour windows the Collar enforces on its own poll —
+  bedtime locks the phone, curfew drops a geofence. Neither was visible from
+  this side, so the bunny did not know when they turn into a pumpkin.
+- **Body check.** A whole subsystem with its own cadence and its own streak,
+  invisible here until now.
+- **Negotiation, from the side that negotiates.** Lion's Share has had
+  accept/decline for offers all along; the bunny had no way to make one. Writes
+  the same three keys the Collar's `doOffer` sets, and the 60-second minimum
+  before an accept stays enforced Collar-side.
+- **What is still coming.** Fines, tribute cadence and `sub_total_owed` — the
+  balance was visible, what was scheduled to grow it was not.
+- **Desktop collars.** Their own machines are collared and the app never said
+  which, or whether they were locked.
+
+### Removed — a pairing fallback that never existed
+
+- `pairing_code_text` and `pairing_code_hint` sat permanently GONE, referenced
+  by nothing, promising a manual code that was never generated. The button
+  above them was also labelled "Generate Pairing Code" in XML and rewritten to
+  "Join Mesh" in `onCreate`, so a slow inflate flashed the wrong word.
+
+### Released — Bunny Tasker 67
+
+
+<!-- ───────── 2026-09-01 Bunny Tasker, first pass ───────── -->
+
+### Changed — Bunny Tasker was one long scroll
+
+- **Four tabs, named for what the bunny is doing:** Now (self-lock, stats),
+  Owe (balance, trend, the flip, history), Talk (messages), Me (subscription,
+  payer identity, detection). Same regroup Lion's Share got, and for the same
+  reason: six sections stacked in one 815-line layout meant "what do I owe" and
+  "what did my Lion say" were the same act of scrolling. The status card,
+  pinned message and deadline task stay ABOVE the tab bar — what the Lion is
+  saying right now does not belong behind a tab. Last tab is remembered.
+
+### Added — the bunny can take the bet they could already be made to take
+
+- **Double or nothing, in the bunny's own app.** `/api/mesh/{id}/gamble` has
+  always been bunny-signed, but the only button anywhere was in Lion's Share,
+  which drives it through the Collar's local `/api/gamble` — so the bunny could
+  be made to flip and could not choose to.
+- **Bounded on the relay, because that is the half that matters.** Heads halves
+  the balance, tails doubles it: +25% EV to the Lion per flip, which is what
+  makes the bet safe to offer. Unlimited flips are a different game — the bunny
+  is not playing the average, they are buying tickets against a balance that
+  only has to reach zero once, and enough attempts clears any balance. A
+  cooldown (1h) and a rolling daily cap (3) now live in a server-only file, the
+  one a bunny with root would otherwise delete. The window is rolling rather
+  than calendar so midnight is not a fresh allowance.
+- **Fails closed.** Unreadable or unwritable limit state refuses the flip: an
+  unreadable file is what a half-deleted one looks like, and "I cannot tell how
+  many times you have flipped" must not mean "go on". The paywall check runs
+  first, so "nothing to gamble" never burns one of the day's attempts.
+
+### Added — numbers the bunny already had, finally shown
+
+- **What it costs to wait.** Every input was on the device (`paywall`,
+  `paywall_original`, `sub_tier`, `locked_at`) and the relay's interest tick
+  uses exactly this arithmetic. The balance said what was owed now; nothing
+  said what it becomes by tomorrow. Silent at no balance and on Gold, where a
+  line reading "+$0" would only teach people to stop reading it.
+- **Balance trend.** A dependency-free sparkline over the ledger's
+  `balance_after` values — data the app already fetched and rendered as a list
+  of numbers nobody adds up. Rising is the Lion's colour, falling is green.
+
+### Fixed — the STREAK tile had never shown anything
+
+- It read `prefs.getInt("streak_days")`, a key **nothing in any of the three
+  apps has ever written**, so it rendered "0d" on every device, forever. The
+  real streak was already there: the relay's `start-streak` stamps
+  `streak_start` + `streak_escapes_at_start`, and `streak-break` clears
+  `streak_enabled` the moment lifetime escapes pass that baseline.
+- Now derived from that state, and given the half that gives a streak weight —
+  it can read **broken**, and shows the next unclaimed 7d/30d bonus it is
+  heading for. Days come from the start timestamp rather than a counter, so
+  nothing drifts while the app is closed.
+
+### Released — Bunny Tasker 66
+
+- 65 was published minutes earlier with different content, so this bumps
+  rather than rebuilding under a code F-Droid has already offered. Signing
+  certificate verified against 65 before staging.
+
+
+<!-- ───────── 2026-09-01 the balance would not come down ───────── -->
+
+### Fixed — two payments, and the balance never moved
+
+Reported from the bunny's side: paid twice, balance unchanged. Both halves of
+the payment pipeline were broken independently, and either one alone was enough
+to produce exactly that.
+
+- **A partial payment did not debit the balance.** `payment-received` touched
+  `paywall` only when the payment covered it in full; anything short of that
+  bumped the lifetime `total_paid_cents` counter and left the balance where it
+  started. Pay $20 a week against $100 and it sits at $100 forever. A partial
+  branch did exist (`reduce_paywall`) but it wrote straight to the phone over
+  ADB — homelab-only, and overwritten by the next vault sync from the orders
+  doc anyway. Vault-mode meshes had nothing debiting the balance at all.
+- **The debit takes the principal too.** `paywall_original` is what compound
+  interest accrues on (`compounded = paywall_original * rate**hours`, applied
+  whenever it exceeds the current balance), so debiting only `paywall` would
+  have let the next hourly tick recompute from the un-paid principal and hand
+  the payment straight back. The arithmetic lives in one place
+  (`focuslock_payment.debit_balance`) rather than once per caller.
+- **The scanner no longer decides clearing.** It read `paywall` once per cycle,
+  so two payment emails in one batch tested the second against a balance the
+  first had already reduced, and could zero a balance that was only partly
+  paid. The relay debits from live orders and clears when the debit reaches
+  zero; the number it computed rides the vault blob as `new_paywall` so every
+  device applies the relay's answer instead of re-deriving its own.
+- **Remainders round up, and the lifetime total keeps its cents.** Balances are
+  whole-dollar strings on both sides of the wire; rounding a remainder down
+  would credit more than was sent.
+
+### Fixed — neither side could configure payment detection after pairing
+
+Crediting needs both halves set, and both were unreachable on a mesh with no
+homelab — which is the normal vault-mode setup. With no payer allowlist the
+scanner fails closed and skips every payment, silently.
+
+- **Lion's Share ⋮ → Payment Email** was hidden behind `homelabConfigured()`.
+  It posts the payee identity to the *relay* (`set-payee-identity`) and has
+  nothing to do with the homelab. A Lion who skipped the IMAP step in
+  onboarding, changed inbox, or rotated an app password had no way back in.
+- **Bunny Tasker's payer identity** was hidden behind the same check, and is
+  likewise a signed POST to the relay. Both now gate on what they actually
+  need: a mesh to post to.
+- **Removed Bunny Tasker's "Connect Payment Email".** It POSTed to
+  `/mesh/set-imap-creds`, an endpoint no server in this repo serves, and never
+  read the response — every "Connected ✓" it printed was a lie. Wiring it up
+  would have been worse: the scanned mailbox is the *Lion's* (a received-payment
+  notice in the payee's inbox is what proves a transfer), so a bunny who could
+  point the scanner at a mailbox they control could mint their own payment
+  confirmations. That section is now a read-only detection status fed by three
+  booleans on `/api/mesh/{id}/payments` — no address or credential crosses the
+  boundary, but "I paid and nothing happened" now names the missing half on
+  screen instead of only in the relay log.
+
+### Released — The Collar 85, Bunny Tasker 65, Lion's Share 84
+
+- All three apps changed, so all three bumped. F-Droid keys on the versionCode:
+  rebuilding under the code already in the repo changes content nobody is
+  offered.
+- **Signing certificates verified against their predecessors** before staging —
+  each app has its own key, and all three match, so these install as upgrades
+  rather than being refused.
+- **Installer pins synced** in `re-enslave-lib.sh` (85 / 84 / 65) and the
+  F-Droid publish map pointed at the new APKs, the two literals that drift
+  every release for the same reason.
+- **The server half does not ship via F-Droid.** The debit and the detection
+  booleans are in `focuslock-mail.py` + `shared/focuslock_payment.py`; without
+  a relay deploy the APKs alone fix nothing.
+
+
+<!-- ───────── 2026-08-23 operator identifiers out of a public repo ───────── -->
+
+### Changed — the operator's own infrastructure is no longer in the tree
+
+- **Scrubbed:** the live relay and F-Droid hostnames, four mesh ids, and a
+  phone's adb serial, replaced with `*.example.com` and same-shaped fakes. Mesh
+  ids keep their character classes on purpose — the validity fixtures assert
+  that mixed case, digits and a hyphen are accepted, and a placeholder that
+  quietly stopped covering hyphens would be worse than the leak.
+- **Both desktop collars prefilled the author's own relay** as the default mesh
+  URL, so every fresh install offered a stranger's host and one Enter accepted
+  it. The GTK tray now prefills only what the machine is already configured
+  with and shows the example as placeholder text; the Windows prompt moved its
+  example into the prompt, where it reads as an example rather than an answer.
+- **Machine hostnames were deliberately left alone.** They identify the operator
+  only to people who already know them personally, and those people already know
+  about the dynamic — so scrubbing them cost the handoff docs their real
+  referents and bought nothing.
+- **Guarded, without writing the secrets down.** A denylist of the real values
+  would publish them, so the test derives the operator's domain from the repo's
+  own commit authorship and asserts it appears nowhere but
+  `.github/allowed_signers` — exempt because the signing principal *must* equal
+  the committer email or CI cannot verify a signature. A second check rejects
+  `/home/<someone>` paths, which kept arriving via pasted shell output.
+- **This does not un-publish anything.** The strings remain in git history and on
+  the public branches that already carry them; the scrub stops future exposure
+  and stops a merge from regressing `main`, which `670ebe9` had already cleaned.
+
+<!-- ───────── 2026-08-23 the mesh id was the wake-up channel ───────── -->
+
+### Fixed — a leaked mesh id no longer leaks the wake-up feed
+
+- **The ntfy topic was `focuslock-{mesh_id}`.** ntfy topics are world-readable
+  and world-writable with no registration, so the mesh id *was* the channel:
+  anywhere one had been written down — including this changelog, which spelled
+  out `https://ntfy.sh/focuslock-Cd5gHj8k-Nq3` in full — published that mesh's
+  lock and unlock timing to anyone who read it, and handed them a way to inject
+  spurious wakes. Payload is only `{"v": N}`, so no content leaked; timing did.
+- **A derived topic cannot be rotated.** That was the real defect. The relay now
+  stores a random topic per mesh, and `scripts/rotate-ntfy-topic.sh` mints a new
+  one whenever the old one is suspect.
+- **Nodes learn it over a node-signed route**, not an `auth_token` one: the token
+  is the Lion's, and the collar is exactly the node that needs the topic and
+  holds no token. A stranger with the mesh id gets 403.
+- **Back-compat on both sides.** A mesh that has never rotated still resolves to
+  the derived topic, and a client whose relay predates the route keeps the one it
+  derived — so upgrading either half alone changes nothing.
+
+<!-- ───────── 2026-08-23 published to F-Droid + GitHub ───────── -->
+
+### Released — Lion's Share 83, The Collar 84, Bunny Tasker 64
+
+- **Published to the OpenCollar F-Droid repo**, signing fingerprint unchanged
+  (`C5D875B0…B49E5D8E`), so existing QR codes and subscribed devices keep working.
+  All three APK signing certificates match the builds already published, which is
+  what lets a device install these as upgrades rather than refusing them.
+- **Lion's Share 83** carries this pass's work: the four-tab regroup, the kebab
+  overflow, veneration tasks, visible message history, the balance history, and
+  the dead-endpoint fixes behind all three of those screens.
+- **The Collar 84 / Bunny Tasker 64** were bumped because the repo already held
+  83 and 63 — F-Droid keys on the versionCode, so rebuilding under the same code
+  changes content nobody is offered. Both carry PWA pinning, the device-admin
+  onboarding gate, and balance-event reporting, none of which had ever shipped.
+- **Installer targets synced.** `re-enslave-lib.sh` still pinned controller 81 and
+  companion 62, two and one releases behind what the repo served.
+- **The publish script can no longer point at a stale build.** Its APK map carries
+  a literal filename, which drifted for the same reason the hand-typed
+  `CurrentVersionCode` did — a new APK is built beside the old one and nothing
+  notices. It now refuses to publish when `apks/` holds a higher versionCode for
+  the same package than the one it is about to ship.
+
+<!-- ───────── 2026-08-23 the balance moved and nothing said why ───────── -->
+
+### Added — every balance movement records what caused it
+
+- **The ledger was a one-sided account.** It held payments and reversals only:
+  `_apply_payment_reversal` and the IMAP credit path were its two production writers
+  (`handle_ledger_entry` is reachable from tests alone). Every *charge* — manual `+$`,
+  daily tribute, recurring fine, escape penalty, app-launch penalty, SMS sit-boy,
+  compound interest, desktop tamper, consent decline — moved the balance through
+  `mesh_apply_order` and recorded nothing. The bunny watched what they owed climb with
+  nothing saying which charge did it, and the Lion had the same blind spot in reverse.
+- **Recorded at the choke point, not per action.** `mesh_apply_order` has exactly one
+  caller, so `_server_apply_order` now diffs the paywall across every order and appends a
+  row when it moved. A charging action added later is recorded whether or not anyone
+  remembers to instrument it — the property the tests pin, because the list of actions is
+  the part that rots. `payment-received` is excluded: it writes its own row first, and
+  recording the movement again would show the bunny paying twice for one payment.
+- **Rows say what happened, and where it left things.** A `reason` on the order takes
+  precedence, so the callers that know supply it — "Desktop tamper #3", "Consent declined",
+  "Pasted a veneration instead of typing it", "Silent for 4 days", "Disposal token". An
+  action with no reason falls back to a readable name ("Recurring fine", "Daily tribute"),
+  and one in neither table still records rather than vanishing. `PaymentLedger.add_entry`
+  takes an optional `balance_after` so a row can state the resulting balance instead of
+  leaving the reader to add up deltas.
+- **Bookkeeping cannot fail enforcement.** The charge has already landed by the time the
+  row is written, so a ledger failure is logged and swallowed: a missing history line is a
+  smaller harm than an enforcement action reporting failure.
+
+### Fixed — Bunny Tasker rendered every ledger row as money paid
+
+- Its history hardcoded `+$` and green, which was correct while the ledger held only
+  payments. With charges in it, a $5 fine would have read as **five dollars paid off** —
+  the exact opposite of what happened. Sign and colour now come from the row type: charges
+  climb in amber, payments fall in green, credits (a clear, a bonus — a reduction nobody
+  paid for) fall in a muted green, reversals in gold. Both apps show the resulting balance
+  and a relative time; Lion's Share had neither.
+
+
+<!-- ───────── 2026-08-23 the Lion draws a task instead of retyping one ───────── -->
+
+### Added — 144 preloaded venerations, drawn by category, in Lion's Share
+
+- **The tasks existed; only the retyping did not.** `veneration-tasks.md` has held 144
+  written-out venerations since 2026-08-22, and the only way to use one was to read it and
+  type it into the writing-task field. Fine once, tedious nightly — and retyping is where
+  the danger sat: Lion's Share turns `task_randcaps` on for these, so the lockscreen
+  enforces capitalisation exactly, and a remembered "their" where the document says
+  "Their" is a task the bunny cannot satisfy and cannot argue with.
+- **Rules → 🎲 Draw a veneration…** offers *Anything (144)* plus the nine categories with
+  their counts — Ownership & belonging (20), Gratitude (16), Obedience (36), Service (15),
+  Discipline (15), Attention (16), Patience (10), Devotion (10), Long-form (6). Picking one
+  draws a task, shows its id and suggested reps, and offers **Draw another** before
+  anything is written. Nothing touches the task field until the Lion accepts: a picker that
+  overwrites what They already typed the moment it opens is one They stop opening.
+- **Accepting sets all three fields together** — text, the catalogue's suggested reps, and
+  Random caps ON. That last is deliberate rather than incidental: every task capitalises
+  Their pronouns mid-sentence and the catalogue's own `pronoun_rule` says the strings *are*
+  the enforced form, so leaving randcaps off would let the lockscreen accept a lowercase
+  "them" — the one thing these tasks exist to make the bunny write out correctly.
+- **`res/raw/veneration_tasks.json` is generated, never hand-edited.**
+  `scripts/make-veneration-md.py` now emits the app view alongside the markdown one, with
+  the category display titles baked in so the picker cannot disagree with the document the
+  Lion reads. 32 KB minified.
+- New `VenerationTasks.java` keeps parsing and drawing free of Android, the same shape as
+  `StatusCore` and `PollGate`, so both are unit-tested off a device. "Draw another" cannot
+  return the line it just gave (a picker that repeats reads as broken), a single-task
+  category still returns its one task, and an empty category yields null rather than
+  something the Lion did not choose.
+
+### Fixed — the generator's own drift check was never run
+
+- `make-veneration-md.py --check` has existed since the markdown view was added and
+  **nothing invoked it**. A drift guard nobody runs is not a guard. New
+  `tests/test_veneration_catalogue.py` runs it in CI and compares the shipped strings to
+  the source directly, so a hand-edit of `res/raw` fails even if the generator was re-run
+  afterwards. Also bounds the suggested reps: a long-form task at five reps is a different
+  punishment from the one the Lion thought They were setting.
+- A first draft of the Java test tried to police capitalisation directly — flag any
+  lowercase "them"/"their". It fired on `ven-011`, *"I built them and handed over the
+  keys"*, where **them** is the locks. That is the trap `CLAUDE.md` already records for
+  `collar-pronoun-check.sh`: a regex cannot tell the Lion from a courier. Replaced with a
+  character-exact comparison against the source, which needs no judgement.
+
+### Fixed — the UI driver could not see any label containing `&`
+
+- `uiautomator dump` XML-escapes attribute values, so "Ownership & belonging" arrives as
+  `Ownership &amp; belonging` and an emoji as `&#128156;`. `staging/uiauto.py` matched the
+  raw form, so a category the picker was plainly offering read as missing — and the failed
+  tap left a modal up, which then read as *every* later control being absent. Entities are
+  resolved on parse now, with a test.
+
+
+<!-- ───────── 2026-08-23 the tabs were named after power, not purpose ───────── -->
+
+### Changed — Lion's Share tabs are named after what the Lion is doing (controller 83)
+
+- **The Lion's verdict on the shipped UI: "too cluttered, and the buttons don't make
+  sense in their current named sections."** Both halves were structural. The tabs were
+  *Control / Advanced / Inbox* — two named after how dangerous a control was, one after a
+  container — so neither name predicted its contents and **"Advanced" became a junk
+  drawer**: the mode spinner and writing task (core), geofencing (situational), payment
+  email and vault nodes (setup), Play Audio and Double or Nothing (occasional), and Entrap
+  and `RELEASE FOREVER` (destructive), all on one 25-button scroll. 48 Buttons, 7
+  ToggleButtons, 9 EditTexts and 2 Spinners in a single 369-line layout.
+- **The worst consequence was that the commonest composite action spanned two tabs.**
+  Locking with a writing task meant setting the mode in Advanced, typing the task in
+  Advanced, and returning to Control to press Lock.
+- Now each tab answers exactly one question — **Lock** (what is happening, and make it
+  happen), **Rules** (what must the bunny do to get out?), **Money** (what do they owe?),
+  **Inbox** (what have they said?). The `Lock / Rules / Money` naming is carried over from
+  `web/index.html`, whose four-tab restructure the 2026-04-28 usability audit recorded as
+  landing well — one mental model across both surfaces.
+- **Seven controls left the tabs entirely.** Bunnies, Vault Nodes, Web Remote, Payment
+  Email, Setup, App PIN and Release Forever are configuration, administration and
+  teardown, not actions on the bunny; they now live in a kebab (`res/menu/overflow.xml`)
+  behind a `PopupMenu`, since the app's `Theme.Material.NoActionBar` provides no system
+  overflow to inherit. Release Forever keeps its own separated group: it is a documented
+  consent guarantee (`CLAUDE.md` → Safety), so it stays discoverable — a named row one tap
+  away is both easier to find deliberately and harder to hit by accident than a button
+  sharing a scroll with Play Audio.
+- **`paywall_amount` was not the duplicate money field it appeared to be.** It sat one
+  field away from `balance_set_input` in the quick-add money row, which is exactly why the
+  two read as redundant — but it stages the balance for the *next lock order*
+  (`buildLockJson`, MainActivity:3067; the lock order's `paywall` field SETS the balance,
+  ControlService.java:1105). Moved in with the other lock parameters, where its label can
+  say so.
+- Also: Modifiers and Live Pokes collapse to a single line that still names what is
+  switched on inside them; Entrap sits in a bordered danger block rather than being
+  distinguished only by hue on a dark background; and the primary Lock button now reports
+  the live state (`Re-lock · 42m left`) instead of reading "Lock all devices" whether or
+  not the bunny was already locked — single-line, because a Button truncates rather than
+  wraps when its label outgrows it. onCreate's 90 lines of wiring are grouped into
+  `wireLockTab()` / `wireRulesTab()` / `wireMoneyTab()` / `wireInboxTab()`, so the code
+  mirrors the taxonomy.
+- **Not yet walked on hardware** — no device attached, Waydroid uninitialised. The APK
+  builds and `apksigner verify`s clean, and the checks below cover the regression class,
+  but the on-device walk is still owed and v83 is deliberately **not published**.
+
+### Added — `tests/test_android_layout_ids.py`, the layout↔code contract nothing checked
+
+- **`MainActivity` resolves every view by string**, via
+  `getResources().getIdentifier(name, "id", getPackageName())`. Nothing links those strings
+  to the layout, so moving or renaming a view returns id `0`, `findViewById(0)` returns
+  null, and — given the ~20 `if (x != null)` guards and several `try { … } catch
+  (Exception e) {}` wrappers around exactly these lookups — **the control silently stops
+  working**. The Lion presses the button, nothing happens, and no log line says why. That
+  is the single largest hazard in reorganising this UI, and it had no coverage at all.
+- Nine tests over all three apps: every statically-resolvable `getIdentifier(name, type)`
+  and `getId(name)` resolves to a real resource (ids, layouts, menus, drawables, mipmaps,
+  strings); every collapsible section has all three of its `_head` / `_body` / `_chevron`
+  parts, since `wireSection()` builds those ids by concatenation where no static check can
+  see them; every id-bearing Button in the main layout is referenced from code, so a
+  control cannot survive on screen with no handler behind it; and no layout defines the
+  same id twice.
+- Mutation-checked four ways — a renamed id, a broken menu resource name, a half-renamed
+  section and a planted orphan button each fail the suite, naming the offending file and
+  line. Passed against `HEAD` before the reorganisation began, so it went in as a net
+  rather than a rationalisation. Suite `1331 → 1340`.
+
+
+<!-- ───────── 2026-08-23 three places the record disagreed with the money ───────── -->
+
+### Fixed — F-Droid held Lion's Share 82 and told every client 81 was current
+
+- **The newer build was published, indexed, downloadable — and not offered.**
+  `build-collar-repo.sh` wrote `CurrentVersionCode` from a literal typed into the
+  `write_meta` call, and that literal still said `81` after `LionsShare-82.apk` was
+  staged beside it. `fdroid update` turns that into `suggestedVersionCode: 81`, which is
+  the number a client uses to decide whether an update exists, so the auto-accept toggle
+  fix (`95f33bd`) sat in the repo unoffered from 2026-08-22 until now. Confirmed against
+  the live index at `fdroid.example.com` before and after.
+- **The literal is gone rather than corrected.** The same number used to be written down
+  three times — in the source APK filename, in the name it takes in `repo/`, and in
+  `CurrentVersionCode` — with nothing checking that the three agreed. All three now derive
+  from `aapt2 dump badging` on the APK itself, so the index cannot advertise a version the
+  repo does not hold, or hold one it does not advertise. The build also refuses an APK
+  whose declared package does not match the slot it was put in.
+- **Repo signing fingerprint unchanged** (`C5D875B0…5D8E`) and re-verified after the
+  rebuild, as is required of any run against this repo; the subscribe QR re-encodes to the
+  same URL + fingerprint. The Collar (83) and Bunny Tasker (63) are published as the
+  2026-08-09/15 builds and now predate the vector icons — they need a versionCode bump
+  before a rebuild can carry those, and are deliberately left alone here.
+
+### Fixed — every `add-paywall` reported the balance as `$0` right after raising it
+
+- **`mesh_apply_order("add-paywall", …)` fell through to the bare `{"applied": action}`
+  at the bottom of the function**, so every caller reading `paywall` off the result got
+  `None`. `/webhook/desktop-penalty` answered `new_paywall: 0` and — worse — sent the Lion
+  an evidence line reading *"$5 penalty applied. New paywall: $0"* while the charge itself
+  had landed correctly. The node-signed penalty route replied `"paywall": null`. Every
+  other charging action (`tribute-charge`, `fine-charge`, `escape-penalty`,
+  `app-launch-penalty`) already returned the new value; this one never did.
+- Enforcement was right and the record was wrong — the same shape as the auto-accept flag
+  (`30dbd96`) and the mirror-`.pyc` test run (`71c70eb`). The negative-delta clamp had the
+  matching bug: it reset the stored paywall to 0 but kept returning the negative number,
+  invisible only because nothing read it.
+- Mutation-checked: reverting the return drops 3 of the new tests.
+
+### Added — QA for the node-signed penalty route, which landed without any
+
+- `POST /vault/{mesh_id}/penalty` (`803c432`, `be76064`, `0e6885d`) let a vault-mode collar
+  report a fine-bearing incident with its own node key instead of `ADMIN_TOKEN` — a
+  credential for the whole admin API, which those machines deliberately do not hold. It
+  shipped with **no tests**. New `tests/test_vault_penalty_node_signed.py`, 26 of them.
+- Pins the property the design rests on: **the collar reports the event and gets no say in
+  the price.** An `amount` in the request body is ignored; an unarmed kind charges nothing
+  and says so with a 200 rather than inviting a retry; an unknown kind never reaches a
+  default; the Lion's own price is capped at $500; the tamper tier comes off the relay's
+  per-mesh counter, which a claimed count can fast-forward but never walk back, and a wild
+  claim is clamped to +100.
+- Pins the refusals too: a stranger, a member signing with the wrong key, a stale
+  timestamp, a signature lifted from another mesh, and a signature covering a different
+  kind or count than the body carries. Plus the one place this route parts company with
+  `standing-orders` and `lion-pubkey` — an auto-accepted node the Lion has never confirmed
+  is served orders but **cannot spend money**, and starts being able to the moment They
+  confirm it.
+- Also pinned: a negative count is refused rather than floored, because the server
+  normalizes before it rebuilds the payload it verifies. Fails closed, which is the right
+  side to fail on.
+- Suite `1299 → 1331`.
+
+### Fixed — the lint gate had drifted again, in the scripts that generate the app art
+
+- `ruff check .` was **54 errors** across `scripts/svg-to-vectordrawable.py`,
+  `scripts/make-fdroid-icons.py` and `veneration-lockscreen-patch/`, with 6 files
+  unformatted — all landed by the 2026-08-22/23 commits, all of it CI-red. Same recurrence
+  the branch had before `36d02b0`.
+- Six of those were `B023` on closures over loop variables in the gradient math of both
+  icon generators — latent, not live (each is called inside its own iteration), and now
+  bound as defaults. Also removed an `import_module(...) if False else None` line left over
+  from an approach that could not work.
+- **These scripts generate committed artifacts**, so the rewrite was verified the only way
+  that counts: both generators were run before and after, and all four VectorDrawables plus
+  all three 512px F-Droid icons came back **byte-identical**.
+
+
+<!-- ───────── 2026-08-17 the signing gate could not be passed by signing ───────── -->
+
+### Fixed — `signed-commits` CI rejected correctly-signed commits
+
+- **Nothing configured `gpg.ssh.allowedSignersFile`, so the runner could not verify an SSH
+  signature at all.** Git reports `%G?=N` in that state — byte-identical to the status it
+  reports for a wholly unsigned commit — and the workflow accepts only `G`/`U`. A
+  contributor who followed `CONTRIBUTING.md` to the letter would have signed every commit
+  and still watched the gate fail, with an error message instructing them to sign.
+  Confirmed directly: the same SSH-signed commit reads `N` with no allowed-signers file and
+  `G` with one. New `.github/allowed_signers` carries the trusted keys and the workflow
+  points git at it before checking.
+- **The trust list is itself an enforcement-sensitive path.** Added to `SENSITIVE_REGEX` in
+  the same change — a list that an unsigned commit can append to is not a trust list, so
+  adding a key now requires a signature from a key already on it.
+- **CI can verify SSH signatures only.** A GPG-signed commit still reads `E` (missing key),
+  because nothing imports a keyring into the runner. `CONTRIBUTING.md` now says so and
+  points contributors at SSH signing rather than leaving the choice open.
+
+### Added — `scripts/sign-branch.sh`, retroactive signing that reports before it rewrites
+
+- **The documented one-liner was not sufficient on its own.**
+  `git rebase --exec 'git commit --amend --no-edit -S' <upstream>..HEAD` signs nothing
+  unless signing is already configured, and this machine had no `commit.gpgsign`, no
+  `user.signingkey`, no `gpg.format` — the rebase would have rewritten the whole branch and
+  changed no signature status. The script configures signing first, then rewrites.
+- Reports by default and changes nothing; `--apply` rewrites. Refuses a dirty tree, refuses
+  merge commits, and refuses a detached HEAD **before** taking a backup or touching history.
+  Never generates a signing key — a signing key is an identity, and a script does not get to
+  mint one. Takes a `backup/pre-signing/…` branch, re-verifies afterward with the workflow's
+  regex copied byte-for-byte, asserts the tree is unchanged against that backup, and never
+  pushes: it prints the force-push and the one-line undo instead.
+- Report mode reads `%G?` through the in-repo allowed-signers list when none is configured,
+  so an already-signed branch is not reported as unsigned — the exact failure the script
+  exists to diagnose, which it briefly reproduced.
+- **Run on `feat/real-mesh-bunnies`:** all 91 commits verify `G` (the gate requires it of
+  73), tree byte-identical to the backup. Verified against a fresh clone with no local
+  config — the runner's condition — using the workflow's own logic.
+
+
+<!-- ───────── 2026-08-17 the read side of the address gate ───────── -->
+
+### Fixed — `GET /controller` served the Lion's address to anyone who asked
+
+- **The write side has been admin-gated since audit 2026-04-27 M-2**, on the explicit
+  reasoning that an unauthenticated caller must not get to choose the address controller
+  resolution hands back. The read side was left open — so the address itself, the Lion's
+  controller on the mesh, was served to any caller that could reach the relay, and this
+  relay is on public HTTPS at `collar.example.com`. It answered 404 when checked only
+  because `controller.json` lives on tmpfs and a reboot had wiped it; it refills the moment
+  the installer re-registers. Gating the write and publishing the read is the gate facing
+  one direction.
+- **Now gated with the same shape as `/standing-orders`** (`?admin_token=` or
+  `Authorization: Bearer`): 503 when no `ADMIN_TOKEN` is configured, 403 on a missing or
+  wrong token. Dispatch had to stop comparing the raw path — an authed call carries a query
+  string, and `self.path == "/controller"` would have 404'd every one of them.
+- **`scripts/release.sh`, the one caller, sends `FOCUSLOCK_ADMIN_TOKEN`** as a Bearer
+  header rather than a query parameter, since a query string lands in the relay's access log
+  and this token is the whole admin API. With the variable unset the script says so and
+  falls back to `LION_DEVICE_IP`, exactly as it did before.
+- `tests/test_e2e_public_routes.py` gives up its claim on this route.
+  `TestControllerIsNoLongerPublic` replaces it with 6 tests: unauthenticated refused, wrong
+  token refused, unconfigured token fails closed rather than falling open, the query-token
+  and Bearer paths both reach the handler, and a registered address is still served to an
+  authed caller — the caller the endpoint exists for.
+
+
+<!-- ───────── 2026-08-17 the flag that claimed a door was open ───────── -->
+
+### Fixed — `auto_accept_nodes` stayed `true` on disk long after the window shut
+
+- **`_auto_accept_active()` fails closed on an expired or missing deadline, so no mesh
+  was actually accepting anyone** — but nothing ever wrote that verdict back, so
+  `auto_accept_nodes` sat `true` in the account JSON forever. That file is what an
+  operator reads on the relay when they go to ask whether the onboarding door is open,
+  and on the live mesh (`Mn4pQr7tVw2X`) it had been answering *yes* against a door the
+  gate holds shut. Both HTTP readouts were already honest — `/nodes` and the Lion's
+  toggle both go through the helper — so this was never a security hole; it was a record
+  that disagreed with the system enforcing it, on the exact question the record exists to
+  answer. New `_close_expired_auto_accept_windows()` runs at every relay start and
+  reconciles the flag to `false` (with `auto_accept_until` zeroed) for any account the
+  gate was already refusing. Idempotent, and **an open window is never shortened** — a
+  Lion who opened one 30 minutes ago keeps all 30.
+- 5 new tests (`tests/test_auto_accept_window.py::TestExpiredWindowReconcile`): an expired
+  deadline reconciles; the legacy no-deadline shape the live mesh was actually in
+  reconciles; a deliberately-opened window survives untouched; the write lands on disk and
+  is stable across a re-run; and a registration after the reconcile still queues for
+  approval rather than sliding in.
+
+### Still owed — trust provenance on the live mesh is thin
+
+- Every node on `Mn4pQr7tVw2X` except `relay`/`controller` is stamped
+  `confirmed_by: grandfathered` — swept in by the one-shot migration, never looked at by
+  the Lion — and `gengar-neon` was admitted from the relay console
+  (`admitted_by: operator-console`) at the bunny's request, without a Lion signature. The
+  grandfather sweep was the right call for working meshes, but a stamp that says "nobody
+  checked" is not authority. **One tap each in Lion's Share → Vault Nodes replaces the
+  inherited stamps with deliberate ones**; that is an operator action, not a code change,
+  and it has not been done.
+
+<!-- ───────── 2026-08-17 deploy-path defects + the template's missing safeword ───────── -->
+
+### Fixed — `FOCUSLOCK_SRC` was documented, exported, and ignored
+
+- **Every `re-enslave-*` script called `discover_paths` before `load_config`**
+  (`installers/re-enslave-{server,desktops,phones}.sh`), so the source pin that
+  `load_config` exists to export was never set in time for the function that reads it.
+  The pin only worked when the operator exported it by hand; otherwise autodiscovery
+  walked to whichever checkout it found first. On a machine with two checkouts that is a
+  coin flip between branches, and the losing side of it deploys older code over newer —
+  a bare `re-enslave-server.sh` offered exactly that against a live relay. Reordered in
+  all three, so the config file's `FOCUSLOCK_SRC` finally means what it says.
+
+### Fixed — the settings fallback disarmed the collar it was installing
+
+- **`install-standing-orders.sh` installed the homelab account's own
+  `~/.claude/settings.json` over the collared machine's** — and on a relay-only box that
+  file is typically a bare `{"theme": "auto"}`. `settings.json` is not preferences on a
+  collared machine; it is where the enforcement hooks live. Observed on 2026-08-17: a
+  3174-byte settings carrying the paywall gate, tamper hook, pronoun check and bash audit
+  was replaced by 22 bytes of theme preference, disarming all four silently. `efbe1b2`'s
+  backup made it recoverable, but a backup is not a guard. Both fetch paths now go
+  through `settings_is_safe()`: the candidate must parse as JSON, and must not drop a
+  `hooks` key the destination already has.
+
+### Fixed — the public standing-orders template had no safeword in it
+
+- **`docs/CLAUDE-stub.md`** — the template every deployment copies onto its relay — shipped
+  with an emergency override but no safeword tier. The override covers danger; it does not
+  cover *"stop the dynamic, talk to me plainly"*, which is the exit the rest of the document
+  depends on to be enforceable literally. Adds a `## Safewords` section (yellow pauses, red
+  ends it, neither ever logged as tamper, neither revocable by any order, everything else
+  stays in scene) plus a line in the intro naming both exits, since the section otherwise
+  sits two thirds of the way down a long file. Found while tracing why standing orders were
+  not propagating on a live mesh: the relay had no orders on file at all, so what a fresh
+  seed would contain stopped being hypothetical.
+
+<!-- ───────── 2026-08-17 node-signed standing orders ───────── -->
+
+### Added — a collar can read its orders without holding the Lion's admin token
+
+- **Being told what to do required the keys to the relay** (`focuslock-mail.py`,
+  `focuslock-desktop.py`, `focuslock-desktop-win.py`). `GET /standing-orders` is
+  admin-gated (audit 2026-04-27 H-1), so the only way a desktop collar could pull the
+  Lion's orders was to keep `ADMIN_TOKEN` — a credential for the whole admin API, across
+  every mesh the relay serves — in the config of the machine the collar exists to
+  constrain. Found on a live mesh where the sync had been dead for a day and the
+  remedy on offer was to hand the bunny that token. New **`POST
+  /vault/{mesh_id}/standing-orders`** — body `{node_id, ts, signature}`, signature over
+  `"{mesh_id}|{node_id}|standing-orders|{ts}"` with the node's own registered key
+  (vault `node_pubkey` or the `bunny_pubkey` on its row), ±5 min replay window —
+  returns `{content, sha256}`. Membership is the right proof: a node that already holds
+  a registered key has demonstrated it is on this mesh, and that is all reading the
+  orders should require. Both collars try it first and fall back to the Bearer path, so
+  a separate homelab box or a token-configured operator keeps working.
+- **Serves the stub only.** `_read_standing_orders()` is shared with the admin GET:
+  `CLAUDE-stub.md` if present, else `CLAUDE.md`, with `ADMIN_TOKEN` redacted.
+  `/enforcement-orders` — tactical orders, penalty amounts, the token itself — has no
+  node-signed route and stays admin-gated, where a node key is not enough.
+- **Not gated on `lion_confirmed`**, same reasoning as `lion-pubkey`: a machine that
+  starts obeying the Lion's standing orders becomes more governed, never less.
+- **One verifier for every node-signed route.** `_verify_node_signature()` +
+  `_node_signing_keys()` now back both this route and `lion-pubkey`, which previously
+  carried its own thirty-line copy. A route that quietly accepted a wider set of keys
+  than its siblings is the kind of drift that is easier to notice in one function than
+  in three copies.
+- 13 new tests (`tests/test_standing_orders_node_fetch.py`): registered node served and
+  the sha matches; **the safeword clause survives the trip**; the admin token is
+  redacted; an unconfirmed auto-accepted node is served; stranger, rogue key, the
+  Lion's own key, stale ts, and a signature bound to another mesh all refused; missing
+  fields 400; no orders on file 404; the admin gate on the GET is untouched and
+  `/enforcement-orders` has no node-signed door. Mutation-checked. Suite `1277 → 1290`.
+
+<!-- ───────── 2026-08-17 restart re-registration ───────── -->
+
+### Fixed — a collar restart looked like a stranger knocking
+
+- **Every already-approved collar re-queued itself on restart** (`focuslock-mail.py`).
+  `_vault_register_node()` guards on an in-process flag, so each start re-posts
+  `register-node-request`; once the auto-accept window shuts, that request was queued
+  unconditionally — there was no "this node_id is already approved with this exact key"
+  short-circuit — and fired `_node_join_ntfy()`. Found on the live mesh: of three
+  pending requests, two (`charizard-garuda`, `vaporeon`) were established members
+  re-posting the **same** key, and only one (`gengar-neon`) was a device that had never
+  been let in. That is how a real request hides: the Lion sees a queue where approving
+  most rows is a no-op, and learns to wave the whole thing through. An exact-key repost
+  now answers `{"status": "approved", "already_registered": true, "lion_confirmed": …}`
+  with no queue write and no alert.
+- **Strict about what counts as the same node.** `node_pubkey` must match byte-for-byte,
+  and a request carrying a *different* `bunny_pubkey` than the row holds falls through to
+  the queue. Both are verification anchors, so silently accepting a new one on an
+  unsigned endpoint would be the key-swap this handler routes to the Lion on purpose.
+- **The no-op deliberately does not clear the node's pending row.** Pending is keyed by
+  `node_id` and `node_pubkey`s are readable anonymously from `/vault/{id}/nodes`, so
+  clearing there would let anyone replay a node's current key to delete that node's
+  *rotation* request and strand it on its old key.
+- **The restart repost stays** rather than being suppressed client-side with a
+  persisted flag: it is the self-healing path that re-enrolls collars through the normal
+  gate if relay state is ever lost (as it was on 2026-08-15).
+- 6 new tests (`tests/test_auto_accept_window.py::TestIdempotentReRegistration`): repost
+  is a no-op that neither churns `registered_at` nor queues; no join alert for a repost
+  but still one for a stranger; the no-op reports live confirmation state; a rotated key
+  and a changed `bunny_pubkey` both still queue with the stored row untouched; replaying
+  the current key cannot cancel a pending rotation. Suite `1271 → 1277`.
+
+<!-- ───────── 2026-08-16 unattended relay deploys ───────── -->
+
+### Added — `install-server-sudoers.sh`: the relay stops asking for a password
+
+- **Every relay deploy prompted for sudo, so none could run unattended**
+  (`installers/install-server-sudoers.sh`, `installers/re-enslave-server.sh`).
+  Desktop collars have had narrow NOPASSWD rules since `install-desktop-collar.sh`;
+  the relay had no equivalent, which also meant a deploy could never be driven from a
+  non-interactive shell. Run once on the relay with sudo, the new script hands
+  `/opt/focuslock` to the deploy user and installs a four-line
+  `/etc/sudoers.d/focuslock-server` covering exactly `systemctl restart|is-active
+  focuslock-mail` (exact argument forms, no wildcards — it cannot be widened into
+  "restart anything"), validated with `visudo -cf` before install because a malformed
+  sudoers file locks every user out of sudo. `--revert` gives the directory back to
+  root and removes the rule.
+- **`re-enslave-server.sh` escalates only where it must.** The generated apply script
+  now checks `test -w /opt/focuslock` and uses plain writes when the dir is the deploy
+  user's, leaving `sudo` for the service restart alone; on an unprepared relay it falls
+  back to sudo for everything, exactly as before. Its pre-flight also asks the *real*
+  questions — is the install dir writable, is the specific systemctl command passwordless
+  — because a bare `sudo -n true` answers neither and reports "needs a password" on a
+  correctly prepared relay.
+- **Stated plainly in the script header, not buried:** `focuslock-mail.service` runs as
+  root with no `User=`, so any passwordless path to replace `/opt/focuslock/*.py` is
+  root-equivalent for that account on the next restart. That is inherent to unattended
+  deployment — a root-owned staging helper would be no stronger, since the code it
+  installs is what root then executes. `config.json` and any `*.pem` stay `root:root
+  0600` as defence in depth, with the caveat spelled out that directory ownership still
+  allows replacing them.
+
+<!-- ───────── 2026-08-16 desktops claim their Lion ───────── -->
+
+### Added — a desktop can obtain its Lion's pubkey instead of waiting for a hand-copied PEM
+
+- **A collar could join a mesh and stay unclaimed forever** (`focuslock-mail.py`,
+  `focuslock-desktop.py`, `focuslock-desktop-win.py`). `register-node-request` never
+  returned the Lion's public key, and the collar has no fetch path — only the
+  invite-code join (`/api/mesh/join`) and the passphrase pairing flow ever handed it
+  over. So a self-registering desktop (the normal path) sat as a fully approved vault
+  node with a **gray crown**, no standing orders, and no way to verify a Lion-signed
+  order, until a human copied `lion_pubkey.pem` onto the box by hand. Found on
+  vaporeon: an approved, auto-accepted, state-mirroring member of the live mesh that
+  had never been claimed. New **`POST /vault/{mesh_id}/lion-pubkey`** — body
+  `{node_id, ts, signature}`, signature over `"{mesh_id}|{node_id}|lion-pubkey|{ts}"`
+  with the node's *own* registered key (vault `node_pubkey` or the `bunny_pubkey` on
+  its row, same pair state-mirror accepts), ±5 min replay window — returns the
+  account's `lion_pubkey`. Both collars call it on the standing-orders tick when no
+  Lion key is on file, write it as PEM (loading it first, so a reverse-proxy error
+  page can't become a trust anchor), and claim themselves within one poll.
+- **Why not read the `controller` row's `node_pubkey` client-side** (it does match the
+  account's `lion_pubkey` — verified on the live mesh, hash `73195ffcf316ab30`):
+  `node_type` is self-asserted at registration, so anything that registered as
+  `node_type: "controller"` during an open auto-accept window could poison a collar's
+  trust anchor and forge orders from then on. Only the relay knows the authoritative
+  key, so only the relay can safely hand it over.
+- **Not gated on `lion_confirmed`.** It is a public verification key, and a node that
+  adopts it only becomes *more* obedient — it starts enforcing Lion-signed orders it
+  would otherwise ignore. Withholding it would protect nothing and leave devices
+  unclaimed, which is the failure the endpoint exists to end.
+- 8 new tests (`tests/test_lion_pubkey_fetch.py`): approved node served; unconfirmed
+  auto-accepted node still served (deliberate); unknown node, rogue key, stale ts, and
+  a signature lifted from another mesh all rejected; mesh with no Lion key 404s;
+  missing fields 400. Suite `1263 → 1271`.
+
+### Fixed — a claimed machine kept telling Claude that nobody owned it
+
+- **The interim marching orders outlived their pairing** (`focuslock-desktop.py`,
+  `focuslock-desktop-win.py`). The paired branch cleared the `unpaired-since` marker
+  and then returned early when no `admin_token` was configured to fetch the Lion's real
+  orders — leaving the overlay, whose own text reads *"collared, unpaired"*, in place
+  indefinitely on a machine that now had a Lion. Both collars now revoke the overlay
+  the moment a Lion key lands, restoring the bunny's pre-existing `CLAUDE.md` if there
+  was one. Gated on the overlay marker, so a file the collar didn't write is never
+  touched.
+
+<!-- ───────── 2026-08-16 interim marching orders for an unpaired collar ───────── -->
+
+### Added — a collared-but-unpaired PC is no longer silent
+
+- **The collar was invisible until it paired** (`shared/focuslock_unpaired_orders.py`,
+  `focuslock-desktop.py`, `focuslock-desktop-win.py`). The Lion's standing orders live
+  on Their mesh (`GET /standing-orders`), so a machine with no Lion key on file fetched
+  nothing and every Claude Code session on it behaved as though there were no collar at
+  all — which is exactly the state a bunny stalls in: installed, nothing feels
+  different, pairing slides to "later". Both collars now render an **interim CLAUDE.md
+  overlay** whenever `lion_pubkey.pem` is absent: the Lion/bunny frame plus one standing
+  task — get this machine paired — and nothing else.
+- **The nudge escalates on the collar's own clock.** `unpaired-since` is stamped the
+  first time the collar finds itself unpaired (not when the bunny opens a session) and
+  drives four tiers: *settling-in* (<6 h — one line per session), *insistent* (<24 h —
+  every session plus every ~10 exchanges), *pointed* (<72 h — every response, elapsed
+  time named, ask what's blocking them), *unignorable* (72 h+ — leads every response,
+  states the Lion still has no visibility). The overlay is re-rendered each
+  `MEMORY_SYNC_INTERVAL` tick, so the pressure grows without a restart. The marker file
+  is cleared on pairing, so a later unpairing starts from zero.
+- **It is deliberately not the full marching orders.** The overlay says so in its own
+  text, speaks for the collar and never for the Lion, and carries no enforcement: no
+  punishing, billing, restricting, or withholding work — *"You are pressing, not
+  withholding"* is in every tier. The consent floor is untouched: real enforcement and
+  the **Terms of Surrender** still begin at mesh-join, and the overlay points at that.
+- **A bunny's own `CLAUDE.md` is never clobbered.** Linux reuses `_apply_standing_orders`
+  (first-write backup to `claude-md.preuser`, restored by `_revoke_standing_orders`);
+  Windows gained the equivalent backup, plus a marker check so it only overwrites a file
+  it wrote. Windows also syncs standing orders once at startup instead of five minutes
+  in, so an unpaired machine gets its orders at boot.
+- Registered-but-unclaimed (mesh_id set, Lion hasn't approved the node) gets a different
+  ask than mesh-less: *"tell the Lion to confirm this device in Vault Nodes"* rather than
+  *"join a mesh"*. 17 new tests (`tests/test_unpaired_orders.py`) pin the marker,
+  tier boundaries, escalation ordering, and the no-enforcement/consent-floor contract.
+  Suite `1246 → 1263`.
+
+<!-- ───────── 2026-08-16 auto-accept window + node-join alerts + state-mirror confirmation ───────── -->
+
+### Changed — auto-accept is a 30-minute onboarding window, not a permanent open door
+
+- **Any device that learned a mesh_id became a permanent member** (`focuslock-mail.py`,
+  Lion's Share **81/81.0**). `auto_accept_nodes` was a sticky boolean, **default ON at
+  mesh creation** since 2026-05-25 — so `register-node-request` approved anything that
+  showed up, forever, and approved nodes are recipients of every future Lion blob
+  (`shared/focuslock_vault.py` encrypts the AES key per approved node). The intended
+  workflow ("switch it on to onboard, switch it off after") depended on the Lion
+  remembering, and nothing ever reminded them. Now the flag is paired with
+  `auto_accept_until`: `/api/mesh/{id}/auto-accept` `on` opens a
+  `MeshAccountStore.AUTO_ACCEPT_WINDOW_S` (30 min) window and returns `expires_in_s`;
+  `off` closes it immediately; mesh creation opens one from signup so first-device
+  onboarding stays frictionless. `_auto_accept_active()` is the single gate that
+  `register-node-request` enforces and that `/vault/{id}/nodes` reports to the Lion's
+  toggle, so the UI can never claim a door is open that the relay treats as shut.
+  **Fails closed on a missing deadline**, so accounts persisted before the field
+  existed stop being open-forever the moment this deploys. Key rotation still routes
+  to the pending queue regardless of the window (unchanged).
+- **Devices already on a mesh are grandfathered**, once, by
+  `_grandfather_auto_accepted_nodes()` at relay start: every existing `auto_accepted`
+  row is stamped `lion_confirmed` with `confirmed_by: "grandfathered"`, so a Lion
+  auditing the roster can still tell an inherited confirmation from a deliberate one.
+  Those devices were enrolled under the old rules; retroactively blocking their writes
+  would break working meshes to punish them for the relay's old default. The per-mesh
+  `auto_accept_grandfathered_at` marker is what keeps this from being a hole — without
+  it, a restart would sweep in whatever had auto-accepted since and the gate would mean
+  nothing.
+
+### Added — Lion is told when a device joins the mesh
+
+- **A silent join was invisible until the Lion happened to open Vault Nodes and hit
+  Refresh** (`focuslock-mail.py`, `MainActivity.java`). Every `register-node-request`
+  outcome — auto-accepted, queued for approval, or rotation-blocked — now fires
+  `_node_join_ntfy()`, the standard zero-knowledge `{"v": ts}` wake (the relay never
+  says *who* joined over ntfy). Lion's Share diffs the node roster on that wake and on
+  a 60 s floor poll, remembers which ids it has already shown **per mesh** (so bunny
+  switching doesn't re-announce), and raises a heads-up notification naming the new
+  device and how it got in ("joined automatically" / "wants in"). First sight of a mesh
+  seeds the roster silently — upgrading doesn't fire a notification for devices that
+  were already there.
+
+### Fixed — an unconfirmed auto-accepted node could write the Lion's financial state
+
+- **Holding the mesh_id was enough to zero the paywall** (`focuslock-mail.py`,
+  `MainActivity.java`). `fbbf468` made `register-node-request` carry `bunny_pubkey` so
+  a registered node became a *verifiable member* — which also handed it
+  `/api/mesh/{id}/state-mirror`, whose whitelist writes `paywall`, `paywall_original`,
+  `sub_tier`, `sub_due`, `lock_active`, `locked_at`, `unlock_at`, `free_unlocks`
+  straight into the `_orders_registry` doc the compound-interest and payment scanners
+  bill from. Previously that channel required tampering with the enforced Collar; via
+  auto-accept it required only the mesh_id. A signature now proves *identity*, not
+  *authority*: a node stamped `auto_accepted` without `lion_confirmed` gets 403
+  *"node awaiting lion confirmation"* from state-mirror **and from the sibling
+  plaintext writes that trust a vault row the same way** — `set-payee-identity`,
+  `set-evidence-email` (the Lion's payment email + IMAP password),
+  `set-payer-identity`, and `set-display-name`. Those routes gate on `node_type`
+  ("controller node required", "phone node required"), but `node_type` is
+  self-asserted at registration, so it was never a barrier to a stranger holding
+  the mesh_id; `_node_awaiting_confirmation()` is. New Lion-signed
+  `POST /vault/{mesh_id}/confirm-node` (`{node_id, ts, signature}`) stamps the row;
+  Lion's Share shows "⚠ joined automatically — not confirmed by you" plus a **Confirm
+  this device** button on the node row, and "Add as bunny" implies confirmation. Invite-code
+  members and pending-queue approvals are untouched — both already passed through the
+  Lion. Collars log the 403 and retry, so an unconfirmed device keeps enforcing locally;
+  only the server's view goes stale until the Lion taps once. `auto_accepted` /
+  `lion_confirmed` / `confirmed_at` are stripped from `/vault/{id}/nodes` for
+  unauthenticated callers, same reconnaissance reasoning as the `auto_accept` flag.
+- 19 new HTTP-level tests (`tests/test_auto_accept_window.py`) pin: window opens with a
+  deadline; open window auto-accepts; expired window and legacy no-deadline accounts
+  queue for approval; `off` closes immediately; a new mesh's window expires; key
+  rotation still needs approval inside an open window; `/nodes` reports live window
+  state and hides trust fields from anonymous callers; confirm-node accepts the Lion,
+  rejects a rogue key, 404s an unknown node; unconfirmed auto-accepted node cannot
+  write state, set a payer identity, or rename itself, and confirmation unlocks it;
+  invite-joined and Lion-approved nodes are unaffected; the grandfather sweep runs once
+  and does not re-sweep. Suite `1227 → 1246`.
+
+<!-- ───────── 2026-08-09 unpaired-tamper trap + desktop standing-orders gate ───────── -->
+
+### Fixed — safety floor: admin-tamper enforcement no longer traps an UNPAIRED device
+
+- **An unpaired phone could tamper-lock itself with no way out** (collar
+  **83/8.40**, companion **62/2.29**). The mutual-admin monitor
+  (`ControlService`), the `AdminReceiver` re-lock on admin removal (Collar +
+  companion), and the companion's `refreshStats` monitor all fired **regardless
+  of pairing**. Provisioning device admin *before* the Lion pairs — enabling one
+  app's admin while the other's is momentarily absent — tripped "admin removed",
+  set `focus_lock_active=1`, and re-locked every 6 s. With no Lion (`lion_pubkey`
+  unset) there was no order/timer to clear it, so the wearer was locked out of
+  their own phone; re-adding admin cleared the flag but not the lock. Now every
+  tamper path gates on a new `isPaired()` (a Lion pubkey is on file): an unpaired
+  device has no Lion to be accountable to, so admin changes are never treated as
+  tamper. **Found and fixed on hardware** — both test phones were trapped this
+  way, unlocked via break-glass, then confirmed to stay unlocked on the fixed
+  build with break-glass cleared.
+
+### Added — Linux desktop collar: standing orders only apply while connected
+
+- **The Lion's standing orders (`~/.claude/CLAUDE.md`) now honor connectivity**
+  (`focuslock-desktop.py`, opt-in via `standing_orders_require_connection`).
+  Previously they persisted once synced, so a bunny disconnected from the
+  mesh/Lion kept following directives the Lion could no longer update or revoke.
+  With the flag set, the orders are an overlay: applied on a successful sync,
+  and reverted after `_SO_REVOKE_AFTER` consecutive failed syncs — restoring the
+  machine's own prior `CLAUDE.md`, or removing ours if there was none. A hash
+  guard ensures revoke never clobbers a `CLAUDE.md` the user edited themselves.
+  Consistent with `feedback_offline_no_lock`.
+
+<!-- ───────── 2026-08-08 device-QA follow-ups: status shadowing, A16 release, Tor wait ───────── -->
+
+Cleared three follow-ups the device-QA session left open — two latent-correctness
+traps and one UX gap — all found by inspection while reading the code the
+hardware pass touched, none needing the phones re-provisioned. Versions:
+controller **78 / 78.0**, collar **82 / 8.39**, companion **61 / 2.28**;
+`installers/re-enslave-lib.sh` targets synced.
+
+### Fixed — Lion's Share (controller)
+
+- **The status line still read six signed fields off the whole body with
+  first-match helpers** (`android/controller/src/com/focusctl/MainActivity.java`,
+  `updateLiveStatus`). The signature *verification* path was scoped to the
+  top-level object (the fix-#5 `StatusCore`), but the *display* path was not, so
+  in direct mode it rendered the `orders`-document copies of `paywall` /
+  `task_reps` / `task_done` / `offer` / `offer_status` / `sub_tier` — the exact
+  shadowing hazard, one schema change from mattering. Routed the nine core
+  display fields through `StatusCore.fromWire` (the same scoped reader the
+  signature check uses), with a fail-safe fallback to first-match if the body
+  isn't a parseable object. Non-core fields (`lovense` / `geofence` / `fine` /
+  `body_check`) keep first-match: in direct mode they live *only* inside
+  `orders`, so scoping them to the top level would blank them. No visible change
+  today (the copies tie); the class of bug is now closed on both paths.
+  Regression: `StatusCoreTest.rebuiltCoreUsesTheSignersNativeTypes` now also pins
+  the native types of the fields the display path casts.
+
+### Fixed — Lion's Share (controller, multi-bunny usability)
+
+- **Every bunny slot defaulted to the literal label "bunny"** (`MainActivity.java`,
+  `pairDirect` / `createMesh`). The status line shows only the label, so with more
+  than one bunny the Lion couldn't tell whose lock state and whose balance they
+  were looking at — the exact ambiguity that made the fix-#7 balance leak invisible
+  (a wrong number under an identical name reads as the right number). New slots now
+  default to a short, stable, per-slot tag — `bunny-<fp>` from the bunny-key
+  fingerprint for a direct pair, `bunny-<mesh>` from the mesh id for a relay mesh —
+  so they're distinguishable out of the box; the existing Advanced → Bunnies rename
+  still applies.
+- **The Bunnies dialog didn't redraw after a rename or removal** — the slot was
+  gone from prefs but stayed on screen until you closed and reopened the dialog.
+  It now dismisses and re-opens itself in place after either action.
+
+### Added — Lion's Share (controller)
+
+- **A live "Waking Collar over Tor…" indicator during a cold-onion wake**
+  (`MainActivity.java`, `beginWakeIndicator` / `endWakeIndicator`). The first
+  cold order blocks up to 120 s in `wakeAndAuthorize` while both Tor daemons
+  boot; the old one-shot `setStatus("Waking Collar…")` was overwritten by the
+  next 1 s timer tick, so the UI read as hung. Now a depth-counted ticker owns
+  the status line with a counting-up elapsed timer (the order path and the read
+  poll can each trigger a wake), and the per-second timer + `updateLiveStatus`
+  yield the line while it's up. Inert in default (Tor-OFF) builds.
+
+### Fixed — The Collar + Bunny Tasker (Release Forever teardown on Android 16/17)
+
+- **Release Forever couldn't remove its own device admin on Android 16/17**
+  (`android/slave/src/com/focuslock/ControlService.java`, `doReleaseForever`).
+  The self-destruct shelled `dpm remove-active-admin`, which A16/17 refuse for a
+  non-test admin, and the follow-on `pm uninstall` refuses while an admin is
+  active — so teardown stalled on a manual Settings → Security deactivation both
+  QA sessions. A same-package caller can always remove its own admin, so the
+  Collar now calls `DevicePolicyManager.removeActiveAdmin(adminComponent())`
+  directly (release_authorized=1 makes `AdminReceiver.onDisabled` a no-op, so no
+  tamper penalty fires); the shell calls stay as a best-effort fallback.
+- **Bunny Tasker's admin blocked its own uninstall the same way.** One package
+  can't remove another's admin programmatically, so the companion now removes
+  *its own* admin via the API from `BunnyService`'s watcher when it sees
+  `focus_lock_release_authorized==1` **or** the terminal `focus_lock_released==1`
+  (the safeword path sets the latter and preserves it, so teardown is reliable
+  rather than racing the ~8 s window the Collar holds `release_authorized`),
+  then stops the watcher. Still needs on-device verification with device admin
+  actually enabled.
+
+### Fixed — consent accuracy: "Terms of Surrender" overstated the factory-reset barrier
+
+- **The consent dialog told the wearer factory reset was "available after 150
+  escape attempts"** (`android/slave/src/com/focuslock/FocusActivity.java`), but
+  the in-app shortcut actually appears at `escapes >= 3` and the OS factory reset
+  is *always* available (the code comment says so, and
+  `applyDeviceOwnerRestrictions` never sets `DISALLOW_FACTORY_RESET`). The
+  2026-04 change that lowered the threshold updated the code and the CHANGELOG but
+  missed the dialog text itself, so the binding consent screen understated a
+  safety-floor exit by 50×. Reworded to state the exit accurately: the OS factory
+  reset is always available, with an in-app shortcut after a few escapes. The same
+  stale "150 escapes" claim was corrected across the user-facing docs
+  (`DISCLAIMER.md`, `SECURITY.md`, `docs/MANUAL-BUNNY.md`, `docs/README.md`,
+  `CLAUDE.md`, the QA checklists, roadmap, `CONTRIBUTING.md`, PR template).
+
+- **Docs asserted phantom "+$500 attempt / +$1000 removal" admin-tamper charges.**
+  The code applies neither: the Android admin-tamper path (`AdminReceiver` →
+  server `tamper-recorded`) only bumps `lifetime_tamper`, and the flat
+  `TAMPER_ATTEMPT_PENALTY=500` / `TAMPER_REMOVED_PENALTY=1000` constants in
+  `shared/focuslock_penalties.py` are dead (zero call sites — the real desktop
+  tamper penalty is the `$5/tier` ratchet, capped $500). A wearer reading
+  `PRICE-LIST.md` / `README.md` / `CLAUDE.md` would believe leaving costs
+  $500–$1000 — the "punish-exit" the design explicitly removed. Corrected those
+  plus the QA checklists to state actual behavior (Android admin tamper: friction
+  re-lock + notification, no charge; desktop tamper: `$5/tier` ratchet), and
+  refreshed a stale `ControlService.doReleaseForever` comment that still named the
+  removed penalties. (The dead constants themselves are left for a separate
+  cleanup.)
+
+### Fixed — safety floor: admin-tamper handlers now honor the terminal `released` state
+
+The terminal `released` flag (set by the panic safeword, preserved for good) is
+honored by the enforcement loop, the jail, the order-apply path and the ADB
+bridge — but three admin-tamper paths gated only on `release_authorized`, which
+`doReleaseForever` **deletes** at the end of teardown. So a safeworded-and-
+released device whose admin was later removed could be dragged back into
+enforcement, violating the documented floor ("once released, no enforcement
+action may re-lock" — `docs/THREAT-MODEL.md`). All three now also honor
+`released`:
+
+- **The Collar re-locked a released device on admin removal**
+  (`android/slave/src/com/focuslock/AdminReceiver.java`, `onDisabled` /
+  `onDisableRequested`). It set `focus_lock_active=1`, wrote a shame message, and
+  launched the jail. `launchFocus()` already no-ops when released, but `active=1`
+  is read by the desktops, the companion, and the vault state-mirror — so the
+  re-lock was real even without the jail UI. Now a released (or mid-release)
+  device takes the no-penalty / no-re-lock path.
+- **Bunny Tasker fired a false "admin was removed" tamper alert** on a released
+  device (`android/companion/src/com/bunnytasker/AdminReceiver.java`,
+  `onDisabled`). Now suppressed when `released`.
+- **Bunny Tasker's mutual-admin monitor kept reporting `tamper_removed` and
+  re-locking the Collar** after a release (`MainActivity.java`, `refreshStats`).
+  Now gated on `released` in addition to `release_authorized`.
+
+  (The Collar's own jail-watcher mutual-admin monitor was already safe — the
+  `isReleased()` guard at the top of that loop `continue`s past all enforcement,
+  mutual-admin included; only a clarifying comment was added there.)
+
+- **The SMS `sit-boy` trigger didn't honor `released`**
+  (`android/slave/src/com/focuslock/SmsReceiver.java`). A `sit-boy` text from the
+  controller number re-locked the phone (and desktops) with no `released` check —
+  and this receiver bypasses the jail-watcher / order-dispatch guards entirely, so
+  a released device could be re-locked by SMS. Now ignores the command when
+  released.
+
+- **The Collar's direct HTTP order path didn't honor `released`**
+  (`android/slave/src/com/focuslock/ControlService.java`, `handler`). The mesh
+  path (`handleMeshOrder`) and the legacy apply path (`applyOrdersFromMesh`) both
+  refuse orders when released, but the direct `/api/*` HTTP dispatch — used by
+  Direct (LAN) pairings — did not. A validly-signed `/api/lock` (or `/api/task`,
+  `/api/entrap`, `/api/photo-task`, `/api/lock-device`, `/api/add-paywall` …) to a
+  freed device would set `focus_lock_active=1`: `launchFocus()` no-ops via its own
+  guard, but the lock STATE still mutated and propagated to the desktops,
+  `/mesh/status`, and the vault. Now a blanket `isReleased()` gate (mirroring
+  `handleMeshOrder`) refuses every state-mutating `/api/*` POST when released;
+  read-only endpoints and the exempt bootstrap (`/api/pair` — the documented
+  resume-after-release path) stay callable.
+
+- **Desktop collars kept enforcing after a release that arrived via gossip/vault**
+  (`focuslock-desktop.py` + `focuslock-desktop-win.py`, `poll_status`). Only the
+  direct `release-device` *action* fired liberation; a release delivered as order
+  *state* — gossip `apply_remote`, or a vault order snapshot — just copied the
+  `released` key into orders (it's in `ORDER_KEYS`), and the steady-state poll
+  loop never checked it. So a released desktop kept enforcing (bedtime / countdown
+  / desktop_active / timer) until its next restart, which the `__main__` startup
+  check only catches then. The **safeword-from-phone** case propagates exactly
+  this way (as state, not as an action), so a safeworded bunny's desktop stayed
+  locked. `poll_status` now honors `released` at runtime on every delivery path —
+  fires liberation once (guarded by `state.liberating`) and stops enforcing.
+  (The Windows collar's tray `.exe` must be rebuilt via `build-win.py` to ship
+  this — cannot be built from this environment.)
+
+<!-- ───────── 2026-08-07 (third pass) on-device QA against two real phones ───────── -->
+
+Worked the device-QA runbook against real hardware — a Samsung **SM-S908W** as
+the bunny (Android 16 / API 36) and a **Pixel 10** as the Lion (Android 17 / API
+37) — and fixed the six bugs it surfaced. Five of them were invisible to the
+off-device suite because every one of them lived in a place the tests were
+modelling instead of exercising: two distinct keypairs collapsed into one
+fixture, a prefs key read through the same constant that wrote it, a signed
+payload rebuilt from a hand-written dict rather than the wire, a poll gate no
+test ever evaluated. Versions: controller **77 / 77.0** (slave/companion
+unchanged at 81 / 8.38 and 60 / 2.27); `installers/re-enslave-lib.sh` targets
+synced.
+
+The last two are worth reading together: a Direct (LAN) pairing — the path the
+UI recommends as "Fastest" — could not show the Lion anything. Orders flowed and
+applied, but the status line was frozen twice over, once by a signature rebuild
+that read the wrong bytes and once by a poll that never ran.
+
+### Fixed — Lion's Share (controller)
+
+- **A Direct (LAN) pair produced a paired but completely uncontrollable bunny**
+  (`android/controller/src/com/focusctl/MainActivity.java`). `pairDirect` saved
+  the generated Lion keypair under `lion_privkey_b64` / `lion_pubkey_b64`, but
+  `createMesh` and all ~17 signed-op call sites read the canonical
+  `lion_privkey` / `lion_pubkey`. Nothing ever read what pairing wrote, so
+  `buildDirectSigHeaders` got `""` and returned null — every order failed
+  "missing lion_privkey" *before* opening a socket, on the path the UI
+  recommends as "Fastest". Fixed to the canonical names. Verified end-to-end on
+  hardware: `/api/lock` → collar `locked=True` with a 15-minute timer, `+$25` →
+  collar `paywall=25`.
+- **Every direct-mode `/mesh/status` was rejected as forged, so the Lion's UI
+  froze on its last-good snapshot** (`MainActivity.verifyStatusSignature`, new
+  `android/controller/src/com/focusctl/StatusCore.java`). The Collar signs a flat
+  ten-field status core and ships those fields at the top level of the status
+  body — a body that also embeds the entire orders document, which repeats six
+  of the ten key names *earlier in the byte stream*. The controller rebuilt the
+  core with its `indexOf`-based `parseJson*` helpers, which take the first match
+  anywhere, so it read the orders copies. Five agreed by luck (both sides read
+  the same `Settings.Global` row); `paywall` did not, because `handleMeshStatus`
+  defaults an unset paywall to `"0"` while `buildOrdersJson` emits `""`. On any
+  freshly paired Collar — no balance charged yet — the rebuilt core differed
+  from the signed one by exactly one field, so orders were delivered and applied
+  while the Lion's screen kept showing `$0` and no lock. The rebuild now lives in
+  `StatusCore.fromWire` and is scoped to the **top-level JSON object**, which
+  closes the class rather than the instance: no embedded document can shadow a
+  signed field again, whatever keys the orders schema grows next. The wire format
+  is unchanged, so an updated controller still verifies Collars already in the
+  field.
+- **A serverless Direct (LAN) pairing never polled status at all**
+  (`MainActivity.startStatusPolling`, new
+  `android/controller/src/com/focusctl/PollGate.java`). The poller was gated on
+  `!meshId.isEmpty()`. A direct pairing has no mesh — that is the entire selling
+  point of the mode ("no account, no server") — so the whole poll body was dead
+  code for it. The Lion's UI held whatever it last rendered ("Switched to
+  bunny", `$0`, no lock) indefinitely while the Collar accepted, applied and
+  reported orders normally. `meshGet` already served `/mesh/status` straight off
+  the Collar in that mode; only this gate stopped it from ever being asked. The
+  decision moved to `PollGate.shouldPollStatus`, which polls when there is a
+  mesh **or** a reachable direct target, using the identical direct-mode
+  condition as `meshGet` so the two cannot drift. Also gave the unlocked status
+  line a `| Direct` liveness marker, so a direct-paired Lion can tell a
+  freshly-polled `UNLOCKED` from a line that stopped updating an hour ago.
+  Found on hardware — it is invisible in relay-mode testing, which is why the
+  status-signature bug above had masked it.
+- **Switching bunnies left the previous bunny's balance on screen**
+  (`MainActivity.setActiveBunny`). `setActiveBunny` already resets the backing
+  runtime fields (`isLocked`, `timerEndMs`, `lastEscapes`, `lastPaywall`, the
+  optimistic caches) — but the *rendered* balance is only ever written by
+  `updateLiveStatus`, which runs solely on a **verified** snapshot. When the
+  newly-selected bunny is unreachable or its status can't be verified, nothing
+  overwrites the figure and the Lion reads one bunny's balance under another
+  bunny's name, indefinitely and with no indication. Observed on hardware:
+  switching from a bunny at `$40` to one at `$7` held `$40` for the whole
+  observation window while the new slot's status was being (correctly) rejected.
+  The slot switch now renders `$—` in grey until that bunny's own status lands.
+  Deliberately **not** `$0`: that is a positive claim the bunny owes nothing,
+  which we cannot back and which resolves an ambiguity in the bunny's favour.
+  The default slot label is `"bunny"` for every slot, so the Lion has no second
+  cue that the number belongs to someone else — see the follow-up note in the
+  device-QA handoff.
+
+### Fixed — Tor build (A3)
+
+- **A Tor-ON build killed the whole Collar the first time Tor started, then
+  crash-looped** (`android/slave/build.sh`, `android/controller/build.sh`,
+  `scripts/setup-qa-env-garuda.sh`). `org.torproject.jni.TorService.onCreate()`
+  calls `broadcastStatus()`, which needs `androidx.localbroadcastmanager` — a
+  class the APK never contained, because this project has no Gradle and so no
+  dependency resolver, and the build dexed only the AAR's `classes.jar` plus
+  jtorctl and bcprov. The first onion wake therefore produced
+  `NoClassDefFoundError` → `FATAL EXCEPTION: main` → process death, repeatedly,
+  since the triggering ntfy wake is redelivered to the restarted app.
+  The Collar is the enforcement app and the onion wake topic is a plain ntfy.sh
+  topic anyone can publish to, so a Tor-ON build in the field would have handed
+  out a remote way to crash-loop the leash. It stayed hidden because Tor ships
+  default-OFF and runbook section F had never run on hardware. Now bundled as
+  `FOCUSLOCK_LBM_JAR` in both build scripts, fetched + exported by
+  `setup-qa-env-garuda.sh --tor`, with a loud warning when unset instead of a
+  silently fatal APK. **Verified on-device**: the same wake is now handled
+  cleanly, the process survives, and Tor comes up (SOCKS on `127.0.0.1:9050`,
+  `TorService` bound).
+
+- **The onion was never published — Tor rejected every `ADD_ONION`**
+  (`android/slave/src/com/focuslock/TorManager.java`). The command carried a
+  `ClientAuthV3=` clause without the matching `V3Auth` flag, so Tor replied
+  `No auth type specified`; the exception was swallowed as "relay fallback" and
+  the hidden service silently never came up, on every wake. Now
+  `Flags=Detach,V3Auth`, with the client-auth keys resolved *before* the command
+  is built (with none we must not publish at all). Verified on-device:
+  `onion published: 7bmvii…orad.onion (1 client key(s))`.
+- **The Lion could send orders over Tor but never read status**
+  (`MainActivity.getDirectWithFailover`). `maybeWakeBunny` — which bumps the
+  Collar's wake topic, starts the Lion's own Tor and authorizes the onion — was
+  wired into the POST path only, so the status poller dialed `.onion` candidates
+  with no SOCKS proxy running and failed silently. Third instance of the
+  "orders flow, Lion goes blind" family this session. The read path now performs
+  the same wake behind a rate limit and an in-flight guard (the poller ticks
+  every 5 s while the wake blocks up to 120 s). Candidates stay LAN-first, so it
+  costs nothing while the LAN works. Verified: from a cold start with Tor down,
+  Wi-Fi off and no order ever sent, the Lion brought Tor up within 20 s and
+  rendered `bunny | LOCKED | 22m 35s left`.
+
+### Fixed — Server (relay)
+
+- **`set-display-name` was verified against the wrong key, so every rename
+  403'd** (`focuslock-mail.py`). The companion signs the rename with the account
+  `bunny_pubkey` (its `PairingManager` key), exactly as every other bunny-signed
+  endpoint does, but the server verified only against the vault `node_pubkey` —
+  the Collar's `ControlService` key. On real hardware those are two different
+  keypairs. The unit test reused one key for both stores, which is precisely why
+  it passed. Now verifies against the account `bunny_pubkey` with a `node_pubkey`
+  fallback, and the regression test in
+  `tests/test_display_name_desktop_task_guards.py` provisions **distinct** keys.
+- **The Lion was never told when the bunny killed the enforcement watchdog**
+  (`focuslock-mail.py`). The Collar detects ShadeGuard being disabled mid-lock
+  and POSTs `event_type=shadeguard_disabled`, but the relay's event allowlist
+  didn't include it, so the report came back HTTP 400 and the tamper vanished.
+  Added to the allowlist and to `kind_map` (→ `watchdog_off`). No financial
+  penalty attaches, matching the costly-exit-not-punish-exit tamper model.
+
+### Fixed — Installers
+
+- **Bunny Tasker was never granted `WRITE_SECURE_SETTINGS`, leaving joins
+  half-finished** (`installers/re-enslave-phones.sh`). The companion's in-app
+  "Join Mesh" writes the join config to `Settings.Global`; without WSS the join
+  POST succeeded server-side while the local write threw. The Lion saw the node
+  appear and the bunny saw "Join failed". `recage_focuslock` now grants the
+  companion WSS alongside the Collar.
+
+### Testing
+
+- **The `/mesh/status` wire format is now a spec, not an assumption**
+  (`tests/test_android_conformance.py`, `android/controller/test/com/focusctl/StatusCoreTest.java`,
+  `android/controller/test/com/focusctl/ConformanceCli.java`, `android/build-conformance.sh`).
+  The old test built the status core as a dict on both sides and never rendered
+  a wire body, so the shadowing was structurally unreachable. The Python half
+  (always runs) builds the real body, asserts a top-level-scoped rebuild
+  reproduces the signed core across four Collar states, and keeps a port of the
+  first-match parser as an executable record of the bug it can no longer hide.
+  The JVM half runs the **actual** Collar signer against the **actual**
+  controller verifier over that body, and a new `status-core` conformance
+  subcommand emits `StatusCore.fromWire`'s canonical bytes for byte-comparison
+  against Python. Reverting `StatusCore` to the first-match parse fails four of
+  the nine new JUnit tests, including the freshly-paired-Collar case.
+- **The status-poll gate is now a tested predicate** (`PollGateTest.java`).
+  It was an inline condition in a lambda, which is why nothing caught that it
+  excluded the serverless pairing mode. `PollGate.shouldPollStatus` is extracted
+  for the same reason `MeshOrderApply` lives outside `ControlService`.
+
+### Verified on hardware (2026-08-07, SM-S908W + Pixel 10, Direct LAN pairing)
+
+- The live Collar's `/mesh/status` body, checked against the device's real
+  `focus_lock_bunny_pubkey`: the old first-match rebuild **fails** verification,
+  the scoped rebuild **passes**, and the single drifting field is
+  `paywall` `'0'` vs `''` — the diagnosis reproduced exactly on real hardware.
+- Direct (LAN) pair → `bunny | UNLOCKED | Direct`, zero
+  `REJECTED direct /mesh/status` log lines, **with the paywall never charged**
+  (the precise state that was broken).
+- 15-minute lock → Collar `focus_lock_active=1`, Lion shows
+  `bunny | LOCKED | 14m 49s left`, still at `paywall=null`.
+- `+$25` → Collar `focus_lock_paywall=25`, Lion balance `$25`.
+- **B-9 no-snap-back**: after unlock, six consecutive poll cycles over 36s held
+  `collar_active=0` / `UNLOCKED` with no reversion. Re-lock extends correctly:
+  15M → `14m 50s`, re-lock 30M → `29m 50s` (Collar `unlock_at` +29 min).
+- **B-11 key substitution — PASSED against a live hostile endpoint.** A stand-in
+  Collar (`staging/qa_fake_collar.py`) was paired normally, then flipped
+  dishonest on demand. Signing with a **foreign key** while claiming
+  `locked=true, paywall=999, timer=1h`: rejected every poll, UI held its
+  last-good `UNLOCKED` / `$7`. **No signature at all**, same claims: same result.
+  Then honest again with a genuinely changed `$12`: adopted within one cycle,
+  zero rejections — so the refusal is discernment, not paralysis. A slot whose
+  stored key had been rotated out from under it behaved identically (75
+  consecutive rejections, no adoption). On-device counterpart to
+  `StatusCoreTest.lanMitmClearingTheLockIsRejected` / `unsignedStatusIsRejected`.
+- **B-10 multi-bunny isolation — FAILED, fixed, re-verified.** Lock state and
+  timer *were* correctly isolated across slots; the balance was not. After the
+  fix, switching to an unverifiable slot holds `$—` across 5 poll cycles and 10
+  rejections, while a trusted slot still fills in within one cycle.
+- Closing loop through the real apps: UNLOCK ALL + CLEAR on the Lion → Collar
+  `focus_lock_active=0`, `focus_lock_paywall=0`, Lion's line settles to
+  `bunny | UNLOCKED | Direct` / `$0`.
+- New QA harnesses, all used above: `staging/qa_fake_collar.py` (a controllable
+  second Collar — the thing that made key-substitution testable on hardware),
+  `staging/qa_device_ui.py` (uiautomator tap/type driver, so device QA no longer
+  needs an instrumented build or hand-tapping), `staging/qa_collar_driver.py`
+  (signs Audit-C1 direct POSTs with the bunny key read off the device, so the
+  whole `/api/*` surface is drivable without the Lion's private key),
+  `staging/qa_collar_sweep.py` and `staging/qa_messaging.py`.
+
+### Full-surface empirical sweep
+
+- **Collar control surface: 34 pass · 0 fail · 6 blocked.** All 9 lock modes,
+  task reps, photo-task, the five modifiers, paywall add/stack/clear (incl. the
+  "quick lock must not clobber the ledger" regression), subscribe, messages,
+  pinned messages, offers, geofence, check-in, notification prefs, volume,
+  lock/unlock — each asserted against the Collar's own `Settings.Global` after
+  the order, not against a mock. Refusals are asserted too: local unsubscribe is
+  server-authoritative, check-in rejects an out-of-range hour, and free unlock is
+  refused below Gold / granted at Gold / refused again as already-used.
+- **Messaging: 11 pass · 0 fail** against a real relay signed with the device's
+  real bunny key. Beyond send + thread round-trip: the bunny cannot forge a
+  message from the Lion, cannot edit or delete history, a body tampered in flight
+  fails the signature, a stale timestamp falls outside the replay window, and an
+  unregistered node is refused.
+- **E2EE messaging is zero-knowledge in practice, not just by design.** A message
+  composed on the bunny's phone stored on the relay as `text: "[e2ee]"` plus
+  `ciphertext`/`encrypted_key`/`iv`, with the plaintext appearing nowhere in the
+  stored record.
+- **Relay path end to end**: mesh create → real `/api/mesh/join` → vault appends
+  (`slots=2`, ~1.7 KB ciphertext per tick) → `state-mirror` verifying with
+  `signer=bunny` over the paywall/subscription/lock fields that compound interest
+  and payment crediting depend on.
+- **Daily check-in auto-lock verified autonomously** — the Collar locked itself
+  ~50 minutes after the deadline hour with "Missed daily check-in", no order
+  involved.
+- **A3 Tor / onion — runbook section F fully verified on hardware for the first
+  time** (items 20–25), after the three Tor fixes above. Tor-ON builds are 32 MB
+  with `libtor.so` for all four ABIs, Tor classes dexed, `apksigner VERIFIED`;
+  default-off builds unchanged at 238 KB with zero `libtor.so`.
+  - **20/21**: Collar runs, Tor comes up (SOCKS `127.0.0.1:9050`), a v3 onion is
+    provisioned (derived offline ~0.1 s after service start), and the Lion's
+    `onion_auth_pub` is carried in the pair body and stored.
+  - **22**: `ADD_ONION` accepted with `ClientAuthV3` — *"onion published … (1
+    client key(s))"*. The client half is proven by the Lion's Tor fetching the
+    auth-gated descriptor.
+  - **23**: with Wi-Fi off on the Lion (LTE only) and the bunny's LAN IP
+    confirmed unreachable, the Lion **read** `bunny | LOCKED | 28m 7s left` and
+    **landed an UNLOCK order in under 15 s**, both over the onion.
+  - **24**: republishing the onion authorized to a *different* key turned the
+    identical probe from `HTTP 200` into `HTTP 000` twice; restoring the real key
+    returned `HTTP 200 in 6.7 s`. Client auth is load-bearing, and the Collar
+    refuses to publish at all without a Lion key — enforced at publish time, not
+    merely at connect time.
+  - **25**: ntfy publish → wake received **1.07 / 1.24 / 1.75 s**; wake → onion
+    published **6.09 s**; Tor round-trip **5.7 / 6.7 s**; warm order **< 15 s**;
+    cold Lion → Tor up **≤ 20 s**.
+  - Behaviour worth remembering: Tor starts **on demand via the wake**, not at
+    boot — `focus_lock_tor_warm` only suppresses teardown.
+
+<!-- ───────── 2026-08-07 (second pass) deferred follow-ups from the ecosystem-review fix-forward ───────── -->
+
+Cleared all three follow-ups the 2026-08-07 pass deferred. Versions: slave
+**81 / 8.38**, companion **60 / 2.27** (controller unchanged at 73 / 73.0);
+`installers/re-enslave-lib.sh` targets synced.
+
+### Security
+- **The tamper-escalation ratchet is now server-authoritative**
+  (`focuslock-mail.py`, `report_tamper.py`, `shared/focuslock_penalties.py`).
+  `report_tamper.py` kept its lifetime attempt counter in
+  `~/.config/focuslock/tamper-attempts.json` — on the collared desktop, a machine
+  the bunny has root on. `rm` on that file walked every future tamper penalty back
+  to the $5 tier-1 floor, which is precisely the circumvention the ratchet prices.
+  The authoritative counter now lives on the relay, per mesh
+  (`_TAMPER_TIERS_DIR/{mesh_id}.json`, atomic write under a lock). The client tags
+  the report `tamper: true` and sends its local count as `attempt`; the server takes
+  `max(its own + 1, the claim)`, so the claim can only ever *fast-forward* the
+  ratchet — healing a relay whose state was lost — and never lower it. A caller-
+  supplied `amount` became a **floor** rather than a price: `--amount` can still
+  bill a known incident higher than the reached tier, but can no longer undercut it.
+  A hostile/corrupt claim can jump the counter by at most 100 (logged when clamped).
+  Penalty reports that aren't tagged `tamper` — notably the desktop collar's flat
+  $30 consent-decline — neither escalate nor advance the counter. New
+  `tamper_penalty()` in `shared/focuslock_penalties.py` replaces the duplicated tier
+  literal. The response now echoes `amount` + `tamper_attempt`; the client prefers
+  the server's numbers and syncs its local hint upward (never down).
+
+### Fixed — Collar (slave)
+- **The `"pixel"` `node_id` fallback no longer forks the device's identity mid-join**
+  (`android/slave/src/com/focuslock/ControlService.java`,
+  `android/companion/src/com/bunnytasker/MainActivity.java`). The mesh-gossip
+  handler *persisted* `focus_lock_mesh_node_id = "pixel"` whenever it answered a
+  gossip tick before Bunny Tasker had assigned the real id. That flipped the vault
+  registrar out of its "not joined yet, skip" branch, so it posted a
+  register-node-request under `pixel` — a phantom row on the relay that the real
+  node_id (written moments later) never reclaimed. All seven fallback sites now go
+  through a new `selfNodeId()` which returns the stored id or, pre-join, derives one
+  with the *exact* expression Bunny Tasker uses at join time
+  (`Build.MODEL.toLowerCase().replace(" ", "-")`) — so the pre-join and post-join
+  labels agree — and **never persists**. Bunny Tasker's `joinMesh()` now writes
+  `focus_lock_mesh_node_id` *before* `focus_lock_mesh_id` / `focus_lock_mesh_url`,
+  closing the window in which the Collar can see a mesh it has no identity for, and
+  reuses the node_id it already sent in the join body instead of re-deriving it.
+
+### Tests
+- `tests/test_tamper_ratchet.py` (21) — tier formula vs. `escape_penalty`, the
+  per-mesh counter store (isolation, fast-forward, monotonicity, unsafe-mesh_id
+  path traversal), the end-to-end escalation with the client counter wiped before
+  every attempt, amount-as-floor, the $500 ceiling, the untagged-penalty carve-out,
+  and the client payload/commit contract (incl. no advance on a failed report).
+- `tests/test_display_name_desktop_task_guards.py` (20) — the endpoint-level
+  coverage the last pass deferred: `set-display-name` (happy path, forged signature,
+  name-swap-after-signing, stale ts, unregistered node, unknown/unsafe mesh_id,
+  40-char bound), the `GET /vault/{id}/nodes` enrichment auth gate (anonymous and
+  wrong-token callers get the bootstrap list with no display name / bunny_pubkey /
+  auto_accept), and the `desktop-task` guards (operator-mesh-only 409, armed-task
+  409, miss-lock 409, bad token, input validation). Both guard sets were
+  mutation-checked — reverting either guard fails the tests.
+- Python suite `1177 → 1218`.
+
+<!-- ───────── 2026-08-07 ecosystem-review fix-forward (cage tiers, safeword, optimistic UI, display name) ───────── -->
+
+Landed the previously-uncommitted feature stack (cage tiers, optimistic order
+reflection, bunny display name, desktop-task webhook, Windows liberation, panic
+safeword.exe) after a full adversarial review — fixing the safety-floor
+collisions, security holes, and correctness bugs the review surfaced before
+shipping. Versions: slave **80 / 8.37**, controller **73 / 73.0**, companion
+**59 / 2.26**; `installers/re-enslave-lib.sh` TARGET_*_VERSIONCODE synced.
+
+### Security
+- **Lion's Share no longer trusts a relay-advertised bunny E2EE key over a
+  verified one** (`android/controller/src/com/focusctl/MainActivity.java`).
+  `persistBunnyPubkey()` adopted whatever `bunny_pubkey` the (untrusted, zero-
+  knowledge) relay returned in `/vault/{id}/nodes`, **overwriting** the pairing-
+  fingerprint-verified key — and anyone holding the reusable invite code can
+  register an arbitrary key. That silently defeated the C5 MITM check and let
+  Lion→Bunny messages be encrypted to an attacker. Now it is trust-on-first-use
+  only: it NEVER overwrites a stored key (rotation goes through re-pairing), logs
+  a mismatch, and resolves the target bunny slot at call time (no cross-slot
+  write on a mid-fetch bunny switch).
+- **`GET /vault/{id}/nodes` enrichment is now Lion-authenticated**
+  (`focuslock-mail.py`). The base node list stays readable for E2EE bootstrap,
+  but the newly-added bunny display name (PII), mesh-level bunny pubkey, and
+  `auto_accept` state (a reconnaissance aid) are only returned to a caller with a
+  valid `auth_token` — previously any anonymous caller who knew the semi-public
+  `mesh_id` got them.
+- **`join()` no longer blanks a stored bunny pubkey** (`focuslock-mail.py`). A
+  re-join carrying an empty `bunny_pubkey` (Bunny Tasker sends `""` on a transient
+  keypair miss) overwrote the good key, 403-ing every bunny-signed endpoint with
+  no recovery. Now preserved like `display_name`.
+
+### Fixed — Collar (slave) safety floor
+- **The foreground-app watchdog no longer closes the documented factory-reset
+  exits** (`ShadeGuardService.java`, `FocusActivity.java`). At COLLAR/SEALED the
+  watchdog bounced the **Settings app** (closing the OS factory reset the Terms of
+  Surrender call "always available", and ignoring the Lion's own
+  `/api/enable-settings` grant), and `onStop` delegating all re-jailing to the
+  watchdog **froze the escape counter at 0**, so the in-app factory-reset button
+  (gated at escapes ≥ 3) and the paywall/shame escalation never fired. Now:
+  Settings is reachable when the Lion granted a window OR the wearer has crossed
+  the escape threshold; the watchdog records a debounced escape on each bounce
+  (restoring the counter + server escape event); the **camera** (Photo Task's only
+  exit), **emergency dialer / in-call UI** (every tier, incl. SEALED "no calls"),
+  and **runtime-permission dialogs** (permissioncontroller) are allowlisted.
+- **Cage ceiling has a consent author and is bridge-unwritable**
+  (`ConsentActivity.java`, `ConsentStore.java`, `ShadeGuardService.java`). Nothing
+  wrote `focus_lock_cage_level`, so every device silently defaulted to COLLAR (a
+  full app-bouncing brick the wearer never chose). The Terms-of-Surrender screen
+  now has a Leash/Collar/Sealed chooser stored **app-private** (the one store the
+  Lion's ADB bridge cannot write, making "the Lion may only loosen" enforceable),
+  and an unset ceiling defaults to **Leash** — shipping the watchdog never
+  silently tightens an already-provisioned device.
+- **Watchdog-disabled tamper is now detectable** (`ControlService.java`). When
+  caged at COLLAR+ but the accessibility service is off, re-jailing silently
+  stopped and nothing noticed; the jail watcher now notifies the Lion once
+  (`shadeguard_disabled`), the same accountability as disabling device admin.
+
+### Fixed — Lion's Share (controller) optimistic reflection
+- Cleared the process-wide optimistic + `lastSnapshotJson` caches on a bunny
+  switch (they leaked bunny A's lock/timer/balance onto bunny B and merged A's
+  Collar addresses into B's direct-failover list); restored the phone fallback in
+  the Release-Device dialog (it dead-ended "No devices registered" on cold
+  start / legacy mode); the optimistic confirm now waits for the timer to catch
+  up (a re-lock to extend the timer no longer self-confirms against the old
+  remaining time); a no-real-snapshot render no longer blanks
+  escapes/tier/geofence via a synthetic `{}`; `cancelOptimistic` is generation-
+  guarded so a late failure can't cancel a newer command; quick-lock now reflects
+  a typed paywall amount.
+
+### Fixed — server webhooks
+- **`/webhook/desktop-task` no longer charges for an undeliverable task**
+  (`focuslock-mail.py`). It is now operator-mesh only (an armed task reaches the
+  phone only via operator-mesh gossip; a non-operator mesh would apply the miss
+  penalty for a task the phone never showed — this also closes the vault_only
+  plaintext bypass), refuses when a task is already armed (protecting a Lion-armed
+  recurring task and preventing an unclearable miss-lock), bounds the task text,
+  and emails evidence to the mesh's own Lion (`mesh_id` passed to
+  `send_evidence`, not the operator-wide address). `/webhook/desktop-penalty`
+  gained the same vault_only guard + per-mesh evidence routing.
+
+### Added
+- **Bunny display name is editable after pairing** (`bunnytasker` MainActivity +
+  `focuslock-mail.py` new bunny-signed `POST /api/mesh/{id}/set-display-name`).
+  Previously write-once at join (and unreachable for already-provisioned devices).
+  The join dialog's "Save" button now actually persists the typed name (it was
+  silently discarded), and a long-press on the paired fingerprint opens an editor
+  that signs + pushes the change.
+
+### Fixed — Windows desktop collar + tools
+- **Release Forever is honest about a declined UAC** (`focuslock-desktop-win.py`).
+  The durable teardown (scheduled tasks + `C:\focuslock`) needs elevation; when it
+  must request UAC the farewell now warns that the prompt must be accepted or the
+  collar returns at next sign-in, instead of unconditionally saying "you are free".
+  Also: the liberation helper quotes the firewall-rule `name=` token as one arg
+  (it was left behind), clears the forced HKLM lock-screen policy, and
+  `safeword.py` clears it too (was a visible residual). `sync_standing_orders`
+  now validates `settings.json` as JSON and writes atomically (a proxy error page
+  or a mid-write kill can no longer corrupt `~/.claude` config). `self_install`
+  now deploys `safeword.exe` (the double-click escape tool was built but never
+  copied to the collared machine). `report_tamper.py` advances its escalation
+  counter only after the server accepts the penalty (a failed report no longer
+  over-prices the next one).
+
+### Known follow-ups (tracked, not in this pass)
+- ~~`report_tamper.py`'s escalation counter is still local~~ — closed in the second pass, above.
+- ~~The Collar's `"pixel"` `node_id` fallback…~~ — closed in the second pass, above.
+- ~~Endpoint-level regression tests for `set-display-name` / `desktop-task`~~ —
+  closed in the second pass, above.
+
+<!-- ───────── 2026-07-26 on-device QA fixes ───────── -->
+
+### Fixed
+- **The Collar's `ControlService` crash-looped on every boot on Android 14+ (API 34+)** (`android/slave/src/com/focuslock/ControlService.java`, slave **77 / 8.34**). `onCreate` called the no-type `startForeground(1, n)`, which makes the platform enforce **every** `foregroundServiceType` the manifest declares (`specialUse|location`). On API 34+ the `location` type additionally requires `ACCESS_COARSE/FINE_LOCATION` to be held at that instant — and on a fresh install it never is (geofence is opt-in and its permission may never be granted), so `startForeground` threw `SecurityException` and took the **entire** service down (HTTP API, jail-watcher, paywall, mesh) — Android then only retried on a multi-minute backoff. Now the FGS type is computed at runtime: always `specialUse`, plus `location` **only** when its runtime permission is actually held, with a fallback to `specialUse`-only if the platform still refuses it. The cage core no longer depends on the geofence permission. **Found and verified on-device** (Samsung SM-S908, Android 16 / API 36, via adb): before the fix the service crashed with `SecurityException: Starting FGS with type location`; after, it comes up cleanly with **no** location grant, and with location granted it runs as `types=0x40000008` (`SPECIAL_USE|LOCATION`).
+- **Consent + safeword silently failed to save on a not-yet-provisioned Collar** (`android/slave/src/com/focuslock/{ConsentStore(new),ConsentActivity,FocusActivity,ControlService}.java`, `installers/re-enslave-phones.sh`, slave **78 / 8.35**). The Terms-of-Surrender screen persisted the consent flag and the wearer's **safeword phrase** via `Settings.Global`, which needs `WRITE_SECURE_SETTINGS` — a permission granted only by the adb operator step, *after* first run. So tapping "I CONSENT" on a fresh device threw `SecurityException` (the writes were unguarded) and the safeword never saved — safety-relevant, since the safeword is the wearer's always-available exit and they'd believe it was set. New `ConsentStore` dual-stores both values: **SharedPreferences always** (app-private, needs no permission, cannot fail) plus a best-effort `Settings.Global` mirror (keeps the survive-app-data-clear property and backward-compat with already-provisioned devices); all reads consult both. Also guarded the adjacent unguarded `Settings.Global` write in `storePriorHomePkg` (same crash, one line later), and fixed a key-name mismatch where recage wrote `focus_lock_consent_given` but the app reads `focus_lock_consented` (so "skip the dialog" never actually worked). **Verified on-device** (WSS revoked): consent recorded and survived with `Settings.Global` staying `null` throughout — proving SharedPreferences carried it — and cleared only by wiping app data.
+
+### Security
+- **The notification shade was reachable during a lock on non-device-owner phones — now guarded** (`android/slave/src/com/focuslock/ShadeGuardService.java` (new) + `res/values/strings.xml`, `res/xml/shade_guard_accessibility.xml`, manifest, `installers/re-enslave-phones.sh`, slave **79 / 8.36**). During a lock the wearer could pull down the notification shade and reach Quick Settings (e.g. airplane mode → cut the Lion's control). The status-bar lockdown only truly works two ways, neither available in the common "personal phone, direct mode" config: `setStatusBarDisabled` needs **device owner** (impossible without a factory wipe on a phone with accounts), and the homelab **bridge**'s `cmd statusbar disable-for-setup` needs the bridge running. **An app overlay cannot fix this** — since Android 12 the status bar is a system window layered above all `TYPE_APPLICATION_OVERLAY` windows (anti-tapjacking), so a top-edge swipe never reaches an app (built it, tested it on-device, reverted it). The working app-side fix is a minimal-privilege `AccessibilityService` (`canRetrieveWindowContent=false`) that watches for window changes during a lock and collapses the shade via `GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE` (API 31+). Reactive (the shade may flash before snapping shut) but denies sustained access with no owner/bridge; honors the terminal release flag. Enabled by the operator via adb in recage (appended to `enabled_accessibility_services`, never clobbering the wearer's own). **Verified on-device** (Samsung SM-S908): before, a shade pull stayed open; after, it collapses (`dismiss performed=true`).
+
+### On-device QA (2026-07-26)
+- **First real end-to-end run of the Collar's signed HTTP control surface**, exercised against a live device over adb with a Lion stand-in (RSA-2048 keypair, C1-canonical PKCS1v15/SHA-256 request signing). Verified: `/api/pair` bootstrap (unsigned) stores the Lion pubkey; signed `/api/message`, `/api/lock` (with `timer` → `timer_remaining_ms` counting down, `mode`/`shame`/`paywall` applied), `/api/unlock`, and `/api/clear-paywall` all accepted (200); an unsigned/forged request is rejected 403 (`stale_ts` for an old timestamp, `bad_sig` for a fresh-ts wrong signature). Confirmed the `timer` lock key is the real Collar↔Lion contract (`ControlService.doLock` reads `timer`; controller `buildLockJson` sends `timer`) — the `duration_min` in the `c1_canonicalize` golden vectors is only a format example, not the API key.
+
+<!-- ───────── 2026-07-04 remove covert-coercion primitives + add a real safety floor ───────── -->
+
+### Removed
+- **Covert front-camera capture is gone** (`android/slave/src/com/focuslock/FocusActivity.java`, `focuslock-mail.py`, slave manifest). Deleted `captureSelfieSilent()` (Camera2) and the "silent selfie attached to every task-completion evidence webhook" path — `sendWebhook()` is now text-only. The `CAMERA` permission was dropped from the Collar manifest (the wearer-driven photo-task uses `ACTION_IMAGE_CAPTURE`, which needs no permission). The **explicit, wearer-submitted photo-task is unchanged** — the wearer knowingly takes and submits that photo (`/webhook/verify-photo` LLM check + `/webhook/evidence-photo` delivery, now the endpoint's only caller).
+- **No hidden SMS interception** (`android/slave/src/com/focuslock/SmsReceiver.java`). Dropped `abortBroadcast()` so the `sit-boy` command SMS reaches the default messaging app like any other message. It still parses/locks and honors the `focus_lock_sms_token` gate — it is just no longer hidden from the wearer.
+- **The wearer's location never leaves their phone** (`android/slave/.../ControlService.java`, `android/controller/.../MainActivity.java`, `web/index.html`, `focuslock-mail.py`). Removed `lat`/`lon` from `/api/status`, deleted `reportLocation()` + the `/webhook/location` sink, and stripped coordinates from the geofence-breach report (only the violation magnitude is sent). Geofences are enforced **locally**; the phone tattles the *fact* of a breach → +$100 paywall. `Set Geofence` / `Confine Home` no longer read the wearer's coordinates (Confine Home uses the Collar's own local GPS via `/api/confine-home`). Supersedes the deferred L-2 "signed `/api/location`" idea — there is no location endpoint at all.
+
+### Added
+- **Panic safeword — the wearer's always-available exit** (`android/slave/src/com/focuslock/{ControlService,FocusActivity,ConsentActivity}.java`, `focuslock-bridge.sh`). Long-press the lock message → type your pre-set safeword phrase (chosen in the consent screen, stored as `focus_lock_safeword`) → confirm → immediate full release with **no penalty**, needing neither the Lion nor the homelab. It sets a terminal `focus_lock_released` flag that is honored by the jail-watcher loop, `launchFocus()`, `isLockActive()`, `applyOrdersFromMesh()`, `handleMeshOrder()`, and the ADB bridge (`poll_device` ceases all enforcement when `released=1`), so nothing can re-lock a released device. It notifies the Lion for aftercare (not permission) and is a scene-ender (resuming requires re-pairing). `doReleaseForever()`'s settings-wipe now preserves every `focus_lock_release*` key so the terminal state survives teardown.
+
+### Changed
+- **Costly-exit, not punish-exit** (`android/slave/src/com/focuslock/{AdminReceiver,ControlService,FocusActivity}.java`, `focuslock-mail.py`). Disabling device admin still re-locks the phone (friction) and notifies the Lion for accountability, but the **$500/$1000/$500 tamper penalties are gone** — the server-side `tamper-recorded` handler now only increments `lifetime_tamper` (no paywall bump). Factory reset is **never** blocked: `applyDeviceOwnerRestrictions()` no longer sets `DISALLOW_FACTORY_RESET` (and clears it defensively), so the ultimate exit is always available even in device-owner mode. The in-app factory-reset shortcut now appears after a few escape attempts instead of 150. The consent screen ("Terms of Surrender") and `docs/THREAT-MODEL.md` were updated to describe the guaranteed exits, the no-covert-capture guarantee, and costly-vs-punitive framing.
+- **Roadmap: covert & no-exit capabilities are permanently out of scope** (`docs/PUBLISHABLE-ROADMAP.md`). Added an "Out of scope" principle at the top and **struck** the "No-adb consumer install" Device-Owner/QR strategy (it would block factory reset + uninstall) and the server-side "$500 tamper" idea.
+
+### Tests
+- Updated `tests/test_paywall_hardening.py` (tamper = counter-only, no fine), `tests/test_e2e_qa.py` (tamper event applies no penalty), `tests/test_e2e_uncovered_webhooks.py` (`/webhook/location` removed → 404), and `tests/test_audit_2026_04_27_h2_evidence_webhooks.py` (geofence-breach body carries only `distance`; evidence-photo reframed as wearer-submitted photo-task proof). Python suites green.
+- **The covert-removal Java is now built + verified** (2026-07-05, Garuda workstation; re-verified 2026-07-26 on the same workstation after a full OS reinstall — toolchain reprovisioned from scratch via `scripts/setup-qa-env-garuda.sh --no-waydroid`). All 3 APKs compile, dex, sign, and pass `apksigner verify` (slave 234,190 bytes, zero Tor); JVM unit + conformance 64/64; Java↔Python conformance 20/20. The 6 edited Java files (`ControlService`, `FocusActivity`, `AdminReceiver`, `ConsentActivity`, `SmsReceiver`, controller `MainActivity`) compile clean — retiring the "Android NOT compiled" caveat from the 2026-07-04 handoff.
+- **Fixed a latent `javac` encoding bug in `android/build-conformance.sh`**, found by the 2026-07-26 re-verification on a freshly-installed JDK 17: unlike all three `android/*/build.sh` (which already pass `-encoding UTF-8`), the JVM-unit/conformance build compiled with no explicit encoding and fell back to a non-UTF-8 default charset, failing with ~1178 "unmappable character" errors against this codebase's em-dashes and curly quotes. A prior environment's default charset happened to mask this. Added `-encoding UTF-8` to the `javac` invocation in `build-conformance.sh`; `make qa-android` now passes clean.
+
+### Build / QA tooling
+- **`scripts/setup-qa-env-garuda.sh`** — one-shot, idempotent bootstrap for the full programmatic QA on Garuda/Arch (the `pacman` sibling of `scripts/setup-waydroid-fedora.sh`): Python QA venv + JDK 17 + Android SDK (build-tools 35+36, platform android-36) + Playwright/Chromium + optional waydroid, wiring `~/.config/focuslock-android.env.sh`.
+- **QA venv is now Python 3.12** (provisioned via `uv`), which **resolves the long-standing py3.14 full-suite `[Errno 9] EBADF` isolation bug**: the entire `pytest tests/` suite runs in one process — **1173 passed, 18 skipped** (1172 at the time this venv fix landed; +1 is the new bridge-relock test below). Prior handoffs' "run subsets only" workaround is no longer required. `ruff check` + `ruff format --check` clean (`(OLD)/` scratch copies excluded from lint).
+- **`scripts/setup-qa-env-garuda.sh` gained `--tor`** — fetches the A3 Tor deps (tor-android AAR + jtorctl + bcprov) to `~/android-libs` and a **JDK 24** to `~/.jdks`. The tor-android AAR is Java-24 bytecode, so the Tor-on build needs a JDK-24 `javac` (a JDK-17 `javac` can't even read `TorService.class`) in addition to build-tools 36 for `d8` — a requirement that was undocumented and left the Tor build broken on a JDK-17 box (now fixed + verified: Tor-on slave 32 MB with `libtor.so` ×4 ABIs, `apksigner` VERIFIED; default-off build unchanged at 234 KB, zero Tor). See `docs/TOR-ONION.md`.
+
+### On-device QA (waydroid, 2026-07-05)
+- **Covert-removal + safety-floor guarantees validated on-device** via `scripts/device-qa-waydroid.sh` (Garuda/Arch): the Collar declares **no `CAMERA` / no `READ_SMS`** permission; all three APKs install; the Collar has no runtime CAMERA permission; and — the key one — with `com.focuslock` set as **device-owner**, `DISALLOW_FACTORY_RESET` stays **absent**, proving factory reset is never blocked even in the mode that used to enforce it.
+- **Bridge safeword guard is now unit-tested** (`tests/bridge_relock_test.sh` + pytest wrapper `tests/test_bridge_relock.py`). It sources the real `focuslock-bridge.sh` (now source-guarded so tests can load it without starting the poll loop) and drives `poll_device` with a mocked `adb_dev`, asserting the bridge re-locks when `active=1 & !released` but **never** re-locks once `focus_lock_released=1` (safeword honored, launcher re-enabled) — the terminal-release invariant, no device/adb/sudo required.
+
+<!-- ───────── 2026-05-25 whole-ecosystem review (delivery + security + Phase-3 polish + payment + conformance QA) ───────── -->
+
+### Security
+- **Collar `/mesh/sync` gossip was fully unauthenticated — now Lion-signature-verified** (`android/slave/src/com/focuslock/ControlService.java`, `tests/test_android_conformance.py`). The Collar read an attacker-controlled `orders_version` and, if higher, parsed `orders` and called `applyOrdersFromMesh()` with **no signature check** (the `SigVerifier` exempts `/mesh/*`) — any peer on the gossip HTTP port could lock/paywall/message, and a huge `orders_version` poisoned all later legit orders. The orders are already Lion-signed end-to-end on the wire; the Collar just ignored the field. New `verifyMeshOrdersSignature()` re-attaches the wire `signature` as a map field and runs `VaultCrypto.verifySignature` (canonicalizes map-minus-signature) on **both** gossip paths (incoming push `handleMeshSync` + outgoing poll-response parser). Permissive only when `lion_pubkey` is unset (pre-pairing bootstrap), matching `apply_remote`. The vault path was already verified — this brings gossip to parity. Proven by `tests/test_android_conformance.py::TestSlaveCollarConformance` (5 cases): Python-signed orders ACCEPTED (won't brick gossip), forged/tampered/empty-sig REJECTED.
+- **Collar SMS `sit-boy` trigger hardened + shared-secret gate now provisioned** (`android/slave/src/com/focuslock/{SmsReceiver,ControlService}.java`, `android/controller/src/com/focusctl/MainActivity.java`). `SmsReceiver` wrapped `Long.parseLong` and clamped `mins` to `[0, 525600]` (fixes a crash on >19-digit minutes + `mins*60000` overflow). Added an opt-in `focus_lock_sms_token` shared secret: when set, the command must carry it (`sit-boy <token> …`), defeating sender-number / caller-ID spoofing. **The token is now provisioned**: Collar `doPair` generates a random 8-char `[A-Za-z0-9]` token (`genSmsToken`/`ensureSmsToken`), persists it to `focus_lock_sms_token` (auto-arming the gate), and returns it in the pair JSON; Lion's Share stores it per-bunny and shows `sit-boy <token> 15 $20` (tap-to-copy) in Setup. **Operator note: existing direct Collars need a one-time re-pair to provision.** Paywall stays server-authoritative (the SMS amount is reported as a `sit_boy` event and clamped server-side).
+- **Direct-mode `/mesh/status` is now signed + verified** (`android/slave/src/com/focuslock/ControlService.java`, `android/controller/src/com/focusctl/MainActivity.java`, `android/slave/test/com/focuslock/ConformanceCli.java`, `tests/test_android_conformance.py`). In serverless/direct mode the Collar served `"signature":""` and Lion's Share trusted a plain GET — a LAN MITM could spoof `locked`/`paywall`/`escapes`. The Collar's `handleMeshStatus` now builds a canonical flat "status core" (locked/escapes/paywall/timer_remaining_ms/task_reps/task_done/offer/offer_status/sub_tier/orders_version, native Boolean/Long/String types) and signs it with `focus_lock_bunny_privkey` via `VaultCrypto.signBlob`. Lion's Share `verifyStatusSignature` rebuilds the identical core and verifies with the paired `bunny_pubkey_b64`, gated in `meshGet`'s direct branch — a forged/unsigned status returns `null` so the UI keeps its last-good snapshot. Permissive only pre-pairing. New slave `sign-status` conformance subcommand + 2 tests (Collar-signed status verifies in Python; a tampered field is rejected). **Breaking: old Collar (empty sig) + updated Lion's Share in direct mode → status rejected until both are updated together (fail-closed by design).**
+- **Collar `handle_mesh_order` OR-logic tightened** (`focuslock_mesh.py`, `tests/test_mesh.py`). Once `lion_pubkey` is set, a valid Lion **signature** is required to fire `apply_fn` — a bare PIN no longer authorizes orders; the PIN is bootstrap-only when no pubkey exists yet. Covered by `tests/test_mesh.py::TestHandleMeshOrderAuth`.
+- **Exported Collar `FocusActivity` hardened against jail-DoS** (`android/slave/src/com/focuslock/FocusActivity.java`). It must stay `exported` to act as the HOME launcher, so any app could `startActivity` it. Added the lock-state guard (`isLockActive()`) at the **top** of `onCreate`, before any side effect (immersive / SHOW_WHEN_LOCKED / starting ControlService / flashing the jail UI) — a not-locked launch bounces to the prior launcher and `finish()`es immediately. `focus_lock_active` can't be set by an attacker, so it's the correct authorization signal. The pre-existing `onResume` guard stays as defense-in-depth.
+- **Desktop collar secret-file permissions** (`focuslock-desktop.py`, `focuslock-desktop-win.py`). Linux chmods the config dir `0700` every start and warns if `config.json` is group/other-readable; Windows `_restrict_to_owner_windows()` runs guarded `icacls /inheritance:r /grant:r` (chmod can't express 0600 on Windows). Protects the plaintext `admin_token` + relay privkey.
+
+### Fixed
+- **Lion↔Bunny message delivery — silent non-delivery, false "Sent", and colliding IDs** (`focuslock_mesh.py`, `focuslock-mail.py`, `android/controller/src/com/focusctl/MainActivity.java`, `android/companion/src/com/bunnytasker/MainActivity.java`, `tests/test_message_delivery.py`). Three root causes from the reported "messages don't arrive" complaint:
+  - **Colliding message IDs** — `MessageStore` keyed ids `{ts}_{len(messages)}`; after the 500-message cap `len()` sticks near 500, so same-millisecond messages collided and `mark_read`/`edit`/`delete` hit the *first* match → wrong-message edits/deletes and messages that "won't mark read" and re-notify forever. Replaced with a monotonic `{ts}_{seq}` counter (`_init_seq()` resumes it on reload). +`client_msg_id` idempotency dedup in `add()`; `focuslock-mail.py /messages/send` threads it through (unsigned — stripping it only disables dedup).
+  - **Lion saw "Sent" on a failed delivery** — the non-vault path masked a failed server-store post behind the `/api/message` direct-Collar fallback ("Sent via API"), and the vault path ignored the server-store result entirely. `doSendInboxMessage`/`postLionMessage` now treat the **server store** (what Bunny Tasker's chat fetches) as authoritative for "Sent", with a bounded retry reusing `ts`+`client_msg_id` (server dedups), and honest "Not delivered — check connection and resend"; vault/direct-Collar writes are best-effort secondaries.
+  - **Bunny's reply was fully optimistic** — `sendMessage` rendered the bubble and called `markMandatoryReplied()` regardless of POST success, so a failed reply cleared the mandatory-reply obligation and suppressed the auto-lock while the Lion never received it. Now records the check-in + clears the obligation **only on actual delivery**, with the same bounded retry and a failure Toast.
+  - 9 cases in `tests/test_message_delivery.py` (id uniqueness across the cap, `client_msg_id` idempotency, mark/edit/delete hit the right message).
+- **Payment scanner credited unrelated transactions** (`focuslock_mesh.py`, `shared/focuslock_payment.py`, `android/companion/src/com/bunnytasker/MainActivity.java`, `tests/test_payment.py`). The server scans Lion's payee inbox and matches each "received money" email against Bunny's payer allowlist; two bugs over-credited the paywall. (1) **fail-OPEN** — an empty `payer_allow` logged a warning and credited anyway. (2) **loose match** — `matches_payer` did a case-insensitive substring of each needle against the whole subject+body, so a generic needle (bare domain, `interac.ca`, a short token) matched every e-transfer's boilerplate, and `joe` ⊂ `joey`. Fix: a generic-needle guard (`_payer_needle_is_generic` — free-email domains + channel tokens + len<3), `_payer_needle_matches` (full emails match as substring; names/handles on word boundaries), and the scanner now **fails closed** (unconfigured or all-generic allowlist credits nothing). `matched_payer_needle()` records which needle matched **in the server log only — NOT the Lion-visible `/mesh/ledger`** (preserves the payee/payer privacy split; a draft that put it in the ledger was caught + reverted). `set_payer_allow` returns `effective_count`/`generic_rejected`; Bunny Tasker surfaces "⚠ Set, but entries too generic — payments won't be credited" and drops the stale "every payment will count" copy. **Operator note: if a payer entry was too generic, payments stop crediting until a specific identifier (full e-transfer email/name) is entered; past mis-credits are reversible via `/admin/reverse-payment`.**
+- **Collar applied gossiped orders non-atomically — torn lock-screen render** (`android/slave/src/com/focuslock/{ControlService,MeshOrderApply}.java`, `android/slave/test/com/focuslock/MeshOrderApplyTest.java`). `applyOrdersFromMesh` wrote `MESH_ORDER_KEYS` in array order, with `lock_active` at index 0 and `message`/`mode`/`paywall`/`task_text` later; `FocusActivity`'s 5s poll (and the launch it triggers) could observe the new `active=1` paired with the **old** message/mode/paywall. Extracted a pure `MeshOrderApply.orderForApply` (no Android deps) that writes every non-`lock_active` key first and `lock_active` last, so by the instant the lock flag flips the content is already current. +4 JVM unit tests.
+- **Linux desktop collar didn't refresh the lock wallpaper on mid-lock changes** (`focuslock-desktop.py`). The cairo lock wallpaper already renders message/pinned/paywall, but the poll tick's already-locked branch called `update_lock`, which only poked **dead** GTK labels (`self.windows` is never populated; the browser `lock_process` is never launched on Linux) and never regenerated the PNG — so pinning/changing a message while locked was invisible until unlock+relock. Added a `_prev_display` tuple guard that regenerates the PNG and re-points `kscreenlockerrc` (extracted `_apply_kde_lock_wallpaper`, shared with `show_lock`) when `(message, pinned, paywall)` changes; the KDE greeter reloads on the next paint (e.g. the 1s enforce re-lock after an unlock attempt). Mirrors the Windows collar's existing guard.
+- **Repo-wide ruff `check` + `format` were red on `main`** (`focuslock-mail.py`, `focuslock-tray.py`, `tests/test_payment.py`, +4 format-drifting files). Pre-existing ruff 0.15.x version drift (not introduced by this work) had both CI gates failing; fixed all 5 `check` errors (RUF046×2, UP012, RUF003, I001) and ruff-formatted the drifting files. Both gates green repo-wide.
+
+### Changed
+- **E2EE "not encrypted" warning in both apps (warn + allow)** (`android/controller/src/com/focusctl/MainActivity.java` + `res/layout/activity_main.xml`, `android/companion/src/com/bunnytasker/MainActivity.java` + `res/layout/activity_main.xml`, `android/controller/test/com/focusctl/E2EEHelperTest.java`). E2EE is per-peer (`E2EEHelper.canEncrypt(peerPub)` is false until pairing exchanges the key); both apps silently fell back to plaintext. Now each shows a persistent "⚠ Not encrypted — <peer>'s key not yet exchanged" banner in the chat view when no peer pubkey is available, plus a plaintext send signal (controller "Sent ⚠ not encrypted" status; companion a "Sending unencrypted…" Toast). Messages still send (these are key-exchange-pending bootstrap states). +3 JVM unit tests pinning the `canEncrypt`/`canDecrypt` truth table.
+
+### Added
+- **No-device Android test layer: JVM unit tests + Java↔Python conformance harness** (`android/test-support/android/util/{Base64,Log}.java`, `android/build-conformance.sh`, `android/{controller,slave}/test/com/**`, `tests/test_android_conformance.py`, `Makefile`, `docs/ANDROID-CONFORMANCE.md`, `.github/workflows/ci.yml`). The Android Java had no enforced test coverage. Added a Gradle-free, device-free harness: tiny `android.util.*` shims (test classpath only) let the crypto classes compile against a JUnit 5 + real `org.json` classpath; `build-conformance.sh` compiles + runs them and emits CLI commands for the Python side. Conformance tests drive the compiled CLIs (canonical_json parity, order sign/verify, message pipe-payload, the Collar `/mesh/sync` verify gate, the direct `/mesh/status` signature) so any Java↔Python canonical-form drift fails CI rather than silently bricking gossip. JUnit unit tests: controller `VaultCryptoTest` (6) + `E2EEHelperTest` (3), slave `MeshOrderApplyTest` (4). `make qa-android` + a CI `build-android` step run it all. Doc: `docs/ANDROID-CONFORMANCE.md`.
+- **Server/mesh coverage gates** (`.coveragerc.mesh`, `.coveragerc.server`, `Makefile`, `.github/workflows/ci.yml`). `focuslock_mesh.py` and `focuslock-mail.py` had no enforced coverage (the 95% gate was `shared/`-only). Added `.coveragerc.mesh` with an 80% floor on `focuslock_mesh.py` (measured 84% from the topical subset) and `.coveragerc.server` (report-only, ratchet TODO). `make qa-cov-mesh`/`qa-cov-server` + a CI `test`-job step on the 3.12 leg.
+
+<!-- ───────── end 2026-05-25 ───────── -->
+
 ### Fixed
 - **Atomic `add-paywall` — closes the R-M-W race surfaced by `tests/test_perf_smoke.py::test_admin_order_concurrent`** (`focuslock_mesh.py`, `focuslock-mail.py`, `tests/test_mesh.py`, `tests/test_perf_smoke.py`). Pre-fix, `mesh_apply_order::add-paywall` did `current = orders.get("paywall", "0"); orders.set("paywall", str(current + delta))` — `OrdersDocument.get` and `.set` are individually locked but the increment between them isn't. Concurrent `/admin/order add-paywall` calls dropped increments; in the perf smoke, 100 expected dollars landed as ~$53. New `OrdersDocument.add(key, delta, default=0)` holds `self.lock` across the whole read-modify-write. `add-paywall` switched to use it. Perf concurrent test tightened from soft-gate (`paywall > 0`) to strict equality (`final_pw == expected_total`); ConnectionResetError flake at 100-simultaneous-TCP-connect handled with a 3-attempt retry in `_post`. New unit test `tests/test_mesh.py::TestOrdersDocument::test_add_atomic_under_concurrent_threads` proves `OrdersDocument.add` loses zero increments under 50-thread × 100-increment contention. +7 unit tests covering corrupt-string state, non-int delta, negative delta, missing-key default, and the contention regression. Tracked from `docs/PUBLISHABLE-ROADMAP.md § Medium-term` (now removed). No coordinated rollout — server-side fix only.
 
@@ -80,7 +2040,7 @@ starting with v1.0.0.
 - **Lion↔Bunny messaging — edit + delete + ntfy fan-out + Android UI** (`focuslock-mail.py:4007-4256`, `focuslock_mesh.py:1485-1617`, both Android `MainActivity.java`). Five HTTP routes under `/api/mesh/{id}/messages/{send,fetch,mark,edit,delete}`, all RSA-SHA256 (PKCS1v15) signed and verified against the per-mesh `lion_pubkey` (or the per-node `bunny_pubkey` for bunny-signed sends/fetches/marks). Edit + delete are Lion-only — the server returns 403 with a `"lion-only"` error before signature verification, so a tampered Bunny client can't even attempt to forge from=lion. New `MessageStore.edit()` appends the prior live fields (text, ciphertext, encrypted_key, iv) to `edit_history[]` and overwrites with the new values; `MessageStore.delete_message()` sets a tombstone (`deleted: true`, `deleted_at`, `deleted_by`) but preserves the original text + ciphertext server-side so Lion's own audit view can render it (Bunny's UI shows "[deleted]"). E2EE-aware: edit replaces the ciphertext/iv/encrypted_key bundle while history captures the prior bundle. `_messages_publish_ntfy(mesh_id)` fires after every send/edit/delete via the per-mesh ntfy topic so subscribers refresh the inbox in ~1s instead of waiting 5–10s for the next poll. Android UI: controller `lion_message_thread` ScrollView + companion `messages_container`, both with reply chains, edited/deleted markers, and pinned/mandatory-reply flags. Tests: `tests/test_messages.py` (8 unit tests of `MessageStore` edit/delete/tombstone semantics) plus the new `tests/test_e2e_messages_admin.py` (15 HTTP-level tests covering edit/delete/fetch/mark + ntfy fan-out + cross-mesh signer rejection).
 - **Generic mesh installer — `installers/install-mesh.{sh,ps1}` + `installers/README.md`**. One-shot pre-configured desktop-collar installer for any mesh — writes `~/.config/focuslock/config.json` (Linux) or `%APPDATA%\focuslock\config.json` (Windows) with `mesh_id` + `mesh_url` + `vault_mode: true` + ntfy enabled, then hands off to the platform installer (`install-desktop-collar.sh` / `FocusLock.exe`). `--mesh-id` and `--mesh-url` (or `FOCUSLOCK_MESH_ID` / `FOCUSLOCK_MESH_URL` env vars) are required — there is no default mesh, no operator-specific hostname baked in. `--no-ntfy` skips ntfy subscription, `--reset-keys` wipes the vault keypair to force a fresh `register-node-request` cycle (defaults to preserving so prior Lion approvals stick). Idempotent — re-running rewrites `config.json` authoritatively + re-runs the platform installer. `installers/README.md` documents every parameter with sample `<your-mesh-id>` / `https://your.relay.example` invocations across Bash + PowerShell.
 
-- **Per-mesh ntfy push topic** (`focuslock-mail.py:415`, audit followup #7). Pre-fix the server published every vault-blob wake-up to one config-wide `ntfy_topic`, so consumer meshes on the multi-tenant relay never got push notifications — silently falling back to the 30s vault poll (measured lock-propagation ~12s in hands-on QA). `_get_ntfy_topic(mesh_id)` now derives `focuslock-{mesh_id}` for non-operator meshes; operator keeps its config-wide topic for continuity. `ntfy_fn(version, mesh_id="")` threads the id through `_server_apply_order` + `/admin/order`. Consumer-mesh Collars subscribe via `focus_lock_ntfy_topic` in Settings.Global. Deployed + verified live on pegasus — Pixel subscribed to `https://ntfy.sh/focuslock-DNfs4xCZM-HY` and now receives sub-second wake-ups.
+- **Per-mesh ntfy push topic** (`focuslock-mail.py:415`, audit followup #7). Pre-fix the server published every vault-blob wake-up to one config-wide `ntfy_topic`, so consumer meshes on the multi-tenant relay never got push notifications — silently falling back to the 30s vault poll (measured lock-propagation ~12s in hands-on QA). `_get_ntfy_topic(mesh_id)` now derives `focuslock-{mesh_id}` for non-operator meshes; operator keeps its config-wide topic for continuity. `ntfy_fn(version, mesh_id="")` threads the id through `_server_apply_order` + `/admin/order`. Consumer-mesh Collars subscribe via `focus_lock_ntfy_topic` in Settings.Global. Deployed + verified live on pegasus — Pixel subscribed to `https://ntfy.sh/focuslock-Cd5gHj8k-Nq3` and now receives sub-second wake-ups.
 - **`installers/install-desktop-collar.sh` hardening**. Three hang points fixed: (1) new `--non-interactive` / `-n` flag (auto-detected via `[ ! -t 0 ]`) fails fast instead of blocking on the "Homelab URL" `read` prompt when run from a watcher/CI; (2) `sudo -v` up-front consolidates password prompts so later `sudo cp` can't re-prompt mid-install; (3) `curl -m 15` hard timeout on the Lexend font download so a slow GitHub doesn't hang install forever. Runs cleanly as `FOCUSLOCK_HOMELAB=… bash installers/install-desktop-collar.sh --non-interactive`.
 - `docs/QA-v1.2.0-mesh.md` — manual QA script for the 1-lion + 3-slave mesh topology. Complements `docs/MANUAL-QA.md` (single-device fundamentals). Exercises pairing (incl. C5 fingerprint pin regression), order propagation, C1 signature gate + replay, messaging (incl. C4 mandatory-reply regression), per-device + target=all release, and the P2 paywall hardening regression sanity tour. Protocol-level 7-test vault driver + 9-test C1 gate driver both green against a throwaway local mesh as of 2026-04-21.
 - **Headless-start caveat** for Android 14+ FGS-location enforcement, now documented in both `docs/MANUAL-QA.md §1` and `docs/QA-v1.2.0-mesh.md §Pre-flight/On each device`. `adb shell am start-foreground-service com.focuslock/.ControlService` on a fresh Android-14+ install crashes with `SecurityException: Starting FGS with type location requires FOREGROUND_SERVICE_LOCATION` — the manifest does declare that permission (`android/slave/AndroidManifest.xml:24`), but Android 14 also requires at least one runtime `ACCESS_*_LOCATION` grant before a location-typed FGS can start. Mitigation: drive through `ConsentActivity` or pre-grant via `adb shell pm grant`. Verified empirically in Waydroid Android 13 that the crash is not reproducible there (Android-14-only rule, as expected).

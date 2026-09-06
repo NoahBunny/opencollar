@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Accessibility service (notification-shade guard during a lock). Shown in
+         Settings > Accessibility, which cannot be hidden — labeled honestly, in
+         keeping with the no-covert principle in docs/THREAT-MODEL.md. -->
+    <string name="shade_guard_label">The Collar — screen guard</string>
+    <string name="shade_guard_desc">While a lock session is active, keeps the lock screen in focus by closing the notification shade and Quick Settings. Part of The Collar, which you consented to during setup. Turning it off is treated like disabling device admin.</string>
+</resources>

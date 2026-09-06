@@ -18,8 +18,15 @@ build/
 android/*/bin/
 android/*/gen/
 android/*/obj/
+android/*/classes/
+android/*/*.apk
+android/*/*.apk.idsig
+android/*/classes.zip
 *.keystore
 debug.keystore
+
+# JVM conformance / unit-test build output (android/build-conformance.sh)
+build-conformance/
 
 # Keys and pairing
 keys/
@@ -73,3 +80,12 @@ memory/
 staging/.relay.pid
 staging/.relay.log
 staging/qa-matrix-result.json
+
+# Per-operator mesh installers (embed specific relay URLs + mesh IDs that
+# PR #46 scrubbed from the public repo — keep them local). The generic
+# install-mesh.sh wrapper is whitelisted back in.
+installers/install-mesh-*.sh
+!installers/install-mesh.sh
+
+# Local archive of superseded builds / session docs (tidy-up, not for distribution)
+archive/

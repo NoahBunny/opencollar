@@ -117,6 +117,22 @@ python build-win.py --skip-sign        # Skip self-signed code signing (CI defau
 
 Output: `dist/FocusLock.exe`, `dist/FocusLock-Watchdog.exe`.
 
+`dist/` is gitignored and the binaries are **never committed**. They were, once —
+from 2026-08-08 until the merge of `feat/real-mesh-bunnies` — and the reason to
+stop is instructive: a binary in git has no way to stay in step with the source
+beside it. `focuslock-desktop-win.py` was changed to remove a hardcoded default
+relay, and the committed `.exe`, built before that, went on carrying the old one.
+Anyone installing from the repo got a collar that disagreed with its own source
+on exactly the point the fix existed to address.
+
+Get a build from CI instead, where it is always made from the tree it claims to
+come from:
+
+- **Any pull request** — the `Build Windows EXEs` job uploads a `windows-exes`
+  artifact, retained 14 days.
+- **Any tag** — `release.yml` builds all three, stamps the version into the
+  filename, and attaches them to the GitHub release.
+
 ### Reproducibility
 
 The release CI workflow sets `SOURCE_DATE_EPOCH` from the git commit timestamp before running PyInstaller. Local builds inherit whatever wall-clock time you ran them at.

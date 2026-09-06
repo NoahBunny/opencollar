@@ -24,7 +24,7 @@ tightenings per standing order rules.
 - Training artifact `pwc.py` shredded and removed
 
 ### Interest ratio tightened to 95/5
-- CLAUDE.md updated, pushed to pegasus (both /home/livv and /opt/focuslock)
+- CLAUDE.md updated, pushed to pegasus (both /home/<user> and /opt/focuslock)
 - 5% is property maintenance (Jace's investment), NOT Livv's autonomy
 - Memory written: `feedback_interest_ratio.md` (now server-side only)
 

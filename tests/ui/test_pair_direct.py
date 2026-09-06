@@ -57,7 +57,11 @@ def test_direct_pair_happy_path(ui_env):
     assert len(fingerprint) == 16, f"bad fingerprint: {fingerprint!r}"
 
     d.app_start("com.focusctl", wait=True)
-    d(resourceId="com.focusctl:id/btn_setup").click(timeout=10)
+    # Setup moved off the tabs into the kebab in controller 83 — there is no
+    # btn_setup any more. The kebab is a PopupMenu, so the entry is matched by
+    # its title rather than by a resource id.
+    d(resourceId="com.focusctl:id/btn_kebab").click(timeout=10)
+    d(textContains="Setup").click(timeout=10)
     d(text="Pair Direct (LAN)").click(timeout=10)
 
     # The dialog has three EditTexts: IP, port (default 8432), fingerprint.

@@ -102,14 +102,17 @@ public class ControlService extends Service {
         DevicePolicyManager dpm = dpm();
         ComponentName admin = adminComponent();
         try {
-            // Block uninstalling the collar
+            // Block uninstalling the collar (friction)
             dpm.setUninstallBlocked(admin, getPackageName(), true);
-            // Block safe mode boot
+            // Block safe mode boot (friction)
             dpm.addUserRestriction(admin, UserManager.DISALLOW_SAFE_BOOT);
-            // Block factory reset from Settings (the Lion can still release via
-            // Release Forever which calls clearDeviceOwnerApp first)
-            dpm.addUserRestriction(admin, UserManager.DISALLOW_FACTORY_RESET);
-            Log.i(TAG, "Device owner restrictions applied (uninstall blocked, safe boot blocked, factory reset blocked)");
+            // Factory reset is DELIBERATELY left available — it is the guaranteed
+            // ultimate exit (the safety floor). We never set DISALLOW_FACTORY_RESET,
+            // and clear it defensively in case an older build set it. This is what
+            // keeps consensual inescapability from becoming an actual trap.
+            // See docs/THREAT-MODEL.md.
+            try { dpm.clearUserRestriction(admin, UserManager.DISALLOW_FACTORY_RESET); } catch (Exception ignore) {}
+            Log.i(TAG, "Device owner restrictions applied (uninstall + safe boot blocked; factory reset ALWAYS allowed)");
         } catch (Exception e) {
             Log.w(TAG, "Failed to apply device owner restrictions", e);
         }
@@ -202,7 +205,36 @@ public class ControlService extends Service {
             .setContentText("Always on")
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setOngoing(true).build();
-        startForeground(1, n);
+
+        // startForeground() enforces EVERY foregroundServiceType the manifest
+        // declares (specialUse|location). On API 34+ the "location" type also
+        // requires ACCESS_COARSE/FINE_LOCATION to be held AND the app to be in an
+        // eligible start state at this instant. On a fresh install neither is true,
+        // so the plain startForeground(1, n) throws SecurityException and the whole
+        // cage (HTTP API, jail-watcher, paywall) crash-loops on every boot. Request
+        // only what we can satisfy: always specialUse; add location when its runtime
+        // permission is held, and fall back to specialUse-only if the platform still
+        // refuses it (geofence stays inert until a restart in a permitted state — the
+        // cage core must never be gated behind the geofence permission).
+        if (android.os.Build.VERSION.SDK_INT >= 34) {
+            int special = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE;
+            boolean hasLocation =
+                checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)
+                        == android.content.pm.PackageManager.PERMISSION_GRANTED
+                || checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION)
+                        == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            int type = hasLocation
+                ? special | android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+                : special;
+            try {
+                startForeground(1, n, type);
+            } catch (SecurityException e) {
+                Log.w(TAG, "location FGS type rejected; starting specialUse-only: " + e.getMessage());
+                startForeground(1, n, special);
+            }
+        } else {
+            startForeground(1, n);
+        }
 
         // Initialize TTS for talk-through-mic
         tts = new android.speech.tts.TextToSpeech(this, status -> {
@@ -271,11 +303,17 @@ public class ControlService extends Service {
         Thread watcher = new Thread(() -> {
             Log.w(TAG, "Jail watcher thread started");
             boolean wasLocked = false;
+            boolean shadeGuardWarned = false;
             int healthCounter = 0;
             long bootTime = System.currentTimeMillis();
             while (running) {
                 try {
                     Thread.sleep(2000);
+
+                    // Terminal safety floor — once released (safeword / Release
+                    // Forever), do NO enforcement of any kind (countdown, geofence,
+                    // curfew, bedtime, screen-time, mutual-admin). See THREAT-MODEL.
+                    if (isReleased()) { wasLocked = false; continue; }
 
                     // Check lock flag
                     int active = Settings.Global.getInt(getContentResolver(), "focus_lock_active", 0);
@@ -296,6 +334,24 @@ public class ControlService extends Service {
                         enforceEscapeHatches();
                     } else if (active == 0 && wasLocked) {
                         wasLocked = false;
+                    }
+
+                    // Watchdog liveness (detectable tamper): when the effective cage
+                    // tier is COLLAR+ the foreground-app watchdog (ShadeGuardService)
+                    // is what actually re-jails other apps. If it is disabled while
+                    // locked, re-jailing silently stops — so notify the Lion once,
+                    // the same accountability signal as disabling device admin. Only
+                    // meaningful at COLLAR+; at LEASH the watchdog is off by design.
+                    if (active == 1
+                            && ShadeGuardService.effectiveCageLevel(this) >= ShadeGuardService.LEVEL_COLLAR
+                            && !ShadeGuardService.isEnabled(this)) {
+                        if (!shadeGuardWarned) {
+                            shadeGuardWarned = true;
+                            postEventToServer(this, "shadeguard_disabled", null);
+                            Log.w(TAG, "ShadeGuardService disabled while caged at COLLAR+ — watchdog inactive");
+                        }
+                    } else {
+                        shadeGuardWarned = false;  // re-arm once restored / unlocked
                     }
 
                     // Countdown to lock — fires the lock at countdown_lock_at, with notification warnings
@@ -335,8 +391,13 @@ public class ControlService extends Service {
                         Settings.Global.putLong(getContentResolver(), "focus_lock_countdown_warn_tier", 0);
                     }
 
-                    // Mutual admin monitoring — lock + penalty if BunnyTasker admin removed
-                    if (healthCounter % 3 == 0) {
+                    // Mutual admin monitoring — re-lock (friction, no penalty) if BunnyTasker admin removed.
+                    // (A released device never reaches here — the isReleased() guard at the top
+                    // of this loop already `continue`s past all enforcement, mutual-admin included.)
+                    // Gated on isPaired(): an UNPAIRED device has no Lion, so tamper-locking it
+                    // (e.g. while device admin is being provisioned before the Lion pairs) would
+                    // only trap the wearer with active=1 and no unlock path.
+                    if (healthCounter % 3 == 0 && isPaired()) {
                         long breakglassUntil = Settings.Global.getLong(getContentResolver(), "focus_lock_breakglass_until", 0);
                         int releaseAuth = Settings.Global.getInt(getContentResolver(), "focus_lock_release_authorized", 0);
                         if (System.currentTimeMillis() > breakglassUntil && releaseAuth == 0) {
@@ -349,18 +410,18 @@ public class ControlService extends Service {
                                         Log.w(TAG, "BunnyTasker admin removed — locking + reporting tamper");
                                         Settings.Global.putInt(getContentResolver(), "focus_lock_bt_admin_removed", 1);
                                         Settings.Global.putString(getContentResolver(), "focus_lock_message",
-                                            "BunnyTasker admin removed.\n+$500 penalty.\nRe-enable it in Settings → Security → Device admin.");
+                                            "BunnyTasker admin removed.\nRe-enable it in Settings → Security → Device admin.");
                                         Settings.Global.putInt(getContentResolver(), "focus_lock_shame", 1);
-                                        // P2 paywall hardening (2026-04-17): $500 + lifetime_tamper
-                                        // applied server-side by tamper-recorded(kind=detected).
-                                        // The new paywall lands back here via the next vault pull.
+                                        // Report for accountability only — the server-side
+                                        // tamper-recorded handler no longer applies a penalty
+                                        // (costly-exit, not punish-exit — see THREAT-MODEL).
                                         ControlService.postEventToServer(ControlService.this, "tamper_detected", null);
                                         // Full-screen reactivation prompt — brings up the Android
                                         // admin-activation dialog so the user can re-grant without
                                         // navigating Settings manually. Fires once per 0→1 flip.
                                         launchAdminActivation(btAdmin,
                                             "Bunny Tasker admin was removed. Tap to reactivate — until then, "
-                                                + "the Collar keeps the phone locked and $500 is on the paywall.");
+                                                + "the Collar keeps the phone locked.");
                                     }
                                     Settings.Global.putInt(getContentResolver(), "focus_lock_active", 1);
                                     Settings.Global.putLong(getContentResolver(), "focus_lock_locked_at",
@@ -453,15 +514,17 @@ public class ControlService extends Service {
                                         Settings.Global.putString(getContentResolver(), "focus_lock_mode", "basic");
                                         Settings.Global.putLong(getContentResolver(), "focus_lock_locked_at", System.currentTimeMillis());
                                         launchFocus();
-                                        reportGeofenceBreach(lat, lon, dist[0]);
-                                        // P2 paywall hardening (2026-04-17): server applies the
-                                        // $100 breach penalty + updates lifetime_geofence_breaches
-                                        // in one atomic op; the new paywall lands on this device
-                                        // via the next vault pull.
+                                        // Tattle the breach WITHOUT coordinates — only the
+                                        // violation magnitude is sent, never where the phone is.
+                                        reportGeofenceBreach(dist[0]);
+                                        // Server applies the $100 breach penalty + updates
+                                        // lifetime_geofence_breaches in one atomic op; the new
+                                        // paywall lands on this device via the next vault pull.
                                         postEventToServer(this, "geofence_breach",
                                             String.format("%.0fm outside zone", dist[0]));
                                     }
-                                    reportLocation(lat, lon);
+                                    // Location is evaluated locally only. It is never reported
+                                    // off-device (covert-location removal — see THREAT-MODEL).
                                 }
                             }
                         } catch (SecurityException e) {
@@ -831,6 +894,28 @@ public class ControlService extends Service {
                 }
             }
 
+            // Safety floor: once released (safeword / Release Forever), refuse every
+            // state-mutating DIRECT order too — mirrors handleMeshOrder's isReleased()
+            // gate on the mesh path. Without this, a validly-signed /api/lock (or
+            // /api/task, /api/entrap, /api/photo-task, /api/lock-device, /api/set-
+            // geofence, /api/add-paywall …) over direct LAN would set
+            // focus_lock_active=1 on a freed device: launchFocus() no-ops via its own
+            // guard, but the lock STATE still mutates and propagates to the desktops,
+            // /mesh/status, and the vault. Same condition as the C1 gate, so the
+            // read-only endpoints and the exempt bootstrap (/api/pair — the documented
+            // way to resume after release) stay callable. See THREAT-MODEL.
+            if (method.equals("POST") && path.startsWith("/api/")
+                    && !SIG_EXEMPT_PATHS.contains(path) && isReleased()) {
+                Log.i(TAG, "Released — refusing state-mutating " + path);
+                String respR = "{\"error\":\"released\",\"released\":true}";
+                byte[] rbR = respR.getBytes("UTF-8");
+                out.write(("HTTP/1.1 403 Forbidden\r\nContent-Type: application/json; charset=utf-8\r\n"
+                    + "Content-Length: " + rbR.length
+                    + "\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n").getBytes());
+                out.write(rbR);
+                out.flush(); c.close(); return;
+            }
+
             String ct = "application/json";
             String resp;
             int code = 200;
@@ -923,13 +1008,10 @@ public class ControlService extends Service {
         String mode = gstr("focus_lock_mode");
         String offer = gstr("focus_lock_offer");
         String offerStatus = gstr("focus_lock_offer_status");
-        // Current location for Lion's Share "Confine" button
-        double curLat = 0, curLon = 0;
-        try {
-            android.location.LocationManager lm = (android.location.LocationManager) getSystemService(LOCATION_SERVICE);
-            android.location.Location loc = lm.getLastKnownLocation(android.location.LocationManager.NETWORK_PROVIDER);
-            if (loc != null) { curLat = loc.getLatitude(); curLon = loc.getLongitude(); }
-        } catch (Exception e) {}
+        // Location is deliberately NOT read or exposed here. The wearer's
+        // coordinates never leave the phone; geofence enforcement is local
+        // and only a boolean breach event is reported (see the jail watcher).
+        // Covert-location removal — see docs/THREAT-MODEL.md.
         return "{\"locked\":" + (active == 1)
             + ",\"message\":\"" + esc(msg)
             + "\",\"task\":\"" + esc(task)
@@ -955,13 +1037,18 @@ public class ControlService extends Service {
             + "\",\"auth_challenge_desc\":\"" + esc(gstr("focus_lock_auth_challenge_desc"))
             + "\",\"checkin_deadline\":" + Settings.Global.getInt(getContentResolver(), "focus_lock_checkin_deadline", -1)
             + ",\"checkin_last\":" + Settings.Global.getLong(getContentResolver(), "focus_lock_checkin_timestamp", 0)
-            + ",\"lat\":" + curLat + ",\"lon\":" + curLon
             + ",\"geofence_active\":" + (!gstr("focus_lock_geofence_lat").isEmpty())
             + ",\"geofence_radius\":\"" + esc(gstr("focus_lock_geofence_radius_m"))
             + "\",\"bridge_heartbeat\":" + Settings.Global.getLong(getContentResolver(), "focus_lock_bridge_heartbeat", 0)
             + ",\"desktops\":\"" + esc(gstr("focus_lock_desktops")) + "\""
             + ",\"desktop_locked\":" + (Settings.Global.getInt(getContentResolver(), "focus_lock_desktop_active", 0) == 1)
             + ",\"desktop_locked_devices\":\"" + esc(gstr("focus_lock_desktop_locked_devices")) + "\""
+            // The wearer's ceiling and what is actually in force. The Lion needs
+            // both to loosen meaningfully: the ceiling says what They may never
+            // exceed, the effective tier says what They have already given back.
+            + ",\"cage_ceiling\":" + Math.max(0, ConsentStore.getCageLevel(this))
+            + ",\"cage_lion_request\":" + Settings.Global.getInt(getContentResolver(), "focus_lock_cage_level_lion", -1)
+            + ",\"cage_effective\":" + ShadeGuardService.effectiveCageLevel(this)
             + ",\"fine_active\":" + Settings.Global.getInt(getContentResolver(), "focus_lock_fine_active", 0)
             + ",\"fine_amount\":" + Settings.Global.getInt(getContentResolver(), "focus_lock_fine_amount", 0)
             + ",\"fine_interval_m\":" + Settings.Global.getInt(getContentResolver(), "focus_lock_fine_interval_m", 0)
@@ -1762,9 +1849,42 @@ public class ControlService extends Service {
         return "{\"ok\":true,\"action\":\"photo_task_assigned\"}";
     }
 
+    /** Generate a random 8-char [A-Za-z0-9] SMS gate token (SecureRandom). */
+    private static String genSmsToken() {
+        final String charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        java.security.SecureRandom rng = new java.security.SecureRandom();
+        StringBuilder sb = new StringBuilder(8);
+        for (int i = 0; i < 8; i++) sb.append(charset.charAt(rng.nextInt(charset.length())));
+        return sb.toString();
+    }
+
+    /**
+     * Return the provisioned SMS "sit-boy" gate token, generating + persisting a
+     * fresh one if none exists. Writing focus_lock_sms_token auto-activates the
+     * (otherwise dormant) shared-secret gate in SmsReceiver — sender-number
+     * matching alone is spoofable. Shared with Lion's Share by returning it in
+     * the pair response; already-paired Collars provision lazily on next pair.
+     */
+    private String ensureSmsToken() {
+        String t = gstr("focus_lock_sms_token");
+        if (t.isEmpty()) {
+            t = genSmsToken();
+            Settings.Global.putString(getContentResolver(), "focus_lock_sms_token", t);
+            Log.i(TAG, "doPair: provisioned SMS gate token");
+        }
+        return t;
+    }
+
     private String doPair(String body) {
         String lionPubKey = jval(body, "lion_pubkey");
         if (lionPubKey == null || lionPubKey.isEmpty()) return "{\"error\":\"lion_pubkey required\"}";
+        // A3: provision this Collar's onion (idempotent) so selfAddressFields()
+        // returns it in the pair response, and capture Lion's x25519 client-auth
+        // pubkey for the onion's ClientAuthV3 clause. Both no-op when Tor isn't
+        // bundled (TorHook reflection finds no TorManager). Runs on the idempotent
+        // re-pair path too, since both returns below call selfAddressFields().
+        TorHook.provisionOnion(this);
+        TorHook.storeLionAuthPub(this, jval(body, "onion_auth_pub"));
         String bunnyPubKey = gstr("focus_lock_bunny_pubkey");
         String existing = gstr("focus_lock_lion_pubkey");
         if (!existing.isEmpty()) {
@@ -1773,7 +1893,8 @@ public class ControlService extends Service {
             // "Collar thinks it's paired, Lion thinks it isn't" stuck state.
             if (existing.equals(lionPubKey)) {
                 Log.i(TAG, "doPair: idempotent re-pair from same lion key");
-                return "{\"ok\":true,\"action\":\"already-paired\",\"bunny_pubkey\":\"" + esc(bunnyPubKey) + "\"}";
+                return "{\"ok\":true,\"action\":\"already-paired\",\"bunny_pubkey\":\"" + esc(bunnyPubKey)
+                    + "\",\"sms_token\":\"" + esc(ensureSmsToken()) + "\"" + selfAddressFields() + "}";
             }
             // Different key → genuine conflict. The Collar is already paired
             // to a different Lion; no in-app recovery path exists by design
@@ -1790,7 +1911,8 @@ public class ControlService extends Service {
         Settings.Global.putString(getContentResolver(), "focus_lock_lion_pubkey", lionPubKey);
         Log.i(TAG, "PAIRED with Lion. Key fingerprint: " +
             lionPubKey.substring(0, Math.min(8, lionPubKey.length())) + "...");
-        return "{\"ok\":true,\"action\":\"paired\",\"bunny_pubkey\":\"" + esc(bunnyPubKey) + "\"}";
+        return "{\"ok\":true,\"action\":\"paired\",\"bunny_pubkey\":\"" + esc(bunnyPubKey)
+            + "\",\"sms_token\":\"" + esc(ensureSmsToken()) + "\"" + selfAddressFields() + "}";
     }
 
     // doPairReset removed 2026-04-24: the bunny-initiated pair reset was a
@@ -1804,7 +1926,10 @@ public class ControlService extends Service {
     private String doReleaseForever() {
         Log.w(TAG, "RELEASE FOREVER — tearing down cage permanently");
 
-        // SET AUTHORIZATION FLAG FIRST — prevents AdminReceiver $500/$1000 penalties
+        // SET AUTHORIZATION FLAG FIRST — makes AdminReceiver.onDisabled take the
+        // no-penalty/no-re-lock release path when we remove our own admin below
+        // (there are no financial tamper penalties anymore — costly-exit, not
+        // punish-exit — but this still suppresses the re-lock + tamper report).
         Settings.Global.putInt(getContentResolver(), "focus_lock_release_authorized", 1);
 
         // Clear core lock state immediately
@@ -1814,7 +1939,7 @@ public class ControlService extends Service {
         Settings.Global.putString(getContentResolver(), "focus_lock_paywall", "0");
         Settings.Global.putString(getContentResolver(), "focus_lock_paywall_original", "0");
         Settings.Global.putString(getContentResolver(), "focus_lock_message", "");
-        Settings.Global.putInt(getContentResolver(), "focus_lock_consented", 0);
+        ConsentStore.clearConsented(this);
 
         // Clear device-owner restrictions + status bar BEFORE revoking device owner
         if (isDeviceOwner()) {
@@ -1830,6 +1955,26 @@ public class ControlService extends Service {
                 Log.e(TAG, "Failed to clear device owner", e);
             }
         }
+
+        // Remove OUR OWN device admin via the DevicePolicyManager API. This is
+        // the reliable teardown on Android 16/17: the shell
+        // `dpm remove-active-admin com.focuslock/.AdminReceiver` in the
+        // self-destruct thread below refuses a non-test admin there, and the
+        // subsequent `pm uninstall com.focuslock` refuses while an admin is
+        // active — so on A16/17 Release Forever used to stall on a manual
+        // Settings → Security → Device admin deactivation. A same-package caller
+        // can always remove its own admin programmatically, on every API level.
+        // release_authorized=1 (set at the top of this method) makes
+        // AdminReceiver.onDisabled a no-op, so this fires no tamper penalty.
+        try {
+            if (dpm().isAdminActive(adminComponent())) {
+                dpm().removeActiveAdmin(adminComponent());
+                Log.w(TAG, "Own device admin removed via API for release");
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "removeActiveAdmin(self) failed: " + e.getMessage());
+        }
+
         // Restore UI (best-effort — bridge handles this reliably via ADB)
         try {
             Runtime.getRuntime().exec(new String[]{"cmd", "statusbar", "disable-for-setup", "false"});
@@ -1857,7 +2002,10 @@ public class ControlService extends Service {
                     new java.io.InputStreamReader(p.getInputStream()));
                 String line;
                 while ((line = br.readLine()) != null) {
-                    if (line.startsWith("focus_lock_") && !line.startsWith("focus_lock_release_authorized")) {
+                    // Preserve every focus_lock_release* key (release_authorized,
+                    // released, release_timestamp) so the terminal released state
+                    // survives the wipe and the bridge/ControlService keep honoring it.
+                    if (line.startsWith("focus_lock_") && !line.startsWith("focus_lock_release")) {
                         String key = line.split("=")[0].trim();
                         try {
                             Runtime.getRuntime().exec(new String[]{"settings", "delete", "global", key});
@@ -1872,7 +2020,13 @@ public class ControlService extends Service {
             // Wait for liberation notice to be visible
             try { Thread.sleep(5000); } catch (Exception e) {}
 
-            // Self-destruct: remove admins + uninstall (release_authorized flag prevents penalties)
+            // Self-destruct: remove admins + uninstall (release_authorized flag prevents penalties).
+            // Our own admin is already gone via the removeActiveAdmin() API above; these
+            // shell `dpm` calls stay as a belt-and-braces fallback (a no-op for us, and a
+            // best-effort attempt at Bunny Tasker's admin — which the companion's own
+            // BunnyService also removes via API on seeing release_authorized=1, since one
+            // package cannot remove another's admin programmatically). On A16/17 the shell
+            // form no-ops for non-test admins; the API paths are what actually free them.
             try {
                 Runtime.getRuntime().exec(new String[]{"dpm", "remove-active-admin", "com.bunnytasker/.AdminReceiver"});
                 Thread.sleep(1000);
@@ -1890,6 +2044,66 @@ public class ControlService extends Service {
             }
         }).start();
         return "{\"ok\":true,\"action\":\"released_forever\"}";
+    }
+
+    /** Terminal safety floor: once released (via safeword or Release Forever),
+     *  no order, geofence, curfew, bedtime, or bridge action may re-lock this
+     *  device. Guards launchFocus() and applyOrdersFromMesh(). See THREAT-MODEL. */
+    boolean isReleased() {
+        return Settings.Global.getInt(getContentResolver(), "focus_lock_released", 0) == 1;
+    }
+
+    /** Paired = a Lion has completed pairing and their pubkey is on file. Admin-
+     *  tamper enforcement (the mutual-admin re-lock, AdminReceiver's re-lock on
+     *  admin removal) is meaningless before that: there is no Lion to be
+     *  accountable to, and firing it would trap an UNPAIRED device with
+     *  focus_lock_active=1 and no unlock path (no Lion order, no timer). So the
+     *  tamper monitors gate on this. Provisioning device admin BEFORE the Lion
+     *  pairs must not lock the wearer out of their own phone. */
+    boolean isPaired() {
+        String lp = Settings.Global.getString(getContentResolver(), "focus_lock_lion_pubkey");
+        return lp != null && !lp.isEmpty() && !"null".equals(lp);
+    }
+
+    /** Panic safeword — the wearer's always-available exit. Needs neither the
+     *  Lion nor the homelab. Sets the terminal `released` flag (honored by the
+     *  order-apply path, the jail, and the bridge), notifies the Lion for
+     *  aftercare (not permission), and runs the full teardown with NO penalty.
+     *  See docs/THREAT-MODEL.md. */
+    String doSafewordRelease() {
+        Log.w(TAG, "SAFEWORD — wearer-initiated release");
+        Settings.Global.putInt(getContentResolver(), "focus_lock_released", 1);
+        Settings.Global.putLong(getContentResolver(), "focus_lock_release_timestamp",
+            System.currentTimeMillis());
+        notifyLionSafeword();  // aftercare, best-effort, non-blocking
+        try { Thread.sleep(400); } catch (Exception e) {}  // let the notice fire before teardown wipes creds
+        return doReleaseForever();
+    }
+
+    /** Best-effort aftercare notice to the Lion that the wearer safeworded out.
+     *  Reuses the signed evidence-webhook channel; fails silently if unpaired or
+     *  no homelab. This is a scene-ender, so it also states re-pairing is needed. */
+    private void notifyLionSafeword() {
+        new Thread(() -> {
+            try {
+                String host = webhookHost();
+                if (host.isEmpty()) return;
+                org.json.JSONObject body = new org.json.JSONObject();
+                body.put("text", "Safeword used — the wearer has ended the arrangement. "
+                    + "The collar is released with no penalty. Re-pairing is required to resume.");
+                String signed = SlaveSigner.signAndAttach(this, "compliment", body);
+                if (signed == null) return;
+                java.net.URL url = new java.net.URL("http://" + host + "/webhook/compliment");
+                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("POST");
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setDoOutput(true);
+                conn.setConnectTimeout(3000);
+                conn.getOutputStream().write(signed.getBytes("UTF-8"));
+                conn.getResponseCode();
+                conn.disconnect();
+            } catch (Exception e) {}
+        }).start();
     }
 
     // ── Lovense Integration ──
@@ -1981,30 +2195,18 @@ public class ControlService extends Service {
         return "{\"ok\":true,\"action\":\"message_pinned\"}";
     }
 
-    private void reportLocation(double lat, double lon) {
-        new Thread(() -> {
-            String host = webhookHost();
-            if (host.isEmpty()) return;
-            try {
-                String json = "{\"lat\":" + lat + ",\"lon\":" + lon + ",\"time\":" + System.currentTimeMillis() + "}";
-                java.net.URL url = new java.net.URL("http://" + host + "/webhook/location");
-                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("POST"); conn.setRequestProperty("Content-Type", "application/json");
-                conn.setDoOutput(true); conn.setConnectTimeout(5000);
-                conn.getOutputStream().write(json.getBytes()); conn.getResponseCode(); conn.disconnect();
-            } catch (Exception e) {}
-        }).start();
-    }
+    // Location is enforced locally and never reported off-device. The old
+    // reportLocation() / webhook-location path was removed (covert-location
+    // removal — see docs/THREAT-MODEL.md).
 
-    private void reportGeofenceBreach(double lat, double lon, float distance) {
+    private void reportGeofenceBreach(float distance) {
         new Thread(() -> {
             String host = webhookHost();
             if (host.isEmpty()) return;
             try {
-                // Audit 2026-04-27 H-2: slave-signed evidence webhook.
+                // Slave-signed breach tattle — carries only the violation
+                // magnitude, never coordinates.
                 org.json.JSONObject body = new org.json.JSONObject();
-                body.put("lat", lat);
-                body.put("lon", lon);
                 body.put("distance", distance);
                 String signed = SlaveSigner.signAndAttach(this, "geofence-breach", body);
                 if (signed == null) return;  // unpaired — skip silently
@@ -2105,6 +2307,7 @@ public class ControlService extends Service {
     }
 
     private void launchFocus() {
+        if (isReleased()) return;  // safety floor — never re-jail a released device
         // Direct activity start — works when screen is on (fullScreenIntent only
         // auto-launches when the keyguard is showing / screen is off).
         try {
@@ -2407,6 +2610,35 @@ public class ControlService extends Service {
         String v = Settings.Global.getString(getContentResolver(), key);
         return (v == null || v.equals("null")) ? "" : v;
     }
+
+    /** This device's mesh node_id, or the id Bunny Tasker WILL assign at join
+     *  time if we haven't joined yet.
+     *
+     *  Bunny Tasker owns `focus_lock_mesh_node_id` — it writes it during
+     *  joinMesh(). Until then the Collar still has to label itself in gossip /
+     *  ping / status responses, and the old fallback was a hardcoded "pixel"
+     *  that the gossip handler also PERSISTED. That was two bugs in one: every
+     *  un-joined phone answered to the same identity, and once "pixel" was
+     *  persisted the vault registrar stopped treating the node as un-joined and
+     *  posted a register-node-request under it — a phantom row on the relay that
+     *  the real node_id (written moments later by Bunny Tasker) never reclaimed.
+     *
+     *  Deriving it from Build.MODEL with the exact expression Bunny Tasker uses
+     *  means the pre-join label and the post-join one agree, so a gossip tick
+     *  that lands mid-join can't fork our identity. Never persists — the store
+     *  stays Bunny Tasker's to write, and vaultRegisterIfNeeded keeps using the
+     *  raw setting so it still waits for a real join. */
+    private String selfNodeId() {
+        String stored = gstr("focus_lock_mesh_node_id");
+        if (!stored.isEmpty()) return stored;
+        try {
+            // Must stay character-for-character identical to Bunny Tasker's
+            // joinMesh(): android.os.Build.MODEL.toLowerCase().replace(" ", "-")
+            String derived = android.os.Build.MODEL.toLowerCase().replace(" ", "-");
+            if (!derived.trim().isEmpty()) return derived;
+        } catch (Exception e) {}
+        return "pixel";
+    }
     private static int safeInt(String s, int def) {
         if (s == null) return def;
         try { return Integer.parseInt(s.trim()); } catch (NumberFormatException e) { return def; }
@@ -2436,6 +2668,16 @@ public class ControlService extends Service {
         int e = i;
         while (e < json.length() && json.charAt(e) != ',' && json.charAt(e) != '}') e++;
         return json.substring(i, e).trim();
+    }
+
+    /** jval + parse-to-long, null when the key is absent or not numeric.
+     *  Lets a handler tell "the server sent 0" apart from "the server sent
+     *  nothing", which is the difference between an absolute SET and a
+     *  fall-back local increment. */
+    private Long jlong(String json, String key) {
+        String v = jval(json, key);
+        if (v == null || v.isEmpty()) return null;
+        try { return Long.valueOf(v.trim()); } catch (Exception e) { return null; }
     }
 
     private String webUI() {
@@ -2645,6 +2887,13 @@ public class ControlService extends Service {
                 } catch (Exception e) {
                     Log.e(TAG, "Mesh gossip error", e);
                 }
+                try {
+                    // Serverless recurring tribute: when no homelab is driving
+                    // weekly charges, the Collar fires them on-device.
+                    maybeFireLocalSubscriptionCharge();
+                } catch (Exception e) {
+                    Log.e(TAG, "Local subscription charge error", e);
+                }
                 // Vault sync + runtime push run when vault mode is on.
                 // In Phase B/C the vault was an additive read path. Phase D
                 // promotes the slave to a vault writer for runtime state, so
@@ -2687,6 +2936,7 @@ public class ControlService extends Service {
         // ── ntfy Push Subscriber (latency optimization — triggers immediate vault sync) ──
         String ntfyServer = gstr("focus_lock_ntfy_server");
         String ntfyTopic = gstr("focus_lock_ntfy_topic");
+        final boolean ntfyTopicPinned = !ntfyTopic.isEmpty();
         if (ntfyTopic.isEmpty()) {
             String mid = gstr("focus_lock_mesh_id");
             if (!mid.isEmpty()) ntfyTopic = "focuslock-" + mid;
@@ -2694,11 +2944,35 @@ public class ControlService extends Service {
         if (!ntfyTopic.isEmpty()) {
             if (ntfyServer.isEmpty()) ntfyServer = "https://ntfy.sh";
             final String fServer = ntfyServer;
-            final String fTopic = ntfyTopic;
-            Thread ntfyThread = new Thread(() -> ntfySubscribeLoop(fServer, fTopic));
+            final String fDerived = ntfyTopic;
+            // Resolve the topic on the subscriber thread, not here: this runs
+            // in service startup and the fetch is a network round-trip. A
+            // pinned topic is an explicit choice and is never overridden.
+            Thread ntfyThread = new Thread(() -> {
+                String topic = fDerived;
+                if (!ntfyTopicPinned) {
+                    String served = fetchNtfyTopic();
+                    if (!served.isEmpty()) topic = served;
+                }
+                Log.w(TAG, "ntfy subscriber started: " + fServer + "/" + topic);
+                ntfySubscribeLoop(fServer, topic);
+            });
             ntfyThread.setDaemon(true);
             ntfyThread.start();
-            Log.w(TAG, "ntfy subscriber started: " + ntfyServer + "/" + ntfyTopic);
+        }
+
+        // A3: also subscribe to the onion-derived wake topic so a battery-cold
+        // Collar brings Tor up + republishes its onion on Lion's wake bump. This
+        // is independent of mesh_id, so it works in relay-less direct pairings.
+        // No-op (empty topic) when Tor isn't bundled or no onion is provisioned.
+        String onionWakeTopic = TorHook.wakeTopic(this);
+        if (!onionWakeTopic.isEmpty() && !onionWakeTopic.equals(ntfyTopic)) {
+            final String fOnionServer = ntfyServer.isEmpty() ? "https://ntfy.sh" : ntfyServer;
+            final String fOnionTopic = onionWakeTopic;
+            Thread torWakeThread = new Thread(() -> ntfySubscribeLoop(fOnionServer, fOnionTopic));
+            torWakeThread.setDaemon(true);
+            torWakeThread.start();
+            Log.w(TAG, "ntfy onion-wake subscriber started: " + fOnionServer + "/" + fOnionTopic);
         }
     }
 
@@ -2747,8 +3021,15 @@ public class ControlService extends Service {
     }
 
     private void applyOrdersFromMesh(String ordersJson) {
-        // Parse and write each field to Settings.Global
-        for (String k : MESH_ORDER_KEYS) {
+        if (isReleased()) {
+            Log.w(TAG, "Device is released — ignoring incoming mesh/vault orders");
+            return;
+        }
+        // Parse and write each field to Settings.Global. lock_active is written
+        // LAST (see MeshOrderApply.orderForApply) so FocusActivity never observes
+        // a half-applied state where the lock flag flipped before the new
+        // message/mode/paywall. The reorder helper is unit-tested off-device.
+        for (String k : MeshOrderApply.orderForApply(MESH_ORDER_KEYS)) {
             String v = jval(ordersJson, k);
             if (v != null) {
                 Settings.Global.putString(getContentResolver(), meshToAdbKey(k), v);
@@ -2758,6 +3039,33 @@ public class ControlService extends Service {
         int nowActive = Settings.Global.getInt(getContentResolver(), "focus_lock_active", 0);
         if (nowActive == 1) {
             launchFocus();
+        }
+    }
+
+    /**
+     * Verify the Lion signature on a gossiped orders document before applying it.
+     *
+     * Gossip (/mesh/sync) was previously unauthenticated — any peer that could
+     * reach the gossip HTTP port could inject orders (lock/paywall/message) and
+     * poison orders_version so legitimate Lion orders were ignored. Orders are
+     * Lion-signed end-to-end: the relay/Lion's Share sign canonical_json(orders)
+     * (OrdersDocument.sign_orders), and VaultCrypto.verifySignature canonicalizes
+     * (map minus "signature") and verifies — so re-attaching the wire signature
+     * as a field reproduces exactly the signed input. This mirrors the already-
+     * verified vault path (vaultSync) and the relay's apply_remote policy.
+     *
+     * Fail-closed: any missing/invalid signature or parse error returns false.
+     */
+    private boolean verifyMeshOrdersSignature(String ordersJson, String sigB64, String lionPubB64) {
+        if (sigB64 == null || sigB64.isEmpty() || lionPubB64 == null || lionPubB64.isEmpty()) return false;
+        try {
+            java.util.Map<String, Object> orders =
+                new java.util.HashMap<>(VaultCrypto.jsonToMap(new org.json.JSONObject(ordersJson)));
+            orders.put("signature", sigB64);
+            return VaultCrypto.verifySignature(orders, lionPubB64);
+        } catch (Exception e) {
+            Log.w(TAG, "verifyMeshOrdersSignature failed: " + e.getMessage());
+            return false;
         }
     }
 
@@ -2807,10 +3115,20 @@ public class ControlService extends Service {
                             else if (body.charAt(i) == '}') { depth--; if (depth == 0) { braceEnd = i; break; } }
                         }
                         String ordersJson = body.substring(braceStart, braceEnd + 1);
-                        Log.w(TAG, "Mesh: applying orders v" + remoteVersion + " from " + remoteId);
-                        applyOrdersFromMesh(ordersJson);
-                        meshVersion.set(remoteVersion);
-                        Settings.Global.putLong(getContentResolver(), "focus_lock_mesh_version", meshVersion.get());
+                        // SECURITY: require a valid Lion signature before applying.
+                        // Permissive only when no lion_pubkey is provisioned yet
+                        // (pre-pairing bootstrap) — matches apply_remote.
+                        String lionPub = gstr("focus_lock_lion_pubkey");
+                        if (!lionPub.isEmpty()
+                                && !verifyMeshOrdersSignature(ordersJson, jval(body, "signature"), lionPub)) {
+                            Log.w(TAG, "Mesh: REJECTED orders v" + remoteVersion + " from " + remoteId
+                                + " — invalid/missing signature");
+                        } else {
+                            Log.w(TAG, "Mesh: applying orders v" + remoteVersion + " from " + remoteId);
+                            applyOrdersFromMesh(ordersJson);
+                            meshVersion.set(remoteVersion);
+                            Settings.Global.putLong(getContentResolver(), "focus_lock_mesh_version", meshVersion.get());
+                        }
                     }
                 }
             }
@@ -2818,8 +3136,9 @@ public class ControlService extends Service {
 
         // Build response
         StringBuilder resp = new StringBuilder();
-        String nodeId = gstr("focus_lock_mesh_node_id");
-        if (nodeId.isEmpty()) { nodeId = "pixel"; Settings.Global.putString(getContentResolver(), "focus_lock_mesh_node_id", nodeId); }
+        // Label-only: never persist this. Writing the fallback here is what
+        // used to leave a phantom vault row behind (see selfNodeId()).
+        String nodeId = selfNodeId();
         resp.append("{\"node_id\":\"").append(esc(nodeId)).append("\"");
         resp.append(",\"type\":\"phone\"");
         resp.append(",\"addresses\":").append(getLocalAddressesJson());
@@ -2851,8 +3170,16 @@ public class ControlService extends Service {
     }
 
     private String handleMeshOrder(String body) {
+        // Terminal safety floor — a released device accepts no further orders.
+        if (isReleased()) return "{\"error\":\"released\",\"released\":true}";
         String action = jval(body, "action");
         if (action == null || action.isEmpty()) return "{\"error\":\"action required\"}";
+
+        // On a vault mesh the relay never sees this order — it hands over an
+        // encrypted blob and we apply it here — so nothing server-side can
+        // record WHY the balance moved. Snapshot it either side of the
+        // dispatch and report the cause afterwards. See reportBalanceEvent.
+        double pwBefore = paywallNow();
 
         // Delegate to existing handlers
         String result;
@@ -2866,8 +3193,15 @@ public class ControlService extends Service {
             case "clear-paywall": result = doClearPaywall(); break;
             case "payment-received": {
                 // Server-confirmed IMAP payment. Bumps total_paid_cents
-                // (lifetime counter, server-authoritative mirror) and
-                // optionally clears paywall + unlocks.
+                // (lifetime counter, server-authoritative mirror) and applies
+                // the balance the relay computed.
+                //
+                // Pre-fix this acted on clear_paywall and nothing else, so a
+                // payment that didn't cover the WHOLE balance left the lock
+                // screen showing the same number as before — the bunny paid and
+                // watched nothing move. The relay is the single writer for the
+                // balance and now sends its result as `new_paywall`;
+                // amount_cents is the fallback for a relay predating it.
                 int amountCents = 0;
                 try { amountCents = Integer.parseInt(jval(body, "amount_cents")); } catch (Exception e) {}
                 if (amountCents > 0) {
@@ -2878,16 +3212,71 @@ public class ControlService extends Service {
                 }
                 boolean clearPaywall = "true".equals(jval(body, "clear_paywall"))
                     || "1".equals(jval(body, "clear_paywall"));
-                if (clearPaywall) {
+                int newPaywall = -1;
+                String npRaw = jval(body, "new_paywall");
+                if (npRaw != null && !npRaw.isEmpty()) {
+                    try { newPaywall = (int) Math.ceil(Double.parseDouble(npRaw)); } catch (Exception e) {}
+                }
+                if (newPaywall < 0 && amountCents > 0) {
+                    // Older relay: derive the remainder locally. Rounds UP, the
+                    // same way the server does — a fraction of a dollar still
+                    // owed is still owed, and rounding down would credit the
+                    // bunny more than they actually sent.
+                    long owedCents = Math.round(paywallNow() * 100d);
+                    newPaywall = (int) Math.ceil(Math.max(0L, owedCents - amountCents) / 100d);
+                }
+                if (clearPaywall || newPaywall == 0) {
+                    newPaywall = 0;
                     Settings.Global.putString(getContentResolver(), "focus_lock_paywall", "0");
                     Settings.Global.putString(getContentResolver(), "focus_lock_paywall_original", "0");
                     Settings.Global.putInt(getContentResolver(), "focus_lock_active", 0);
                     Settings.Global.putLong(getContentResolver(), "focus_lock_unlock_at", 0);
                     Settings.Global.putString(getContentResolver(), "focus_lock_message",
                         "Payment received. Good boy.");
+                } else if (newPaywall > 0) {
+                    Settings.Global.putString(getContentResolver(), "focus_lock_paywall",
+                        String.valueOf(newPaywall));
+                    // paywall_original is the principal compound interest
+                    // accrues on, so it takes the same debit — leaving it whole
+                    // would let the next interest tick recompute from the
+                    // un-paid principal and undo the payment. Untouched when
+                    // it was never seeded (0 = interest off for this lock).
+                    long origCents = 0L;
+                    try {
+                        String o = gstr("focus_lock_paywall_original");
+                        if (o != null && !o.isEmpty()) origCents = Math.round(Double.parseDouble(o) * 100d);
+                    } catch (Exception e) {}
+                    if (origCents > 0) {
+                        int newOrig = (int) Math.ceil(Math.max(0L, origCents - amountCents) / 100d);
+                        Settings.Global.putString(getContentResolver(),
+                            "focus_lock_paywall_original", String.valueOf(newOrig));
+                    }
+                    Settings.Global.putString(getContentResolver(), "focus_lock_message",
+                        "Payment received. $" + newPaywall + " remaining.");
                 }
                 result = "{\"ok\":true,\"action\":\"payment-received\",\"amount_cents\":"
-                    + amountCents + ",\"cleared\":" + clearPaywall + "}";
+                    + amountCents + ",\"paywall\":" + Math.max(newPaywall, 0)
+                    + ",\"cleared\":" + (newPaywall == 0) + "}";
+                break;
+            }
+            case "set-cage-level": {
+                // The Lion's requested tier, which effectiveCageLevel() clamps
+                // with min() against the wearer's ceiling — so this can only
+                // ever LOOSEN. Writing a tighter number here is not rejected,
+                // it is simply inert, because the ceiling is in this app's
+                // private prefs where an order cannot reach it.
+                //
+                // -1 clears the request and hands the wearer their own ceiling
+                // back, which is how the Lion returns what They lent.
+                int lvl;
+                try { lvl = Integer.parseInt(jval(body, "level")); } catch (Exception e) { lvl = -1; }
+                if (lvl < -1) lvl = -1;
+                if (lvl > 2) lvl = 2;
+                Settings.Global.putInt(getContentResolver(), "focus_lock_cage_level_lion", lvl);
+                int eff = ShadeGuardService.effectiveCageLevel(this);
+                Settings.Global.putInt(getContentResolver(), "focus_lock_cage_level_effective", eff);
+                result = "{\"ok\":true,\"action\":\"set-cage-level\",\"requested\":" + lvl
+                    + ",\"effective\":" + eff + "}";
                 break;
             }
             case "pin-message": result = doPinMessage(body); break;
@@ -2969,8 +3358,7 @@ public class ControlService extends Service {
                     String paramsJson = jval(body, "params");
                     if (paramsJson != null) target = jval("{" + paramsJson + "}", "target");
                 }
-                String nodeId = gstr("focus_lock_mesh_node_id");
-                if (nodeId.isEmpty()) nodeId = "pixel";
+                String nodeId = selfNodeId();
                 if ("all".equals(target) || nodeId.equals(target)) {
                     result = doReleaseForever();
                 } else {
@@ -2994,20 +3382,40 @@ public class ControlService extends Service {
                 else if ("silver".equals(tier)) amt = 35;
                 else if ("gold".equals(tier)) amt = 50;
                 if (amt > 0) {
-                    String pw = gstr("focus_lock_paywall");
-                    int curPw = 0;
-                    try { curPw = Integer.parseInt(pw); } catch (Exception e) {}
-                    Settings.Global.putString(getContentResolver(),
-                        "focus_lock_paywall", String.valueOf(curPw + amt));
+                    // The server stamps the authoritative post-charge numbers into
+                    // params (paywall / sub_due / sub_total_owed). SET them rather
+                    // than re-deriving with `paywall += amt`: a blob that gets
+                    // re-delivered — a vault replay, a resumed sync, a restart that
+                    // re-reads the same version — then lands on the same balance
+                    // instead of charging a second time. Only fall back to the local
+                    // increment for an older relay that sends tier alone.
+                    long nowMs = System.currentTimeMillis();
+                    Long srvPw = jlong(body, "paywall");
+                    Long srvDue = jlong(body, "sub_due");
+                    Long srvOwed = jlong(body, "sub_total_owed");
+                    if (srvPw != null) {
+                        Settings.Global.putString(getContentResolver(),
+                            "focus_lock_paywall", String.valueOf(srvPw.longValue()));
+                    } else {
+                        String pw = gstr("focus_lock_paywall");
+                        int curPw = 0;
+                        try { curPw = Integer.parseInt(pw); } catch (Exception e) {}
+                        Settings.Global.putString(getContentResolver(),
+                            "focus_lock_paywall", String.valueOf(curPw + amt));
+                    }
+                    Settings.Global.putLong(getContentResolver(), "focus_lock_sub_due",
+                        srvDue != null ? srvDue.longValue() : nowMs + 7L * 24 * 3600 * 1000);
+                    if (srvOwed != null) {
+                        Settings.Global.putLong(getContentResolver(),
+                            "focus_lock_sub_total_owed", srvOwed.longValue());
+                    } else {
+                        long totalOwed = Settings.Global.getLong(getContentResolver(),
+                            "focus_lock_sub_total_owed", 0);
+                        Settings.Global.putLong(getContentResolver(),
+                            "focus_lock_sub_total_owed", totalOwed + amt);
+                    }
                     Settings.Global.putLong(getContentResolver(),
-                        "focus_lock_sub_due",
-                        System.currentTimeMillis() + 7L * 24 * 3600 * 1000);
-                    long totalOwed = Settings.Global.getLong(getContentResolver(),
-                        "focus_lock_sub_total_owed", 0);
-                    Settings.Global.putLong(getContentResolver(),
-                        "focus_lock_sub_total_owed", totalOwed + amt);
-                    Settings.Global.putLong(getContentResolver(),
-                        "focus_lock_sub_last_charged", System.currentTimeMillis());
+                        "focus_lock_sub_last_charged", nowMs);
                     result = "{\"ok\":true,\"action\":\"subscribe_charged\",\"tier\":\""
                         + tier + "\",\"amount\":" + amt + "}";
                 } else {
@@ -3225,12 +3633,214 @@ public class ControlService extends Service {
         Settings.Global.putLong(getContentResolver(), "focus_lock_mesh_version", newVer);
         meshPushToPeers();
 
+        // Tell the relay why the balance moved, if it did. Fire-and-forget on a
+        // worker: the order has already been applied and the wearer is already
+        // being held to it — a history row that fails to send must never make
+        // an enforcement action look failed.
+        final double pwAfter = paywallNow();
+        if (pwAfter != pwBefore) {
+            final String appliedAction = action;
+            final long verForEvent = newVer;
+            new Thread(() -> reportBalanceEvent(appliedAction, pwBefore, pwAfter, verForEvent)).start();
+        }
+
         return "{\"ok\":true,\"action\":\"" + esc(action) + "\",\"orders_version\":" + newVer + "}";
     }
 
+    /** The balance right now, as a number. */
+    private double paywallNow() {
+        try {
+            String v = gstr("focus_lock_paywall");
+            return (v == null || v.isEmpty()) ? 0d : Double.parseDouble(v);
+        } catch (Exception e) {
+            return 0d;
+        }
+    }
+
+    /**
+     * Report a balance movement and its cause to the relay.
+     *
+     * <p>On a vault mesh the Lion's order reaches us as an encrypted blob, so
+     * the relay never applies it and cannot know what it did. Its ledger
+     * therefore recorded tributes and fines — the charges the SERVER makes —
+     * and nothing at all for the Lion adding $25, which is most of the
+     * movement a bunny actually sees.
+     *
+     * <p>We send the ACTION and the balance either side. We deliberately do not
+     * send a description: the relay looks that up from its own table, so this
+     * device cannot put words into the Lion's history. It can still lie about
+     * numbers — it is the bunny's phone — but those are cross-checkable against
+     * the state-mirror the same device already sends.
+     *
+     * <p>Signed with the bunny key, same shape as state-mirror. Blocking; call
+     * off the main thread.
+     */
+    /**
+     * Ask the relay for this mesh's ntfy wake-up topic.
+     *
+     * <p>The topic used to be {@code focuslock-<mesh_id>}, which every node
+     * could compute — and so could anyone who had ever seen the mesh id.
+     * ntfy topics are world-readable, so the mesh id published this collar's
+     * lock and unlock timing to whoever read it. The relay can now hold a
+     * stored random topic instead, which a node has to be told and only gets
+     * told if it can sign as a registered node.
+     *
+     * <p>Returns "" on any failure, including a relay too old to serve the
+     * route — the caller then keeps the derived topic, so an old relay keeps
+     * working exactly as before. Blocking; call off the main thread.
+     */
+    private String fetchNtfyTopic() {
+        try {
+            String meshId = gstr("focus_lock_mesh_id");
+            String meshUrl = gstr("focus_lock_mesh_url");
+            String nodeId = gstr("focus_lock_mesh_node_id");
+            String bunnyPrivB64 = gstr("focus_lock_bunny_privkey");
+            if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty() || bunnyPrivB64.isEmpty()) return "";
+
+            long ts = System.currentTimeMillis();
+            String payload = meshId + "|" + nodeId + "|ntfy-topic|" + ts;
+
+            byte[] privBytes = android.util.Base64.decode(bunnyPrivB64, android.util.Base64.NO_WRAP);
+            java.security.PrivateKey priv = java.security.KeyFactory.getInstance("RSA")
+                .generatePrivate(new java.security.spec.PKCS8EncodedKeySpec(privBytes));
+            java.security.Signature sig = java.security.Signature.getInstance("SHA256withRSA");
+            sig.initSign(priv);
+            sig.update(payload.getBytes("UTF-8"));
+            String signature = android.util.Base64.encodeToString(sig.sign(), android.util.Base64.NO_WRAP);
+
+            String body = "{\"node_id\":\"" + esc(nodeId)
+                + "\",\"ts\":" + ts
+                + ",\"signature\":\"" + signature + "\"}";
+            String resp = vaultHttpPost(meshUrl + "/vault/" + meshId + "/ntfy-topic", body);
+            if (resp == null || resp.isEmpty()) return "";
+            return new org.json.JSONObject(resp).optString("topic", "");
+        } catch (Exception e) {
+            Log.w(TAG, "fetchNtfyTopic: " + e.getMessage());
+            return "";
+        }
+    }
+
+    private void reportBalanceEvent(String appliedAction, double before, double after, long version) {
+        try {
+            String meshId = gstr("focus_lock_mesh_id");
+            String meshUrl = gstr("focus_lock_mesh_url");
+            String nodeId = gstr("focus_lock_mesh_node_id");
+            String bunnyPrivB64 = gstr("focus_lock_bunny_privkey");
+            if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty() || bunnyPrivB64.isEmpty()) return;
+
+            long ts = System.currentTimeMillis();
+            // %s of a double the way Python's :g renders it, so the signed
+            // string matches byte-for-byte on both sides.
+            String beforeStr = fmtAmount(before);
+            String afterStr = fmtAmount(after);
+            String payload = meshId + "|" + nodeId + "|balance-event|" + ts + "|"
+                + appliedAction + "|" + beforeStr + "|" + afterStr;
+
+            byte[] privBytes = android.util.Base64.decode(bunnyPrivB64, android.util.Base64.NO_WRAP);
+            java.security.PrivateKey priv = java.security.KeyFactory.getInstance("RSA")
+                .generatePrivate(new java.security.spec.PKCS8EncodedKeySpec(privBytes));
+            java.security.Signature sig = java.security.Signature.getInstance("SHA256withRSA");
+            sig.initSign(priv);
+            sig.update(payload.getBytes("UTF-8"));
+            String signature = android.util.Base64.encodeToString(sig.sign(), android.util.Base64.NO_WRAP);
+
+            // event_id dedups a retry to one row: the same applied order, not
+            // three identical charges an unlucky network produced.
+            String body = "{\"node_id\":\"" + esc(nodeId)
+                + "\",\"ts\":" + ts
+                + ",\"action\":\"" + esc(appliedAction) + "\""
+                + ",\"before\":" + beforeStr
+                + ",\"after\":" + afterStr
+                + ",\"event_id\":\"" + version + "\""
+                + ",\"signature\":\"" + signature + "\"}";
+
+            java.net.URL url = new java.net.URL(meshUrl + "/vault/" + meshId + "/balance-event");
+            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(10_000);
+            conn.setReadTimeout(10_000);
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.getOutputStream().write(body.getBytes("UTF-8"));
+            int code = conn.getResponseCode();
+            if (code != 200) Log.w(TAG, "balance-event POST returned " + code);
+            conn.disconnect();
+        } catch (Exception e) {
+            Log.w(TAG, "reportBalanceEvent: " + e.getMessage());
+        }
+    }
+
+    /** Render an amount the way Python's "{:g}" does, so a signed payload
+     *  built here matches the one rebuilt on the relay. */
+    private String fmtAmount(double v) {
+        if (v == Math.rint(v) && !Double.isInfinite(v)) return String.valueOf((long) v);
+        String out = String.valueOf(v);
+        return out;
+    }
+
+    /**
+     * Direct-mode (no-homelab) weekly subscription charger. The Collar already
+     * APPLIES `subscribe-charge` orders (bumps paywall, advances sub_due); this
+     * is the on-device DRIVER that fires the charge when sub_due passes, so
+     * recurring tribute works fully serverless.
+     *
+     * Disabled whenever ANY server-side charger exists — a homelab webhook host
+     * or a mesh relay — since either one runs its own weekly ticker and is then
+     * the single authoritative charger. Idempotent: advances sub_due by 7 days
+     * from the previous due (so a brief offline gap still charges), but caps
+     * catch-up to one cycle so a long-powered-off device doesn't lump-charge
+     * months at once.
+     * Runtime state (paywall/sub_due) propagates to Lion via /mesh/status and
+     * the vault runtime push, so no orders-version bump is needed.
+     */
+    private void maybeFireLocalSubscriptionCharge() {
+        // Homelab present → its server-side ticker is the charger.
+        if (!gstr("focus_lock_webhook_host").isEmpty()) return;
+        // Relay present → so is focuslock-mail.py's check_subscription_charges(),
+        // which scans EVERY mesh carrying a sub_tier, homelab or not. This guard
+        // used to test the homelab alone, so a plain vault mesh (mesh_url set, no
+        // webhook host) had two chargers: the relay bumped the balance and pushed
+        // a subscribe-charge blob, and 30s later this driver bumped it again —
+        // then state-mirror carried the doubled figure back up to the relay. A
+        // $50/wk gold tier billed $100. Serverless means serverless: no webhook
+        // host AND no relay.
+        if (!gstr("focus_lock_mesh_url").isEmpty()) return;
+        String tier = gstr("focus_lock_sub_tier");
+        if (tier == null || tier.isEmpty()) return;  // no active subscription
+        tier = tier.toLowerCase();
+        int amt;
+        if ("bronze".equals(tier)) amt = 25;
+        else if ("silver".equals(tier)) amt = 35;
+        else if ("gold".equals(tier)) amt = 50;
+        else return;
+
+        long now = System.currentTimeMillis();
+        final long WEEK = 7L * 24 * 3600 * 1000;
+        long due = Settings.Global.getLong(getContentResolver(), "focus_lock_sub_due", 0);
+        if (due == 0) {
+            // First tick after subscribing — the subscribe action already
+            // charged once; schedule the next due a week out, don't re-charge.
+            Settings.Global.putLong(getContentResolver(), "focus_lock_sub_due", now + WEEK);
+            return;
+        }
+        if (now < due) return;  // not due yet
+
+        String pw = gstr("focus_lock_paywall");
+        int curPw = 0;
+        try { curPw = Integer.parseInt(pw); } catch (Exception e) {}
+        Settings.Global.putString(getContentResolver(), "focus_lock_paywall", String.valueOf(curPw + amt));
+
+        long newDue = due + WEEK;
+        if (newDue < now) newDue = now + WEEK;  // cap catch-up to a single cycle
+        Settings.Global.putLong(getContentResolver(), "focus_lock_sub_due", newDue);
+        long totalOwed = Settings.Global.getLong(getContentResolver(), "focus_lock_sub_total_owed", 0);
+        Settings.Global.putLong(getContentResolver(), "focus_lock_sub_total_owed", totalOwed + amt);
+        Settings.Global.putLong(getContentResolver(), "focus_lock_sub_last_charged", now);
+        Log.i(TAG, "on-device subscription charge: " + tier + " +$" + amt + " (serverless), next due " + newDue);
+    }
+
     private String handleMeshStatus() {
-        String nodeId = gstr("focus_lock_mesh_node_id");
-        if (nodeId.isEmpty()) nodeId = "pixel";
+        String nodeId = selfNodeId();
         // Convenience fields for direct (serverless) Lion's Share polling — match the
         // shape of the relay server's handle_mesh_status() so the same parser works.
         boolean isLocked = Settings.Global.getInt(getContentResolver(), "focus_lock_active", 0) == 1;
@@ -3245,10 +3855,35 @@ public class ControlService extends Service {
         String offerStatus = gstr("focus_lock_offer_status");
         String subTier = gstr("focus_lock_sub_tier");
 
+        // SECURITY: sign the security-relevant status core with the bunny key so
+        // Lion's Share can reject a spoofed direct-mode /mesh/status (LAN MITM).
+        // The signed core is a canonical flat map; Lion rebuilds the identical
+        // map from the parsed wire fields and verifies — mirrors the orders path
+        // (verifyMeshOrdersSignature) so format drift can't silently disable it.
+        // Native types (Boolean/Long/String) MUST match Python canonical_json.
+        java.util.TreeMap<String, Object> statusCore = new java.util.TreeMap<>();
+        statusCore.put("locked", isLocked);
+        statusCore.put("escapes", (long) escapes);
+        statusCore.put("paywall", paywall);
+        statusCore.put("timer_remaining_ms", timerRemainingMs);
+        statusCore.put("task_reps", (long) taskReps);
+        statusCore.put("task_done", (long) taskDone);
+        statusCore.put("offer", offer);
+        statusCore.put("offer_status", offerStatus);
+        statusCore.put("sub_tier", subTier);
+        statusCore.put("orders_version", meshVersion.get());
+        String statusSig = "";
+        try {
+            String bunnyPriv = gstr("focus_lock_bunny_privkey");
+            if (!bunnyPriv.isEmpty()) statusSig = VaultCrypto.signBlob(statusCore, bunnyPriv);
+        } catch (Exception e) {
+            Log.w(TAG, "handleMeshStatus: signing failed: " + e.getMessage());
+        }
+
         StringBuilder sb = new StringBuilder();
         sb.append("{\"orders_version\":").append(meshVersion.get());
         sb.append(",\"orders\":").append(buildOrdersJson());
-        sb.append(",\"signature\":\"\"");
+        sb.append(",\"signature\":\"").append(esc(statusSig)).append("\"");
         sb.append(",\"locked\":").append(isLocked);
         sb.append(",\"escapes\":").append(escapes);
         sb.append(",\"paywall\":\"").append(esc(paywall)).append("\"");
@@ -3258,6 +3893,10 @@ public class ControlService extends Service {
         sb.append(",\"offer\":\"").append(esc(offer)).append("\"");
         sb.append(",\"offer_status\":\"").append(esc(offerStatus)).append("\"");
         sb.append(",\"sub_tier\":\"").append(esc(subTier)).append("\"");
+        // Advertise our own reachable addresses so Lion's Share can refresh its
+        // direct-failover candidate list (DHCP/WiFi self-heal). Advisory only —
+        // status security core above is signed; addresses are not load-bearing.
+        sb.append(selfAddressFields());
         sb.append(",\"nodes\":{\"").append(esc(nodeId)).append("\":{\"type\":\"phone\",\"online\":true,\"orders_version\":")
           .append(meshVersion.get()).append(",\"status\":{\"escapes\":")
           .append(escapes).append("}}");
@@ -3271,8 +3910,7 @@ public class ControlService extends Service {
     }
 
     private String handleMeshPing() {
-        String nodeId = gstr("focus_lock_mesh_node_id");
-        if (nodeId.isEmpty()) nodeId = "pixel";
+        String nodeId = selfNodeId();
         return "{\"ok\":true,\"node_id\":\"" + esc(nodeId) + "\",\"orders_version\":" + meshVersion.get()
             + ",\"timestamp\":" + System.currentTimeMillis() + "}";
     }
@@ -3513,6 +4151,12 @@ public class ControlService extends Service {
                 Log.w(TAG, "vault: GET " + url + " failed");
                 return;
             }
+            // Bump mesh-last-sync timestamp on every successful vault GET so
+            // the Bunny Tasker connection-crown lights up even on quiet meshes
+            // (no new Lion-signed blobs to bump focus_lock_lion_last_seen).
+            // BunnyTasker.updateCrownConnectionState reads this.
+            Settings.Global.putLong(getContentResolver(),
+                "focus_lock_mesh_last_sync_ms", System.currentTimeMillis());
 
             org.json.JSONObject sinceResp = new org.json.JSONObject(resp);
             org.json.JSONArray blobsArr = sinceResp.optJSONArray("blobs");
@@ -3689,9 +4333,17 @@ public class ControlService extends Service {
             }
 
             String pubB64 = android.util.Base64.encodeToString(myPubDer, android.util.Base64.NO_WRAP);
+            // Real-mesh-bunnies: carry the E2EE bunny pubkey in the registration so
+            // the relay records a FULL account member (bunny_pubkey), not just a
+            // vault node_pubkey. Without this, state-mirror + Lion↔Bunny messaging
+            // can't verify the bunny and a separate Bunny-Tasker /api/mesh/join was
+            // the only way to become a real member. Empty is fine (relay treats a
+            // blank bunny_pubkey as "vault-only node", the pre-existing behaviour).
+            String bunnyPub = gstr("focus_lock_bunny_pubkey");
             String body = "{\"node_id\":\"" + esc(nodeId)
                 + "\",\"node_type\":\"phone\""
-                + ",\"node_pubkey\":\"" + pubB64 + "\"}";
+                + ",\"node_pubkey\":\"" + pubB64 + "\""
+                + ",\"bunny_pubkey\":\"" + esc(bunnyPub) + "\"}";
             String resp = vaultHttpPost(meshUrl + "/vault/" + meshId + "/register-node-request", body);
             if (resp != null) {
                 Log.w(TAG, "vault: posted register-node-request (slot=" + mySlotId
@@ -3884,8 +4536,7 @@ public class ControlService extends Service {
         body.put("orders_version", meshVersion.get());
         // Nodes registry — controller's doUnlockDevice() and refreshInbox() consume this.
         java.util.TreeMap<String, Object> nodes = new java.util.TreeMap<>();
-        String selfId = gstr("focus_lock_mesh_node_id");
-        if (selfId.isEmpty()) selfId = "pixel";
+        String selfId = selfNodeId();
         java.util.TreeMap<String, Object> selfEntry = new java.util.TreeMap<>();
         selfEntry.put("type", "phone");
         selfEntry.put("online", true);
@@ -4217,8 +4868,7 @@ public class ControlService extends Service {
         // We still gossip to phone↔desktop peers because those use /mesh/sync
         // (peer-to-peer, never the relay) and stay legacy by design.
         // The flag clears itself if a future tick sees a 200 from a server peer.
-        String nodeId = gstr("focus_lock_mesh_node_id");
-        if (nodeId.isEmpty()) nodeId = "pixel";
+        String nodeId = selfNodeId();
         String meshPin = gstr("focus_lock_pin");
         // Multi-tenant mesh: when joined to an account-based mesh via /api/mesh/join,
         // BunnyTasker writes focus_lock_mesh_id. Server peers must then be addressed at
@@ -4310,10 +4960,22 @@ public class ControlService extends Service {
                                                 else if (respBody.charAt(i) == '}') { depth--; if (depth == 0) { braceEnd = i; break; } }
                                             }
                                             String ordersJson = respBody.substring(braceStart, braceEnd + 1);
-                                            Log.w(TAG, "Mesh gossip: applying v" + remVer + " from " + peerId);
-                                            applyOrdersFromMesh(ordersJson);
-                                            meshVersion.set(remVer);
-                                            Settings.Global.putLong(getContentResolver(), "focus_lock_mesh_version", meshVersion.get());
+                                            // SECURITY: verify the Lion signature on
+                                            // gossiped orders before applying (see
+                                            // verifyMeshOrdersSignature). Permissive
+                                            // only pre-pairing (no lion_pubkey yet).
+                                            String lionPub = gstr("focus_lock_lion_pubkey");
+                                            if (!lionPub.isEmpty() && !verifyMeshOrdersSignature(
+                                                    ordersJson, jval(respBody, "signature"), lionPub)) {
+                                                Log.w(TAG, "Mesh gossip: REJECTED v" + remVer + " from " + peerId
+                                                    + " — invalid/missing signature");
+                                            } else {
+                                                Log.w(TAG, "Mesh gossip: applying v" + remVer + " from " + peerId);
+                                                applyOrdersFromMesh(ordersJson);
+                                                meshVersion.set(remVer);
+                                                Settings.Global.putLong(getContentResolver(),
+                                                    "focus_lock_mesh_version", meshVersion.get());
+                                            }
                                         }
                                     }
                                 }
@@ -4397,6 +5059,39 @@ public class ControlService extends Service {
         }
     }
 
+    /** Best-effort Tailscale (tun*) IPv4 address, or "" if Tailscale isn't up. */
+    private String getTailscaleIp() {
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> nets = java.net.NetworkInterface.getNetworkInterfaces();
+            while (nets != null && nets.hasMoreElements()) {
+                java.net.NetworkInterface ni = nets.nextElement();
+                if (ni.getName() != null && ni.getName().startsWith("tun")) {
+                    java.util.Enumeration<java.net.InetAddress> addrs = ni.getInetAddresses();
+                    while (addrs.hasMoreElements()) {
+                        java.net.InetAddress a = addrs.nextElement();
+                        if (a instanceof java.net.Inet4Address) return a.getHostAddress();
+                    }
+                }
+            }
+        } catch (Exception e) {}
+        return "";
+    }
+
+    /**
+     * Reachable-address advertisement appended to the /api/pair response and the
+     * /mesh/status body. Lets Lion's Share build a multi-address failover list
+     * (LAN, Tailscale, .onion) and self-heal when an address changes (DHCP/WiFi).
+     * The `.onion` is empty until the Collar has provisioned its onion key (A3).
+     * These fields are advisory transport hints — every order and status remains
+     * end-to-end RSA-signed, so a tampered address can DoS but never forge.
+     */
+    private String selfAddressFields() {
+        return ",\"addresses\":" + getLocalAddressesJson()
+            + ",\"tailscale_ip\":\"" + esc(getTailscaleIp()) + "\""
+            + ",\"onion\":\"" + esc(gstr("focus_lock_onion_addr")) + "\""
+            + ",\"direct_port\":" + PORT;
+    }
+
     /** Get current local IP addresses as a JSON array string, refreshed each call. */
     private String getLocalAddressesJson() {
         StringBuilder sb = new StringBuilder("[");
@@ -4448,8 +5143,7 @@ public class ControlService extends Service {
     }
 
     private void meshPushToPeers() {
-        String nodeId = gstr("focus_lock_mesh_node_id");
-        if (nodeId.isEmpty()) nodeId = "pixel";
+        String nodeId = selfNodeId();
         String meshPin = gstr("focus_lock_pin");
         // See meshGossip(): server peers in a multi-tenant mesh use /api/mesh/{mesh_id}/sync.
         String meshId = gstr("focus_lock_mesh_id");
@@ -4545,6 +5239,14 @@ public class ControlService extends Service {
                                     try { vaultSync(); } catch (Exception e) {
                                         Log.w(TAG, "ntfy: vaultSync error: " + e);
                                     }
+                                    // A3: an onion-wake-topic bump means a Lion is
+                                    // about to dial our .onion — bring Tor up and
+                                    // (re)publish for a session window, off-thread
+                                    // so this ntfy loop keeps reading. No-op when
+                                    // Tor isn't bundled.
+                                    if (topic.equals(gstr("focus_lock_onion_wake_topic"))) {
+                                        new Thread(() -> TorHook.onWake(ControlService.this, 10), "tor-wake").start();
+                                    }
                                 }
                             } catch (Exception ignored) {}
                         }
@@ -4571,6 +5273,9 @@ public class ControlService extends Service {
     @Override public int onStartCommand(Intent i, int f, int id) {
         if (i != null && i.getBooleanExtra("mesh_bump", false)) {
             meshBumpAndPush();
+        }
+        if (i != null && i.getBooleanExtra("safeword", false)) {
+            doSafewordRelease();
         }
         return START_STICKY;
     }

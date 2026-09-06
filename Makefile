@@ -13,13 +13,23 @@ PY ?= .venv/bin/python3
 else
 PY ?= python3
 endif
+# Bytecode lands OUTSIDE the checkout. This repo is mirrored into ~/Nextcloud
+# and the sync carries `__pycache__` with it; a .pyc records the compiling
+# checkout's absolute path in co_filename, so a synced-in one makes pytest
+# report skips and tracebacks against the *other* repo, on a different branch.
+# Audited 2026-08-17: 99 of 130 in-tree .pyc carried the mirror's path. Nothing
+# had executed wrong (contents matched), but "which checkout am I looking at"
+# is exactly the question that has cost this project hours. Keeping bytecode
+# out of the tree means there is nothing for the sync to carry.
+export PYTHONPYCACHEPREFIX ?= $(HOME)/.cache/focuslock/pycache
+
 STAGING_DIR := staging
-RELAY_PORT ?= 8435
+RELAY_PORT ?= 18435
 RELAY_URL ?= http://127.0.0.1:$(RELAY_PORT)
 RELAY_PIDFILE := $(STAGING_DIR)/.relay.pid
 STATE_DIR ?= /tmp/focuslock-staging
 
-.PHONY: help qa qa-staging-up qa-staging-down qa-clean qa-pytest qa-runner qa-wizard qa-index qa-perf qa-matrix lint
+.PHONY: help qa qa-staging-up qa-staging-down qa-clean qa-pytest qa-cov-mesh qa-cov-server qa-android qa-runner qa-wizard qa-index qa-perf qa-matrix lint
 
 help:
 	@echo 'Targets:'
@@ -28,6 +38,9 @@ help:
 	@echo '  qa-staging-down Kill staging relay + state-clean $(STATE_DIR).'
 	@echo '  qa-clean        State-clean only ($(STATE_DIR)); does not kill relay.'
 	@echo '  qa-pytest       pytest tests/ (does NOT need staging relay).'
+	@echo '  qa-cov-mesh     Gated coverage floor on focuslock_mesh.py (.coveragerc.mesh).'
+	@echo '  qa-cov-server   Report-only coverage of focuslock_mesh.py + focuslock-mail.py.'
+	@echo '  qa-android      JVM unit tests + Java<->Python conformance (needs JDK; no device).'
 	@echo '  qa-runner       Drive /admin/order against staging relay (49 cases).'
 	@echo '  qa-wizard       Playwright walkthrough of web/signup.html (8 cases).'
 	@echo '  qa-index        Playwright walkthrough of web/index.html (19 cases).'
@@ -48,6 +61,7 @@ qa-staging-up:
 		echo "Booting staging relay on $(RELAY_URL)..."; \
 		FOCUSLOCK_CONFIG=$(STAGING_DIR)/config.json \
 		FOCUSLOCK_STATE_DIR=$(STATE_DIR) \
+		FOCUSLOCK_WEB_DIR="$(CURDIR)/web" \
 			$(PY) focuslock-mail.py >$(STAGING_DIR)/.relay.log 2>&1 & \
 		echo $$! > $(RELAY_PIDFILE); \
 		for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
@@ -90,14 +104,32 @@ qa-clean:
 qa-pytest:
 	$(PY) -m pytest tests/ -q
 
+# Gated coverage floor on the shared mesh module (separate from the shared/ @95
+# gate). Fails if focuslock_mesh.py drops below the floor in .coveragerc.mesh.
+qa-cov-mesh:
+	$(PY) -m pytest tests/ -q --cov --cov-config=.coveragerc.mesh --cov-report=term-missing
+
+# Report-only coverage of the top-level server modules (visibility, not a gate).
+qa-cov-server:
+	$(PY) -m pytest tests/ -q --cov --cov-config=.coveragerc.server --cov-report=term-missing
+
+# JVM-level Android tests: JUnit unit tests + Java<->Python conformance.
+# No device/emulator/Gradle — compiles the crypto classes against test-support
+# shims for android.util.*. Needs a JDK (javac); jars are fetched + cached.
+qa-android:
+	bash android/build-conformance.sh
+	ANDROID_CONFORMANCE_CLI="$$(cat build-conformance/cli-cmd.txt)" \
+	ANDROID_CONFORMANCE_CLI_SLAVE="$$(cat build-conformance/cli-cmd-slave.txt)" \
+	$(PY) -m pytest tests/test_android_conformance.py -q
+
 qa-runner:
 	$(PY) $(STAGING_DIR)/qa_runner.py --relay $(RELAY_URL) --config $(STAGING_DIR)/config.json
 
 qa-wizard:
-	$(PY) $(STAGING_DIR)/qa_wizard_browser.py
+	FOCUSLOCK_QA_RELAY=$(RELAY_URL) $(PY) $(STAGING_DIR)/qa_wizard_browser.py
 
 qa-index:
-	$(PY) $(STAGING_DIR)/qa_index_browser.py
+	FOCUSLOCK_QA_RELAY=$(RELAY_URL) $(PY) $(STAGING_DIR)/qa_index_browser.py
 
 qa-perf:
 	PERF_TESTS=1 $(PY) -m pytest tests/test_perf_smoke.py -v
@@ -105,6 +137,10 @@ qa-perf:
 qa-matrix:
 	$(PY) $(STAGING_DIR)/qa_matrix.py
 
+# Run ruff through the project interpreter, not off PATH. A bare `ruff` here
+# meant `make lint` died with "No such file or directory" on any machine that
+# had ruff only inside .venv — the same off-PATH gate failure as the QA
+# pre-flight in b4010e9, which silently skipped instead of failing.
 lint:
-	ruff check .
-	ruff format --check .
+	$(PY) -m ruff check .
+	$(PY) -m ruff format --check .

@@ -90,6 +90,7 @@ def _stage_sources():
         "focuslock_mesh.py",
         "focuslock_ntfy.py",
         "watchdog-win.pyw",
+        "safeword.py",
     ]:
         src = os.path.join(SCRIPT_DIR, f)
         if os.path.exists(src):
@@ -101,7 +102,13 @@ def _stage_sources():
             if fname.startswith("focuslock_") and fname.endswith(".py"):
                 shutil.copy2(os.path.join(shared_dir, fname), BUILD_ROOT)
     # Icons
-    for icon_name in ["collar-icon.png", "collar-icon-gold.png", "crown-gold.png", "crown-gray.png"]:
+    for icon_name in [
+        "collar-icon.png",
+        "collar-icon-gold.png",
+        "crown-gold.png",
+        "bunny-purple.png",
+        "bunny-gray.png",
+    ]:
         for search_dir in [os.path.join(SCRIPT_DIR, "icons"), SCRIPT_DIR]:
             src = os.path.join(search_dir, icon_name)
             if os.path.exists(src):
@@ -113,12 +120,29 @@ def _stage_sources():
         shutil.copy2(font, BUILD_ROOT)
 
 
-def pyinstaller_build(name, script, ico_path=None, windowed=True):
+DEFAULT_HIDDEN_IMPORTS = [
+    "pystray",
+    "focuslock_mesh",
+    "focuslock_http",
+    "focuslock_sync",
+    "focuslock_vault",
+    "focuslock_config",
+    "focuslock_transport",
+    "focuslock_ntfy",
+    "focuslock_unpaired_orders",
+    "focuslock_companion",
+]
+
+
+def pyinstaller_build(name, script, ico_path=None, windowed=True, hidden_imports=None):
     """Run PyInstaller to produce a single .exe. Builds from BUILD_ROOT to avoid path issues."""
     _stage_sources()
     work_dir = os.path.join(BUILD_ROOT, "work")
     spec_dir = os.path.join(BUILD_ROOT, "spec")
     os.makedirs(DIST_DIR, exist_ok=True)
+
+    if hidden_imports is None:
+        hidden_imports = DEFAULT_HIDDEN_IMPORTS
 
     cmd = [
         sys.executable,
@@ -131,15 +155,8 @@ def pyinstaller_build(name, script, ico_path=None, windowed=True):
         f"--distpath={DIST_DIR}",
         f"--workpath={work_dir}",
         f"--specpath={spec_dir}",
-        "--hidden-import=pystray",
-        "--hidden-import=focuslock_mesh",
-        "--hidden-import=focuslock_http",
-        "--hidden-import=focuslock_sync",
-        "--hidden-import=focuslock_vault",
-        "--hidden-import=focuslock_config",
-        "--hidden-import=focuslock_transport",
-        "--hidden-import=focuslock_ntfy",
     ]
+    cmd += [f"--hidden-import={mod}" for mod in hidden_imports]
     if windowed:
         cmd.append("--windowed")
     if ico_path and os.path.exists(ico_path):
@@ -147,7 +164,14 @@ def pyinstaller_build(name, script, ico_path=None, windowed=True):
         cmd.extend(["--add-data", f"{ico_path}{os.pathsep}."])
 
     # Bundle assets from the staged build dir
-    assets = ["collar-icon.png", "collar-icon-gold.png", "crown-gold.png", "crown-gray.png", "Lexend.ttf"]
+    assets = [
+        "collar-icon.png",
+        "collar-icon-gold.png",
+        "crown-gold.png",
+        "bunny-purple.png",
+        "bunny-gray.png",
+        "Lexend.ttf",
+    ]
     # Include all staged focuslock_*.py modules so PyInstaller ships them alongside the exe
     for fname in os.listdir(BUILD_ROOT):
         if fname.startswith("focuslock_") and fname.endswith(".py"):
@@ -312,6 +336,14 @@ def main():
     print("\n[3/5] Building executables...")
     pyinstaller_build("FocusLock", "focuslock-desktop-win.py", ico_path)
     pyinstaller_build("FocusLock-Watchdog", "watchdog-win.pyw", ico_path)
+    pyinstaller_build("safeword", "safeword.py", ico_path, windowed=False, hidden_imports=[])
+
+    # Plain-file copy, not compiled — self_install() copies it into
+    # C:\focuslock alongside the exes; it just needs a system Python there.
+    tamper_src = os.path.join(SCRIPT_DIR, "report_tamper.py")
+    if os.path.exists(tamper_src):
+        shutil.copy2(tamper_src, os.path.join(DIST_DIR, "report_tamper.py"))
+        print("  report_tamper.py copied to dist/")
 
     print("\n[4/5] Signing executables...")
     sign_executables(skip=args.skip_sign)

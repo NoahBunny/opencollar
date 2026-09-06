@@ -24,6 +24,7 @@ from focuslock_mesh import (
     handle_ledger_entry,
     handle_mark_read,
     handle_mark_replied,
+    handle_mesh_order,
     handle_mesh_ping,
     handle_mesh_status,
     handle_mesh_sync,
@@ -920,7 +921,10 @@ class TestHandleMeshOrder:
         )
         assert "error" in r
 
-    def test_valid_pin_accepted(self, lion_keypair):
+    def test_valid_pin_accepted_during_bootstrap(self):
+        """Bootstrap path: with no Lion pubkey provisioned yet, a valid PIN
+        authorizes. (Once lion_pubkey is set a signature is required — see
+        TestHandleMeshOrderAuth.)"""
         doc = OrdersDocument()
         doc.set("pin", "1234")
         peers = PeerRegistry()
@@ -933,7 +937,7 @@ class TestHandleMeshOrder:
                 peers=peers,
                 my_id="homelab",
                 apply_fn=lambda action, params, orders: {"applied": action},
-                lion_pubkey=lion_keypair["pub_pem"],
+                lion_pubkey="",
             )
         assert r["ok"] is True
         assert r["action"] == "lock"
@@ -993,14 +997,14 @@ class TestHandleMeshOrder:
 
     def test_ntfy_called_when_provided(self, lion_keypair):
         doc = OrdersDocument()
-        doc.set("pin", "1234")
         peers = PeerRegistry()
+        sig = sign_orders({"action": "unlock", "params": {}}, lion_keypair["priv_pem"])
         ntfy_calls = []
         import focuslock_mesh
 
         with patch.object(focuslock_mesh, "push_to_peers"):
             focuslock_mesh.handle_mesh_order(
-                body={"action": "unlock", "params": {}, "pin": "1234"},
+                body={"action": "unlock", "params": {}, "signature": sig},
                 orders=doc,
                 peers=peers,
                 my_id="homelab",
@@ -1775,3 +1779,88 @@ class TestTailnetDiscovery:
 
         monkeypatch.setattr("subprocess.run", boom)
         focuslock_mesh._refresh_tailscale_hosts()
+
+
+# ── handle_mesh_order auth policy ──
+
+
+class TestHandleMeshOrderAuth:
+    """Once a Lion pubkey is configured, a valid Lion SIGNATURE is required to
+    fire an order — a bare PIN (low-entropy bootstrap secret that rides along in
+    every sync) must no longer be sufficient, and must not run the apply_fn
+    side-effect. PIN stays valid only as the pre-pubkey bootstrap path."""
+
+    def _order(self, action, params, priv_pem=None):
+        body = {"action": action, "params": params}
+        if priv_pem is not None:
+            body["signature"] = sign_orders({"action": action, "params": params}, priv_pem)
+        return body
+
+    def test_pin_only_rejected_when_lion_pubkey_set(self, lion_keypair):
+        doc = OrdersDocument()
+        doc.set("pin", "1234")
+        applied = []
+        res = handle_mesh_order(
+            {"action": "unlock", "params": {}, "pin": "1234"},
+            doc,
+            PeerRegistry(),
+            my_id="self",
+            apply_fn=lambda a, p, o: applied.append(a) or {},
+            lion_pubkey=lion_keypair["pub_pem"],
+        )
+        assert "error" in res
+        assert applied == [], "side-effect must not fire on PIN-only when pubkey is set"
+
+    def test_valid_signature_accepted_when_lion_pubkey_set(self, lion_keypair):
+        doc = OrdersDocument()
+        applied = []
+        res = handle_mesh_order(
+            self._order("unlock", {}, lion_keypair["priv_pem"]),
+            doc,
+            PeerRegistry(),
+            my_id="self",
+            apply_fn=lambda a, p, o: applied.append(a) or {},
+            lion_pubkey=lion_keypair["pub_pem"],
+        )
+        assert res.get("ok") is True
+        assert applied == ["unlock"]
+
+    def test_wrong_key_signature_rejected_when_lion_pubkey_set(self, lion_keypair, slave_keypair):
+        doc = OrdersDocument()
+        applied = []
+        res = handle_mesh_order(
+            self._order("unlock", {}, slave_keypair["priv_pem"]),  # signed by the wrong key
+            doc,
+            PeerRegistry(),
+            my_id="self",
+            apply_fn=lambda a, p, o: applied.append(a) or {},
+            lion_pubkey=lion_keypair["pub_pem"],
+        )
+        assert "error" in res
+        assert applied == []
+
+    def test_bootstrap_pin_accepted_when_no_lion_pubkey(self):
+        doc = OrdersDocument()
+        doc.set("pin", "1234")
+        res = handle_mesh_order(
+            {"action": "lock", "params": {}, "pin": "1234"},
+            doc,
+            PeerRegistry(),
+            my_id="self",
+            apply_fn=lambda a, p, o: {},
+            lion_pubkey="",
+        )
+        assert res.get("ok") is True
+
+    def test_bootstrap_wrong_pin_rejected(self):
+        doc = OrdersDocument()
+        doc.set("pin", "1234")
+        res = handle_mesh_order(
+            {"action": "lock", "params": {}, "pin": "9999"},
+            doc,
+            PeerRegistry(),
+            my_id="self",
+            apply_fn=lambda a, p, o: {},
+            lion_pubkey="",
+        )
+        assert "error" in res

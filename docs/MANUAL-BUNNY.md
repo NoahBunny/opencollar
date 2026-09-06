@@ -202,6 +202,13 @@ The AI assistant on your computers follows standing orders:
 - Syncs enforcement across all machines every 5 minutes
 - Paywall hook can't be removed ($50 tamper penalty + auto-restore)
 
+A machine that's collared but **not yet paired** doesn't get any of that — your
+Lion's orders live on Their mesh, and an unpaired PC can't reach them. What it
+gets instead is an interim set: the same tone, no enforcement, and a standing
+instruction to get you to pair the machine. The longer it stays unpaired, the
+harder it pushes — after three days Claude leads *every* answer with it. Pair
+the machine and it stops; the Lion's real orders take over.
+
 ---
 
 ## Escape Attempts
@@ -212,7 +219,9 @@ Each attempt:
 3. Adds 5 minutes (if penalty mode is on)
 4. Progressively louder buzzer + vibration
 5. After 5: public notification announcing your escape count
-6. At 150: factory reset button appears. That's not a perk.
+6. After a few attempts (3+): an in-app factory-reset shortcut appears. (Your
+   device's own factory reset in Android settings/recovery is *always* available
+   regardless — the arrangement is consensual and you can end it at any time.)
 
 ---
 

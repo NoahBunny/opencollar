@@ -14,7 +14,7 @@ Production staging must NEVER share:
 |----------|------|---------|
 | `mesh_id` | operator's real mesh | distinct random base64url |
 | `admin_token` | real token | distinct random token |
-| Relay URL | `https://your-relay.example` | `http://127.0.0.1:8435` or `http://staging.<your-domain>` |
+| Relay URL | `https://your-relay.example` | `http://127.0.0.1:18435` or `http://staging.<your-domain>` |
 | `ntfy_topic` | real topic | distinct random topic |
 | State files | `/run/focuslock/` | `/tmp/focuslock-staging/` |
 | Config file | `~/.config/focuslock/config.json` | `staging/config.json` (repo-local) |
@@ -87,7 +87,7 @@ waydroid session start
 waydroid app launch com.focusctl
 ```
 
-The staging relay binds to `127.0.0.1:8435` by default — configure phones' `mesh_url` to `http://<host-LAN-IP>:8435` (Waydroid runs in a network namespace that can reach host LAN).
+The staging relay binds to `127.0.0.1:18435` by default (from `staging/config.json` `mesh_port`; keeps staging clear of a production relay on the default 8435) — configure phones' `mesh_url` to `http://<host-LAN-IP>:18435` (Waydroid runs in a network namespace that can reach host LAN).
 
 ---
 

@@ -41,6 +41,7 @@ It is **not** for: monitoring children, partners without consent, employees, or 
 | [`docs/THREAT-MODEL.md`](THREAT-MODEL.md) | What this defends against, what it doesn't, and out-of-scope adversaries |
 | [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) | Sanitized code map and sequence diagrams for new contributors |
 | [`docs/VAULT-DESIGN.md`](VAULT-DESIGN.md) | Full cryptographic design rationale |
+| [`docs/GAMIFICATION-ETHICS.md`](GAMIFICATION-ETHICS.md) | The evidence behind the engagement mechanics, what we declined to build, and why |
 | [`docs/QA-CHECKLIST.md`](QA-CHECKLIST.md) | Manual + scripted regression matrix |
 | [`docs/STAGING.md`](STAGING.md) | Spin up an isolated mesh for testing |
 | [`docs/MANUAL-LION.md`](MANUAL-LION.md) | Controller manual (cheeky) |
@@ -213,7 +214,7 @@ Basic, Negotiation, Task, Compliment, Gratitude Journal, Exercise, Love Letter, 
 ### Enforcement
 - Paywall with compound interest (10%/hr, reduced by subscription tier)
 - Tiered escape penalties ($5/$10/$15+ per attempt, stacking)
-- Admin tamper: +$500 attempt, +$1000 removal (stacking)
+- Admin tamper (Android): friction re-lock + Lion notification, no charge (costly-exit, not punish-exit). Desktop-collar tamper: server-side $5/tier ratchet (capped $500)
 - Public shame notification after 5 escapes
 - Lovense integration (escape buzz, lock pulse, task reward)
 - Geofence auto-lock ($100 paywall on breach)
@@ -240,7 +241,7 @@ Basic, Negotiation, Task, Compliment, Gratitude Journal, Exercise, Love Letter, 
 ### Safety
 - Terms of Surrender consent screen on first install
 - Release Forever button (Lion only) -- full teardown + auto-uninstall
-- Factory reset at 150 escapes
+- Factory reset always available (OS-level); in-app shortcut after a few escapes
 - System is consensual. Power dynamic is not.
 
 ## Files

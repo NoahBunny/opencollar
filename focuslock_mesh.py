@@ -27,6 +27,27 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+
+def sanitize_log(value) -> str:
+    """Escape CR / LF / NUL in user-provided strings before substituting them
+    into log records.
+
+    Closes py/log-injection (CodeQL): a peer who sends a node_id or mesh_id
+    containing newlines could otherwise forge whole log entries — the first
+    line ends in an expected-format message, the next is attacker-chosen text
+    an operator reads as real.
+
+    Deliberately duplicated from ``_sanitize_log`` in focuslock-mail.py rather
+    than shared: that one already guards 143 call sites and is not worth
+    re-routing through an import to save three lines. tests/test_log_sanitizer.py
+    asserts the two stay identical in behaviour.
+    """
+    if value is None:
+        return "<none>"
+    s = value if isinstance(value, str) else str(value)
+    return s.replace("\r", "\\r").replace("\n", "\\n").replace("\x00", "\\0")
+
+
 # On Windows, subprocess calls need CREATE_NO_WINDOW to avoid console flashes
 _SUBPROCESS_FLAGS = {}
 if sys.platform == "win32":
@@ -93,6 +114,10 @@ ORDER_KEYS = {
     "mode": "basic",
     "paywall": "0",
     "paywall_original": "0",
+    # The Lion's requested cage tier (-1 = no request). Only ever loosens: the
+    # Collar clamps it against the wearer's ceiling, which is stored where no
+    # order can reach it. See ShadeGuardService.effectiveCageLevel.
+    "cage_level_lion": -1,
     "compliment": "",
     "word_min": 50,
     "exercise": "Do 20 pushups",
@@ -162,6 +187,12 @@ ORDER_KEYS = {
     "fine_active": 0,
     "fine_amount": 0,  # $ per interval
     "fine_interval_m": 60,  # minutes between charges
+    # Pasting a veneration task instead of typing it. Off by default: the collar
+    # detects and blocks regardless, but whether that costs anything is the
+    # Lion's to set, not the collar's to assume.
+    "paste_fine_active": 0,
+    "paste_fine_amount": 0,  # $ per proven attempt after the warnings are spent
+    "paste_free_warnings": 1,  # per lock session, not per rep and not lifetime
     "fine_last_applied": 0,  # epoch ms
     # Streak bonuses (positive reinforcement — Lion enables, server tracks)
     "streak_enabled": 0,
@@ -169,10 +200,15 @@ ORDER_KEYS = {
     "streak_escapes_at_start": 0,  # escape count when streak began
     "streak_7d_claimed": 0,  # 1 if 7d bonus already applied this streak
     "streak_30d_claimed": 0,  # 1 if 30d bonus already applied this streak
-    # Payment email — Lion's IMAP creds (set via Lion's Share)
-    "payment_imap_host": "",
-    "payment_imap_user": "",
-    "payment_imap_pass": "",
+    # SECURITY (privacy isolation, 2026-06-25): Lion's IMAP email/password are
+    # DELIBERATELY NOT in ORDER_KEYS. They used to live here (payment_imap_*),
+    # which propagated them via signed gossip AND the encrypted vault blob to
+    # every mesh node — including the Bunny's Collar + Tasker, who could decrypt
+    # the vault. Lion's payment creds now live ONLY server-side in
+    # payment_identities/{mesh_id}.json (PaymentIdentity), written via the signed
+    # set-payee-identity endpoint and never serialized into the orders doc or a
+    # vault blob. Three adversarial audits confirmed the old path was a real
+    # Lion-email -> Bunny breach. Do NOT re-add payment_imap_* here.
     # Lifetime payout — server-authoritative, projected from payment_ledger.json.
     # Migrated 2026-04-15 from phone-local Settings.Global so it survives device
     # swap. Server IMAP bot increments on confirmed payment; vault propagates.
@@ -226,7 +262,7 @@ class OrdersDocument:
                 for k in ORDER_KEYS:
                     if k in stored:
                         self.orders[k] = stored[k]
-                logger.info("Loaded orders v%s from %s", self.version, self.persist_path)
+                logger.info("Loaded orders v%s from %s", sanitize_log(self.version), sanitize_log(self.persist_path))
             except Exception as e:
                 logger.warning("Failed to load orders: %s", e)
 
@@ -267,10 +303,10 @@ class OrdersDocument:
         # permissive path so initial setup can complete.
         if lion_pubkey:
             if not remote_sig:
-                logger.warning("REJECTED orders v%s — unsigned (lion_pubkey configured)", remote_version)
+                logger.warning("REJECTED orders v%s — unsigned (lion_pubkey configured)", sanitize_log(remote_version))
                 return False
             if not verify_signature(remote_orders, remote_sig, lion_pubkey):
-                logger.warning("REJECTED orders v%s — invalid signature", remote_version)
+                logger.warning("REJECTED orders v%s — invalid signature", sanitize_log(remote_version))
                 return False
 
         with self.lock:
@@ -282,7 +318,7 @@ class OrdersDocument:
                     self.orders[k] = remote_orders[k]
             self.save()
 
-        logger.info("Applied orders v%s", self.version)
+        logger.info("Applied orders v%s", sanitize_log(self.version))
         return True
 
     def bump_version(self, privkey_pem: str = ""):
@@ -505,7 +541,7 @@ class PeerRegistry:
             if peer is None:
                 peer = PeerInfo(node_id)
                 self.peers[node_id] = peer
-                logger.info("Discovered new peer: %s", node_id)
+                logger.info("Discovered new peer: %s", sanitize_log(node_id))
             if node_type:
                 peer.node_type = node_type
             if addresses:
@@ -844,12 +880,23 @@ def handle_mesh_order(
         except Exception as e:
             logger.warning("Mesh order signature check raised: %s", e)
             sig_ok = False
-    # If neither auth method configured (PIN and lion_pubkey both missing),
-    # this is an uninitialized node — fall through legacy permissive behavior
-    # so initial setup can complete. Otherwise require one to pass.
-    if expected_pin or lion_pubkey:
-        if not pin_ok and not sig_ok:
-            return {"error": "unauthenticated — missing valid pin or signature"}
+    # Auth policy:
+    #   * lion_pubkey set  → REQUIRE a valid Lion signature. The PIN is a
+    #     low-entropy bootstrap secret that rides along in every sync, so once a
+    #     Lion identity exists it must not be sufficient on its own to fire an
+    #     order (apply_fn runs the actual lock/unlock side-effect below). This
+    #     matches OrdersDocument.apply_remote, which already rejects unsigned
+    #     order docs when lion_pubkey is configured.
+    #   * lion_pubkey unset but PIN set → bootstrap: accept a valid PIN until
+    #     the Lion pubkey is provisioned.
+    #   * neither set → uninitialized node; legacy permissive path so initial
+    #     setup can complete.
+    if lion_pubkey:
+        if not sig_ok:
+            return {"error": "unauthenticated — valid lion signature required"}
+    elif expected_pin:
+        if not pin_ok:
+            return {"error": "unauthenticated — missing valid pin"}
 
     # Apply the action locally
     result = {}
@@ -1473,7 +1520,22 @@ class PaymentLedger:
                     total += e.get("amount", 0)
             return total
 
-    def add_entry(self, entry_type: str, amount: float, source: str = "", description: str = "") -> dict:
+    def add_entry(
+        self,
+        entry_type: str,
+        amount: float,
+        source: str = "",
+        description: str = "",
+        balance_after: float | None = None,
+    ) -> dict:
+        """Append one balance event.
+
+        `balance_after` is what the balance became once this entry was applied.
+        Both apps render it, so a row can say what the charge was AND where it
+        left things — without it the history is a list of deltas the reader has
+        to add up themselves. Optional because entries written before it existed
+        do not have one.
+        """
         with self.lock:
             # Dedup by source
             if source:
@@ -1487,9 +1549,28 @@ class PaymentLedger:
                 "description": description,
                 "timestamp": int(time.time() * 1000),
             }
+            if balance_after is not None:
+                entry["balance_after"] = round(float(balance_after), 2)
             self.entries.append(entry)
             self.save()
             return {"ok": True, "entry": entry}
+
+    def stamp_balance_after(self, source: str, balance_after: float) -> bool:
+        """Backfill `balance_after` on an already-appended entry.
+
+        The IMAP scanner has to write its ledger row BEFORE crediting the
+        payment — the row's Message-ID is the dedup key that stops the same
+        email being credited on every 30s poll — so at write time it cannot
+        know what the balance became. Without this the bunny's history showed
+        every charge with a running balance and every payment without one.
+        Returns False when no entry has that source."""
+        with self.lock:
+            for e in self.entries:
+                if e.get("source") == source:
+                    e["balance_after"] = round(float(balance_after), 2)
+                    self.save()
+                    return True
+            return False
 
     def set_imap_epoch(self, epoch: int):
         with self.lock:
@@ -1500,6 +1581,279 @@ class PaymentLedger:
         with self.lock:
             return list(reversed(self.entries[-limit:]))
 
+    def find_by_source(self, source: str) -> dict:
+        """Return the entry with matching source, or None."""
+        if not source:
+            return None
+        with self.lock:
+            for e in self.entries:
+                if e.get("source") == source:
+                    return dict(e)
+        return None
+
+
+# ── PaymentIdentity ──
+# Server-only file holding the two halves of the payer/payee identity used
+# by the IMAP scanner to filter which incoming emails count as Bunny→Lion
+# payments. Lives outside the vault on purpose: neither client app should
+# be able to read the other side's email. Lion's Share writes its half via
+# the controller-signed set-payee-identity endpoint; Bunny Tasker (or the
+# Collar) writes its half via the phone-signed set-payer-identity endpoint.
+# Server uses both. Reads never echo the other side's half back to either
+# app — the only thing apps can ask is "is my half configured."
+
+# A payer needle must identify a PERSON. Needles that name a channel/provider
+# (or a whole free-email domain) match every e-transfer and would credit
+# unrelated transactions, so they're ignored at match time and flagged at set
+# time. This is the root cause of "it credited several unrelated payments":
+# a bare-domain / channel needle substring-matched the provider boilerplate.
+_FREE_EMAIL_DOMAINS = {
+    "gmail.com",
+    "googlemail.com",
+    "outlook.com",
+    "hotmail.com",
+    "live.com",
+    "yahoo.com",
+    "ymail.com",
+    "icloud.com",
+    "me.com",
+    "aol.com",
+    "proton.me",
+    "protonmail.com",
+}
+_PAYER_CHANNEL_TOKENS = {
+    "interac",
+    "interac.ca",
+    "payments.interac",
+    "etransfer",
+    "e-transfer",
+    "paypal",
+    "paypal.com",
+    "venmo",
+    "zelle",
+    "wise",
+    "wise.com",
+    "worldremit",
+    "deposit",
+    "transfer",
+    "payment",
+    "received",
+    "money",
+    "autodeposit",
+    "tangerine.ca",
+}
+
+
+def _payer_needle_is_generic(needle: str) -> bool:
+    """True for needles that identify a channel/provider/free-domain rather than
+    a person — too short, a known payment-channel token, or a bare free-email
+    domain. Such needles match every payment email and must not filter."""
+    n = (needle or "").strip().lower()
+    if len(n) < 3:
+        return True
+    if n in _PAYER_CHANNEL_TOKENS or n in _FREE_EMAIL_DOMAINS:
+        return True
+    if n.lstrip("@") in _FREE_EMAIL_DOMAINS:  # "@gmail.com" / "gmail.com"
+        return True
+    return False
+
+
+def _payer_needle_matches(needle: str, haystack: str) -> bool:
+    """Match one payer needle against (already-lowercased) text. Full emails
+    (contain '@') match as a substring — they're specific. Names/handles match
+    on word boundaries, so 'joe' no longer matches 'joey'/'joseph' and a needle
+    can't match inside an unrelated word in the provider boilerplate."""
+    n = (needle or "").strip().lower()
+    if not n:
+        return False
+    if "@" in n:
+        return n in haystack
+    return re.search(r"\b" + re.escape(n) + r"\b", haystack) is not None
+
+
+class PaymentIdentity:
+    """Per-mesh payer/payee identity + IMAP creds, server-only."""
+
+    def __init__(self, persist_path=None):
+        self.payee_email = ""
+        self.payee_set_at = 0
+        self.imap_host = ""
+        self.imap_pass = ""
+        self.imap_set_at = 0
+        # Lion's evidence/report recipient email — where compliments, gratitude,
+        # photos, etc. are delivered. Lion's own email; server-only (same trust
+        # boundary as payee_email — never readable by the Bunny's apps).
+        self.evidence_email = ""
+        self.evidence_set_at = 0
+        self.payer_allow = []  # list[str] of substrings (case-insensitive)
+        self.payer_set_at = 0
+        self.persist_path = persist_path
+        self.lock = threading.Lock()
+        self._load()
+
+    def _load(self):
+        if not self.persist_path or not os.path.exists(self.persist_path):
+            return
+        try:
+            with open(self.persist_path, "r") as f:
+                data = json.load(f)
+            self.payee_email = str(data.get("payee_email", "") or "")
+            self.payee_set_at = int(data.get("payee_set_at", 0) or 0)
+            self.imap_host = str(data.get("imap_host", "") or "")
+            self.imap_pass = str(data.get("imap_pass", "") or "")
+            self.imap_set_at = int(data.get("imap_set_at", 0) or 0)
+            self.evidence_email = str(data.get("evidence_email", "") or "")
+            self.evidence_set_at = int(data.get("evidence_set_at", 0) or 0)
+            raw_allow = data.get("payer_allow", []) or []
+            if isinstance(raw_allow, list):
+                self.payer_allow = [str(s) for s in raw_allow if s]
+            self.payer_set_at = int(data.get("payer_set_at", 0) or 0)
+        except Exception as e:
+            logger.warning("Failed to load payment identity: %s", e)
+
+    def save(self):
+        if not self.persist_path:
+            return
+        try:
+            os.makedirs(os.path.dirname(self.persist_path), exist_ok=True)
+            tmp = self.persist_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(
+                    {
+                        "payee_email": self.payee_email,
+                        "payee_set_at": self.payee_set_at,
+                        "imap_host": self.imap_host,
+                        "imap_pass": self.imap_pass,
+                        "imap_set_at": self.imap_set_at,
+                        "evidence_email": self.evidence_email,
+                        "evidence_set_at": self.evidence_set_at,
+                        "payer_allow": self.payer_allow,
+                        "payer_set_at": self.payer_set_at,
+                    },
+                    f,
+                )
+            os.replace(tmp, self.persist_path)
+            try:
+                os.chmod(self.persist_path, 0o600)
+            except OSError:
+                pass
+        except Exception as e:
+            logger.warning("Failed to save payment identity: %s", e)
+
+    def set_payee(self, email: str, imap_host: str = "", imap_pass: str = "") -> dict:
+        with self.lock:
+            now = int(time.time() * 1000)
+            self.payee_email = (email or "").strip()
+            self.payee_set_at = now
+            if imap_host:
+                self.imap_host = imap_host.strip()
+            if imap_pass:
+                self.imap_pass = imap_pass
+            if imap_host or imap_pass:
+                self.imap_set_at = now
+            self.save()
+            return {
+                "payee_configured": bool(self.payee_email),
+                "imap_configured": bool(self.imap_host and self.imap_pass),
+            }
+
+    def set_evidence_email(self, email: str) -> dict:
+        """Set the Lion's evidence/report recipient email (server-only)."""
+        with self.lock:
+            self.evidence_email = (email or "").strip()
+            self.evidence_set_at = int(time.time() * 1000)
+            self.save()
+            return {"evidence_configured": bool(self.evidence_email)}
+
+    def set_payer_allow(self, allow: list) -> dict:
+        with self.lock:
+            cleaned = []
+            for s in allow or []:
+                if not s:
+                    continue
+                t = str(s).strip()
+                if t and t not in cleaned:
+                    cleaned.append(t)
+            self.payer_allow = cleaned
+            self.payer_set_at = int(time.time() * 1000)
+            self.save()
+            generic = [n for n in cleaned if _payer_needle_is_generic(n)]
+            # effective_count == 0 with count > 0 means every entry is a
+            # channel/domain/short token — it will match NOTHING (fail-closed).
+            # Bunny Tasker should surface this so the operator fixes the entry.
+            return {
+                "payer_configured": bool(self.payer_allow),
+                "count": len(self.payer_allow),
+                "effective_count": len(cleaned) - len(generic),
+                "generic_rejected": len(generic),
+            }
+
+    def payer_summary(self) -> dict:
+        """Safe-to-return-to-Bunny summary: count + last-set timestamp, no
+        contents (the Bunny knows what they set themselves)."""
+        with self.lock:
+            return {
+                "configured": bool(self.payer_allow),
+                "count": len(self.payer_allow),
+                "set_at": self.payer_set_at,
+            }
+
+    def payee_summary(self) -> dict:
+        """Safe-to-return-to-Lion summary: presence + last-set timestamps,
+        no Bunny-side fields."""
+        with self.lock:
+            return {
+                "payee_configured": bool(self.payee_email),
+                "imap_configured": bool(self.imap_host and self.imap_pass),
+                "payee_set_at": self.payee_set_at,
+                "imap_set_at": self.imap_set_at,
+            }
+
+    def resolve_imap(self) -> tuple:
+        """Return (host, user, pass) for the IMAP scanner. The payee_email
+        doubles as the IMAP login."""
+        with self.lock:
+            return (self.imap_host, self.payee_email, self.imap_pass)
+
+    def matched_payer_needle(self, sender: str, body: str):
+        """Return the first NON-generic payer needle that matches, else None.
+        Generic needles (channels/free-domains/short tokens) are skipped so a
+        configured-but-useless allowlist matches nothing instead of everything.
+        The returned needle is recorded in the ledger so the operator can see
+        exactly why a payment was credited."""
+        with self.lock:
+            allow = list(self.payer_allow)
+        if not allow:
+            return None
+        haystack = ((sender or "") + " " + (body or "")).lower()
+        for needle in allow:
+            if _payer_needle_is_generic(needle):
+                continue
+            if _payer_needle_matches(needle, haystack):
+                return needle
+        return None
+
+    def matches_payer(self, sender: str, body: str) -> bool:
+        """True if a non-generic payer needle matches. An EMPTY allowlist
+        returns True for backward compatibility (the scanner now fails closed
+        on an empty allowlist via payer_configured); a non-empty allowlist that
+        only matches via generic needles returns False."""
+        with self.lock:
+            empty = not self.payer_allow
+        if empty:
+            return True
+        return self.matched_payer_needle(sender, body) is not None
+
+    def payer_configured(self) -> bool:
+        with self.lock:
+            return bool(self.payer_allow)
+
+    def has_effective_payer(self) -> bool:
+        """True if the allowlist has at least one needle that can actually
+        identify a person (i.e. survives the generic filter)."""
+        with self.lock:
+            return any(not _payer_needle_is_generic(n) for n in self.payer_allow)
+
 
 # ── MessageStore ──
 
@@ -1507,11 +1861,20 @@ class PaymentLedger:
 class MessageStore:
     """Stores messages between bunny and lion."""
 
+    # Hard cap on retained messages. Past this, the oldest are trimmed.
+    MAX_MESSAGES = 500
+
     def __init__(self, persist_path=None):
         self.messages = []
         self.persist_path = persist_path
         self.lock = threading.Lock()
+        # Monotonic id counter. The old scheme keyed ids off len(self.messages),
+        # which stops being unique once the size-cap starts trimming (len sticks
+        # at MAX_MESSAGES, so same-millisecond sends collide and mark/edit/delete
+        # hit the wrong message). A per-store counter that never rewinds fixes it.
+        self._seq = 0
         self._load()
+        self._init_seq()
 
     def _load(self):
         if self.persist_path and os.path.exists(self.persist_path):
@@ -1520,6 +1883,18 @@ class MessageStore:
                     self.messages = json.load(f)
             except Exception as e:
                 logger.warning("Failed to load messages: %s", e)
+
+    def _init_seq(self):
+        """Resume the id counter past any suffix we've already handed out so a
+        reload after the size-cap can't re-issue a colliding `{ts}_{seq}` id."""
+        max_seq = 0
+        for m in self.messages:
+            mid = m.get("id", "")
+            if isinstance(mid, str) and "_" in mid:
+                tail = mid.rsplit("_", 1)[-1]
+                if tail.isdigit():
+                    max_seq = max(max_seq, int(tail))
+        self._seq = max_seq
 
     def save(self):
         if not self.persist_path:
@@ -1536,11 +1911,23 @@ class MessageStore:
     def add(self, msg: dict) -> dict:
         with self.lock:
             msg["ts"] = msg.get("ts", int(time.time() * 1000))
-            msg["id"] = msg.get("id", f"{msg['ts']}_{len(self.messages)}")
+            # Idempotency: a client that retries a send (network blip, app
+            # restart) re-POSTs with the same client_msg_id. Return the already
+            # stored copy instead of appending a duplicate. Random per-message
+            # ids mean a collision implies an intentional retry, not two
+            # distinct messages.
+            cmid = msg.get("client_msg_id")
+            if cmid:
+                for existing in self.messages:
+                    if existing.get("client_msg_id") == cmid:
+                        return existing
+            if "id" not in msg:
+                self._seq += 1
+                msg["id"] = f"{msg['ts']}_{self._seq}"
             self.messages.append(msg)
-            # Cap at 500
-            if len(self.messages) > 500:
-                self.messages = self.messages[-500:]
+            # Cap retained history; trim oldest first.
+            if len(self.messages) > self.MAX_MESSAGES:
+                self.messages = self.messages[-self.MAX_MESSAGES :]
             self.save()
             return msg
 

@@ -204,10 +204,20 @@ PHONE_PIN = os.environ.get("PHONE_PIN", _cfg.get("pin", ""))
 IMAP_CHECK_INTERVAL = 30  # seconds
 WEBHOOK_PORT = _cfg.get("homelab_port", 8434)
 
-# Runtime state directory — hosts orders, peers, device registry, and per-mesh
-# vaults. Overridable via FOCUSLOCK_STATE_DIR for staging / tests / non-root
-# environments (systemd prod uses /run/focuslock via a tmpfiles.d unit).
-_STATE_DIR = os.environ.get("FOCUSLOCK_STATE_DIR", "/run/focuslock")
+# Public-facing base URL (e.g. https://collar.example.com) when the relay sits
+# behind a TLS reverse proxy. When set, it's what the relay ADVERTISES to apps
+# during pairing instead of a bare LAN/Tailscale IP:port — so a phone enrolled
+# from anywhere reaches the homelab over the public name. Empty = advertise the
+# discovered local address (LAN/Tailscale-only deployments). No trailing slash.
+PUBLIC_URL = (_cfg.get("public_url", "") or os.environ.get("FOCUSLOCK_PUBLIC_URL", "")).rstrip("/")
+
+# State directory — hosts orders, peers, device registry, mesh ACCOUNTS, and
+# per-mesh vaults. This is DURABLE data: mesh accounts + vault node lists are the
+# only server-side record of who's on a mesh. It MUST live on persistent disk.
+# (It used to default to /run/focuslock — tmpfs — which silently erased every
+# mesh on reboot; recovered 2026-08-15.) Overridable via FOCUSLOCK_STATE_DIR for
+# staging / tests / non-root environments.
+_STATE_DIR = os.environ.get("FOCUSLOCK_STATE_DIR", "/var/lib/focuslock")
 
 IP_REGISTRY_FILE = os.path.join(_STATE_DIR, "phone-ips.json")
 
@@ -227,12 +237,10 @@ from focuslock_penalties import (
     GOOD_BEHAVIOR_INTERVAL_MS,
     GOOD_BEHAVIOR_REWARD,
     SIT_BOY_MAX_AMOUNT,
-    TAMPER_ATTEMPT_PENALTY,
-    TAMPER_DETECTED_PENALTY,
-    TAMPER_REMOVED_PENALTY,
     UNSUBSCRIBE_FEES,
     compound_interest_rate,
     escape_penalty,
+    tamper_penalty,
 )
 
 adb = ADBBridge(
@@ -275,6 +283,30 @@ def _safe_mesh_id_static(mesh_id):
     return all(c.isalnum() or c in "-_" for c in mesh_id)
 
 
+def _mesh_state_path(base_dir, mesh_id, suffix=".json"):
+    """Path of a per-mesh file (or directory, with suffix="") under base_dir.
+    Returns None if mesh_id could not safely name one.
+
+    Two independent locks, on purpose. _safe_mesh_id_static makes traversal
+    inexpressible in the first place — neither a dot nor a separator survives
+    its whitelist — and then the joined path is resolved and confirmed to still
+    sit inside base_dir, which is the check that still holds if that whitelist
+    is ever loosened. Several callers below previously had nothing but the
+    caller's word that mesh_id had been validated back at the route.
+
+    Resolving with realpath() is also the shape CodeQL's py/path-injection
+    recognises as a barrier; the resolved path names the same file, so callers
+    are unaffected by state directories that live behind a symlink.
+    """
+    if not _safe_mesh_id_static(mesh_id):
+        return None
+    base = os.path.realpath(base_dir)
+    candidate = os.path.realpath(os.path.join(base, f"{mesh_id}{suffix}"))
+    if candidate != base and not candidate.startswith(base + os.sep):
+        return None
+    return candidate
+
+
 class MeshOrdersRegistry:
     """Maps mesh_id -> OrdersDocument. Every mesh — including the operator's
     own — gets its own OrdersDocument persisted under base_dir. Prior to
@@ -302,10 +334,10 @@ class MeshOrdersRegistry:
 
     def get_or_create(self, mesh_id):
         # SECURITY: defense-in-depth — validate mesh_id before using in path
-        if not _safe_mesh_id_static(mesh_id):
+        path = _mesh_state_path(self.base_dir, mesh_id)
+        if path is None:
             raise ValueError(f"invalid mesh_id: {mesh_id!r}")
         if mesh_id not in self.docs:
-            path = os.path.join(self.base_dir, f"{mesh_id}.json")
             self.docs[mesh_id] = mesh.OrdersDocument(persist_path=path)
         return self.docs[mesh_id]
 
@@ -422,9 +454,25 @@ def _get_ntfy_topic(mesh_id: str = "") -> str:
     if mesh_id:
         # Per-mesh topic. Operator's explicitly-configured topic wins
         # ONLY for the operator mesh, so consumer meshes always get
-        # their own deterministic topic regardless of config.
+        # their own topic regardless of config.
         if OPERATOR_MESH_ID and mesh_id == OPERATOR_MESH_ID and _ntfy_topic:
             return _ntfy_topic
+        # A STORED topic beats the derived one. The derived form is
+        # `focuslock-{mesh_id}`, which means the wake-up channel is a pure
+        # function of the mesh id — and ntfy topics are world-readable and
+        # world-writable. So anywhere a mesh id appears (a changelog, a
+        # handoff doc, a support thread, a screenshot) the mesh's wake-up
+        # channel appears with it: a stranger can subscribe and watch lock
+        # and unlock timing in real time, or publish spurious wakes. The
+        # payload is only {"v": N}, so no content leaks — but when a device
+        # gets locked is not nothing.
+        #
+        # Rotating the mesh id to fix that would re-pair every node. A
+        # stored random topic fixes it without touching mesh identity, and
+        # can be rotated again the moment one leaks.
+        stored = _mesh_accounts.get_ntfy_topic(mesh_id) if _mesh_accounts else ""
+        if stored:
+            return stored
         return f"focuslock-{mesh_id}"
     # Fallback when the caller doesn't know a mesh_id — matches old behavior.
     if _ntfy_topic:
@@ -459,6 +507,20 @@ def _messages_publish_ntfy(mesh_id: str):
         ntfy_fn(int(time.time() * 1000), mesh_id)
     except Exception as e:
         logger.warning("messages ntfy publish failed: mesh=%s err=%s", _sanitize_log(mesh_id), e)
+
+
+def _node_join_ntfy(mesh_id: str):
+    """Wake-up ping when a device registers against a mesh (auto-accepted or
+    queued). A silent join used to be invisible until the Lion happened to open
+    Vault Nodes and hit Refresh; this wakes Lion's Share so it can diff the node
+    list and surface the new arrival within seconds. Payload stays the standard
+    zero-knowledge {"v": ts} — the relay never says who joined over ntfy."""
+    if not _ntfy_enabled:
+        return
+    try:
+        ntfy_fn(int(time.time() * 1000), mesh_id)
+    except Exception as e:
+        logger.warning("node-join ntfy publish failed: mesh=%s err=%s", _sanitize_log(mesh_id), e)
 
 
 # Lion's public key for signature verification — loaded from phone on first sync
@@ -558,11 +620,36 @@ def _ensure_relay_node_registered(mesh_id):
     return True
 
 
+# SECURITY (privacy isolation): actions/params that carry Lion's email or IMAP
+# credentials must NEVER be encrypted into a vault blob — the blob is addressed
+# to EVERY registered vault node, which includes the Bunny's Collar + Tasker.
+# Fail-closed denylist; the legitimate sink for these is the server-only
+# PaymentIdentity (set-payee-identity), never the vault.
+_VAULT_BLOB_DENY_ACTIONS = {"set-payment-email", "set-payee-identity"}
+_VAULT_BLOB_DENY_PARAM_KEYS = {
+    "imap_host",
+    "imap_user",
+    "imap_pass",
+    "payee_email",
+    "email",
+    "payment_imap_host",
+    "payment_imap_user",
+    "payment_imap_pass",
+}
+
+
 def _admin_order_to_vault_blob(action, params, mesh_id=None):
     """Write an admin order as a relay-signed vault RPC blob so vault-mode slaves pick it up.
     Uses the RELAY's private key (P6.5 zero-knowledge compliance — Lion's key never on server).
     Works for any mesh once the relay is registered as an approved vault node
     (auto-handled by _ensure_relay_node_registered, called at mesh-create + startup)."""
+    # Fail-closed: refuse to serialize any payment-credential-bearing order into
+    # a vault blob (privacy isolation — see denylist above).
+    if action in _VAULT_BLOB_DENY_ACTIONS or (
+        isinstance(params, dict) and any(k in _VAULT_BLOB_DENY_PARAM_KEYS for k in params)
+    ):
+        logger.warning("vault blob REFUSED for sensitive action=%s (privacy isolation)", _sanitize_log(action))
+        return
     if not RELAY_PRIVKEY_PEM:
         logger.info("vault blob write skipped: no relay keypair")
         return
@@ -595,7 +682,7 @@ def _admin_order_to_vault_blob(action, params, mesh_id=None):
     if err:
         logger.warning("vault blob append error: %s", err)
     else:
-        logger.info("vault blob written: v%s action=%s (relay-signed)", ver, action)
+        logger.info("vault blob written: v%s action=%s (relay-signed)", ver, _sanitize_log(action))
 
 
 def on_mesh_orders_applied(orders_dict):
@@ -688,6 +775,17 @@ def mesh_apply_order(action, params, orders):
         new_value = orders.add("paywall", params.get("amount", 0), default=0)
         if new_value < 0:
             orders.set("paywall", "0")
+            new_value = 0
+        # Report the number that landed. Until 2026-08-23 this branch fell
+        # through to the bare `{"applied": action}` at the bottom of the
+        # function, so every caller that read `paywall` off the result got
+        # None: the evidence line the Lion is sent after a desktop penalty
+        # said "New paywall: $0" while the charge itself had gone through
+        # correctly, /webhook/desktop-penalty answered `new_paywall: 0`, and
+        # the node-signed /vault/{mesh}/penalty replied `"paywall": null`.
+        # Same failure mode as the auto-accept flag: enforcement right,
+        # record wrong. Every other charging action already returns this.
+        return {"applied": action, "amount": params.get("amount", 0), "paywall": new_value}
     elif action == "clear-paywall":
         orders.set("paywall", "0")
     elif action == "send-message":
@@ -789,7 +887,16 @@ def mesh_apply_order(action, params, orders):
         orders.set("sub_tier", tier)
         orders.set("sub_due", due)
         amounts = {"bronze": 25, "silver": 35, "gold": 50}
-        return {"applied": action, "tier": tier, "due": due, "amount": amounts[tier]}
+        amount = amounts[tier]
+        # Enrollment ONLY — sets tier + due, no paywall bump here. The immediate
+        # first charge is a separate `subscribe-charge` fired by the caller (see
+        # the /subscribe endpoint + signup wizard). This keeps the first charge
+        # identical to every weekly charge and — crucially — propagates to
+        # vault-mode meshes: the old inline bump landed only in the server orders
+        # registry, which vault-mode devices never read, so "subscribed but
+        # not charged" (the eMv8 bug). subscribe-charge rides a vault blob that
+        # the Collar's tested subscribe-charge handler applies on-device.
+        return {"applied": action, "tier": tier, "due": due, "amount": amount}
     elif action == "set-sub-due":
         import time as t_sd
 
@@ -802,22 +909,68 @@ def mesh_apply_order(action, params, orders):
         return {"applied": action, "due": due}
     elif action == "payment-received":
         # IMAP-confirmed payment. Additively stamps total_paid_cents (lifetime
-        # counter, server-authoritative) and optionally zeroes paywall.
+        # counter, server-authoritative) and DEBITS the balance by what was paid.
         # Migrated 2026-04-15 from direct ADB writes so the lifetime total
         # survives device swap.
+        #
+        # Pre-fix — the "paid twice, balance never moved" bug: only a payment
+        # that covered the WHOLE balance touched `paywall`. Anything short of it
+        # bumped the lifetime counter and left the balance exactly where it was,
+        # so a bunny paying $20 a week against $100 watched it sit at $100
+        # forever. A partial branch did exist (focuslock_payment.reduce_paywall)
+        # but it only ran on homelab deployments and wrote straight to the phone
+        # over ADB, which the next vault sync overwrote from this doc anyway.
+        # Vault-mode meshes have no ADB at all, so nothing debited the balance.
+        #
+        # The debit itself (including paywall_original, the principal compound
+        # interest accrues on) lives in focuslock_payment.debit_balance so this
+        # handler and the legacy bridge-only scan path share one implementation.
         try:
             amount_cents = int(params.get("amount_cents", 0) or 0)
         except (ValueError, TypeError):
             amount_cents = 0
+        amount_cents = max(0, amount_cents)
         if amount_cents > 0:
             try:
                 cur = int(orders.get("total_paid_cents", 0) or 0)
             except (ValueError, TypeError):
                 cur = 0
             orders.set("total_paid_cents", cur + amount_cents)
-        if params.get("clear_paywall"):
-            orders.set("paywall", "0")
-        return {"applied": action, "amount_cents": amount_cents, "cleared": bool(params.get("clear_paywall"))}
+
+        new_paywall = debit_balance(orders, amount_cents, clear=bool(params.get("clear_paywall")))
+
+        # Stamp the authoritative result back into `params` — _server_apply_order
+        # hands this same dict to _admin_order_to_vault_blob, so the Collar
+        # applies the number the server computed instead of re-deriving it from
+        # whatever balance that device last managed to sync.
+        cleared = new_paywall <= 0
+        if isinstance(params, dict):
+            params["new_paywall"] = new_paywall
+            params["clear_paywall"] = cleared
+        return {
+            "applied": action,
+            "amount_cents": amount_cents,
+            "paywall": new_paywall,
+            "cleared": cleared,
+        }
+
+    elif action == "set-cage-level":
+        # The Lion loosening the cage. Server-side this is only a relay: the
+        # value lands on the Collar as `focus_lock_cage_level_lion`, and the
+        # Collar clamps it with min() against the wearer's ceiling — which
+        # lives in the Collar's app-private prefs precisely so no order, no
+        # relay and no ADB bridge can raise it.
+        #
+        # So a "tighter" number here is not an error, it is inert. The rule is
+        # enforced where the boundary is stored, not where the request is made.
+        # -1 clears the request and returns the wearer their own ceiling.
+        try:
+            level = int(params.get("level", -1))
+        except (ValueError, TypeError):
+            level = -1
+        level = max(-1, min(2, level))
+        orders.set("cage_level_lion", level)
+        return {"applied": action, "level": level}
     elif action == "gamble-resolved":
         # Server-driven coin flip outcome. Action is a dumb setter — the RNG +
         # math live in the /api/mesh/{id}/gamble endpoint so the handler stays
@@ -876,11 +1029,25 @@ def mesh_apply_order(action, params, orders):
         except (ValueError, TypeError):
             total_owed = 0
         now_ms = int(t_sc.time() * 1000)
-        orders.set("paywall", str(current_pw + amount))
-        orders.set("sub_due", now_ms + 7 * 24 * 3600 * 1000)
-        orders.set("sub_total_owed", str(total_owed + amount))
+        new_pw = current_pw + amount
+        new_due = now_ms + 7 * 24 * 3600 * 1000
+        new_owed = total_owed + amount
+        orders.set("paywall", str(new_pw))
+        orders.set("sub_due", new_due)
+        orders.set("sub_total_owed", str(new_owed))
         orders.set("sub_last_charged", now_ms)
-        return {"applied": action, "tier": tier, "amount": amount, "paywall": current_pw + amount}
+        # Stamp the authoritative result into `params` — _server_apply_order
+        # hands this same dict to _admin_order_to_vault_blob, so the Collar
+        # SETS the number the server computed instead of re-deriving it with a
+        # local `paywall += amount`. Same trick as payment-received above, and
+        # here it also makes the order idempotent: re-applying a replayed or
+        # re-delivered blob lands on the same balance instead of charging twice.
+        if isinstance(params, dict):
+            params["paywall"] = new_pw
+            params["sub_due"] = new_due
+            params["sub_total_owed"] = new_owed
+            params["charged_at"] = now_ms
+        return {"applied": action, "tier": tier, "amount": amount, "paywall": new_pw}
     elif action == "tribute-charge":
         # Daily tribute: accrues while phone unlocked. Fired by
         # check_tributes_and_fines once per 24h unlocked window.
@@ -1046,37 +1213,17 @@ def mesh_apply_order(action, params, orders):
             "paywall": new_pw,
         }
     elif action == "tamper-recorded":
-        # Phone reports device-admin tampering:
-        #   attempt  — onDisableRequested (user tapped deactivate, prompt fired)
-        #   detected — peer app (BunnyTasker ↔ Collar watcher) sees other's admin gone
-        #   removed  — admin actually stripped, big penalty
-        # P2 paywall hardening (2026-04-17): all three apply server-side now.
+        # Phone reports device-admin tampering (attempt/detected/removed).
+        # Costly-exit, not punish-exit (see docs/THREAT-MODEL.md): tampering is
+        # tracked and the Lion is notified for accountability, but it no longer
+        # applies a financial penalty. Disabling admin is friction, not a fine —
+        # the act of leaving is never punished.
         kind = (params.get("kind", "") or "").lower()
         try:
             cur = int(orders.get("lifetime_tamper", 0) or 0)
         except (ValueError, TypeError):
             cur = 0
         orders.set("lifetime_tamper", cur + 1)
-        penalty_by_kind = {
-            "attempt": TAMPER_ATTEMPT_PENALTY,
-            "detected": TAMPER_DETECTED_PENALTY,
-            "removed": TAMPER_REMOVED_PENALTY,
-        }
-        penalty = penalty_by_kind.get(kind, 0)
-        if penalty > 0:
-            try:
-                current_pw = int(orders.get("paywall", "0") or "0")
-            except (ValueError, TypeError):
-                current_pw = 0
-            new_pw = current_pw + penalty
-            orders.set("paywall", str(new_pw))
-            return {
-                "applied": action,
-                "kind": kind,
-                "lifetime_tamper": cur + 1,
-                "penalty": penalty,
-                "paywall": new_pw,
-            }
         return {"applied": action, "kind": kind, "lifetime_tamper": cur + 1}
     elif action == "streak-bonus":
         # 7d or 30d clean-streak reward: subtract credit from paywall
@@ -1294,14 +1441,17 @@ def mesh_apply_order(action, params, orders):
                     del devices[target]
                     with open(reg, "w") as f:
                         json.dump(devices, f)
-                    logger.info("Removed %s from device registry", target)
+                    logger.info("Removed %s from device registry", _sanitize_log(target))
             except Exception as e:
                 logger.debug("Device registry update for %s failed: %s", reg, e)
     elif action == "set-payment-email":
-        orders.set("payment_imap_host", params.get("imap_host", ""))
-        orders.set("payment_imap_user", params.get("user", ""))
-        orders.set("payment_imap_pass", params.get("pass", ""))
-        logger.info("Payment email configured: %s", _sanitize_log(params.get("user", "(empty)")))
+        # SECURITY (privacy isolation): DO NOT write Lion's IMAP creds into the
+        # shared orders doc (it gossips + vault-broadcasts to the Bunny). Lion's
+        # payment creds belong only in the server-only PaymentIdentity, set via
+        # the signed set-payee-identity endpoint (see _apply_initial_mesh_config
+        # and the /set-payee-identity handler). This action is now a no-op in
+        # the orders doc; the _admin_order_to_vault_blob denylist also blocks it.
+        logger.warning("set-payment-email order ignored in orders doc (use set-payee-identity; privacy isolation)")
     return {"applied": action}
 
 
@@ -1324,6 +1474,7 @@ desktop_registry = mesh.DesktopRegistry(persist_path=DESKTOP_REGISTRY_FILE)
 
 from focuslock_payment import (
     check_payment_emails_multi,
+    debit_balance,
     load_iso_codes,
     load_payment_providers,
 )
@@ -1353,7 +1504,9 @@ def _get_desktop_registry(mesh_id: str) -> "mesh.DesktopRegistry":
                 reg = desktop_registry  # legacy operator singleton
             else:
                 os.makedirs(_DESKTOP_REGISTRIES_DIR, exist_ok=True)
-                path = os.path.join(_DESKTOP_REGISTRIES_DIR, f"{mesh_id}.json")
+                path = _mesh_state_path(_DESKTOP_REGISTRIES_DIR, mesh_id)
+                if path is None:
+                    raise ValueError(f"invalid mesh_id: {mesh_id!r}")
                 reg = mesh.DesktopRegistry(persist_path=path)
             _desktop_registries[mesh_id] = reg
         return reg
@@ -1373,6 +1526,544 @@ def _iter_desktop_registries():
         if OPERATOR_MESH_ID and mid == OPERATOR_MESH_ID:
             continue  # already yielded
         yield mid, reg
+
+
+# ── Per-mesh tamper ratchet (server-authoritative) ──
+# report_tamper.py used to keep its lifetime attempt counter in a local file
+# next to the desktop collar's config — on a machine the bunny has root on.
+# Deleting `tamper-attempts.json` walked the escalating penalty back down to
+# the $5 tier-1 floor, which is exactly the circumvention the ratchet exists
+# to price. The authoritative counter now lives here, on the relay, keyed by
+# mesh. The client still sends its local count as a hint (`attempt`) and the
+# server takes the max of the two, so the ratchet is monotone across BOTH
+# stores: wiping the local file can't lower it, and a relay reinstall that
+# loses this directory is healed by the next report from a client that
+# remembers a higher number.
+_TAMPER_TIERS_DIR = os.path.join(os.path.dirname(MESH_ORDERS_FILE), "tamper_tiers")
+_tamper_tiers_lock = threading.Lock()
+
+
+def _tamper_counter_path(mesh_id: str):
+    """Per-mesh counter file, or None if mesh_id isn't path-safe."""
+    return _mesh_state_path(_TAMPER_TIERS_DIR, mesh_id)
+
+
+def _read_tamper_attempts(mesh_id: str) -> int:
+    """Lifetime tamper attempts recorded for this mesh (0 if none/unreadable)."""
+    path = _tamper_counter_path(mesh_id)
+    if not path or not os.path.exists(path):
+        return 0
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return max(0, int(json.load(f).get("lifetime_attempts", 0)))
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        return 0
+
+
+def _bump_tamper_attempts(mesh_id: str, at_least: int = 0) -> int:
+    """Record one more tamper attempt for this mesh and return its number.
+
+    `at_least` is the client's own lifetime count — the returned number is
+    ``max(stored + 1, at_least)`` so a client that remembers more attempts
+    than the relay does fast-forwards the server rather than being reset by
+    it. Never decreases. Best-effort persistence: if the write fails the
+    caller still gets a correctly-tiered number for THIS report (the relay
+    just may not remember it), which is the fail-toward-enforcement side."""
+    with _tamper_tiers_lock:
+        current = _read_tamper_attempts(mesh_id)
+        attempt = max(current + 1, int(at_least or 0))
+        path = _tamper_counter_path(mesh_id)
+        if path:
+            try:
+                os.makedirs(_TAMPER_TIERS_DIR, exist_ok=True)
+                tmp = path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump({"lifetime_attempts": attempt}, f)
+                os.replace(tmp, path)
+            except OSError as e:
+                logger.warning("Failed to persist tamper counter for %s: %s", _sanitize_log(mesh_id), e)
+        return attempt
+
+
+# ── Per-mesh gamble limits (server-authoritative) ──
+# The coin flip halves the balance on heads and doubles it on tails, so a
+# single flip is +25% EV for the Lion. Unlimited flips are a different game:
+# the bunny is not trying to win on average, they are buying lottery tickets
+# against a balance that only has to hit zero once. Enough attempts and
+# variance clears any balance, which turns a Lion-favourable bet into an
+# escape hatch.
+#
+# Both limits therefore live on the relay, not the device: this is the file
+# a bunny with root would otherwise delete. Same reasoning (and shape) as
+# the tamper ratchet above.
+GAMBLE_COOLDOWN_S = int(_cfg.get("gamble", {}).get("cooldown_seconds", 3600))
+GAMBLE_MAX_PER_DAY = int(_cfg.get("gamble", {}).get("max_per_day", 3))
+_GAMBLE_LIMITS_DIR = os.path.join(os.path.dirname(MESH_ORDERS_FILE), "gamble_limits")
+_gamble_limits_lock = threading.Lock()
+
+
+def _gamble_state_path(mesh_id: str):
+    return _mesh_state_path(_GAMBLE_LIMITS_DIR, mesh_id)
+
+
+def _gamble_check_and_record(mesh_id: str) -> dict:
+    """Consume one gamble attempt for this mesh.
+
+    Returns {"ok": True, ...} when the flip may proceed — the attempt is
+    recorded before returning, so a crash mid-flip costs the attempt rather
+    than granting a free one. Returns {"ok": False, "error", "retry_after"}
+    when the cooldown or the daily cap blocks it.
+
+    Fails CLOSED: if the limits file cannot be read the attempt is refused
+    rather than allowed. An unreadable limits file is exactly what deleting
+    it looks like, and the safe reading of "I cannot tell how many times you
+    have already flipped" is "not again right now".
+    """
+    now = int(time.time())
+    with _gamble_limits_lock:
+        path = _gamble_state_path(mesh_id)
+        if not path:
+            return {"ok": False, "error": "invalid mesh_id", "retry_after": 0}
+        state = {"last_ms": 0, "day_start": 0, "day_count": 0}
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                state["last_ms"] = int(raw.get("last_ms", 0) or 0)
+                state["day_start"] = int(raw.get("day_start", 0) or 0)
+                state["day_count"] = int(raw.get("day_count", 0) or 0)
+            except (OSError, json.JSONDecodeError, ValueError, TypeError):
+                logger.warning("gamble limits unreadable for mesh=%s — refusing", _sanitize_log(mesh_id))
+                return {"ok": False, "error": "gamble state unavailable", "retry_after": GAMBLE_COOLDOWN_S}
+
+        elapsed = now - (state["last_ms"] // 1000)
+        if state["last_ms"] and elapsed < GAMBLE_COOLDOWN_S:
+            return {
+                "ok": False,
+                "error": "cooling down",
+                "retry_after": GAMBLE_COOLDOWN_S - elapsed,
+            }
+
+        # Rolling 24h window, anchored on the first flip of the window rather
+        # than on midnight — a calendar day would hand out a fresh allowance
+        # at 00:00 to anyone willing to wait up for it.
+        if not state["day_start"] or (now - state["day_start"]) >= 86400:
+            state["day_start"] = now
+            state["day_count"] = 0
+        if state["day_count"] >= GAMBLE_MAX_PER_DAY:
+            return {
+                "ok": False,
+                "error": f"daily limit reached ({GAMBLE_MAX_PER_DAY})",
+                "retry_after": 86400 - (now - state["day_start"]),
+            }
+
+        state["last_ms"] = now * 1000
+        state["day_count"] += 1
+        try:
+            os.makedirs(_GAMBLE_LIMITS_DIR, exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(state, f)
+            os.replace(tmp, path)
+        except OSError as e:
+            # Cannot record it -> cannot bound it. Refuse.
+            logger.warning("gamble limits unwritable for mesh=%s: %s — refusing", _sanitize_log(mesh_id), e)
+            return {"ok": False, "error": "gamble state unavailable", "retry_after": GAMBLE_COOLDOWN_S}
+        return {
+            "ok": True,
+            "remaining_today": max(0, GAMBLE_MAX_PER_DAY - state["day_count"]),
+            "cooldown_s": GAMBLE_COOLDOWN_S,
+        }
+
+
+def _gamble_status(mesh_id: str) -> dict:
+    """Read-only view for clients: when the next flip is allowed and how many
+    remain in the window. Never consumes an attempt."""
+    now = int(time.time())
+    path = _gamble_state_path(mesh_id)
+    state = {"last_ms": 0, "day_start": 0, "day_count": 0}
+    if path and os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            state["last_ms"] = int(raw.get("last_ms", 0) or 0)
+            state["day_start"] = int(raw.get("day_start", 0) or 0)
+            state["day_count"] = int(raw.get("day_count", 0) or 0)
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            pass
+    if state["day_start"] and (now - state["day_start"]) >= 86400:
+        state["day_count"] = 0
+    cooldown_left = 0
+    if state["last_ms"]:
+        cooldown_left = max(0, GAMBLE_COOLDOWN_S - (now - state["last_ms"] // 1000))
+    return {
+        "gamble_cooldown_s": cooldown_left,
+        "gamble_remaining_today": max(0, GAMBLE_MAX_PER_DAY - state["day_count"]),
+        "gamble_max_per_day": GAMBLE_MAX_PER_DAY,
+    }
+
+
+# ── Per-mesh devotion (voluntary tasks) ──
+# A bunny can ask for work. The 144-task veneration catalogue already ships to
+# both apps; this is the same catalogue drawn from voluntarily rather than
+# imposed, and it is a subscription perk — the tier decides how much of it
+# counts in a week.
+#
+# The reward is deliberately POINTS AND NOT MONEY. A voluntary task that took
+# money off the balance would be a discount the bunny writes themselves, which
+# is the one thing this system must never hand over: they already hold the
+# device, the root and the drive. Points are a record of effort they chose,
+# and the Lion may reward it, convert it, or ignore it. Standing is earnable;
+# a discount is not.
+#
+# The counter and the cap live here for the same reason the tamper ratchet and
+# the gamble budget do: on the relay, in a file the bunny cannot reach. The
+# typing discipline in the app is client-side and a tampered client can always
+# lie about it — which is exactly why what it buys is a rank and not a dollar.
+#
+# WHERE THE UNCERTAINTY COMES FROM (see docs/GAMIFICATION-ETHICS.md)
+# Dopamine encodes reward PREDICTION ERROR, not pleasure: a fully predicted
+# reward produces no phasic response at all. A flat +1 per task is exactly
+# that, and goes inert within weeks. The usual fix is a variable-ratio payout,
+# which is also the slot-machine schedule and the documented driver of
+# compulsion — and this system already has one variable-ratio mechanic wired
+# to real money (the gamble), which is capped for that reason.
+#
+# So the uncertainty is supplied by a PERSON instead of an RNG: points accrue
+# deterministically, and the Lion's `commend` is the unpredictable reward —
+# unpredictable in timing, in wording, and in whether it comes at all. That
+# keeps the prediction error, removes the gambling structure, and routes the
+# payoff through the relationship rather than around it. It also inverts the
+# documented failure mode where the points displace the thing they were meant
+# to serve, because here the payoff IS the thing.
+DEVOTION_WEEKLY_CAP = {"": 0, "bronze": 3, "silver": 7, "gold": -1}  # -1 = uncapped
+DEVOTION_RANKS = [
+    (0, "Unproven"),
+    (10, "Attentive"),
+    (25, "Dutiful"),
+    (50, "Devoted"),
+    (100, "Exemplary"),
+]
+# Endowed progress (Nunes & Drèze 2006): a pre-stamped card was completed by
+# 34% against 19% for an empty one needing identical purchases. Given openly,
+# as a gift, and recorded as real points rather than a padded display — the
+# car-wash effect held with the head start disclosed, and an inflated bar the
+# bunny cannot audit would be a lie told for engagement.
+DEVOTION_OPENING_CREDIT = 2
+# One a month, granted automatically, capped at two held. Streak freeze cut
+# at-risk churn 21% in Duolingo's data and users holding one kept streaks 4.5x
+# longer by day 21 — it is structural, not a courtesy, so it is never sold and
+# never a reward.
+DEVOTION_FREEZE_CAP = 2
+_DEVOTION_DIR = os.path.join(os.path.dirname(MESH_ORDERS_FILE), "devotion")
+_devotion_lock = threading.Lock()
+
+_WEEK_S = 604800
+
+
+def _devotion_path(mesh_id: str):
+    return _mesh_state_path(_DEVOTION_DIR, mesh_id)
+
+
+def devotion_rank(points: int) -> str:
+    name = DEVOTION_RANKS[0][1]
+    for threshold, label in DEVOTION_RANKS:
+        if points >= threshold:
+            name = label
+    return name
+
+
+def devotion_next_rank(points: int):
+    """(label, points_needed) for the next rung, or (None, 0) at the top.
+
+    Goal gradient: people accelerate as a goal comes into view, so the next
+    rung and the distance to it are worth more than the current total."""
+    for threshold, label in DEVOTION_RANKS:
+        if points < threshold:
+            return label, threshold - points
+    return None, 0
+
+
+def _devotion_blank() -> dict:
+    return {
+        "points": 0,
+        "week_start": 0,
+        "week_count": 0,
+        "last_ms": 0,
+        "claims": [],
+        "seq": 0,
+        "streak": 0,
+        "best_streak": 0,
+        "streak_week": 0,
+        "broke_from": 0,
+        "freezes": 0,
+        "freeze_month": "",
+        "endowed": False,
+    }
+
+
+def _devotion_read(mesh_id: str) -> dict:
+    state = _devotion_blank()
+    path = _devotion_path(mesh_id)
+    if not path or not os.path.exists(path):
+        return state
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        logger.warning("devotion state unreadable for mesh=%s", _sanitize_log(mesh_id))
+        return state
+    for key, cast in (
+        ("points", int),
+        ("week_start", int),
+        ("week_count", int),
+        ("last_ms", int),
+        ("seq", int),
+        ("streak", int),
+        ("best_streak", int),
+        ("streak_week", int),
+        ("broke_from", int),
+        ("freezes", int),
+    ):
+        try:
+            state[key] = max(0, cast(raw.get(key, 0) or 0))
+        except (ValueError, TypeError):
+            pass
+    state["freeze_month"] = str(raw.get("freeze_month", "") or "")
+    state["endowed"] = bool(raw.get("endowed", False))
+    claims = raw.get("claims", []) or []
+    if isinstance(claims, list):
+        clean = []
+        for c in claims[-20:]:
+            # Pre-commend state stored "task_id@ts" strings. Keep them readable
+            # rather than dropping the record of work already done.
+            if isinstance(c, str):
+                task_id, _, ts = c.partition("@")
+                clean.append({"id": "", "task_id": task_id, "ts": int(ts or 0), "commended": False, "note": ""})
+            elif isinstance(c, dict):
+                clean.append(
+                    {
+                        "id": str(c.get("id", "") or ""),
+                        "task_id": str(c.get("task_id", "") or ""),
+                        "ts": int(c.get("ts", 0) or 0),
+                        "commended": bool(c.get("commended", False)),
+                        "note": str(c.get("note", "") or ""),
+                    }
+                )
+        state["claims"] = clean
+    elif isinstance(raw.get("recent"), list):  # oldest layout
+        state["claims"] = []
+    return state
+
+
+def _devotion_write(mesh_id: str, state: dict) -> bool:
+    path = _devotion_path(mesh_id)
+    if not path:
+        return False
+    try:
+        os.makedirs(_DEVOTION_DIR, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+        os.replace(tmp, path)
+        return True
+    except OSError as e:
+        logger.warning("devotion unwritable for mesh=%s: %s", _sanitize_log(mesh_id), e)
+        return False
+
+
+def _devotion_grant_monthly_freeze(state: dict, now: int) -> None:
+    """One freeze a month, capped. Mutates in place; caller persists."""
+    month = time.strftime("%Y%m", time.gmtime(now))
+    if state["freeze_month"] == month:
+        return
+    # First contact gets the full allowance rather than one: the evidence for
+    # freezes is strongest exactly at the start, before the habit has formed.
+    grant = DEVOTION_FREEZE_CAP if not state["freeze_month"] else 1
+    state["freezes"] = min(DEVOTION_FREEZE_CAP, state["freezes"] + grant)
+    state["freeze_month"] = month
+
+
+def _devotion_view(state: dict, tier: str) -> dict:
+    now = int(time.time())
+    week_count = state["week_count"]
+    if state["week_start"] and (now - state["week_start"]) >= _WEEK_S:
+        week_count = 0
+    cap = DEVOTION_WEEKLY_CAP.get((tier or "").lower(), 0)
+    nxt, need = devotion_next_rank(state["points"])
+
+    # A streak whose week has already lapsed is shown as at risk rather than
+    # silently still standing — the honest number, and the one worth acting on.
+    this_week = now // _WEEK_S
+    at_risk = bool(state["streak"] and state["streak_week"] and this_week > state["streak_week"])
+    return {
+        "devotion_points": state["points"],
+        "devotion_rank": devotion_rank(state["points"]),
+        "devotion_next_rank": nxt or "",
+        "devotion_to_next": need,
+        "devotion_week_used": week_count,
+        "devotion_week_cap": cap,
+        "devotion_available": cap != 0 and (cap < 0 or week_count < cap),
+        "devotion_streak": state["streak"],
+        "devotion_best_streak": state["best_streak"],
+        "devotion_streak_at_risk": at_risk,
+        "devotion_broke_from": state["broke_from"],
+        "devotion_freezes": state["freezes"],
+        "devotion_claims": list(reversed(state["claims"]))[:10],
+    }
+
+
+def devotion_status(mesh_id: str, tier: str = "") -> dict:
+    """Read-only view. Never records a claim.
+
+    It does grant the monthly freeze if one is due, because a freeze that only
+    materialises when you claim is no use to the week you missed."""
+    with _devotion_lock:
+        state = _devotion_read(mesh_id)
+        before = (state["freezes"], state["freeze_month"])
+        _devotion_grant_monthly_freeze(state, int(time.time()))
+        if (state["freezes"], state["freeze_month"]) != before:
+            _devotion_write(mesh_id, state)
+        return _devotion_view(state, tier)
+
+
+def devotion_claim(mesh_id: str, tier: str, task_id: str) -> dict:
+    """Record one voluntary task. Returns the post-claim status, or an error.
+
+    Tier gates it: without a subscription the perk simply is not there, and
+    each tier buys a bigger weekly allowance. The window is rolling from the
+    first claim of the week rather than calendar-anchored, same as the gamble
+    budget — a calendar week hands out a fresh allowance at a predictable
+    moment, which turns "how much did you choose to do" into "who stayed up".
+
+    The STREAK is weekly, and deliberately not daily. A daily streak here would
+    be broken by the Lion's own ordinary authority — an imposed lock, a fine,
+    a confiscated evening — so the bunny would lose accumulated standing
+    through no choice of theirs. Loss aversion only motivates while the loss is
+    yours to prevent; a streak someone else can take teaches helplessness
+    instead. Weekly also matches the allowance the tier already grants.
+    """
+    tier = (tier or "").lower()
+    cap = DEVOTION_WEEKLY_CAP.get(tier, 0)
+    if cap == 0:
+        return {"error": "devotion is a subscriber perk", "tier": tier}
+    now = int(time.time())
+    with _devotion_lock:
+        state = _devotion_read(mesh_id)
+        _devotion_grant_monthly_freeze(state, now)
+
+        if not state["week_start"] or (now - state["week_start"]) >= _WEEK_S:
+            state["week_start"] = now
+            state["week_count"] = 0
+        if cap > 0 and state["week_count"] >= cap:
+            return {
+                "error": f"weekly limit reached ({cap})",
+                "retry_after": _WEEK_S - (now - state["week_start"]),
+            }
+
+        # Opening credit, given openly and only once.
+        if not state["endowed"]:
+            state["endowed"] = True
+            state["points"] += DEVOTION_OPENING_CREDIT
+
+        state["week_count"] += 1
+        state["points"] += 1
+        state["last_ms"] = now * 1000
+
+        # ── Weekly streak ──
+        this_week = now // _WEEK_S
+        last_week = state["streak_week"]
+        broke = 0
+        if not last_week or state["streak"] == 0:
+            state["streak"] = 1
+        elif this_week == last_week:
+            pass  # already counted this week
+        elif this_week == last_week + 1:
+            state["streak"] += 1
+        elif this_week == last_week + 2 and state["freezes"] > 0:
+            # Exactly one week missed, and a freeze to cover it.
+            state["freezes"] -= 1
+            state["streak"] += 1
+        else:
+            # Broken. Remember what it was: a bare 0 after a long run is a quit
+            # moment rather than a restart, so the app is given the number it
+            # needs to say "your 6-week run ended" instead of showing nothing.
+            broke = state["streak"]
+            state["broke_from"] = broke
+            state["streak"] = 1
+        state["streak_week"] = this_week
+        state["best_streak"] = max(state["best_streak"], state["streak"])
+
+        state["seq"] += 1
+        claim_id = f"c{state['seq']}"
+        state["claims"] = (
+            state["claims"] + [{"id": claim_id, "task_id": task_id, "ts": now, "commended": False, "note": ""}]
+        )[-20:]
+
+        if not _devotion_write(mesh_id, state):
+            # The gamble budget refuses on an unwritable store because an
+            # unbounded flip is an escape hatch. Here the risk points the other
+            # way: the harm is a claim that silently does not count, which is
+            # effort the Lion never sees. So report the failure plainly rather
+            # than returning a success the record does not back.
+            return {"error": "could not record devotion"}
+
+        view = _devotion_view(state, tier)
+
+    logger.info(
+        "devotion claimed: mesh=%s task=%s points=%s week=%s/%s streak=%s%s",
+        _sanitize_log(mesh_id),
+        _sanitize_log(task_id),
+        state["points"],
+        state["week_count"],
+        cap if cap > 0 else "∞",
+        state["streak"],
+        f" (broke a run of {broke})" if broke else "",
+    )
+    view["ok"] = True
+    view["claim_id"] = claim_id
+    return view
+
+
+def devotion_commend(mesh_id: str, claim_id: str, note: str = "") -> dict:
+    """The Lion acknowledges one claim. This is the actual reward.
+
+    Points accrue deterministically and therefore stop meaning anything on
+    their own; a fully predicted reward produces no prediction error, which is
+    what dopamine actually encodes. The variable term in this system is meant
+    to be a person, not an RNG: whether a commend comes, when, and what it says
+    is the Lion's to decide, which keeps the uncertainty that makes the loop
+    live while keeping the slot machine out of it.
+
+    Lion-only, enforced by the caller's signature check. Idempotent-ish: a
+    second commend on the same claim updates the note rather than erroring, so
+    the Lion can amend what They said.
+    """
+    note = (note or "").strip()[:200]
+    with _devotion_lock:
+        state = _devotion_read(mesh_id)
+        target = None
+        for c in state["claims"]:
+            if c.get("id") and c["id"] == claim_id:
+                target = c
+                break
+        if target is None:
+            return {"error": "no such claim"}
+        already = target["commended"]
+        target["commended"] = True
+        target["note"] = note
+        if not _devotion_write(mesh_id, state):
+            return {"error": "could not record commendation"}
+        view = _devotion_view(state, "")
+    logger.info(
+        "devotion commended: mesh=%s claim=%s%s",
+        _sanitize_log(mesh_id),
+        _sanitize_log(claim_id),
+        " (amended)" if already else "",
+    )
+    view["ok"] = True
+    view["amended"] = already
+    return view
 
 
 # ── Per-mesh payment ledger ──
@@ -1401,7 +2092,9 @@ def _get_payment_ledger(mesh_id: str) -> "mesh.PaymentLedger":
                 path = _LEDGER_PATH  # legacy operator ledger
             else:
                 os.makedirs(_LEDGERS_DIR, exist_ok=True)
-                path = os.path.join(_LEDGERS_DIR, f"{mesh_id}.json")
+                path = _mesh_state_path(_LEDGERS_DIR, mesh_id)
+                if path is None:
+                    raise ValueError(f"invalid mesh_id: {mesh_id!r}")
             ledger = mesh.PaymentLedger(persist_path=path)
             _payment_ledgers[mesh_id] = ledger
         return ledger
@@ -1411,6 +2104,143 @@ def _get_payment_ledger(mesh_id: str) -> "mesh.PaymentLedger":
 # ledger (or an anonymous singleton before OPERATOR_MESH_ID is populated).
 # Prefer _get_payment_ledger(mesh_id) everywhere else.
 payment_ledger = mesh.PaymentLedger(persist_path=_LEDGER_PATH)
+
+
+# ── Per-mesh payment identity (server-only) ──
+# Holds Lion's payee_email + IMAP creds AND Bunny's payer_allow list. Kept
+# off the vault on purpose — the vault is symmetric E2E across roles, so
+# anything written there is readable by the OTHER side's apps. Each half
+# is written by its respective signed endpoint (set-payee-identity,
+# set-payer-identity) and never echoed back to the wrong app.
+_IDENTITIES_DIR = os.path.join(os.path.dirname(MESH_ORDERS_FILE), "payment_identities")
+_payment_identities: dict = {}
+_payment_identities_lock = threading.Lock()
+
+
+def _get_payment_identity(mesh_id: str) -> "mesh.PaymentIdentity":
+    with _payment_identities_lock:
+        ident = _payment_identities.get(mesh_id)
+        if ident is None:
+            os.makedirs(_IDENTITIES_DIR, exist_ok=True)
+            path = _mesh_state_path(_IDENTITIES_DIR, mesh_id)
+            if path is None:
+                raise ValueError(f"invalid mesh_id: {mesh_id!r}")
+            ident = mesh.PaymentIdentity(persist_path=path)
+            _payment_identities[mesh_id] = ident
+        return ident
+
+
+def _migrate_vault_payment_imap():
+    """Move legacy `payment_imap_*` vault fields into the server-only
+    PaymentIdentity file. Pre-fix, Lion's IMAP creds (host/user/pass) lived
+    in the shared mesh-orders vault — which both apps decrypt — so Bunny's
+    Collar/Tasker could read Lion's email simply by inspecting the vault
+    blob. The post-fix path stores creds in payment_identities/{mid}.json,
+    which lives only on the server.
+
+    Idempotent: a mesh with payee_email already populated is skipped, so
+    this is safe to call on every startup. Migration runs after
+    init_mesh_from_adb() so OPERATOR_MESH_ID has been provisioned.
+    """
+    migrated = 0
+    for mid in list(_orders_registry.docs.keys()):
+        orders = _orders_registry.get(mid)
+        if orders is None:
+            continue
+        ident = _get_payment_identity(mid)
+        if ident.payee_email:
+            continue
+        # payment_imap_* are no longer in ORDER_KEYS (privacy fix), so they are
+        # dropped on load and orders.get() returns "". Recover any orphaned
+        # creds straight from the RAW persisted orders JSON, move them to the
+        # server-only PaymentIdentity, then save() the doc to purge them from
+        # disk (to_dict only serializes ORDER_KEYS, so the leaked fields vanish).
+        vh = vu = vp = ""
+        try:
+            if orders.persist_path and os.path.exists(orders.persist_path):
+                with open(orders.persist_path, "r") as f:
+                    raw = json.load(f).get("orders", {})
+                vh = str(raw.get("payment_imap_host", "") or "").strip()
+                vu = str(raw.get("payment_imap_user", "") or "").strip()
+                vp = str(raw.get("payment_imap_pass", "") or "")
+        except Exception as e:
+            logger.warning("migration: raw read failed for mesh=%s err=%s", _sanitize_log(mid), e)
+        if not (vh and vu and vp):
+            continue
+        ident.set_payee(vu, vh, vp)
+        try:
+            orders.save()  # rewrites the file via to_dict() → leaked fields purged
+        except Exception as e:
+            logger.warning(
+                "migration: purging vault payment_imap_* failed for mesh=%s err=%s",
+                _sanitize_log(mid),
+                e,
+            )
+        migrated += 1
+        logger.warning(
+            "migrated payment_imap_* off vault for mesh=%s (email no longer readable by other-side apps)",
+            _sanitize_log(mid),
+        )
+    if migrated:
+        logger.warning("payment_imap migration: %d mesh(es) updated", migrated)
+
+
+def _apply_payment_reversal(mesh_id: str, source: str) -> dict:
+    """Reverse a previously-credited payment for one mesh.
+
+    Factored out of the /admin/reverse-payment handler so unit tests can
+    exercise the logic without spinning up an HTTPServer. Returns a dict;
+    callers strip `_status` (the desired HTTP status) before responding.
+
+    Behaviour:
+      - 404 if no ledger entry matches `source`
+      - 409 if a reversal for that source already exists (idempotent)
+      - 200 with {ok, reversed_amount, new_total_paid_cents} on success
+    """
+    ledger = _get_payment_ledger(mesh_id)
+    orig = ledger.find_by_source(source)
+    if orig is None:
+        return {"_status": 404, "error": "no ledger entry with that source"}
+    if ledger.find_by_source("rev:" + source) is not None:
+        return {"_status": 409, "error": "already reversed"}
+    orig_amount = float(orig.get("amount", 0) or 0)
+    add_result = ledger.add_entry(
+        entry_type="reversal",
+        amount=-orig_amount,
+        source="rev:" + source,
+        description="reversal of " + str(orig.get("description", "")),
+    )
+    if add_result.get("error"):
+        return {"_status": 500, "error": "ledger append failed: " + str(add_result["error"])}
+
+    new_cents = 0
+    orders = _orders_registry.get(mesh_id)
+    if orders is not None:
+        try:
+            cur_cents = int(orders.get("total_paid_cents", 0) or 0)
+        except (ValueError, TypeError):
+            cur_cents = 0
+        new_cents = max(0, cur_cents - round(orig_amount * 100))
+        orders.set("total_paid_cents", new_cents)
+        if hasattr(orders, "bump_version"):
+            try:
+                orders.bump_version()
+            except Exception:
+                pass
+
+    logger.warning(
+        "payment reversed: mesh=%s source=%s amount=$%.2f new_total_paid=$%.2f",
+        _sanitize_log(mesh_id),
+        _sanitize_log(source),
+        orig_amount,
+        new_cents / 100.0,
+    )
+    return {
+        "_status": 200,
+        "ok": True,
+        "reversed_amount": orig_amount,
+        "new_total_paid_cents": new_cents,
+    }
 
 
 # ── Per-mesh IMAP scanner contexts (audit MEDIUM #5, 2026-04-26) ──
@@ -1437,6 +2267,7 @@ def _iter_imap_scan_contexts():
                 "mesh_id": OPERATOR_MESH_ID,
                 "mesh_orders": op_orders,
                 "payment_ledger": _get_payment_ledger(OPERATOR_MESH_ID),
+                "payment_identity": _get_payment_identity(OPERATOR_MESH_ID),
                 "apply_fn": (lambda action, params, _mid=OPERATOR_MESH_ID: _server_apply_order(_mid, action, params)),
                 "static_fallback": (IMAP_HOST, MAIL_USER, MAIL_PASS),
             }
@@ -1451,6 +2282,7 @@ def _iter_imap_scan_contexts():
             "mesh_id": mid,
             "mesh_orders": orders,
             "payment_ledger": _get_payment_ledger(mid),
+            "payment_identity": _get_payment_identity(mid),
             "apply_fn": (lambda action, params, _mid=mid: _server_apply_order(_mid, action, params)),
             "static_fallback": None,
         }
@@ -1470,7 +2302,9 @@ def _get_message_store(mesh_id: str) -> "mesh.MessageStore":
     with _message_stores_lock:
         store = _message_stores.get(mesh_id)
         if store is None:
-            path = os.path.join(_MESSAGES_DIR, f"{mesh_id}.json")
+            path = _mesh_state_path(_MESSAGES_DIR, mesh_id)
+            if path is None:
+                raise ValueError(f"invalid mesh_id: {mesh_id!r}")
             store = mesh.MessageStore(persist_path=path)
             _message_stores[mesh_id] = store
         return store
@@ -1496,14 +2330,25 @@ def enforce_jail():
 from focuslock_evidence import send_evidence as _send_evidence_impl
 
 
-def send_evidence(text, evidence_type="compliment"):
-    """Convenience wrapper capturing module-level config."""
+def send_evidence(text, evidence_type="compliment", mesh_id=None):
+    """Convenience wrapper capturing module-level config. When mesh_id is given,
+    deliver to that mesh's Lion evidence email (server-only PaymentIdentity, set
+    in onboarding), falling back to the operator-wide PARTNER_EMAIL. The per-mesh
+    address is the Lion's own email and is never exposed to the Bunny's apps."""
+    recipient = PARTNER_EMAIL
+    if mesh_id:
+        try:
+            ev = (_get_payment_identity(mesh_id).evidence_email or "").strip()
+            if ev:
+                recipient = ev
+        except Exception:
+            pass
     _send_evidence_impl(
         text,
         evidence_type,
         mesh_orders=mesh_orders,
         adb=adb,
-        partner_email=PARTNER_EMAIL,
+        partner_email=recipient,
         smtp_host=SMTP_HOST,
         mail_user=MAIL_USER,
         mail_pass=MAIL_PASS,
@@ -1563,7 +2408,11 @@ def check_desktop_heartbeats():
                                 _sanitize_log(hostname),
                                 silence_days,
                             )
-                            applied = _server_apply_order(mid, "add-paywall", {"amount": 50})
+                            applied = _server_apply_order(
+                                mid,
+                                "add-paywall",
+                                {"amount": 50, "reason": f"Silent for {silence_days} days"},
+                            )
                             if applied is None and mid == OPERATOR_MESH_ID:
                                 # Legacy ADB fallback for operator's pre-mesh-registry phones.
                                 pw_str = adb.get("focus_lock_paywall")
@@ -1589,6 +2438,69 @@ def check_desktop_heartbeats():
 # ── Subscription auto-charge (server-side, per-mesh) ──
 
 
+# ── Balance history ───────────────────────────────────────────────────
+#
+# Every charge used to move the balance and leave no trace. The ledger held
+# payments and reversals only, so both apps' "payment history" was a one-sided
+# account: the bunny watched what they owed climb with nothing saying which
+# fine, tribute, escape or manual charge did it, and the Lion had the same
+# blind spot in reverse.
+#
+# _server_apply_order is the single choke point — mesh_apply_order has exactly
+# one caller — so recording here catches every action that moves money,
+# including ones added later that nobody remembers to instrument.
+
+# Actions that write their own ledger entry. Recording them again here would
+# double-count the same movement.
+_SELF_LEDGERED_ACTIONS = {"payment-received"}
+
+# What the Lion and the bunny should read. Falls back to the action name, so an
+# unmapped action still records a legible row instead of vanishing.
+_LEDGER_DESCRIPTIONS = {
+    "add-paywall": "Added by the Lion",
+    "clear-paywall": "Balance cleared",
+    "tribute-charge": "Daily tribute",
+    "fine-charge": "Recurring fine",
+    "escape-penalty": "Escape attempt",
+    "app-launch-penalty": "Opened a blocked app while locked",
+    "sit-boy-recorded": "SMS sit-boy",
+    "compound-interest-tick": "Compound interest",
+    "subscribe": "Subscription",
+    "unsubscribe": "Subscription ended",
+}
+
+
+def _paywall_of(orders) -> float:
+    try:
+        return float(orders.get("paywall", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _record_balance_change(mesh_id, action, params, before, after):
+    """Append a ledger row for a balance movement, if there was one."""
+    delta = round(after - before, 2)
+    if not delta:
+        return
+    reason = ""
+    if isinstance(params, dict):
+        reason = str(params.get("reason", "") or "").strip()
+    description = reason or _LEDGER_DESCRIPTIONS.get(action, action.replace("-", " ").capitalize())
+    try:
+        _get_payment_ledger(mesh_id).add_entry(
+            entry_type="charge" if delta > 0 else "credit",
+            amount=abs(delta),
+            source="",  # no dedup key: every charge is its own event
+            description=description,
+            balance_after=after,
+        )
+    except Exception:
+        # Never let bookkeeping fail the order it is describing: the charge
+        # itself has already landed, and a missing history row is a smaller
+        # harm than an enforcement action that reports failure.
+        logger.exception("ledger: could not record %s on %s", _sanitize_log(action), _sanitize_log(mesh_id))
+
+
 def _server_apply_order(mesh_id, action, params):
     """Apply an order server-side and propagate via vault blob.
     Analogous to the /admin/order path but invoked from background threads.
@@ -1596,23 +2508,28 @@ def _server_apply_order(mesh_id, action, params):
     orders = _orders_registry.get(mesh_id)
     if orders is None:
         return None
+    balance_before = _paywall_of(orders)
     try:
         result = mesh_apply_order(action, params, orders)
         orders.bump_version()
     except Exception:
-        logger.exception("server apply %s on %s failed", action, mesh_id)
+        logger.exception("server apply %s on %s failed", _sanitize_log(action), _sanitize_log(mesh_id))
         return None
+    if action not in _SELF_LEDGERED_ACTIONS:
+        _record_balance_change(mesh_id, action, params, balance_before, _paywall_of(orders))
     try:
         _admin_order_to_vault_blob(action, params, mesh_id)
     except Exception as e:
-        logger.warning("server apply %s on %s: vault blob write failed: %s", action, mesh_id, e)
+        logger.warning(
+            "server apply %s on %s: vault blob write failed: %s", _sanitize_log(action), _sanitize_log(mesh_id), e
+        )
     # Operator-mesh gossip to peers so plaintext consumers (desktop collars
     # pre-vault_only) also see the new state. No-op for non-operator meshes.
     if mesh_id == OPERATOR_MESH_ID:
         try:
             mesh.push_to_peers(MESH_NODE_ID, mesh_orders, mesh_peers)
         except Exception as e:
-            logger.warning("server apply %s: gossip push failed: %s", action, e)
+            logger.warning("server apply %s: gossip push failed: %s", _sanitize_log(action), e)
     if ntfy_fn:
         try:
             ntfy_fn(orders.version, mesh_id)
@@ -1628,7 +2545,7 @@ def _apply_initial_mesh_config(mesh_id, cfg):
     body so the wizard can confirm what stuck).
 
     Recognized keys:
-      imap_host + imap_user + imap_pass  → set-payment-email
+      imap_host + imap_user + imap_pass  → set-payee-identity
       tribute_amount (>0)                 → set-tribute
       sub_tier ('bronze'|'silver'|'gold') → subscribe (default due now+7d)
       bedtime_lock_hour + bedtime_unlock_hour → set-bedtime
@@ -1638,20 +2555,31 @@ def _apply_initial_mesh_config(mesh_id, cfg):
     if not isinstance(cfg, dict):
         return applied
 
-    # Payment email
+    # Payment email — route to the SERVER-ONLY PaymentIdentity (privacy
+    # isolation). NEVER via set-payment-email/_server_apply_order: that would
+    # write Lion's IMAP creds into the shared orders doc + an encrypted vault
+    # blob the Bunny can decrypt. set_payee() writes payment_identities/{mid}.json
+    # only — identical to the in-app /set-payee-identity endpoint.
     imap_host = (cfg.get("imap_host") or "").strip()
     imap_user = (cfg.get("imap_user") or "").strip()
     imap_pass = cfg.get("imap_pass") or ""
     if imap_host and imap_user and imap_pass:
         try:
-            _server_apply_order(
-                mesh_id,
-                "set-payment-email",
-                {"imap_host": imap_host, "user": imap_user, "pass": imap_pass},
-            )
-            applied.append("set-payment-email")
+            _get_payment_identity(mesh_id).set_payee(imap_user, imap_host, imap_pass)
+            applied.append("set-payee-identity")
         except Exception:
-            logger.exception("initial_config: set-payment-email failed")
+            logger.exception("initial_config: set-payee-identity failed")
+
+    # Evidence/report email — Lion's own; server-only PaymentIdentity (never
+    # vault). Set at onboarding so we don't need the controller registered as a
+    # vault node yet (unlike the signed set-evidence-email endpoint).
+    evidence_email = (cfg.get("evidence_email") or "").strip()
+    if evidence_email:
+        try:
+            _get_payment_identity(mesh_id).set_evidence_email(evidence_email)
+            applied.append("set-evidence-email")
+        except Exception:
+            logger.exception("initial_config: set-evidence-email failed")
 
     # Daily tribute
     try:
@@ -1670,6 +2598,9 @@ def _apply_initial_mesh_config(mesh_id, cfg):
     if sub_tier in ("bronze", "silver", "gold"):
         try:
             _server_apply_order(mesh_id, "subscribe", {"tier": sub_tier})
+            # Immediate first charge (no grace period) — same order the weekly
+            # scheduler and the /subscribe endpoint use.
+            _server_apply_order(mesh_id, "subscribe-charge", {"tier": sub_tier})
             applied.append("subscribe")
         except Exception:
             logger.exception("initial_config: subscribe failed")
@@ -2140,6 +3071,12 @@ class MeshAccountStore:
     # Per-mesh quotas
     DEFAULT_MAX_BLOBS_PER_DAY = 5000
     DEFAULT_MAX_TOTAL_BYTES_MB = 100
+    # Auto-accept onboarding window (seconds). Auto-accept is a time-boxed
+    # window, never a standing flag: the Lion opens it to enrol devices and it
+    # shuts itself, so "forgot to turn it back off" stops being a permanent
+    # open door for anyone who learns the mesh_id. Re-tapping the toggle
+    # re-opens a fresh window.
+    AUTO_ACCEPT_WINDOW_S = 1800  # 30 minutes
 
     def __init__(self, persist_dir=None):
         if persist_dir is None:
@@ -2166,7 +3103,10 @@ class MeshAccountStore:
         account = self.meshes.get(mesh_id)
         if not account:
             return
-        path = os.path.join(self.persist_dir, f"{mesh_id}.json")
+        path = _mesh_state_path(self.persist_dir, mesh_id)
+        if path is None:
+            logger.warning("Refusing to persist mesh account under unsafe id")
+            return
         tmp = path + ".tmp"
         with open(tmp, "w") as f:
             json.dump(account, f, indent=2)
@@ -2186,7 +3126,7 @@ class MeshAccountStore:
         ts.append(time.time())
         self._create_rate[client_ip] = ts
 
-    def create(self, lion_pubkey, pin="", client_ip=""):
+    def create(self, lion_pubkey, pin="", client_ip="", account_email="", account_pass_hash=""):
         with self.lock:
             if client_ip:
                 self._record_create(client_ip)
@@ -2199,6 +3139,11 @@ class MeshAccountStore:
                 "mesh_id": mesh_id,
                 "lion_pubkey": lion_pubkey,
                 "auth_token": auth_token,
+                # Lion's account email + (optional) password hash — server-only
+                # contact/recovery for THIS mesh. The Lion's own email; never
+                # exposed to the Bunny's apps (account record is not vault/gossip).
+                "account_email": (account_email or "").strip(),
+                "account_pass_hash": account_pass_hash or "",
                 "invite_code": invite_code,
                 "invite_expires_at": int(time.time()) + self.INVITE_TTL_S,
                 "invite_uses": 0,
@@ -2206,6 +3151,16 @@ class MeshAccountStore:
                 "created_at": int(time.time()),
                 "nodes": {},
                 "vault_only": False,
+                # Open for the first AUTO_ACCEPT_WINDOW_S after signup — long
+                # enough to enrol the devices you're holding while you create
+                # the mesh, then it shuts itself. Previously this was a sticky
+                # boolean, which left every mesh permanently accepting any
+                # device that learned its mesh_id (that device becomes a blob
+                # recipient — a standing READ leak of every future Lion order).
+                # The Lion re-opens a window from Vault Nodes when adding a
+                # device later; expired means new devices queue for approval.
+                "auto_accept_nodes": True,
+                "auto_accept_until": int(time.time()) + self.AUTO_ACCEPT_WINDOW_S,
                 "max_blobs_per_day": self.DEFAULT_MAX_BLOBS_PER_DAY,
                 "max_total_bytes_mb": self.DEFAULT_MAX_TOTAL_BYTES_MB,
             }
@@ -2213,7 +3168,7 @@ class MeshAccountStore:
             self._save(mesh_id)
             return account
 
-    def join(self, invite_code, node_id, node_type, bunny_pubkey=""):
+    def join(self, invite_code, node_id, node_type, bunny_pubkey="", display_name=""):
         with self.lock:
             account = self._find_by_invite(invite_code)
             if not account:
@@ -2229,10 +3184,18 @@ class MeshAccountStore:
             # Track reuse count for operator diagnostics + future rate-limit
             # hooks. Not enforced as a cap today.
             account["invite_uses"] = int(account.get("invite_uses", 0)) + 1
+            # Preserve prior values this join omits (e.g. a re-sync after the bunny
+            # already named themselves). CRUCIALLY this now also preserves the
+            # bunny_pubkey: Bunny Tasker sends "" when PairingManager.getPublicKey()
+            # transiently returns null, and blanking the stored key would silently
+            # 403 every bunny-signed endpoint (subscribe, deadline-task-clear,
+            # message send/ack) with no way for the bunny to notice or recover.
+            prior = account["nodes"].get(node_id, {})
             account["nodes"][node_id] = {
                 "type": node_type,
                 "joined_at": int(time.time()),
-                "bunny_pubkey": bunny_pubkey,
+                "bunny_pubkey": bunny_pubkey or prior.get("bunny_pubkey", ""),
+                "display_name": display_name or prior.get("display_name", ""),
             }
             self._save(account["mesh_id"])
             return account, None
@@ -2274,6 +3237,27 @@ class MeshAccountStore:
             account["vault_only"] = bool(value)
             self._save(mesh_id)
             return True
+
+    def get_ntfy_topic(self, mesh_id):
+        """This mesh's stored wake-up topic, or "" if it has never had one."""
+        account = self.meshes.get(mesh_id)
+        return (account or {}).get("ntfy_topic", "") or ""
+
+    def rotate_ntfy_topic(self, mesh_id):
+        """Mint a fresh, unguessable wake-up topic for this mesh.
+
+        Returns the new topic, or "" if the mesh does not exist. Safe to call
+        repeatedly; each call invalidates the previous topic, which is the
+        point — a topic that leaked is only dead once nothing publishes to it.
+        """
+        with self.lock:
+            account = self.meshes.get(mesh_id)
+            if not account:
+                return ""
+            topic = "focuslock-" + secrets.token_urlsafe(18)
+            account["ntfy_topic"] = topic
+            self._save(mesh_id)
+            return topic
 
     def _find_by_invite(self, invite_code):
         code = invite_code.upper().strip()
@@ -2406,9 +3390,7 @@ class VaultStore:
         self.lock = threading.Lock()
 
     def _mesh_dir(self, mesh_id):
-        if not _safe_mesh_id(mesh_id):
-            return None
-        return os.path.join(self.base_dir, mesh_id)
+        return _mesh_state_path(self.base_dir, mesh_id, "")
 
     def _ensure_mesh(self, mesh_id):
         d = self._mesh_dir(mesh_id)
@@ -2581,6 +3563,30 @@ class VaultStore:
             nodes.append(node_entry)
             return self._write_json(mesh_id, "nodes.json", nodes)
 
+    def confirm_node(self, mesh_id, node_id, by="lion"):
+        """Lion vouches for an auto-accepted node. Membership alone (which the
+        auto-accept window grants to anything holding the mesh_id) is read-only
+        trust; confirmation is what unlocks the plaintext write channels — see
+        the state-mirror gate. Returns True if a row was found and marked.
+
+        `by` records who vouched: "lion" for a signed confirm-node, or
+        "grandfathered" for the one-shot migration that swept in devices
+        enrolled before the gate existed. Keeping them distinguishable means a
+        Lion auditing the roster can tell a deliberate confirmation from an
+        inherited one."""
+        with self.lock:
+            nodes = self.get_nodes(mesh_id)
+            found = False
+            for n in nodes:
+                if n.get("node_id") == node_id:
+                    n["lion_confirmed"] = True
+                    n["confirmed_at"] = int(time.time())
+                    n["confirmed_by"] = by
+                    found = True
+            if found:
+                self._write_json(mesh_id, "nodes.json", nodes)
+            return found
+
     def get_pending_nodes(self, mesh_id):
         return self._read_json(mesh_id, "nodes_pending.json", [])
 
@@ -2711,6 +3717,124 @@ def _relay_backfill_consumer_meshes():
 _relay_backfill_consumer_meshes()
 
 
+def _node_awaiting_confirmation(vault_row):
+    """True when a vault node may not make plaintext server-side writes yet.
+
+    A node that walked in through the auto-accept window is a member nobody
+    looked at. Membership earns it vault reads; the endpoints that write
+    plaintext the relay itself acts on — state-mirror (paywall / sub_due /
+    lock_active), the payment identities, the display name — stay shut until
+    the Lion vouches for it via /vault/{mesh_id}/confirm-node. Note that
+    `node_type` is self-asserted at registration, so "controller node
+    required" checks on those routes are not a barrier to a stranger holding
+    the mesh_id; this is.
+
+    Rows that came in any other way — Lion-signed register-node, approval out
+    of the pending queue, invite-code join — never carry the auto_accepted
+    stamp and are never blocked here.
+    """
+    if not vault_row:
+        return False
+    return bool(vault_row.get("auto_accepted")) and not vault_row.get("lion_confirmed")
+
+
+def _node_signing_keys(mesh_id, node_id):
+    """Public keys a registered node is allowed to sign with: its vault
+    node_pubkey and the bunny_pubkey on the same row — the same pair
+    state-mirror accepts. Empty list means "not a member"."""
+    for vnode in _vault_store.get_nodes(mesh_id):
+        if vnode.get("node_id") == node_id:
+            return [k for k in (vnode.get("node_pubkey"), vnode.get("bunny_pubkey")) if k]
+    return []
+
+
+def _verify_node_signature(mesh_id, node_id, signature_b64, payload):
+    """True when `signature_b64` over `payload` verifies against one of the
+    node's registered keys.
+
+    Shared by every node-signed vault route so they cannot drift apart on which
+    keys count as the node's — a route that quietly accepted a wider set than
+    its siblings would be the hole, and that is easier to notice in one function
+    than in three copies of thirty lines."""
+    import base64 as _b64
+
+    from cryptography.hazmat.primitives import hashes as _hh
+    from cryptography.hazmat.primitives import serialization as _ser
+    from cryptography.hazmat.primitives.asymmetric import padding as _pad
+
+    try:
+        sig = _b64.b64decode(signature_b64)
+    except Exception:
+        return False
+    for pk_b64 in _node_signing_keys(mesh_id, node_id):
+        try:
+            pub = _ser.load_der_public_key(_b64.b64decode(pk_b64))
+            pub.verify(sig, payload.encode("utf-8"), _pad.PKCS1v15(), _hh.SHA256())
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _read_standing_orders():
+    """The Lion's standing orders as the relay serves them: CLAUDE-stub.md if
+    present, else CLAUDE.md, with ADMIN_TOKEN redacted. None when neither
+    exists. The stub is the framework only — the tactical orders, penalty
+    amounts and the token itself live behind /enforcement-orders, which stays
+    admin-gated."""
+    stub = os.path.expanduser("~/.claude/CLAUDE-stub.md")
+    fallback = os.path.expanduser("~/.claude/CLAUDE.md")
+    target = stub if os.path.exists(stub) else fallback
+    if not os.path.exists(target):
+        return None
+    with open(target, "r") as f:
+        content = f.read()
+    if ADMIN_TOKEN and ADMIN_TOKEN in content:
+        content = content.replace(ADMIN_TOKEN, "<REDACTED>")
+    return content
+
+
+def _grandfather_auto_accepted_nodes():
+    """One-shot on the deploy that introduced the confirmation gate: stamp
+    every node already on a mesh as lion_confirmed.
+
+    Those devices were enrolled under the old rules, when auto-accept was a
+    standing door and nothing asked the Lion to look. Blocking their
+    state-mirror and identity writes retroactively would break working meshes
+    to punish them for the relay's old default, so they are grandfathered in
+    — the gate is for devices that show up from here on.
+
+    Runs at most once per mesh, tracked by `auto_accept_grandfathered_at` on
+    the account. That marker is what keeps this from being a hole: without it,
+    a restart would silently confirm whatever had auto-accepted since, and the
+    gate would mean nothing.
+    """
+    for mesh_id, account in list(_mesh_accounts.meshes.items()):
+        if account.get("auto_accept_grandfathered_at"):
+            continue
+        try:
+            stamped = []
+            for node in _vault_store.get_nodes(mesh_id):
+                node_id = node.get("node_id", "")
+                if node_id and _node_awaiting_confirmation(node):
+                    if _vault_store.confirm_node(mesh_id, node_id, by="grandfathered"):
+                        stamped.append(node_id)
+            account["auto_accept_grandfathered_at"] = int(time.time())
+            _mesh_accounts._save(mesh_id)
+            if stamped:
+                logger.warning(
+                    "Grandfathered %d pre-existing auto-accepted node(s) as lion-confirmed: mesh=%s nodes=%s",
+                    len(stamped),
+                    _sanitize_log(mesh_id),
+                    ",".join(_sanitize_log(n) for n in stamped),
+                )
+        except Exception as e:
+            logger.warning("auto-accept grandfather failed for mesh=%s: %s", _sanitize_log(mesh_id), e)
+
+
+_grandfather_auto_accepted_nodes()
+
+
 # In-memory daily blob counter per mesh — resets on date change.
 # Key: (mesh_id, "YYYYMMDD"), Value: count.
 _daily_blob_counts: dict = {}
@@ -2778,6 +3902,57 @@ def _verify_signed_payload(payload, signature_b64, lion_pubkey_str, quiet=False)
         return False
 
 
+def _auto_accept_active(account):
+    """True when this mesh's auto-accept onboarding window is open right now.
+
+    Fails closed on two legacy shapes, both deliberately:
+      * `auto_accept_nodes` true with no `auto_accept_until` — an account
+        persisted before the window existed. Those were sticky-open forever;
+        treating them as expired closes that door on deploy. The Lion re-opens
+        a 30-minute window with one tap when they actually need it.
+      * a window whose deadline has passed.
+    """
+    if not account or not account.get("auto_accept_nodes"):
+        return False
+    try:
+        until = int(account.get("auto_accept_until", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    return until > int(time.time())
+
+
+def _close_expired_auto_accept_windows():
+    """Make the persisted flag agree with the gate that enforces it.
+
+    `_auto_accept_active()` fails closed on an expired or missing deadline, so
+    behavior is already correct — but `auto_accept_nodes` stays `true` on disk
+    forever, and the account JSON is what an operator reads when they go to the
+    relay to ask whether the door is open. On mesh Mn4pQr7tVw2X that flag has
+    been claiming an open door against a shut one since the window landed.
+
+    This changes no decision: every account it touches is one the gate was
+    already refusing. It only stops the record from lying about it. Runs at
+    every start, and is idempotent — an open window is left alone, and the
+    Lion's toggle reopens one whenever they want it.
+    """
+    for mesh_id, account in list(_mesh_accounts.meshes.items()):
+        if not account.get("auto_accept_nodes") or _auto_accept_active(account):
+            continue
+        try:
+            account["auto_accept_nodes"] = False
+            account["auto_accept_until"] = 0
+            _mesh_accounts._save(mesh_id)
+            logger.warning(
+                "Auto-accept window had already expired; flag reconciled to off: mesh=%s",
+                _sanitize_log(mesh_id),
+            )
+        except Exception as e:
+            logger.warning("auto-accept reconcile failed for mesh=%s: %s", _sanitize_log(mesh_id), e)
+
+
+_close_expired_auto_accept_windows()
+
+
 def _verify_blob_two_writer(blob, lion_pubkey, registered_nodes):
     """Multi-writer verification. Try Lion pubkey first (order blobs from
     controller), then iterate registered node pubkeys (slave runtime pushes,
@@ -2799,11 +3974,12 @@ def _verify_blob_two_writer(blob, lion_pubkey, registered_nodes):
 def _verify_slave_signed_webhook(data, webhook_type, *, version_field="min_collar_version", min_version=74):
     """Verify a slave-signed (or companion-signed) evidence webhook.
 
-    Audit 2026-04-27 H-2: gates the seven evidence webhooks the slave
+    Audit 2026-04-27 H-2: gates the evidence webhooks the slave
     APK / Bunny Tasker fires (compliment, gratitude, love_letter,
     geofence-breach, evidence-photo, offer, subscription-charge) plus
-    the original bunny-message that the 2026-04-17 audit closed with
-    the same shape.
+    the original bunny-message that the 2026-04-17 audit closed with the
+    same shape. (evidence-photo is now wearer-submitted photo-task proof
+    only — covert front-camera capture was removed.)
 
     Canonical payload: "{mesh_id}|{node_id}|{webhook_type}|{ts_i}"
     Signed with the bunny_privkey (focus_lock_bunny_privkey on the
@@ -2878,6 +4054,26 @@ def _vault_resolve_mesh(mesh_id):
 
 class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
     MAX_BODY_BYTES = 1_048_576  # 1 MB
+
+    def _reject_unconfirmed_node(self, route, mesh_id, node_id, vault_row):
+        """Refuse a plaintext write from an auto-accepted node the Lion has not
+        confirmed. Returns True when it responded (caller must return)."""
+        if not _node_awaiting_confirmation(vault_row):
+            return False
+        logger.warning(
+            "%s DENIED (auto-accepted node not confirmed by lion): mesh=%s node=%s",
+            route,
+            _sanitize_log(mesh_id),
+            _sanitize_log(node_id),
+        )
+        self.respond(
+            403,
+            {
+                "error": "node awaiting lion confirmation",
+                "hint": "confirm this device in Lion's Share → Vault Nodes",
+            },
+        )
+        return True
 
     def do_POST(self):
         try:
@@ -2954,12 +4150,6 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             send_evidence(text, "negotiation offer")
             self.respond(200, {"ok": True})
 
-        elif self.path == "/webhook/location":
-            lat = data.get("lat", 0)
-            lon = data.get("lon", 0)
-            logger.info("Location: %s, %s", lat, lon)
-            self.respond(200, {"ok": True})
-
         elif self.path == "/webhook/geofence-breach":
             # Audit 2026-04-27 H-2. Caller-controlled lat/lon/distance
             # are content-only; the signature only proves the request
@@ -2969,13 +4159,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if verdict[0] == "error":
                 self.respond(verdict[1], verdict[2])
                 return
-            lat = data.get("lat", 0)
-            lon = data.get("lon", 0)
-            distance = data.get("distance", 0)
-            logger.warning("GEOFENCE BREACH: %.0fm from center at %s,%s", distance, lat, lon)
+            # Covert-location removal: the Collar reports only the violation
+            # magnitude, never coordinates. See docs/THREAT-MODEL.md.
+            distance = float(data.get("distance", 0) or 0)
+            logger.warning("GEOFENCE BREACH: %.0fm outside zone", distance)
             send_evidence(
-                f"GEOFENCE BREACH\n\nDistance from center: {distance:.0f}m\n"
-                f"Location: {lat}, {lon}\n"
+                f"GEOFENCE BREACH\n\nDistance outside zone: {distance:.0f}m\n"
                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 f"Phone has been auto-locked with $100 paywall.",
                 "geofence breach",
@@ -2983,26 +4172,25 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             self.respond(200, {"ok": True})
 
         elif self.path == "/webhook/evidence-photo":
-            # Audit 2026-04-27 H-2. Sig binds (mesh, node, ts) only —
-            # photo bytes themselves are content-only. A tampered slave
-            # could still upload a misleading photo to its own Lion;
-            # this gate stops third-parties on the network from doing
-            # the same.
+            # Wearer-submitted photo-task proof ONLY. Covert front-camera capture
+            # was removed (see docs/THREAT-MODEL.md); the sole caller now is the
+            # explicit photo-task the wearer knowingly takes and submits. Sig
+            # binds (mesh, node, ts); the photo bytes are content-only.
             verdict = _verify_slave_signed_webhook(data, "evidence-photo")
             if verdict[0] == "error":
                 self.respond(verdict[1], verdict[2])
                 return
             photo_b64 = data.get("photo", "")
-            evidence_type = data.get("type", "obedience")
+            evidence_type = data.get("type", "photo_task")
             text = data.get("text", "")
-            logger.info("Evidence photo received (%s)", _sanitize_log(evidence_type))
+            logger.info("Photo-task proof received (%s)", _sanitize_log(evidence_type))
             if photo_b64 and PARTNER_EMAIL:
                 try:
                     photo_bytes = base64.b64decode(photo_b64)
                     msg = MIMEMultipart()
                     msg["From"] = MAIL_USER
                     msg["To"] = PARTNER_EMAIL
-                    msg["Subject"] = f"Lion's Share — {evidence_type.title()} Photo Evidence"
+                    msg["Subject"] = f"Lion's Share — {evidence_type.title()} Photo"
                     body_text = (
                         f"Lion's Share — {evidence_type.title()} Photo\n\n"
                         f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -3010,7 +4198,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     )
                     if text:
                         body_text += f"\nContent:\n{text}\n"
-                    body_text += "\n---\nSelfie taken automatically on task completion.\n"
+                    body_text += "\n---\nPhoto submitted by the wearer for the photo-task.\n"
                     msg.attach(MIMEText(body_text, "plain"))
                     attachment = MIMEBase("image", "jpeg")
                     attachment.set_payload(photo_bytes)
@@ -3018,18 +4206,18 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     attachment.add_header(
                         "Content-Disposition",
                         "attachment",
-                        filename=f"evidence_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg",
+                        filename=f"phototask_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg",
                     )
                     msg.attach(attachment)
                     with smtplib.SMTP(SMTP_HOST, 587) as server:
                         server.starttls()
                         server.login(MAIL_USER, MAIL_PASS)
                         server.send_message(msg)
-                    logger.info("Evidence photo email sent to %s", PARTNER_EMAIL)
+                    logger.info("Photo-task email sent to %s", PARTNER_EMAIL)
                 except Exception:
-                    logger.exception("Evidence photo email error")
+                    logger.exception("Photo-task email error")
             elif not photo_b64:
-                send_evidence(text or "Photo capture failed", evidence_type)
+                send_evidence(text or "Photo task", evidence_type)
             self.respond(200, {"ok": True})
 
         elif self.path == "/webhook/verify-photo":
@@ -3076,7 +4264,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 return
             tier = data.get("tier", "unknown")
             amount = data.get("amount", 0)
-            logger.info("Subscription charge: $%s (%s)", amount, _sanitize_log(tier))
+            logger.info("Subscription charge: $%s (%s)", _sanitize_log(amount), _sanitize_log(tier))
             send_evidence(
                 f"Weekly subscription charge: ${amount} ({tier.upper()})\n"
                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -3130,23 +4318,66 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if not _is_valid_admin_auth(data.get("admin_token", ""), mesh_id=mesh_id):
                 self.respond(403, {"error": "invalid admin_token"})
                 return
+            # vault_only meshes (other than the operator's own) must not receive
+            # plaintext order writes on the relay — mirror the /admin/order guard.
+            # The amount is only an integer, but the "relay holds no plaintext
+            # order content" property vault_only is sold on still forbids it.
+            if mesh_id and mesh_id != OPERATOR_MESH_ID and _mesh_accounts.is_vault_only(mesh_id):
+                self.respond(403, {"error": "vault_only mesh — desktop penalty refused"})
+                return
             # Clamp caller-supplied amount as defense-in-depth even with auth.
             DESKTOP_PENALTY_MAX = 500
+            raw_amount = data.get("amount", None)
             try:
-                amount = int(data.get("amount", 30))
+                amount = 30 if raw_amount is None else int(raw_amount)
             except (TypeError, ValueError):
                 self.respond(400, {"error": "amount must be an integer"})
                 return
             if amount < 0 or amount > DESKTOP_PENALTY_MAX:
                 self.respond(400, {"error": f"amount must be 0-{DESKTOP_PENALTY_MAX}"})
                 return
+            # `tamper: true` (report_tamper.py) prices the report off the
+            # SERVER's per-mesh lifetime attempt counter instead of trusting
+            # the collared desktop's local one, which the bunny has root over.
+            # The caller's own count comes along as a hint and only ever
+            # fast-forwards the server; a caller-supplied `amount` becomes a
+            # floor, never a discount, so `--amount` can still price a known
+            # incident higher but can't undercut the tier the ratchet reached.
+            tamper_attempt = None
+            if data.get("tamper"):
+                TAMPER_CLAIM_JUMP_MAX = 100  # bound a bogus/corrupt client claim
+                try:
+                    claimed = max(0, int(data.get("attempt", 0) or 0))
+                except (TypeError, ValueError):
+                    claimed = 0
+                counter_key = mesh_id or OPERATOR_MESH_ID or ""
+                ceiling = _read_tamper_attempts(counter_key) + TAMPER_CLAIM_JUMP_MAX
+                if claimed > ceiling:
+                    logger.warning(
+                        "Tamper attempt claim %s from mesh=%s exceeds +%s of the recorded count — clamping",
+                        claimed,
+                        _sanitize_log(counter_key),
+                        TAMPER_CLAIM_JUMP_MAX,
+                    )
+                    claimed = ceiling
+                tamper_attempt = _bump_tamper_attempts(counter_key, at_least=claimed)
+                floor = 0 if raw_amount is None else amount
+                amount = min(DESKTOP_PENALTY_MAX, max(floor, tamper_penalty(tamper_attempt)))
             reason = data.get("reason", "Desktop penalty")
-            logger.warning("DESKTOP PENALTY: mesh=%s $%s — %s", mesh_id, amount, _sanitize_log(reason))
+            logger.warning(
+                "DESKTOP PENALTY: mesh=%s $%s%s — %s",
+                _sanitize_log(mesh_id),
+                amount,
+                f" (tamper attempt #{tamper_attempt})" if tamper_attempt else "",
+                _sanitize_log(reason),
+            )
             # Route through _server_apply_order so the paywall write lands
             # on the mesh's orders doc + propagates via vault blob to any
             # vault-mode slaves. For the operator mesh this also keeps the
             # ADB write (server is single writer — no legacy dual-write).
-            applied = _server_apply_order(mesh_id, "add-paywall", {"amount": amount}) if mesh_id else None
+            applied = (
+                _server_apply_order(mesh_id, "add-paywall", {"amount": amount, "reason": reason}) if mesh_id else None
+            )
             if applied is None:
                 # Mesh unknown — fall back to operator ADB write for
                 # backward compat with pre-mesh-aware collars.
@@ -3161,8 +4392,127 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 adb.put_str("focus_lock_message", f"{reason}. ${amount} added.")
             else:
                 pw = applied.get("paywall", 0)
-            send_evidence(f"{reason}: ${amount} penalty applied. New paywall: ${pw}", "desktop penalty")
-            self.respond(200, {"ok": True, "new_paywall": pw, "mesh_id": mesh_id})
+            _attempt_note = f" (lifetime tamper attempt #{tamper_attempt})" if tamper_attempt else ""
+            send_evidence(
+                f"{reason}: ${amount} penalty applied{_attempt_note}. New paywall: ${pw}",
+                "desktop penalty",
+                mesh_id=mesh_id,
+            )
+            self.respond(
+                200,
+                {
+                    "ok": True,
+                    "new_paywall": pw,
+                    "mesh_id": mesh_id,
+                    "amount": amount,
+                    "tamper_attempt": tamper_attempt,
+                },
+            )
+
+        elif self.path == "/webhook/desktop-task":
+            # Same auth shape as /webhook/desktop-penalty (mesh-scoped
+            # admin_token, never the caller's choice of mesh) but arms a
+            # deadline task instead of a flat penalty -- lets a
+            # detected-circumvention response force something other than
+            # money. Reuses the existing set-deadline-task order (the same
+            # do-or-lock mechanism Lion uses manually) rather than a new
+            # enforcement path. Bunny Tasker shows it; on_miss defaults to
+            # "paywall" rather than "lock" since this can fire unattended
+            # with no Lion review in the loop -- an unreviewed autonomous
+            # full lock is a bigger blast radius than an unreviewed charge.
+            if not ADMIN_TOKEN:
+                self.respond(503, {"error": "admin_token not configured"})
+                return
+            mesh_id = data.get("mesh_id", "") or OPERATOR_MESH_ID or ""
+            if not _is_valid_admin_auth(data.get("admin_token", ""), mesh_id=mesh_id):
+                self.respond(403, {"error": "invalid admin_token"})
+                return
+            if not mesh_id:
+                self.respond(400, {"error": "mesh_id required"})
+                return
+            # Delivery guarantee: an armed deadline task reaches the phone ONLY via
+            # the operator mesh's full-state gossip (the deadline_task_* keys are in
+            # the Collar's MESH_ORDER_KEYS, applied by applyOrdersFromMesh). The
+            # Collar's vault-RPC dispatch (handleMeshOrder) has NO set-deadline-task
+            # case, so on any non-operator mesh the task would never appear on the
+            # phone YET the miss penalty would still fire — charging/locking the
+            # bunny for a task they were never shown. Refuse rather than do that.
+            # (This also closes the vault_only plaintext bypass for this route.)
+            if mesh_id != OPERATOR_MESH_ID:
+                self.respond(
+                    409,
+                    {
+                        "error": "desktop-task is operator-mesh only — a non-operator mesh "
+                        "cannot deliver the task to the phone; set it from the Lion app instead"
+                    },
+                )
+                return
+            text = (data.get("text", "") or "").strip()
+            if not text:
+                self.respond(400, {"error": "text required"})
+                return
+            DESKTOP_TASK_TEXT_MAX = 500  # bound like other free-text; it is persisted,
+            if len(text) > DESKTOP_TASK_TEXT_MAX:  # vault-encrypted per node, pinned, emailed
+                text = text[:DESKTOP_TASK_TEXT_MAX]
+            # Don't clobber a task the Lion armed manually (destroying a recurring
+            # task's interval, #27) or a miss-lock in progress (which would strand
+            # the bunny in an unclearable lock, #12). Refuse if one is live.
+            try:
+                _armed_orders = _resolve_orders(mesh_id)
+                _armed_ms = int(_armed_orders.get("deadline_task_deadline_ms", 0) or 0)
+                _locked_by_miss = str(_armed_orders.get("deadline_task_locked_by_miss", 0)) in ("1", "true", "True")
+            except Exception:
+                _armed_ms, _locked_by_miss = 0, False
+            if _armed_ms > int(time.time() * 1000) or _locked_by_miss:
+                self.respond(409, {"error": "a deadline task is already armed — refusing to overwrite it"})
+                return
+            DESKTOP_TASK_MAX_MINUTES = 7 * 24 * 60  # 1 week ceiling
+            try:
+                deadline_minutes = int(data.get("deadline_minutes", 1440))
+            except (TypeError, ValueError):
+                self.respond(400, {"error": "deadline_minutes must be an integer"})
+                return
+            if deadline_minutes < 1 or deadline_minutes > DESKTOP_TASK_MAX_MINUTES:
+                self.respond(400, {"error": f"deadline_minutes must be 1-{DESKTOP_TASK_MAX_MINUTES}"})
+                return
+            proof_type = (data.get("proof_type", "typed") or "typed").lower()
+            if proof_type not in ("none", "typed", "photo"):
+                self.respond(400, {"error": "invalid proof_type"})
+                return
+            on_miss = (data.get("on_miss", "paywall") or "paywall").lower()
+            if on_miss not in ("lock", "paywall"):
+                self.respond(400, {"error": "invalid on_miss"})
+                return
+            DESKTOP_TASK_MISS_MAX = 500  # matches DESKTOP_PENALTY_MAX
+            try:
+                miss_amount = max(0, min(DESKTOP_TASK_MISS_MAX, int(data.get("miss_amount", 25))))
+            except (TypeError, ValueError):
+                miss_amount = 25
+            reason = data.get("reason", "Desktop-assigned task")
+            applied = _server_apply_order(
+                mesh_id,
+                "set-deadline-task",
+                {
+                    "text": text,
+                    "deadline_minutes": deadline_minutes,
+                    "proof_type": proof_type,
+                    "on_miss": on_miss,
+                    "miss_amount": miss_amount,
+                },
+            )
+            if applied is None or applied.get("error"):
+                self.respond(500, {"error": (applied or {}).get("error", "failed to arm task")})
+                return
+            logger.warning(
+                "DESKTOP TASK: mesh=%s %r (deadline %sm, on_miss=%s) — %s",
+                _sanitize_log(mesh_id),
+                _sanitize_log(text[:80]),
+                deadline_minutes,
+                on_miss,
+                _sanitize_log(reason),
+            )
+            send_evidence(f"{reason}: task assigned — {text}", "desktop task", mesh_id=mesh_id)
+            self.respond(200, {"ok": True, "mesh_id": mesh_id, **applied})
 
         # ── Admin API (enforcement infrastructure) ──
         # Without mesh_id: operates on operator's mesh (backwards compat).
@@ -3199,6 +4549,36 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 },
             )
 
+        elif self.path == "/admin/reverse-payment":
+            # Reverse a credited payment that should not have counted as a
+            # Bunny→Lion payment (e.g. WorldRemit remittance, refund, random
+            # deposit notice that slipped past the scanner before the
+            # payer-allow filter was in place). Adds a `reversal` ledger
+            # entry with negative amount and decrements `total_paid_cents`.
+            # Idempotent: a second call with the same source returns 409.
+            # Does NOT unwind the paywall — by the time the operator reverses,
+            # subscription accrual + other payments have moved the paywall and
+            # we'd corrupt history trying to back it out. Lifetime PAID is
+            # the only safely-correctable field.
+            if not ADMIN_TOKEN:
+                self.respond(503, {"error": "admin_token not configured"})
+                return
+            token = data.get("admin_token", "")
+            if not _is_valid_admin_auth(token):
+                self.respond(403, {"error": "invalid admin_token"})
+                return
+            mesh_id = str(data.get("mesh_id", "") or "")
+            source = str(data.get("source", "") or "")
+            if not mesh_id or not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "valid mesh_id required"})
+                return
+            if not source:
+                self.respond(400, {"error": "source (ledger entry Message-ID) required"})
+                return
+            result = _apply_payment_reversal(mesh_id, source)
+            status = result.pop("_status", 200)
+            self.respond(status, result)
+
         elif self.path == "/admin/order":
             if not ADMIN_TOKEN:
                 self.respond(503, {"error": "admin_token not configured"})
@@ -3224,7 +4604,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         return
                     dt["used"] = True
                 target_mesh = data.get("mesh_id", "") or OPERATOR_MESH_ID
-                result = _server_apply_order(target_mesh, "add-paywall", {"amount": amount})
+                result = _server_apply_order(target_mesh, "add-paywall", {"amount": amount, "reason": "Disposal token"})
                 if result:
                     self.respond(200, {"ok": True, "disposal": True, "result": result})
                 else:
@@ -3290,7 +4670,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     return
                 logger.info(
                     "Admin gamble: mesh=%s old=%s result=%s new=%s",
-                    target,
+                    _sanitize_log(target),
                     old_pw,
                     result_str,
                     new_pw,
@@ -3379,7 +4759,21 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             req_pin = (data.get("pin") or "").strip()
             if not (req_pin.isdigit() and len(req_pin) == 4):
                 req_pin = ""
-            account = _mesh_accounts.create(lion_pubkey, pin=req_pin, client_ip=client_ip)
+            # Optional Lion account email + password (from onboarding). The
+            # password is stored ONLY as a SHA-256 hash; the raw value never
+            # touches disk. Both are server-only (the Lion's own contact info).
+            account_email = str(data.get("account_email", "") or "").strip()
+            account_pass = data.get("account_pass", "") or ""
+            account_pass_hash = (
+                __import__("hashlib").sha256(account_pass.encode("utf-8")).hexdigest() if account_pass else ""
+            )
+            account = _mesh_accounts.create(
+                lion_pubkey,
+                pin=req_pin,
+                client_ip=client_ip,
+                account_email=account_email,
+                account_pass_hash=account_pass_hash,
+            )
             # Auto-register the relay as an approved vault signer for this
             # new mesh so server-driven mutations (subscribe, compound
             # interest, payment-received, set-geofence …) propagate to the
@@ -3427,13 +4821,14 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             node_id = data.get("node_id", "")
             node_type = data.get("node_type", "phone")
             bunny_pubkey = data.get("bunny_pubkey", "")
+            display_name = str(data.get("display_name", "") or "").strip()[:40]
             if not invite_code:
                 self.respond(400, {"error": "invite_code required"})
                 return
             if not node_id:
                 self.respond(400, {"error": "node_id required"})
                 return
-            account, err = _mesh_accounts.join(invite_code, node_id, node_type, bunny_pubkey)
+            account, err = _mesh_accounts.join(invite_code, node_id, node_type, bunny_pubkey, display_name)
             if err:
                 self.respond(404, {"error": err})
                 return
@@ -3446,7 +4841,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 "Node joined mesh: %s (%s) mesh=%s",
                 _sanitize_log(node_id),
                 _sanitize_log(node_type),
-                account["mesh_id"],
+                _sanitize_log(account["mesh_id"]),
             )
             self.respond(
                 200,
@@ -3463,10 +4858,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         # Body: {state: "on"|"off", ts, signature}
         # signature = SHA256withRSA over "mesh_id|auto-accept|state|ts" with
         # the Lion's private key (verified against account.lion_pubkey).
-        # When ON, register-node-request goes straight to the approved list
-        # instead of the pending queue — but key rotation (existing node_id,
-        # new pubkey) still requires manual approval to close the takeover
-        # vector documented at docs/VAULT-DESIGN.md:266.
+        # While the window is open, register-node-request goes straight to the
+        # approved list instead of the pending queue — but key rotation
+        # (existing node_id, new pubkey) still requires manual approval to
+        # close the takeover vector documented at docs/VAULT-DESIGN.md:266.
+        # "on" opens a MeshAccountStore.AUTO_ACCEPT_WINDOW_S window that
+        # expires on its own; "off" closes it immediately.
         elif self.path.startswith("/api/mesh/") and self.path.endswith("/auto-accept"):
             parts = self.path.strip("/").split("/")
             if len(parts) != 4 or parts[3] != "auto-accept":
@@ -3513,14 +4910,27 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 logger.warning("auto-accept sig verify failed: mesh=%s err=%s", _sanitize_log(mesh_id), e)
                 self.respond(403, {"error": "invalid signature"})
                 return
+            # ON opens a fresh time-boxed window; OFF slams it shut immediately.
+            # The deadline is what register-node-request actually enforces, so a
+            # Lion who forgets to toggle back off is protected by the clock.
+            window_s = _mesh_accounts.AUTO_ACCEPT_WINDOW_S
             account["auto_accept_nodes"] = state == "on"
+            account["auto_accept_until"] = int(time.time()) + window_s if state == "on" else 0
             _mesh_accounts._save(mesh_id)
             logger.warning(
                 "Auto-accept %s for mesh=%s",
-                "ENABLED" if state == "on" else "disabled",
+                f"ENABLED for {window_s // 60}min" if state == "on" else "disabled",
                 _sanitize_log(mesh_id),
             )
-            self.respond(200, {"ok": True, "auto_accept_nodes": account["auto_accept_nodes"]})
+            self.respond(
+                200,
+                {
+                    "ok": True,
+                    "auto_accept_nodes": account["auto_accept_nodes"],
+                    "auto_accept_until": account["auto_accept_until"],
+                    "expires_in_s": window_s if state == "on" else 0,
+                },
+            )
 
         # ── Bunny-authed subscribe (landmine #20 fix) ──
         # Path: /api/mesh/{mesh_id}/subscribe
@@ -3582,7 +4992,10 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
             except Exception as e:
                 logger.warning(
-                    "subscribe sig verify failed: mesh=%s node=%s err=%s", mesh_id, _sanitize_log(node_id), e
+                    "subscribe sig verify failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    e,
                 )
                 self.respond(403, {"error": "invalid signature"})
                 return
@@ -3590,13 +5003,26 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if not result:
                 self.respond(500, {"error": "apply failed"})
                 return
+            # Immediate first charge — no grace period. Fires the same
+            # subscribe-charge order the weekly scheduler uses, so it charges the
+            # paywall on-device (via a vault blob) as well as in the registry.
+            charge = _server_apply_order(mesh_id, "subscribe-charge", {"tier": tier})
             logger.info(
-                "Bunny subscribe: mesh=%s node=%s tier=%s",
-                mesh_id,
+                "Bunny subscribe: mesh=%s node=%s tier=%s charged=%s",
+                _sanitize_log(mesh_id),
                 _sanitize_log(node_id),
                 tier,
+                bool(charge),
             )
-            self.respond(200, {"ok": True, "tier": tier, "due": result.get("due")})
+            self.respond(
+                200,
+                {
+                    "ok": True,
+                    "tier": tier,
+                    "due": result.get("due"),
+                    "charged": (charge or {}).get("amount", 0),
+                },
+            )
 
         # ── Bunny-authed unsubscribe (P2 paywall hardening follow-up) ──
         # Path: /api/mesh/{mesh_id}/unsubscribe
@@ -3655,7 +5081,10 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
             except Exception as e:
                 logger.warning(
-                    "unsubscribe sig verify failed: mesh=%s node=%s err=%s", mesh_id, _sanitize_log(node_id), e
+                    "unsubscribe sig verify failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    e,
                 )
                 self.respond(403, {"error": "invalid signature"})
                 return
@@ -3668,7 +5097,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 return
             logger.info(
                 "Bunny unsubscribe: mesh=%s node=%s tier=%s fee=%s paywall=%s",
-                mesh_id,
+                _sanitize_log(mesh_id),
                 _sanitize_log(node_id),
                 result.get("tier"),
                 result.get("fee"),
@@ -3685,6 +5114,146 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
         # heads halves (rounded up), tails doubles. The Collar's local doGamble()
         # was the previous RNG site; moving it here closes the "tampered Collar
         # always rolls heads" loophole. Returns {result, old_paywall, new_paywall}.
+        # ── Lion-authed commendation ──
+        # Path: /api/mesh/{mesh_id}/commend
+        # Body: {claim_id, note?, ts, signature}
+        # signature = SHA256withRSA over "mesh_id|lion|commend|claim_id|ts"
+        # against account.lion_pubkey. Lion-only by construction: the bunny
+        # does not hold that key, so they cannot commend themselves — which is
+        # the whole point of routing the variable reward through a person.
+        elif self.path.startswith("/api/mesh/") and self.path.endswith("/commend"):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 4 or parts[3] != "commend":
+                self.respond(400, {"error": "bad path — expected /api/mesh/{mesh_id}/commend"})
+                return
+            mesh_id = parts[2]
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            account = _mesh_accounts.get(mesh_id)
+            if not account:
+                self.respond(404, {"error": "mesh not found"})
+                return
+            claim_id = str(data.get("claim_id", "") or "").strip()[:32]
+            note = str(data.get("note", "") or "")
+            signature = data.get("signature", "")
+            if not claim_id or not all(c.isalnum() for c in claim_id):
+                self.respond(400, {"error": "claim_id required"})
+                return
+            if not signature:
+                self.respond(400, {"error": "signature required"})
+                return
+            try:
+                ts_i = int(data.get("ts", 0) or 0)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            if abs(int(time.time() * 1000) - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+            lion_pub = account.get("lion_pubkey", "")
+            if not lion_pub:
+                self.respond(403, {"error": "no lion_pubkey on file for mesh"})
+                return
+            payload = f"{mesh_id}|lion|commend|{claim_id}|{ts_i}"
+            try:
+                import base64 as _b64c
+
+                from cryptography.hazmat.primitives import hashes, serialization
+                from cryptography.hazmat.primitives.asymmetric import padding
+
+                pub = serialization.load_der_public_key(_b64c.b64decode(lion_pub))
+                pub.verify(_b64c.b64decode(signature), payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
+            except Exception as e:
+                logger.warning("commend sig verify failed: mesh=%s err=%s", _sanitize_log(mesh_id), e)
+                self.respond(403, {"error": "invalid signature"})
+                return
+
+            result = devotion_commend(mesh_id, claim_id, note)
+            self.respond(404 if result.get("error") == "no such claim" else 200 if result.get("ok") else 500, result)
+
+        # ── Bunny-authed voluntary task claim (devotion) ──
+        # Path: /api/mesh/{mesh_id}/devotion
+        # Body: {node_id, task_id, ts, signature}
+        # signature = SHA256withRSA over "mesh_id|node_id|devotion|task_id|ts"
+        # with the bunny's registered key. ±5min replay window, same shape as
+        # /gamble. The tier is read from the mesh's own orders — the client
+        # does not get to declare which perk level it is on.
+        elif self.path.startswith("/api/mesh/") and self.path.endswith("/devotion"):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 4 or parts[3] != "devotion":
+                self.respond(400, {"error": "bad path — expected /api/mesh/{mesh_id}/devotion"})
+                return
+            mesh_id = parts[2]
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            account = _mesh_accounts.get(mesh_id)
+            if not account:
+                self.respond(404, {"error": "mesh not found"})
+                return
+            node_id = data.get("node_id", "")
+            signature = data.get("signature", "")
+            task_id = str(data.get("task_id", "") or "").strip()[:32]
+            if not node_id or not signature:
+                self.respond(400, {"error": "node_id and signature required"})
+                return
+            # Plain character check rather than a regex: `re` is imported
+            # locally further down this same handler, which shadows the module
+            # for the whole scope. task_id lands in a log line and a state
+            # file, so keep it to an unmistakable alphabet.
+            if not task_id or not all(c.isalnum() or c in "._-" for c in task_id):
+                self.respond(400, {"error": "task_id required"})
+                return
+            try:
+                ts_i = int(data.get("ts", 0) or 0)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            if abs(int(time.time() * 1000) - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+            node = account.get("nodes", {}).get(node_id)
+            if not node:
+                self.respond(403, {"error": "node not registered in mesh"})
+                return
+            bunny_pubkey = node.get("bunny_pubkey", "")
+            if not bunny_pubkey:
+                for _vn in _vault_store.get_nodes(mesh_id):
+                    if _vn.get("node_id") == node_id and _vn.get("bunny_pubkey"):
+                        bunny_pubkey = _vn["bunny_pubkey"]
+                        break
+            if not bunny_pubkey:
+                self.respond(403, {"error": "no bunny_pubkey on file for node"})
+                return
+            payload = f"{mesh_id}|{node_id}|devotion|{task_id}|{ts_i}"
+            try:
+                import base64 as _b64d
+
+                from cryptography.hazmat.primitives import hashes, serialization
+                from cryptography.hazmat.primitives.asymmetric import padding
+
+                pub = serialization.load_der_public_key(_b64d.b64decode(bunny_pubkey))
+                pub.verify(_b64d.b64decode(signature), payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
+            except Exception as e:
+                logger.warning(
+                    "devotion sig verify failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    e,
+                )
+                self.respond(403, {"error": "invalid signature"})
+                return
+
+            orders = _orders_registry.get(mesh_id)
+            tier = (orders.get("sub_tier", "") or "").lower() if orders else ""
+            result = devotion_claim(mesh_id, tier, task_id)
+            if result.get("error"):
+                status = 402 if "perk" in result["error"] else 429
+                self.respond(status, {**result, **devotion_status(mesh_id, tier)})
+                return
+            self.respond(200, result)
+
         elif self.path.startswith("/api/mesh/") and self.path.endswith("/gamble"):
             parts = self.path.strip("/").split("/")
             if len(parts) != 4 or parts[3] != "gamble":
@@ -3733,7 +5302,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 sig_bytes = _b64.b64decode(signature)
                 pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
             except Exception as e:
-                logger.warning("gamble sig verify failed: mesh=%s node=%s err=%s", mesh_id, _sanitize_log(node_id), e)
+                logger.warning(
+                    "gamble sig verify failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    e,
+                )
                 self.respond(403, {"error": "invalid signature"})
                 return
             # Read current paywall from the mesh's orders doc.
@@ -3745,6 +5319,23 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if old_pw <= 0:
                 self.respond(409, {"error": "no paywall to gamble"})
                 return
+
+            # Cooldown + daily cap, consumed here so a refused flip costs
+            # nothing and an allowed one is recorded before the coin is
+            # tossed. Checked after the paywall test on purpose: "nothing to
+            # gamble" should not burn one of the day's attempts.
+            gate = _gamble_check_and_record(mesh_id)
+            if not gate.get("ok"):
+                self.respond(
+                    429,
+                    {
+                        "error": gate.get("error", "gamble not allowed right now"),
+                        "retry_after": gate.get("retry_after", 0),
+                        **_gamble_status(mesh_id),
+                    },
+                )
+                return
+
             import math as _math
             import secrets as _secrets
 
@@ -3757,7 +5348,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 return
             logger.info(
                 "Bunny gamble: mesh=%s node=%s old=%s result=%s new=%s",
-                mesh_id,
+                _sanitize_log(mesh_id),
                 _sanitize_log(node_id),
                 old_pw,
                 result_str,
@@ -3770,6 +5361,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     "result": result_str,
                     "old_paywall": old_pw,
                     "new_paywall": new_pw,
+                    # So the client can grey the button out and say why,
+                    # instead of finding out by being refused.
+                    **_gamble_status(mesh_id),
                 },
             )
 
@@ -3811,14 +5405,28 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             if abs(now_ms - ts_i) > 5 * 60 * 1000:
                 self.respond(403, {"error": "ts out of window"})
                 return
-            node = account.get("nodes", {}).get(node_id)
-            if not node:
-                self.respond(403, {"error": "node not registered in mesh"})
-                return
-            bunny_pubkey = node.get("bunny_pubkey", "")
-            if not bunny_pubkey:
-                self.respond(403, {"error": "no bunny_pubkey on file for node"})
-                return
+            # Either party may read this mesh's ledger: the bunny signs with its
+            # node key, the Lion with the account key — same shape as
+            # /messages/fetch. Lion's Share used to fetch /mesh/ledger, which no
+            # handler has ever served, so the Lion's balance history rendered
+            # empty on every mesh relay. An empty history and a 404 look
+            # identical on screen, which is why it went unnoticed.
+            from_who = (data.get("from", "") or "").lower()
+            if from_who == "lion":
+                verifier_pub = account.get("lion_pubkey", "")
+                if not verifier_pub:
+                    self.respond(403, {"error": "no lion_pubkey on file for mesh"})
+                    return
+            else:
+                node = account.get("nodes", {}).get(node_id)
+                if not node:
+                    self.respond(403, {"error": "node not registered in mesh"})
+                    return
+                verifier_pub = node.get("bunny_pubkey", "")
+                if not verifier_pub:
+                    self.respond(403, {"error": "no bunny_pubkey on file for node"})
+                    return
+            bunny_pubkey = verifier_pub
             payload = f"{mesh_id}|{node_id}|{since_i}|{ts_i}"
             try:
                 import base64 as _b64
@@ -3831,7 +5439,12 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 sig_bytes = _b64.b64decode(signature)
                 pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
             except Exception as e:
-                logger.warning("payments sig verify failed: mesh=%s node=%s err=%s", mesh_id, _sanitize_log(node_id), e)
+                logger.warning(
+                    "payments sig verify failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    e,
+                )
                 self.respond(403, {"error": "invalid signature"})
                 return
             # Per-mesh ledger — a Bunny on mesh X must not see a Bunny on
@@ -3848,6 +5461,24 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 total_paid_cents = int(orders.get("total_paid_cents", 0) or 0) if orders else 0
             except (ValueError, TypeError):
                 total_paid_cents = 0
+            # Whether payment detection is actually wired up, as three
+            # booleans. No addresses or credentials cross this boundary — the
+            # bunny still cannot read Lion's inbox and the Lion still cannot
+            # read the payer allowlist — but "I paid and nothing happened" now
+            # has an answer on screen instead of only in the relay's log:
+            # payee_configured false means the Lion never connected the inbox
+            # to scan, payer_configured false means the scanner is failing
+            # closed because it can't tell which payments are the bunny's.
+            ident = _get_payment_identity(mesh_id)
+            detection = {}
+            try:
+                detection = {
+                    "payee_configured": bool(ident.payee_summary().get("imap_configured")),
+                    "payer_configured": ident.payer_configured(),
+                    "payer_effective": ident.has_effective_payer(),
+                }
+            except Exception:
+                logger.exception("payments: payment-identity summary failed")
             self.respond(
                 200,
                 {
@@ -3855,6 +5486,17 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     "entries": entries,
                     "total_paid_cents": total_paid_cents,
                     "since": since_i,
+                    **detection,
+                    # Flip budget, so the gamble button can render its own
+                    # state on load rather than after a refusal.
+                    **_gamble_status(mesh_id),
+                    # Devotion rides this read because BOTH sides already call
+                    # it (from: "lion" is accepted above), so the Lion sees what
+                    # the bunny chose to do without a second endpoint.
+                    **devotion_status(
+                        mesh_id,
+                        (orders.get("sub_tier", "") or "").lower() if orders else "",
+                    ),
                 },
             )
 
@@ -3889,6 +5531,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 "tamper_attempt",
                 "tamper_detected",
                 "tamper_removed",
+                "shadeguard_disabled",
                 "geofence_breach",
                 "app_launch_penalty",
                 "sit_boy",
@@ -3928,7 +5571,10 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
             except Exception as e:
                 logger.warning(
-                    "escape-event sig verify failed: mesh=%s node=%s err=%s", mesh_id, _sanitize_log(node_id), e
+                    "escape-event sig verify failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    e,
                 )
                 self.respond(403, {"error": "invalid signature"})
                 return
@@ -3936,7 +5582,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 result = _server_apply_order(mesh_id, "escape-recorded", {})
                 logger.info(
                     "Escape event: mesh=%s node=%s lifetime_escapes=%s penalty=%s paywall=%s",
-                    mesh_id,
+                    _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
                     (result or {}).get("lifetime_escapes"),
                     (result or {}).get("penalty"),
@@ -3946,7 +5592,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 result = _server_apply_order(mesh_id, "geofence-breach-recorded", {})
                 logger.info(
                     "Geofence breach event: mesh=%s node=%s lifetime_breaches=%s paywall=%s details=%s",
-                    mesh_id,
+                    _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
                     (result or {}).get("lifetime_geofence_breaches"),
                     (result or {}).get("paywall"),
@@ -3960,7 +5606,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 result = _server_apply_order(mesh_id, "sit-boy-recorded", {"amount": amount})
                 logger.info(
                     "Sit-boy event: mesh=%s node=%s amount=%s applied=%s paywall=%s",
-                    mesh_id,
+                    _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
                     amount,
                     (result or {}).get("amount"),
@@ -3974,7 +5620,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     if now_ms - last < APP_LAUNCH_DEDUP_WINDOW_MS:
                         logger.info(
                             "App launch penalty dedup: mesh=%s node=%s dt_ms=%s",
-                            mesh_id,
+                            _sanitize_log(mesh_id),
                             _sanitize_log(node_id),
                             now_ms - last,
                         )
@@ -3984,23 +5630,28 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 result = _server_apply_order(mesh_id, "app-launch-penalty", {})
                 logger.info(
                     "App launch penalty: mesh=%s node=%s penalty=%s paywall=%s",
-                    mesh_id,
+                    _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
                     (result or {}).get("penalty"),
                     (result or {}).get("paywall"),
                 )
             else:
-                # tamper_attempt, tamper_detected, tamper_removed
+                # tamper_attempt, tamper_detected, tamper_removed, shadeguard_disabled
                 kind_map = {
                     "tamper_attempt": "attempt",
                     "tamper_detected": "detected",
                     "tamper_removed": "removed",
+                    # The bunny turned off the enforcement watchdog (accessibility
+                    # service) mid-lock. Detected by ControlService and reported so
+                    # the Lion is notified. Like the other tamper kinds this is
+                    # costly-exit not punish-exit — recorded, no financial penalty.
+                    "shadeguard_disabled": "watchdog_off",
                 }
                 kind = kind_map.get(event_type, "detected")
                 result = _server_apply_order(mesh_id, "tamper-recorded", {"kind": kind})
                 logger.info(
                     "Tamper event: mesh=%s node=%s kind=%s lifetime_tamper=%s penalty=%s paywall=%s",
-                    mesh_id,
+                    _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
                     kind,
                     (result or {}).get("lifetime_tamper"),
@@ -4068,9 +5719,18 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             bunny_pubkey = node.get("bunny_pubkey", "")
             if bunny_pubkey:
                 candidate_pubkeys.append(("bunny", bunny_pubkey))
+            vault_row = {}
             for vnode in _vault_store.get_nodes(mesh_id):
-                if vnode.get("node_id") == node_id and vnode.get("node_pubkey"):
-                    candidate_pubkeys.append(("vault-node", vnode["node_pubkey"]))
+                if vnode.get("node_id") == node_id:
+                    vault_row = vnode
+                    # Real-mesh-bunnies: a Collar that registered via register-node now
+                    # carries its E2EE bunny_pubkey on the vault node row — that's the
+                    # key it signs state-mirror with. Prefer it, then fall back to the
+                    # node_pubkey (desktop collars sign with the vault node key).
+                    if vnode.get("bunny_pubkey"):
+                        candidate_pubkeys.append(("vault-bunny", vnode["bunny_pubkey"]))
+                    if vnode.get("node_pubkey"):
+                        candidate_pubkeys.append(("vault-node", vnode["node_pubkey"]))
                     break
             if not candidate_pubkeys:
                 self.respond(403, {"error": "no signing pubkey on file for node"})
@@ -4124,6 +5784,20 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(403, {"error": "invalid signature"})
                 return
 
+            # A valid signature proves "this is the node that registered", not
+            # "the Lion wanted this node writing their financial state". This
+            # endpoint writes paywall / sub_due / lock_active straight into the
+            # registry the scanners bill from, so an unconfirmed auto-accepted
+            # node is refused here even though its signature checks out. It
+            # keeps its vault membership; it just can't move money until the
+            # Lion taps Confirm (→ confirm-node). Invite-code members
+            # (verified_with == "bunny") came in through a code the Lion handed
+            # out, so they're already vouched for.
+            if verified_with in ("vault-bunny", "vault-node") and self._reject_unconfirmed_node(
+                "state-mirror", mesh_id, node_id, vault_row
+            ):
+                return
+
             # Whitelist of mirrorable fields — keep narrow. Compound-interest
             # accrual + payment-crediting need paywall / paywall_original /
             # sub_tier / sub_due / lock_active / locked_at to be live. Anything
@@ -4169,6 +5843,370 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     ",".join(applied),
                 )
             self.respond(200, {"ok": True, "applied": applied, "signer": verified_with})
+
+        # ── Lion-authed payee identity (Lion's email + IMAP creds) ──
+        # Path: /api/mesh/{mesh_id}/set-payee-identity
+        # Body: {node_id, ts, email, imap_host?, imap_pass?, signature}
+        # signature = SHA256withRSA over
+        #     "mesh_id|node_id|set-payee-identity|ts|sha256(email|imap_host|imap_pass)"
+        # Only the controller node may set this. Stored server-only at
+        # payment_identities/{mid}.json — never echoed back to the wrong
+        # app, never written to the vault. Together with set-payer-identity
+        # below this lets the IMAP scanner reject inbound payments that
+        # don't actually come from the Bunny without either app being able
+        # to read the other side's email.
+        elif self.path.startswith("/api/mesh/") and self.path.endswith("/set-payee-identity"):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 4 or parts[3] != "set-payee-identity":
+                self.respond(400, {"error": "bad path"})
+                return
+            mesh_id = parts[2]
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            account = _mesh_accounts.get(mesh_id)
+            if not account:
+                self.respond(404, {"error": "mesh not found"})
+                return
+            node_id = data.get("node_id", "")
+            signature = data.get("signature", "")
+            email = str(data.get("email", "") or "").strip()
+            imap_host = str(data.get("imap_host", "") or "").strip()
+            imap_pass = str(data.get("imap_pass", "") or "")
+            if not node_id or not signature or not email:
+                self.respond(400, {"error": "node_id, signature, email required"})
+                return
+            try:
+                ts_i = int(data.get("ts", 0) or 0)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            now_ms = int(time.time() * 1000)
+            if abs(now_ms - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+            vault_node = None
+            for vnode in _vault_store.get_nodes(mesh_id):
+                if vnode.get("node_id") == node_id and vnode.get("node_pubkey"):
+                    vault_node = vnode
+                    break
+            if not vault_node:
+                self.respond(403, {"error": "node not registered in vault"})
+                return
+            # Only the controller (Lion's Share) may set the payee half.
+            ntype = (vault_node.get("node_type") or vault_node.get("type") or "").lower()
+            if ntype != "controller":
+                self.respond(403, {"error": "controller node required for payee identity"})
+                return
+            import base64 as _b64_pe
+            import hashlib as _h_pe
+
+            from cryptography.hazmat.primitives import hashes as _hh_pe
+            from cryptography.hazmat.primitives import serialization as _ser_pe
+            from cryptography.hazmat.primitives.asymmetric import padding as _pad_pe
+
+            body_hash = _h_pe.sha256(f"{email}|{imap_host}|{imap_pass}".encode()).hexdigest()
+            payload = f"{mesh_id}|{node_id}|set-payee-identity|{ts_i}|{body_hash}"
+            try:
+                pub_der = _b64_pe.b64decode(vault_node["node_pubkey"])
+                pub = _ser_pe.load_der_public_key(pub_der)
+                sig_bytes = _b64_pe.b64decode(signature)
+                pub.verify(sig_bytes, payload.encode("utf-8"), _pad_pe.PKCS1v15(), _hh_pe.SHA256())
+            except Exception as e:
+                logger.warning(
+                    "set-payee-identity sig verify failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    e,
+                )
+                self.respond(403, {"error": "invalid signature"})
+                return
+            if self._reject_unconfirmed_node("set-payee-identity", mesh_id, node_id, vault_node):
+                return
+            ident = _get_payment_identity(mesh_id)
+            summary = ident.set_payee(email, imap_host, imap_pass)
+            logger.info(
+                "set-payee-identity: mesh=%s node=%s payee=✓ imap=%s",
+                _sanitize_log(mesh_id),
+                _sanitize_log(node_id),
+                "✓" if summary["imap_configured"] else "—",
+            )
+            # Response intentionally omits the email back — defense in depth
+            # against a future bug that might log/echo it.
+            self.respond(200, {"ok": True, **summary})
+
+        # ── Lion-authed evidence email (where compliments/photos are sent) ──
+        # Path: /api/mesh/{mesh_id}/set-evidence-email
+        # Body: {node_id, ts, evidence_email, signature}
+        # signature = SHA256withRSA over
+        #     "mesh_id|node_id|set-evidence-email|ts|sha256(evidence_email)"
+        # Controller-only. Stored server-only in payment_identities/{mid}.json —
+        # the Lion's own email; never readable by the Bunny's apps.
+        elif self.path.startswith("/api/mesh/") and self.path.endswith("/set-evidence-email"):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 4 or parts[3] != "set-evidence-email":
+                self.respond(400, {"error": "bad path"})
+                return
+            mesh_id = parts[2]
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            if not _mesh_accounts.get(mesh_id):
+                self.respond(404, {"error": "mesh not found"})
+                return
+            node_id = data.get("node_id", "")
+            signature = data.get("signature", "")
+            evidence_email = str(data.get("evidence_email", "") or "").strip()
+            if not node_id or not signature:
+                self.respond(400, {"error": "node_id, signature required"})
+                return
+            try:
+                ts_i = int(data.get("ts", 0) or 0)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            if abs(int(time.time() * 1000) - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+            vault_node = None
+            for vnode in _vault_store.get_nodes(mesh_id):
+                if vnode.get("node_id") == node_id and vnode.get("node_pubkey"):
+                    vault_node = vnode
+                    break
+            if not vault_node:
+                self.respond(403, {"error": "node not registered in vault"})
+                return
+            ntype = (vault_node.get("node_type") or vault_node.get("type") or "").lower()
+            if ntype != "controller":
+                self.respond(403, {"error": "controller node required for evidence email"})
+                return
+            import base64 as _b64_ev
+            import hashlib as _h_ev
+
+            from cryptography.hazmat.primitives import hashes as _hh_ev
+            from cryptography.hazmat.primitives import serialization as _ser_ev
+            from cryptography.hazmat.primitives.asymmetric import padding as _pad_ev
+
+            body_hash = _h_ev.sha256(evidence_email.encode()).hexdigest()
+            payload = f"{mesh_id}|{node_id}|set-evidence-email|{ts_i}|{body_hash}"
+            try:
+                pub = _ser_ev.load_der_public_key(_b64_ev.b64decode(vault_node["node_pubkey"]))
+                pub.verify(
+                    _b64_ev.b64decode(signature),
+                    payload.encode("utf-8"),
+                    _pad_ev.PKCS1v15(),
+                    _hh_ev.SHA256(),
+                )
+            except Exception as e:
+                logger.warning("set-evidence-email sig verify failed: mesh=%s err=%s", _sanitize_log(mesh_id), e)
+                self.respond(403, {"error": "invalid signature"})
+                return
+            if self._reject_unconfirmed_node("set-evidence-email", mesh_id, node_id, vault_node):
+                return
+            summary = _get_payment_identity(mesh_id).set_evidence_email(evidence_email)
+            logger.info(
+                "set-evidence-email: mesh=%s node=%s configured=%s",
+                _sanitize_log(mesh_id),
+                _sanitize_log(node_id),
+                summary["evidence_configured"],
+            )
+            self.respond(200, {"ok": True, **summary})
+
+        # ── Bunny-authed payer identity (Bunny's email/name allowlist) ──
+        # Path: /api/mesh/{mesh_id}/set-payer-identity
+        # Body: {node_id, ts, allow:[...], signature}
+        # signature = SHA256withRSA over
+        #     "mesh_id|node_id|set-payer-identity|ts|sha256(allow_canonical)"
+        # Only a phone (slave/companion) node may set this. Server stores
+        # in the same payment_identities file but in a separate slot; Lion
+        # cannot read it back. Empty list = legacy mode (every matched
+        # payment email is credited) — the scanner WARNs once per cycle.
+        elif self.path.startswith("/api/mesh/") and self.path.endswith("/set-payer-identity"):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 4 or parts[3] != "set-payer-identity":
+                self.respond(400, {"error": "bad path"})
+                return
+            mesh_id = parts[2]
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            account = _mesh_accounts.get(mesh_id)
+            if not account:
+                self.respond(404, {"error": "mesh not found"})
+                return
+            node_id = data.get("node_id", "")
+            signature = data.get("signature", "")
+            allow = data.get("allow", [])
+            if not isinstance(allow, list):
+                self.respond(400, {"error": "allow must be a JSON array of strings"})
+                return
+            cleaned_allow = [str(s).strip() for s in allow if str(s).strip()]
+            if len(cleaned_allow) > 16:
+                self.respond(400, {"error": "allow capped at 16 entries"})
+                return
+            for s in cleaned_allow:
+                if len(s) > 200:
+                    self.respond(400, {"error": "allow entries capped at 200 chars"})
+                    return
+            if not node_id or not signature:
+                self.respond(400, {"error": "node_id and signature required"})
+                return
+            try:
+                ts_i = int(data.get("ts", 0) or 0)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            now_ms = int(time.time() * 1000)
+            if abs(now_ms - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+            vault_node = None
+            for vnode in _vault_store.get_nodes(mesh_id):
+                if vnode.get("node_id") == node_id and vnode.get("node_pubkey"):
+                    vault_node = vnode
+                    break
+            if not vault_node:
+                self.respond(403, {"error": "node not registered in vault"})
+                return
+            ntype = (vault_node.get("node_type") or vault_node.get("type") or "").lower()
+            if ntype not in ("phone", "slave", "companion"):
+                self.respond(403, {"error": "phone node required for payer identity"})
+                return
+            import base64 as _b64_pr
+            import hashlib as _h_pr
+
+            from cryptography.hazmat.primitives import hashes as _hh_pr
+            from cryptography.hazmat.primitives import serialization as _ser_pr
+            from cryptography.hazmat.primitives.asymmetric import padding as _pad_pr
+
+            allow_canonical = "\n".join(cleaned_allow)
+            body_hash = _h_pr.sha256(allow_canonical.encode("utf-8")).hexdigest()
+            payload = f"{mesh_id}|{node_id}|set-payer-identity|{ts_i}|{body_hash}"
+            try:
+                pub_der = _b64_pr.b64decode(vault_node["node_pubkey"])
+                pub = _ser_pr.load_der_public_key(pub_der)
+                sig_bytes = _b64_pr.b64decode(signature)
+                pub.verify(sig_bytes, payload.encode("utf-8"), _pad_pr.PKCS1v15(), _hh_pr.SHA256())
+            except Exception as e:
+                logger.warning(
+                    "set-payer-identity sig verify failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    e,
+                )
+                self.respond(403, {"error": "invalid signature"})
+                return
+            if self._reject_unconfirmed_node("set-payer-identity", mesh_id, node_id, vault_node):
+                return
+            ident = _get_payment_identity(mesh_id)
+            summary = ident.set_payer_allow(cleaned_allow)
+            logger.info(
+                "set-payer-identity: mesh=%s node=%s count=%d",
+                _sanitize_log(mesh_id),
+                _sanitize_log(node_id),
+                summary["count"],
+            )
+            # Response includes count only — never the actual strings, so a
+            # future Lion-side bug that fetches this can't extract them.
+            self.respond(200, {"ok": True, **summary})
+
+        # ── Bunny-authed display-name update ──
+        # Path: /api/mesh/{mesh_id}/set-display-name
+        # Body: {node_id, ts, display_name, signature}
+        # signature = SHA256withRSA over "mesh_id|node_id|set-display-name|ts|sha256(display_name)".
+        # Lets the bunny set/change how they appear to the Lion AFTER pairing
+        # (the join-time name was otherwise write-once, and already-provisioned
+        # devices had no way to set one at all). Signed with the same node key as
+        # the other bunny-authed endpoints so only the wearer can rename themselves.
+        elif self.path.startswith("/api/mesh/") and self.path.endswith("/set-display-name"):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 4 or parts[3] != "set-display-name":
+                self.respond(400, {"error": "bad path — expected /api/mesh/{mesh_id}/set-display-name"})
+                return
+            mesh_id = parts[2]
+            if not _safe_mesh_id(mesh_id):
+                self.respond(400, {"error": "invalid mesh_id"})
+                return
+            account = _mesh_accounts.get(mesh_id)
+            if not account:
+                self.respond(404, {"error": "mesh not found"})
+                return
+            node_id = data.get("node_id", "")
+            signature = data.get("signature", "")
+            display_name = str(data.get("display_name", "") or "").strip()[:40]
+            if not node_id or not signature:
+                self.respond(400, {"error": "node_id and signature required"})
+                return
+            try:
+                ts_i = int(data.get("ts", 0) or 0)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "ts must be int (ms epoch)"})
+                return
+            if abs(int(time.time() * 1000) - ts_i) > 5 * 60 * 1000:
+                self.respond(403, {"error": "ts out of window"})
+                return
+            vault_node = None
+            for vnode in _vault_store.get_nodes(mesh_id):
+                if vnode.get("node_id") == node_id and vnode.get("node_pubkey"):
+                    vault_node = vnode
+                    break
+            if not vault_node:
+                self.respond(403, {"error": "node not registered in vault"})
+                return
+            import base64 as _b64_dn
+            import hashlib as _h_dn
+
+            from cryptography.hazmat.primitives import hashes as _hh_dn
+            from cryptography.hazmat.primitives import serialization as _ser_dn
+            from cryptography.hazmat.primitives.asymmetric import padding as _pad_dn
+
+            body_hash = _h_dn.sha256(display_name.encode("utf-8")).hexdigest()
+            payload = f"{mesh_id}|{node_id}|set-display-name|{ts_i}|{body_hash}"
+            # Rename is a bunny-authored op: Bunny Tasker signs with the account
+            # bunny_pubkey (PairingManager key) — the same key every other
+            # bunny-signed endpoint verifies against (subscribe, deadline-task-
+            # clear, message send/ack). On a real device that key differs from the
+            # Collar's vault node_pubkey (generated independently by ControlService),
+            # so verifying against node_pubkey alone always 403'd the rename — a
+            # regression the unit test masked by reusing one key for both stores.
+            # Accept either legitimate authority for this node.
+            # Tagged so the confirmation gate below can tell the two authorities
+            # apart: an invite-code member is already vouched for, a bare vault
+            # row that auto-accepted itself is not.
+            candidate_pubkeys = []
+            _acct_node = (account.get("nodes") or {}).get(node_id) or {}
+            if _acct_node.get("bunny_pubkey"):
+                candidate_pubkeys.append(("bunny", _acct_node["bunny_pubkey"]))
+            if vault_node.get("node_pubkey"):
+                candidate_pubkeys.append(("vault-node", vault_node["node_pubkey"]))
+            verified_with = None
+            last_err = "no pubkey on file"
+            for _role, _pk_b64 in candidate_pubkeys:
+                try:
+                    pub = _ser_dn.load_der_public_key(_b64_dn.b64decode(_pk_b64))
+                    pub.verify(
+                        _b64_dn.b64decode(signature), payload.encode("utf-8"), _pad_dn.PKCS1v15(), _hh_dn.SHA256()
+                    )
+                    verified_with = _role
+                    break
+                except Exception as e:
+                    last_err = str(e)
+            if verified_with is None:
+                logger.warning(
+                    "set-display-name sig verify failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    last_err,
+                )
+                self.respond(403, {"error": "invalid signature"})
+                return
+            if verified_with == "vault-node" and self._reject_unconfirmed_node(
+                "set-display-name", mesh_id, node_id, vault_node
+            ):
+                return
+            _mesh_accounts.update_node(mesh_id, node_id, display_name=display_name)
+            logger.info("set-display-name: mesh=%s node=%s", _sanitize_log(mesh_id), _sanitize_log(node_id))
+            self.respond(200, {"ok": True})
 
         # ── Bunny-authed deadline-task completion ──
         # Path: /api/mesh/{mesh_id}/deadline-task/clear
@@ -4226,7 +6264,10 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 pub.verify(sig_bytes, payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
             except Exception as e:
                 logger.warning(
-                    "deadline-task-clear sig verify failed: mesh=%s node=%s err=%s", mesh_id, _sanitize_log(node_id), e
+                    "deadline-task-clear sig verify failed: mesh=%s node=%s err=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    e,
                 )
                 self.respond(403, {"error": "invalid signature"})
                 return
@@ -4250,7 +6291,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 return
             logger.info(
                 "Deadline task cleared: mesh=%s node=%s next_deadline=%s released_lock=%s",
-                mesh_id,
+                _sanitize_log(mesh_id),
                 _sanitize_log(node_id),
                 result.get("next_deadline_ms"),
                 result.get("released_lock"),
@@ -4330,10 +6371,16 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             # Resolve verifier pubkey: bunny = node.bunny_pubkey, lion = account.lion_pubkey
             if from_who == "bunny":
                 node = account.get("nodes", {}).get(node_id)
-                if not node:
-                    self.respond(403, {"error": "node not registered in mesh"})
-                    return
-                verifier_pub = node.get("bunny_pubkey", "")
+                verifier_pub = (node or {}).get("bunny_pubkey", "")
+                if not verifier_pub:
+                    # Real-mesh-bunnies: a Collar that became a member via register-node
+                    # (not the invite /api/mesh/join) carries its bunny_pubkey on the
+                    # vault node row rather than the account nodes dict. Fall back to it
+                    # so messaging verifies for full mesh members registered either way.
+                    for _vn in _vault_store.get_nodes(mesh_id):
+                        if _vn.get("node_id") == node_id and _vn.get("bunny_pubkey"):
+                            verifier_pub = _vn["bunny_pubkey"]
+                            break
                 if not verifier_pub:
                     self.respond(403, {"error": "no bunny_pubkey on file for node"})
                     return
@@ -4419,8 +6466,8 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             except Exception as e:
                 logger.warning(
                     "messages/%s sig verify failed: mesh=%s node=%s from=%s err=%s",
-                    op,
-                    mesh_id,
+                    _sanitize_log(op),
+                    _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
                     from_who,
                     e,
@@ -4445,10 +6492,28 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     entry["pinned"] = True
                 if mandatory:
                     entry["mandatory_reply"] = True
+                # Idempotency key (optional). Clients send a stable random id so a
+                # retried send dedups to one stored message (MessageStore.add).
+                # Not part of the signed payload: stripping it only disables
+                # dedup (falls back to append), and ids are unguessable, so a
+                # relay cannot weaponise it to suppress a distinct message.
+                cmid = data.get("client_msg_id", "")
+                if isinstance(cmid, str) and 0 < len(cmid) <= 128:
+                    entry["client_msg_id"] = cmid
                 # E2EE passthrough (server stores opaquely; signature binds `text`)
                 if data.get("encrypted"):
                     entry["encrypted"] = True
-                    for k in ("ciphertext", "encrypted_key", "iv"):
+                    # encrypted_key_lion / encrypted_key_bunny are the same AES
+                    # key wrapped for the SENDER, so each side can re-read what
+                    # they sent. Opaque to the relay exactly like the others, and
+                    # outside the signed payload (which binds `text`) — dropping
+                    # one would only cost that sender their own history, never
+                    # the recipient their message.
+                    #
+                    # The bunny's half arrived later than the Lion's: Bunny
+                    # Tasker papered over the gap with a per-device plaintext
+                    # cache, which worked until it evicted or the device changed.
+                    for k in ("ciphertext", "encrypted_key", "encrypted_key_lion", "encrypted_key_bunny", "iv"):
                         v = data.get(k, "")
                         if isinstance(v, str) and v:
                             entry[k] = v
@@ -4460,7 +6525,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 msg = store.add(entry)
                 logger.info(
                     "Message appended: mesh=%s node=%s from=%s id=%s pinned=%s mandatory=%s",
-                    mesh_id,
+                    _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
                     from_who,
                     msg.get("id"),
@@ -4535,7 +6600,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 logger.info(
                     "Message %s: mesh=%s node=%s from=%s id=%s",
                     status,
-                    mesh_id,
+                    _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
                     from_who,
                     _sanitize_log(message_id),
@@ -4554,7 +6619,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(
                     400,
                     {
-                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|since/{v}|nodes|nodes-pending}"
+                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|confirm-node|lion-pubkey|standing-orders|penalty|balance-event|since/{v}|nodes|nodes-pending}"
                     },
                 )
                 return
@@ -4607,8 +6672,8 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 _daily_blob_increment(mesh_id)
                 logger.info(
                     "Vault append: mesh=%s v=%s writer=%s:%s slots=%s ct_bytes=%s",
-                    mesh_id,
-                    version,
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(version),
                     writer_role,
                     writer_id,
                     len(blob.get("slots", {})),
@@ -4643,12 +6708,23 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 if not node_id or not node_pubkey:
                     self.respond(400, {"error": "node_id and node_pubkey required"})
                     return
+                # Real-mesh-bunnies: preserve the E2EE bunny_pubkey the Collar sent in
+                # its register-node-request (kept on the pending row) so an approved
+                # node stays a full, verifiable member. The Lion's approval payload
+                # may also carry it directly.
+                approved_bunny_pubkey = data.get("bunny_pubkey", "")
+                if not approved_bunny_pubkey:
+                    for _p in _vault_store.get_pending_nodes(mesh_id):
+                        if _p.get("node_id") == node_id:
+                            approved_bunny_pubkey = _p.get("bunny_pubkey", "")
+                            break
                 _vault_store.add_node(
                     mesh_id,
                     {
                         "node_id": node_id,
                         "node_type": node_type,
                         "node_pubkey": node_pubkey,
+                        "bunny_pubkey": approved_bunny_pubkey,
                         "registered_at": int(time.time()),
                     },
                 )
@@ -4657,11 +6733,517 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 _vault_store.clear_rejection(mesh_id, node_pubkey)
                 logger.info(
                     "Vault register-node: mesh=%s node=%s (%s)",
-                    mesh_id,
+                    _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
                     _sanitize_log(node_type),
                 )
                 self.respond(200, {"ok": True})
+
+            elif action == "confirm-node":
+                # Lion-signed confirmation of an already-approved node.
+                # Body: {node_id, ts, signature} — signature over canonical_json
+                # of the body minus "signature", same shape as register-node.
+                #
+                # Why it exists: a node that walked in through the auto-accept
+                # window is a member the Lion never looked at. Membership gets
+                # it vault reads; it must NOT also get the plaintext
+                # state-mirror channel (paywall / sub_due / lock_active), or
+                # anyone holding the mesh_id could zero the paywall without
+                # ever touching the enforced Collar. This is the one tap that
+                # says "yes, that device is mine" — Lion's Share sends it from
+                # the Confirm button and from "Add as bunny".
+                if not lion_pubkey:
+                    self.respond(403, {"error": "no lion_pubkey on file for this mesh"})
+                    return
+                if not _verify_signed_payload(data, data.get("signature", ""), lion_pubkey):
+                    self.respond(403, {"error": "invalid signature"})
+                    return
+                node_id = data.get("node_id", "")
+                if not node_id:
+                    self.respond(400, {"error": "node_id required"})
+                    return
+                if not _vault_store.confirm_node(mesh_id, node_id):
+                    self.respond(404, {"error": "no approved node with that node_id"})
+                    return
+                logger.warning(
+                    "Vault confirm-node: mesh=%s node=%s (lion vouched — state-mirror unlocked)",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                )
+                self.respond(200, {"ok": True, "node_id": node_id, "lion_confirmed": True})
+
+            elif action == "lion-pubkey":
+                # Node-signed request for the mesh's Lion public key.
+                # Body: {node_id, ts, signature}
+                # signature = SHA256withRSA over "mesh_id|node_id|lion-pubkey|ts"
+                # with the node's own registered key (vault node_pubkey, or the
+                # bunny_pubkey on its row — same pair state-mirror accepts).
+                #
+                # Why it exists: a desktop collar can join a mesh and never
+                # obtain the Lion's pubkey. Registration doesn't return it; only
+                # the invite-code join and the passphrase pairing flow do. So a
+                # perfectly good mesh member sat "unpaired" forever — gray crown,
+                # standing orders never applied, Lion-signed orders unverifiable
+                # — until a human hand-copied a PEM onto the box.
+                #
+                # Why not just read the controller row's node_pubkey client-side:
+                # node_type is self-asserted at registration, so anything that
+                # registered as node_type="controller" could poison a collar's
+                # trust anchor and forge orders. Only the relay knows the
+                # account's authoritative lion_pubkey; this hands over that one,
+                # to a caller that proved possession of an approved node key.
+                #
+                # Not gated on lion_confirmed: this is a public *verification*
+                # key, and a node that adopts it only becomes more obedient —
+                # it starts enforcing Lion-signed orders it would otherwise
+                # ignore. Withholding it would protect nothing and leave devices
+                # unclaimed, which is the failure this endpoint exists to end.
+                node_id = data.get("node_id", "")
+                signature = data.get("signature", "")
+                if not node_id or not signature:
+                    self.respond(400, {"error": "node_id and signature required"})
+                    return
+                try:
+                    ts_i = int(data.get("ts", 0) or 0)
+                except (ValueError, TypeError):
+                    self.respond(400, {"error": "ts must be int (ms epoch)"})
+                    return
+                if abs(int(time.time() * 1000) - ts_i) > 5 * 60 * 1000:
+                    self.respond(403, {"error": "ts out of window"})
+                    return
+                if not lion_pubkey:
+                    self.respond(404, {"error": "no lion_pubkey on file for this mesh"})
+                    return
+                if not _node_signing_keys(mesh_id, node_id):
+                    logger.warning(
+                        "Vault lion-pubkey DENIED (node not approved): mesh=%s node=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                    )
+                    self.respond(403, {"error": "node not registered in vault"})
+                    return
+                payload = f"{mesh_id}|{node_id}|lion-pubkey|{ts_i}"
+                if not _verify_node_signature(mesh_id, node_id, signature, payload):
+                    logger.warning(
+                        "Vault lion-pubkey DENIED (bad signature): mesh=%s node=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                    )
+                    self.respond(403, {"error": "invalid signature"})
+                    return
+                logger.info(
+                    "Vault lion-pubkey served: mesh=%s node=%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                )
+                self.respond(200, {"ok": True, "lion_pubkey": lion_pubkey, "format": "der-b64"})
+
+            elif action == "ntfy-topic":
+                # Node-signed read of this mesh's wake-up topic.
+                # Body: {node_id, ts, signature}
+                # signature = SHA256withRSA over "mesh_id|node_id|ntfy-topic|ts"
+                #
+                # Why it needs a route at all: the topic used to be
+                # `focuslock-{mesh_id}`, which every node could compute on its
+                # own — and so could anyone who had ever seen the mesh id.
+                # Now it is stored and random, so a node has to be told, and
+                # only a node that can prove it holds a registered key gets
+                # told. Deliberately NOT auth_token-gated: that token is the
+                # Lion's, and the collar is exactly the node that needs this
+                # and does not hold one.
+                node_id = data.get("node_id", "")
+                signature = data.get("signature", "")
+                if not node_id or not signature:
+                    self.respond(400, {"error": "node_id and signature required"})
+                    return
+                try:
+                    ts_nt = int(data.get("ts", 0) or 0)
+                except (ValueError, TypeError):
+                    self.respond(400, {"error": "ts must be an int"})
+                    return
+                if abs(int(time.time() * 1000) - ts_nt) > 5 * 60 * 1000:
+                    self.respond(403, {"error": "ts out of window"})
+                    return
+                if not _node_signing_keys(mesh_id, node_id):
+                    logger.warning(
+                        "Vault ntfy-topic DENIED (node not approved): mesh=%s node=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                    )
+                    self.respond(403, {"error": "node not approved on this mesh"})
+                    return
+                payload_nt = f"{mesh_id}|{node_id}|ntfy-topic|{ts_nt}"
+                if not _verify_node_signature(mesh_id, node_id, signature, payload_nt):
+                    self.respond(403, {"error": "bad signature"})
+                    return
+                self.respond(200, {"topic": _get_ntfy_topic(mesh_id)})
+
+            elif action == "penalty":
+                # Node-signed report of a fine-bearing incident on a collar.
+                # Body: {node_id, ts, signature, kind, count}
+                # signature = SHA256withRSA over "mesh_id|node_id|penalty|ts|kind|count"
+                #
+                # Why it exists: /webhook/desktop-penalty is admin-gated, so the
+                # only collar that could ever report one was a collar holding
+                # ADMIN_TOKEN. A vault-mode collar deliberately holds no such
+                # token (see standing-orders below), which meant every penalty it
+                # detected died in a log line — including the $30 consent
+                # decline, silently unchargeable on those machines for months.
+                #
+                # The collar reports the EVENT. It gets no say in the price. The
+                # amount is read from this mesh's own orders, which only the Lion
+                # writes, so a bunny with root on the collar can forge a report
+                # but cannot set what it costs, cannot charge at all unless They
+                # armed it, and gains nothing by lying about the count.
+                # Everything the collar sends is evidence; none of it is
+                # authority.
+                node_id = data.get("node_id", "")
+                signature = data.get("signature", "")
+                kind = str(data.get("kind", ""))
+                if not node_id or not signature:
+                    self.respond(400, {"error": "node_id and signature required"})
+                    return
+                # Allowlist: a kind maps to how it is priced. In none of these
+                # does the collar supply an amount — it reports what happened,
+                # the relay decides what that costs. An unknown kind must never
+                # reach a default.
+                #
+                #   orders  — the Lion arms and prices it in this mesh's orders
+                #   fixed   — a constant that lives here, not on the collar
+                #   ratchet — the server's own per-mesh lifetime counter
+                PENALTY_KINDS = {
+                    "veneration-paste": {
+                        "mode": "orders",
+                        "armed": "paste_fine_active",
+                        "amount": "paste_fine_amount",
+                    },
+                    # Was hardcoded as 30 in the collar, where a bunny with root
+                    # could edit it. Same number, kept somewhere they cannot.
+                    "consent-decline": {"mode": "fixed", "amount": 30},
+                    "desktop-tamper": {"mode": "ratchet"},
+                }
+                if kind not in PENALTY_KINDS:
+                    self.respond(400, {"error": f"unknown penalty kind: {kind!r}"})
+                    return
+                try:
+                    ts_pen = int(data.get("ts", 0) or 0)
+                    count = max(0, int(data.get("count", 0) or 0))
+                except (ValueError, TypeError):
+                    self.respond(400, {"error": "ts and count must be ints"})
+                    return
+                if abs(int(time.time() * 1000) - ts_pen) > 5 * 60 * 1000:
+                    self.respond(403, {"error": "ts out of window"})
+                    return
+                if not _node_signing_keys(mesh_id, node_id):
+                    logger.warning(
+                        "Vault penalty DENIED (node not approved): mesh=%s node=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                    )
+                    self.respond(403, {"error": "node not approved on this mesh"})
+                    return
+                payload_pen = f"{mesh_id}|{node_id}|penalty|{ts_pen}|{kind}|{count}"
+                if not _verify_node_signature(mesh_id, node_id, signature, payload_pen):
+                    logger.warning(
+                        "Vault penalty DENIED (bad signature): mesh=%s node=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                    )
+                    self.respond(403, {"error": "signature verification failed"})
+                    return
+                # Unlike standing-orders and lion-pubkey, this is gated on Lion
+                # confirmation. Those two only ever make a machine more governed;
+                # this one moves money, so an auto-accepted node They have never
+                # looked at does not get to spend it.
+                # The node's own vault row, the way state-mirror finds it.
+                # _vault_resolve_mesh returns the MESH account (and as a tuple),
+                # which carries neither auto_accepted nor lion_confirmed — those
+                # live per node.
+                vault_row_pen = {}
+                for _vn in _vault_store.get_nodes(mesh_id):
+                    if _vn.get("node_id") == node_id:
+                        vault_row_pen = _vn
+                        break
+                if self._reject_unconfirmed_node("Vault penalty", mesh_id, node_id, vault_row_pen):
+                    return
+                # The same guard /webhook/desktop-penalty carries. Without it
+                # this route is a way around the property vault_only is sold on,
+                # which is the shape a backdoor takes.
+                if mesh_id != OPERATOR_MESH_ID and _mesh_accounts.is_vault_only(mesh_id):
+                    self.respond(403, {"error": "vault_only mesh — penalty refused"})
+                    return
+                orders_pen = _orders_registry.get(mesh_id)
+                if orders_pen is None:
+                    self.respond(404, {"error": "unknown mesh"})
+                    return
+                spec = PENALTY_KINDS[kind]
+                attempt_no = None
+                if spec["mode"] == "orders":
+                    try:
+                        armed = int(orders_pen.get(spec["armed"], 0) or 0)
+                        amount = int(orders_pen.get(spec["amount"], 0) or 0)
+                    except (TypeError, ValueError):
+                        armed, amount = 0, 0
+                    if not armed:
+                        # Not an error. The collar is right to report; They
+                        # simply have not armed it. Say so plainly so it logs
+                        # rather than retries.
+                        logger.info(
+                            "Vault penalty NOT ARMED (%s): mesh=%s node=%s count=%s",
+                            _sanitize_log(kind),
+                            _sanitize_log(mesh_id),
+                            _sanitize_log(node_id),
+                            count,
+                        )
+                        self.respond(200, {"ok": True, "armed": False, "amount": 0})
+                        return
+                elif spec["mode"] == "fixed":
+                    amount = int(spec["amount"])
+                else:
+                    # Ratchet: price off the SERVER's per-mesh lifetime counter,
+                    # never the collar's — the bunny has root over theirs. The
+                    # reported count only ever fast-forwards ours, and is bounded
+                    # so a bogus claim cannot leap the tier, exactly as
+                    # /webhook/desktop-penalty does it.
+                    TAMPER_CLAIM_JUMP_MAX = 100
+                    ceiling = _read_tamper_attempts(mesh_id) + TAMPER_CLAIM_JUMP_MAX
+                    if count > ceiling:
+                        logger.warning(
+                            "Vault penalty: tamper claim %s from mesh=%s exceeds +%s of the recorded count — clamping",
+                            count,
+                            _sanitize_log(mesh_id),
+                            TAMPER_CLAIM_JUMP_MAX,
+                        )
+                        count = ceiling
+                    attempt_no = _bump_tamper_attempts(mesh_id, at_least=count)
+                    amount = tamper_penalty(attempt_no)
+                amount = max(0, min(500, amount))
+                if amount == 0:
+                    self.respond(200, {"ok": True, "armed": True, "amount": 0})
+                    return
+                logger.warning(
+                    "VAULT PENALTY: mesh=%s node=%s kind=%s count=%s $%s",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    _sanitize_log(kind),
+                    count,
+                    amount,
+                )
+                # The kind is the whole point of the row: "consent declined" or
+                # "desktop tamper #3" is what the balance history should say,
+                # not "added by the Lion" for something They did not do.
+                PENALTY_REASONS = {
+                    "veneration-paste": "Pasted a veneration instead of typing it",
+                    "consent-decline": "Consent declined",
+                    "desktop-tamper": "Desktop tamper" + (f" #{attempt_no}" if attempt_no else ""),
+                }
+                applied = _server_apply_order(
+                    mesh_id,
+                    "add-paywall",
+                    {"amount": amount, "reason": PENALTY_REASONS.get(kind, kind)},
+                )
+                self.respond(
+                    200,
+                    {
+                        "ok": True,
+                        "armed": True,
+                        "amount": amount,
+                        "attempt": attempt_no,
+                        "paywall": (applied or {}).get("paywall"),
+                    },
+                )
+                return
+
+            elif action == "balance-event":
+                # Node-signed report of WHY the balance moved on a vault mesh.
+                # Body: {node_id, ts, signature, action, before, after, event_id}
+                # signature = SHA256withRSA over
+                #   "mesh_id|node_id|balance-event|ts|action|before|after"
+                #
+                # Why it exists: on a vault mesh the Lion's order is an
+                # encrypted blob the COLLAR decrypts and applies. The relay
+                # never runs mesh_apply_order, so _server_apply_order never
+                # fires and the balance history recorded nothing for the orders
+                # that cause most of the movement — leaving a ledger that knew
+                # about tributes and fines but not about the Lion adding $25.
+                #
+                # The collar reports which ACTION it applied and the balance
+                # either side. It does NOT get to write the description: that
+                # is looked up here, from the same table the server-side path
+                # uses, so a bunny with root can forge a row's numbers but
+                # cannot put words into the Lion's history.
+                node_id = data.get("node_id", "")
+                signature = data.get("signature", "")
+                applied = str(data.get("action", ""))
+                event_id = str(data.get("event_id", ""))[:64]
+                if not node_id or not signature or not applied:
+                    self.respond(400, {"error": "node_id, signature and action required"})
+                    return
+                try:
+                    ts_be = int(data.get("ts", 0) or 0)
+                    before_be = float(data.get("before", 0) or 0)
+                    after_be = float(data.get("after", 0) or 0)
+                except (ValueError, TypeError):
+                    self.respond(400, {"error": "ts/before/after must be numbers"})
+                    return
+                if abs(int(time.time() * 1000) - ts_be) > 5 * 60 * 1000:
+                    self.respond(403, {"error": "ts out of window"})
+                    return
+                if not _node_signing_keys(mesh_id, node_id):
+                    self.respond(403, {"error": "node not approved on this mesh"})
+                    return
+                payload_be = f"{mesh_id}|{node_id}|balance-event|{ts_be}|{applied}|{before_be:g}|{after_be:g}"
+                if not _verify_node_signature(mesh_id, node_id, signature, payload_be):
+                    logger.warning(
+                        "Vault balance-event DENIED (bad signature): mesh=%s node=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                    )
+                    self.respond(403, {"error": "signature verification failed"})
+                    return
+                vault_row_be = {}
+                for _vn in _vault_store.get_nodes(mesh_id):
+                    if _vn.get("node_id") == node_id:
+                        vault_row_be = _vn
+                        break
+                # Same bar as state-mirror, and for the same reason: an
+                # invite-code member came in through a code the Lion handed out,
+                # so they are already vouched for. Only a node that walked in
+                # through the auto-accept window and has never been looked at
+                # needs the Lion's Confirm.
+                #
+                # It would be wrong to be STRICTER here than state-mirror, which
+                # writes paywall straight into the registry the scanners bill
+                # from. This route only describes a movement that endpoint has
+                # already asserted — and being stricter meant a freshly paired
+                # bunny's history stayed silently empty, with a 403 in the
+                # relay log and nothing on either screen to say why.
+                _account_be = _mesh_accounts.get(mesh_id) or {}
+                _is_invite_member = bool((_account_be.get("nodes", {}).get(node_id) or {}).get("bunny_pubkey"))
+                if not _is_invite_member and self._reject_unconfirmed_node(
+                    "Vault balance-event", mesh_id, node_id, vault_row_be
+                ):
+                    return
+                # A vault_only mesh is sold on the relay learning nothing. The
+                # balance already stays off it there (no state-mirror), and
+                # "the Lion added $25" is exactly the kind of thing that
+                # promise covers — so the history stays in the apps.
+                if mesh_id != OPERATOR_MESH_ID and _mesh_accounts.is_vault_only(mesh_id):
+                    self.respond(403, {"error": "vault_only mesh — balance history stays local"})
+                    return
+
+                delta_be = round(after_be - before_be, 2)
+                if not delta_be:
+                    self.respond(200, {"ok": True, "recorded": False, "reason": "no movement"})
+                    return
+                description = _LEDGER_DESCRIPTIONS.get(applied, applied.replace("-", " ").capitalize())
+                try:
+                    add = _get_payment_ledger(mesh_id).add_entry(
+                        entry_type="charge" if delta_be > 0 else "credit",
+                        amount=abs(delta_be),
+                        # Dedup key: the collar retries, and one order must not
+                        # become three rows.
+                        source=f"vault:{node_id}:{event_id}" if event_id else "",
+                        description=description,
+                        balance_after=after_be,
+                    )
+                except Exception:
+                    logger.exception("balance-event: ledger append failed for %s", _sanitize_log(mesh_id))
+                    self.respond(500, {"error": "ledger append failed"})
+                    return
+                if add.get("error") == "duplicate":
+                    self.respond(200, {"ok": True, "recorded": False, "reason": "duplicate"})
+                    return
+                logger.info(
+                    "Balance event: mesh=%s node=%s %s %s->%s (%s)",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    _sanitize_log(applied),
+                    before_be,
+                    after_be,
+                    _sanitize_log(description),
+                )
+                self.respond(200, {"ok": True, "recorded": True, "description": description})
+                return
+
+            elif action == "standing-orders":
+                # Node-signed fetch of the Lion's standing orders.
+                # Body: {node_id, ts, signature}
+                # signature = SHA256withRSA over "mesh_id|node_id|standing-orders|ts"
+                # with the node's own registered key — same contract as
+                # lion-pubkey above.
+                #
+                # Why it exists: GET /standing-orders is admin-gated, so the only
+                # way a desktop collar could pull the Lion's orders was to hold
+                # ADMIN_TOKEN — a credential for the whole admin API — on the
+                # machine the collar exists to constrain. Bunnies were being
+                # handed the keys to the relay in order to be told what to do.
+                # Membership is the right proof here: a node that already holds a
+                # registered key demonstrates it is on this mesh, and that is all
+                # reading the orders should require.
+                #
+                # Not gated on lion_confirmed, for the same reason lion-pubkey
+                # isn't: receiving the Lion's orders only makes a machine more
+                # governed, never less. An unconfirmed node that starts obeying
+                # is not a breach.
+                #
+                # Deliberately serves the *stub* only (via _read_standing_orders),
+                # never /enforcement-orders — the tactical orders, penalty
+                # amounts and the admin token stay behind the admin gate, where
+                # a node key is not enough.
+                node_id = data.get("node_id", "")
+                signature = data.get("signature", "")
+                if not node_id or not signature:
+                    self.respond(400, {"error": "node_id and signature required"})
+                    return
+                try:
+                    ts_so = int(data.get("ts", 0) or 0)
+                except (ValueError, TypeError):
+                    self.respond(400, {"error": "ts must be int (ms epoch)"})
+                    return
+                if abs(int(time.time() * 1000) - ts_so) > 5 * 60 * 1000:
+                    self.respond(403, {"error": "ts out of window"})
+                    return
+                if not _node_signing_keys(mesh_id, node_id):
+                    logger.warning(
+                        "Vault standing-orders DENIED (node not approved): mesh=%s node=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                    )
+                    self.respond(403, {"error": "node not registered in vault"})
+                    return
+                payload_so = f"{mesh_id}|{node_id}|standing-orders|{ts_so}"
+                if not _verify_node_signature(mesh_id, node_id, signature, payload_so):
+                    logger.warning(
+                        "Vault standing-orders DENIED (bad signature): mesh=%s node=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                    )
+                    self.respond(403, {"error": "invalid signature"})
+                    return
+                import hashlib as _h_so
+
+                content_so = _read_standing_orders()
+                if not content_so:
+                    self.respond(404, {"error": "no standing orders found"})
+                    return
+                logger.info(
+                    "Vault standing-orders served: mesh=%s node=%s bytes=%d",
+                    _sanitize_log(mesh_id),
+                    _sanitize_log(node_id),
+                    len(content_so),
+                )
+                self.respond(
+                    200,
+                    {
+                        "ok": True,
+                        "content": content_so,
+                        # Lets a collar skip re-applying an unchanged file, and
+                        # lets an operator compare what a node received against
+                        # what the relay holds without shipping the text around.
+                        "sha256": _h_so.sha256(content_so.encode("utf-8")).hexdigest(),
+                    },
+                )
 
             elif action == "reject-node-request":
                 # Lion-signed rejection. Drops the pending entry and adds the
@@ -4685,9 +7267,9 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     _vault_store.remove_pending_node(mesh_id, node_id)
                 logger.info(
                     "Vault reject-node-request: mesh=%s node=%s reason=%r",
-                    mesh_id,
+                    _sanitize_log(mesh_id),
                     _sanitize_log(node_id),
-                    reason,
+                    _sanitize_log(reason),
                 )
                 self.respond(200, {"ok": True})
 
@@ -4697,6 +7279,11 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 node_id = data.get("node_id", "")
                 node_type = data.get("node_type", "unknown")
                 node_pubkey = data.get("node_pubkey", "")
+                # Real-mesh-bunnies: the Collar now also sends its E2EE bunny_pubkey
+                # so an auto-accepted / approved node becomes a full member the relay
+                # can verify for state-mirror + messaging (previously only the
+                # separate /api/mesh/join carried it). Optional — blank = vault-only.
+                node_bunny_pubkey = data.get("bunny_pubkey", "")
                 # Short hash of the pubkey for structured logs — lets an operator
                 # grep the access log and confirm which key made the request
                 # without logging the full key. Matches the hash shape used by
@@ -4722,6 +7309,53 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     )
                     self.respond(403, {"error": "node rejected"})
                     return
+                # Idempotent re-registration: an already-approved node posting the
+                # exact key it is already on file with is a restart, not a join.
+                # `_vault_register_node()` guards on an in-process flag, so every
+                # collar restart re-posts — and once the auto-accept window shuts,
+                # that queued the node again and fired a join alert for a device
+                # that had been a member for a day. The Lion then saw a queue where
+                # approving most rows was a no-op, which is how a real request hides.
+                # Answering "you are already in" costs nothing and keeps the
+                # restart-driven re-post as the self-healing path it is: if relay
+                # state is ever lost, the same POST re-enrolls the collar through
+                # the normal gate.
+                #
+                # Deliberately strict about what counts as the same node: node_pubkey
+                # must match byte-for-byte, and a request carrying a *different*
+                # bunny_pubkey than the row holds falls through to the queue. Both are
+                # verification anchors, so silently accepting a new one here would be
+                # the unauthenticated key-swap this handler routes to the Lion on purpose.
+                #
+                # It also does NOT clear any pending row for this node_id. Pending is
+                # keyed by node_id, node_pubkeys are readable anonymously from
+                # /vault/{id}/nodes, and a stale row is only ever a duplicate — so
+                # clearing here would let anyone replay a node's current key to delete
+                # that node's *rotation* request and strand it on its old key.
+                existing = None
+                for _n in _vault_store.get_nodes(mesh_id):
+                    if _n.get("node_id") == node_id:
+                        existing = _n
+                        break
+                if existing and existing.get("node_pubkey") == node_pubkey:
+                    _stored_bunny = existing.get("bunny_pubkey", "") or ""
+                    if not node_bunny_pubkey or node_bunny_pubkey == _stored_bunny:
+                        logger.info(
+                            "Vault register-node-request ALREADY-REGISTERED (no-op): mesh=%s node=%s pubkey_hash=%s",
+                            _sanitize_log(mesh_id),
+                            _sanitize_log(node_id),
+                            pk_hash,
+                        )
+                        self.respond(
+                            200,
+                            {
+                                "ok": True,
+                                "status": "approved",
+                                "already_registered": True,
+                                "lion_confirmed": bool(existing.get("lion_confirmed")),
+                            },
+                        )
+                        return
                 # Security: key rotation (same node_id, new pubkey) goes to pending
                 # queue like any new node. Lion must approve. The legacy
                 # always-auto-approve was removed because it allowed
@@ -4730,11 +7364,21 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 #
                 # Lion can opt the mesh into auto-acceptance by toggling
                 # account["auto_accept_nodes"] = true via the /auto-accept
-                # endpoint below. While active, register-node-request goes
-                # straight to the approved list. Closes the friction of
+                # endpoint below. That opens a time-boxed window (see
+                # _auto_accept_active); while it is open, register-node-request
+                # goes straight to the approved list. Closes the friction of
                 # approving every consumer-mesh device while keeping the
-                # opt-in explicit + auditable (logged each time).
-                auto_accept = bool(account.get("auto_accept_nodes", False))
+                # opt-in explicit, expiring, and auditable (logged each time).
+                auto_accept = _auto_accept_active(account)
+                if account.get("auto_accept_nodes") and not auto_accept:
+                    # Flag set but the clock ran out (or a legacy sticky-open
+                    # account). Say so explicitly — otherwise a Lion watching
+                    # the log sees a device queue for approval with no reason.
+                    logger.warning(
+                        "Vault register-node-request: auto-accept window CLOSED, queuing for approval: mesh=%s node=%s",
+                        _sanitize_log(mesh_id),
+                        _sanitize_log(node_id),
+                    )
                 if auto_accept:
                     # Even on auto-accept, refuse a key rotation if a node
                     # with this id already exists with a different pubkey.
@@ -4762,6 +7406,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                             _sanitize_log(node_id),
                             pk_hash,
                         )
+                        _node_join_ntfy(mesh_id)
                         self.respond(
                             200, {"ok": True, "status": "pending", "reason": "key rotation needs lion approval"}
                         )
@@ -4772,6 +7417,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                             "node_id": node_id,
                             "node_type": node_type,
                             "node_pubkey": node_pubkey,
+                            "bunny_pubkey": node_bunny_pubkey,
                             "registered_at": int(time.time()),
                             "auto_accepted": True,
                         },
@@ -4784,6 +7430,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         _sanitize_log(node_type),
                         pk_hash,
                     )
+                    _node_join_ntfy(mesh_id)
                     self.respond(200, {"ok": True, "status": "approved", "auto_accepted": True})
                     return
                 _vault_store.add_pending_node(
@@ -4792,6 +7439,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         "node_id": node_id,
                         "node_type": node_type,
                         "node_pubkey": node_pubkey,
+                        "bunny_pubkey": node_bunny_pubkey,
                         "requested_at": int(time.time()),
                     },
                 )
@@ -4802,6 +7450,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     _sanitize_log(node_type),
                     pk_hash,
                 )
+                _node_join_ntfy(mesh_id)
                 self.respond(200, {"ok": True, "status": "pending"})
 
             else:
@@ -4946,8 +7595,11 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             # Build config payload
             local_addrs = mesh.get_local_addresses()
             homelab_ip = local_addrs[0] if local_addrs else "127.0.0.1"
+            # Prefer the public reverse-proxy URL when configured, so apps
+            # enrolled off-LAN reach the homelab by name over HTTPS.
+            base_url = PUBLIC_URL or f"http://{homelab_ip}:{WEBHOOK_PORT}"
             config = {
-                "homelab_url": f"http://{homelab_ip}:{WEBHOOK_PORT}",
+                "homelab_url": base_url,
                 "mesh_pin": str(mesh_orders.get("pin", "")),
                 "pubkey_pem": get_lion_pubkey() or "",
                 "mesh_port": _cfg.get("mesh_port", 8435),
@@ -4957,8 +7609,8 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             pair_file = os.path.join(pair_dir, f"{code}.json")
             with open(pair_file, "w") as f:
                 json.dump({"config": config, "expires_at": time.time() + expires_min * 60}, f)
-            pair_url = f"http://{homelab_ip}:{WEBHOOK_PORT}/api/pair/{code}"
-            logger.info("Pairing code created: %s (expires %smin)", code, expires_min)
+            pair_url = f"{base_url}/api/pair/{code}"
+            logger.info("Pairing code created: %s (expires %smin)", _sanitize_log(code), _sanitize_log(expires_min))
             self.respond(200, {"ok": True, "code": code, "url": pair_url, "expires_minutes": expires_min})
 
         elif self.path in ("/api/web-session", "/admin/web-session"):
@@ -5026,7 +7678,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                             break
 
                 if matched_mesh_id is None:
-                    logger.warning("Web session approve DENIED (no mesh matched): %s...", session_id[:8])
+                    logger.warning("Web session approve DENIED (no mesh matched): %s...", _sanitize_log(session_id[:8]))
                     self.respond(403, {"error": "invalid signature — no Lion key matched"})
                     return
 
@@ -5036,7 +7688,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 session["mesh_id"] = matched_mesh_id
                 logger.info(
                     "Web session approved: session=%s... mesh=%s",
-                    session_id[:8],
+                    _sanitize_log(session_id[:8]),
                     _sanitize_log(matched_mesh_id or "(operator)"),
                 )
                 self.respond(200, {"ok": True, "status": "approved"})
@@ -5114,7 +7766,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                     )
                     self.respond(403, {"error": "invalid signature"})
                     return
-            logger.debug("Desktop heartbeat: mesh=%s host=%s", mesh_id, _sanitize_log(hostname))
+            logger.debug("Desktop heartbeat: mesh=%s host=%s", _sanitize_log(mesh_id), _sanitize_log(hostname))
             try:
                 reg = _get_desktop_registry(mesh_id) if mesh_id else desktop_registry
                 reg.heartbeat(hostname, name=data.get("name", ""))
@@ -5348,7 +8000,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(
                     400,
                     {
-                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|since/{v}|nodes|nodes-pending}"
+                        "error": "bad vault path — expected /vault/{mesh_id}/{append|register-node|register-node-request|confirm-node|lion-pubkey|standing-orders|since/{v}|nodes|nodes-pending}"
                     },
                 )
                 return
@@ -5382,7 +8034,91 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 )
 
             elif action == "nodes":
-                self.respond(200, {"nodes": _vault_store.get_nodes(mesh_id)})
+                nodes = _vault_store.get_nodes(mesh_id)
+                resp = {"nodes": nodes}
+                # Trust bookkeeping (how a node got in, whether the Lion has
+                # vouched for it) is Lion-only for the same reason the
+                # auto-accept flag is: it tells a prober which rows are
+                # unconfirmed, i.e. exactly which mesh let a stranger walk in.
+                # Stripped below for unauthenticated callers — the collars'
+                # E2EE bootstrap only needs node_id / node_type / pubkeys.
+                _TRUST_FIELDS = ("auto_accepted", "lion_confirmed", "confirmed_at", "confirmed_by")
+                # The base node list (opaque ids/types/pubkeys, needed for E2EE
+                # bootstrap) stays readable, but the enrichment below is Lion-only:
+                # the bunny's self-chosen human display name is PII, and the
+                # auto-accept flag is a reconnaissance aid (it tells a prober which
+                # meshes will auto-approve a rogue register-node-request). So this
+                # GET now authenticates the caller the same way nodes-pending does
+                # before adding any of it. (Anonymously-readable enrichment was the
+                # regression; the Lion's meshGet already sends the Bearer token.)
+                qparams = urllib.parse.parse_qs(parsed.query)
+                auth_token = qparams.get("auth_token", [""])[0]
+                if not auth_token:
+                    auth_header = self.headers.get("Authorization", "")
+                    if auth_header.startswith("Bearer "):
+                        auth_token = auth_header[7:]
+                authed = _mesh_accounts.validate_auth(mesh_id, auth_token)
+                if not authed:
+                    resp["nodes"] = [{k: v for k, v in n.items() if k not in _TRUST_FIELDS} for n in nodes]
+                # Enrich from the mesh account store, which holds data the vault
+                # node store doesn't: the bunny's display name (#4), their E2EE
+                # pubkey (#6), and the auto-accept flag (#5) — Lion-authenticated only.
+                acct = _mesh_accounts.get(mesh_id)
+                if acct and authed:
+                    anodes = acct.get("nodes", {}) or {}
+                    # Per-node display_name, matched by node_id where it aligns.
+                    for n in nodes:
+                        a = anodes.get(n.get("node_id", ""))
+                        if a and a.get("display_name"):
+                            n["display_name"] = a["display_name"]
+                        # ...and the account's bunny_pubkey, when the vault row
+                        # predates register-node-request carrying one. Never
+                        # overwrite a key already on the vault row: that row is
+                        # what the Lion approved, the account row is what an
+                        # invite-code holder self-asserted.
+                        if a and a.get("bunny_pubkey") and not n.get("bunny_pubkey"):
+                            n["bunny_pubkey"] = a["bunny_pubkey"]
+                    # Per-mesh bunny E2EE pubkey (#6): the phone and the Collar
+                    # register under different node_id schemes, so expose the
+                    # bunny's key at the mesh level — there is one bunny E2EE key
+                    # per mesh. Pick the most-recently-joined node that has one.
+                    best = None
+                    for a in anodes.values():
+                        if a.get("bunny_pubkey"):
+                            if best is None or a.get("joined_at", 0) >= best.get("joined_at", 0):
+                                best = a
+                    if best:
+                        resp["bunny_pubkey"] = best["bunny_pubkey"]
+                        if best.get("display_name"):
+                            resp["bunny_display_name"] = best["display_name"]
+                if authed and not resp.get("bunny_pubkey"):
+                    # Fall back to the vault node rows. A Collar that enrolled
+                    # through register-node-request carries its E2EE bunny_pubkey
+                    # on the vault row and never touches /api/mesh/join, so the
+                    # mesh account has no node to harvest — and this mesh-level
+                    # field stayed absent. Lion's Share reads exactly this field
+                    # whenever a slot has no node_id (the ordinary one-bunny
+                    # pairing), so the Inbox sat on "not encrypted" forever with
+                    # the key sitting one dict away. Most-recently-registered
+                    # wins, matching the account-side rule above.
+                    vbest = None
+                    for n in nodes:
+                        if n.get("bunny_pubkey"):
+                            if vbest is None or n.get("registered_at", 0) >= vbest.get("registered_at", 0):
+                                vbest = n
+                    if vbest:
+                        resp["bunny_pubkey"] = vbest["bunny_pubkey"]
+                        if vbest.get("display_name") and not resp.get("bunny_display_name"):
+                            resp["bunny_display_name"] = vbest["display_name"]
+                if acct and authed:
+                    # Real auto-accept state (#5) so the Lion's toggle reflects
+                    # truth instead of a hardcoded "(off)". Read through the same
+                    # helper register-node-request enforces with, so an expired
+                    # window can never show as "on" — otherwise the toggle would
+                    # claim a door is open that the relay treats as shut.
+                    resp["auto_accept"] = _auto_accept_active(acct)
+                    resp["auto_accept_until"] = int(acct.get("auto_accept_until", 0) or 0)
+                self.respond(200, resp)
 
             elif action == "nodes-pending":
                 # Lion polls for pending registrations. Requires auth_token.
@@ -5401,8 +8137,33 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(404, {"error": f"unknown vault action: {action}"})
             return
 
-        elif self.path == "/controller":
-            # Return Lion's Share controller's last known address
+        elif self.path.split("?")[0] == "/controller":
+            # Return Lion's Share controller's last known address.
+            #
+            # Admin-gated 2026-08-17. The *write* side has required the token
+            # since audit 2026-04-27 M-2, on the reasoning that an unauth
+            # caller must not get to choose the address controller resolution
+            # hands back. The read side was left open, which served the answer
+            # to anyone who could reach the relay — and this relay is on public
+            # HTTPS. It read 404 for a while only because controller.json sits
+            # on tmpfs and a reboot had wiped it; it refills the moment the
+            # installer re-registers. Same gate shape as /standing-orders.
+            # scripts/release.sh sends FOCUSLOCK_ADMIN_TOKEN.
+            import urllib.parse as _up_ct
+
+            parsed_ct = _up_ct.urlparse(self.path)
+            params_ct = _up_ct.parse_qs(parsed_ct.query)
+            token_ct = params_ct.get("admin_token", [""])[0]
+            if not token_ct:
+                auth_header_ct = self.headers.get("Authorization", "")
+                if auth_header_ct.startswith("Bearer "):
+                    token_ct = auth_header_ct[7:]
+            if not ADMIN_TOKEN:
+                self.respond(503, {"error": "admin_token not configured"})
+                return
+            if not _is_valid_admin_auth(token_ct):
+                self.respond(403, {"error": "invalid admin_token"})
+                return
             reg_file = "/run/focuslock/controller.json"
             try:
                 if os.path.exists(reg_file):
@@ -5442,14 +8203,8 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                 self.respond(403, {"error": "invalid admin_token"})
                 return
             try:
-                stub = os.path.expanduser("~/.claude/CLAUDE-stub.md")
-                fallback = os.path.expanduser("~/.claude/CLAUDE.md")
-                target = stub if os.path.exists(stub) else fallback
-                if os.path.exists(target):
-                    with open(target, "r") as f:
-                        content = f.read()
-                    if ADMIN_TOKEN and ADMIN_TOKEN in content:
-                        content = content.replace(ADMIN_TOKEN, "<REDACTED>")
+                content = _read_standing_orders()
+                if content is not None:
                     self.send_response(200)
                     self.send_header("Content-Type", "text/plain")
                     self.end_headers()
@@ -5658,7 +8413,7 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         os.remove(pair_file)
                         self.respond(410, {"error": "pairing code expired"})
                 except Exception as e:
-                    logger.warning("/api/pair/%s error: %s", code, e)
+                    logger.warning("/api/pair/%s error: %s", _sanitize_log(code), e)
                     self.respond(500, {"error": "internal error"})
             else:
                 self.respond(404, {"error": "invalid pairing code"})
@@ -5841,6 +8596,10 @@ if __name__ == "__main__":
     # Initialize mesh — bootstrap from ADB if no persisted state
     seed_mesh_peers()
     init_mesh_from_adb()
+    # One-shot vault→file migration for IMAP creds. Idempotent: skips meshes
+    # whose PaymentIdentity is already populated. Logs WARN only when it
+    # actually moves something, so steady-state startups stay quiet.
+    _migrate_vault_payment_imap()
     logger.info("Mesh: node=%s v%s peers=%s", MESH_NODE_ID, mesh_orders.version, len(mesh_peers.peers))
 
     # Start mesh gossip thread (10s interval)

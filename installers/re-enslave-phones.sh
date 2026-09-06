@@ -56,8 +56,12 @@ if [ "$QUIET" = 1 ]; then
 fi
 
 check_paywall
-discover_paths
+# load_config BEFORE discover_paths: the config file is where FOCUSLOCK_SRC is
+# documented to live, and discover_paths only honours it if it is already set.
+# Reversed, the pin was dead unless exported into the environment by hand, and
+# autodiscovery quietly deployed whichever checkout it walked to first.
 load_config
+discover_paths
 
 if [ -z "${PHONE_TARGETS+x}" ] || [ "${#PHONE_TARGETS[@]}" -eq 0 ]; then
     fail "No PHONE_TARGETS configured. Copy re-enslave.config.example to ~/.config/focuslock/re-enslave.config and edit."
@@ -97,7 +101,9 @@ COMPANION_APK_PATH=$(find_apk "$TARGET_COMPANION_APK")
 #     it's granted first; the rest are dangerous-class but pre-grant via adb
 #     works on Android 14+)
 #   - Active device admin for .AdminReceiver
-#   - focus_lock_consent_given flag (consent presumed by maintainer; skip the dialog)
+#   - focus_lock_consented flag (consent presumed by maintainer; skip the dialog).
+#     Must match the key ConsentActivity/FocusActivity read (was focus_lock_consent_given,
+#     which nothing read — the dialog was never actually skipped).
 #   - Force-stop + foreground-service start so the new perms take effect
 #
 # (Removed 2026-04-17: notification-listener allowance for .PaymentListener.
@@ -121,8 +127,29 @@ recage_focuslock() {
     for p in "${pm_perms[@]}"; do
         adb_cmd -s "$dev" shell "pm grant com.focuslock android.permission.$p" >/dev/null 2>&1 || true
     done
+    # Bunny Tasker also writes Settings.Global — the mesh-join config
+    # (node_id/mesh_id/mesh_url/pin) and the vault-mode flag — which requires
+    # WRITE_SECURE_SETTINGS. It's declared in the companion manifest but, unlike
+    # the Collar, was never granted here. Without it the in-app "Join Mesh" flow
+    # dies with a permission denial *after* the server already registered the
+    # node, leaving a half-joined state: the Lion sees a new node while the
+    # phone shows "Join failed" and holds no local mesh config.
+    adb_cmd -s "$dev" shell "pm grant com.bunnytasker android.permission.WRITE_SECURE_SETTINGS" >/dev/null 2>&1 || true
     adb_cmd -s "$dev" shell "dpm set-active-admin --user 0 com.focuslock/.AdminReceiver" >/dev/null 2>&1 || true
-    adb_cmd -s "$dev" shell "settings put global focus_lock_consent_given 1" >/dev/null 2>&1 || true
+    adb_cmd -s "$dev" shell "settings put global focus_lock_consented 1" >/dev/null 2>&1 || true
+    # Enable the notification-shade guard (ShadeGuardService accessibility service).
+    # Non-device-owner devices can't pre-disable the status bar, so this reactively
+    # collapses the shade during a lock. Accessibility services live in a
+    # colon-separated secure setting — APPEND so we never clobber the wearer's own.
+    local a11y_svc="com.focuslock/com.focuslock.ShadeGuardService"
+    local a11y_cur
+    a11y_cur=$(adb_cmd -s "$dev" shell "settings get secure enabled_accessibility_services" 2>/dev/null | tr -d '\r\n')
+    if [ "$a11y_cur" = "null" ] || [ -z "$a11y_cur" ]; then
+        adb_cmd -s "$dev" shell "settings put secure enabled_accessibility_services $a11y_svc" >/dev/null 2>&1 || true
+    elif ! printf '%s' "$a11y_cur" | grep -qF "$a11y_svc"; then
+        adb_cmd -s "$dev" shell "settings put secure enabled_accessibility_services ${a11y_cur}:${a11y_svc}" >/dev/null 2>&1 || true
+    fi
+    adb_cmd -s "$dev" shell "settings put secure accessibility_enabled 1" >/dev/null 2>&1 || true
     # Make The Collar the default home app so the home button always lands in FocusActivity.
     # Stores the prior launcher first so unlock can forward back to it.
     local prior_home

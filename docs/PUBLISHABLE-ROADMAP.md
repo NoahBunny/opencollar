@@ -1,5 +1,88 @@
 # Publishable Roadmap
 
+## Out of scope — covert capture & no-exit coercion (permanent)
+
+These capabilities are **permanently out of scope** and must not be (re)built. They are dangerous regardless of consent and are trivially repurposable against a non-consenting person. Removed 2026-07 (see `docs/THREAT-MODEL.md § Consent and harm reduction`):
+
+- **No covert capture** — no silent camera capture, no hidden/intercepted SMS, no app-invisibility hardening. Photo and SMS flows are wearer-visible and wearer-driven.
+- **No covert location** — the wearer's GPS coordinates never leave their phone. Geofences are enforced locally; only a boolean breach is reported.
+- **A guaranteed ultimate exit** — factory reset is never blocked (no `DISALLOW_FACTORY_RESET`), and every install ships a bunny-controlled **panic safeword** that needs neither the Lion nor the homelab. The "No-adb consumer install" Device-Owner/QR strategy (which would block factory reset + uninstall) is struck for this reason.
+- **No punish-the-exit mechanics** — no financial penalty for tampering or leaving. The paywall is the consensual cost of *unlocking*, not a fine for *leaving*.
+
+## Status — 2026-06-26 (ecosystem-review branch committed + native Tor A3 code-complete)
+
+Branch `feat/ecosystem-review-2026-05-25`, **9 commits** on `8671ba8`. Handoff:
+`docs/HANDOFF-2026-06-26.md`. `git` + `javac` now work in-sandbox (commit directly);
+Android toolchain at `~/android-sdk` (build-tools 35.0.0 + 36.0.0), env at
+`~/.config/focuslock-android.env.sh`.
+
+**Part 1 — the 2026-06-25 work, committed as 6 logical commits:**
+- ✅ **A1/A2/A4** direct-first multi-address failover + optional homelab + serverless
+  fallbacks (`ed453b5`). ✅ **B1/B2** first-run onboarding wizards, both apps (`21099dd`).
+- ✅ **#9 security** — Lion IMAP creds no longer leak into the shared (Bunny-decryptable)
+  vault; 5-layer fix + isolation regression tests (`60561c9`).
+- ✅ **#10–12** Lion email onboarding (account/IMAP/evidence) seeded server-only,
+  never the vault (`f5ec543`). ✅ **C1** Fedora waydroid/SDK setup (`4294224`).
+- ✅ docs + default-off Tor build hook (`b67a81c`). 151 py tests pass.
+
+**Part 2 — #13 native Tor (A3): code-complete + COMPILES, 3 commits.**
+- ✅ `OnionKeys` offline .onion/keyblob crypto — **unit-verified 6/6** vs a Python
+  reference (the base32-vs-base64 footgun) (`a2c2026`). ✅ `OnionControl` jtorctl helper +
+  Collar/Lion `TorManager` + `TorHook` reflection bridge (`7d57833`). ✅ pairing/SOCKS/
+  cold-wake integration + build.sh (bcprov + Tor-file-excluding find-globs) + manifests
+  (`fa18e16`). Cold-wake topic derived from the `.onion` → works relay-less.
+- **Verified:** both APKs build/dex/sign with Tor on (libtor.so ×4 ABIs incl. x86_64);
+  the **default-off build is byte-clean** (232K, zero Tor) — strictly additive. Tor builds
+  need `FOCUSLOCK_BUILD_TOOLS=36.0.0` (AAR ships Java-24 bytecode) + the deps at `~/android-libs/`.
+
+**REMAINING (the only Tor gate left): C3 device/waydroid runtime validation** — control
+port ADD_ONION+ClientAuthV3 / ONION_CLIENT_AUTH_ADD acceptance, bootstrap latency, the
+`foregroundServiceType` question (AAR declares none — crash-loop risk under API 34+),
+client-auth rejection, end-to-end onion round-trip + relay fallback. Checklist in
+`docs/TOR-ONION.md`. **Keep `FOCUSLOCK_TOR_AAR` unset in production until C3 passes.**
+
+**Also still open:** waydroid QA of the email-onboarding panels; JVM/conformance for
+companion `PairingManager` + slave `SigVerifier`; py3.14 full-suite `[Errno 9]` bug;
+audit-deferred M-5/L-1/L-2/L-4; `main` branch protection; per-tier subscription amounts.
+
+---
+
+## Status — 2026-05-25 (whole-ecosystem review: delivery + security criticals + Phase-3 polish + payment + conformance QA)
+
+A full Lion↔Bunny ecosystem review across two same-day sessions, triggered by
+"a few message-delivery issues," scoped up (operator sign-off) to **review + fix +
+automated-QA buildout**. Plan files:
+`~/.claude/plans/let-s-work-on-the-transient-rabbit.md` (Phases 1–2 + payment + QA)
+and `~/.claude/plans/let-s-cotninue-work-on-binary-squid.md` (Phase 3). **All
+changes live in the working tree — no `git` in the build sandbox; commit via
+`~/.octc/commit-opencollar.sh` (see `SESSION-HANDOFF-2026-05-25*.md`).**
+
+**Phase 1 — message delivery (the reported pain):**
+- ✅ `focuslock_mesh.py` `MessageStore`: monotonic `{ts}_{seq}` ids (was `{ts}_{len}`, collided after the 500-cap → wrong-message read/edit/delete) + `client_msg_id` idempotency in `add()`. `focuslock-mail.py /messages/send` threads `client_msg_id`.
+- ✅ Controller: server-store post is authoritative for "Sent" (was masked by the `/api/message` fallback); bounded retry; honest "Not delivered". Companion: clears the mandatory-reply obligation only on actual delivery; bounded retry. `tests/test_message_delivery.py` (9 cases).
+
+**Phase 2 — security criticals:**
+- ✅ **Collar `/mesh/sync` was fully unauthenticated** — `ControlService.verifyMeshOrdersSignature()` now verifies the Lion signature over gossiped orders before applying, on both paths (push + poll-response), closing the unauthenticated lock/paywall + `orders_version` poisoning hole. Permissive only pre-pairing.
+- ✅ Collar `SmsReceiver`: `Long.parseLong` wrapped + `mins` clamped `[0,525600]` (crash + overflow); opt-in `focus_lock_sms_token` shared-secret gate. `focuslock_mesh.py handle_mesh_order` tightened (valid Lion sig required once `lion_pubkey` set). Desktop secret perms (0700 dir + `icacls` on Windows).
+
+**Phase 3 — security polish + correctness/UX (this session):**
+- ✅ **A1 SMS token provisioned** — Collar `doPair` generates a random 8-char token (`genSmsToken`/`ensureSmsToken`), persists `focus_lock_sms_token` (auto-arms the previously dormant `SmsReceiver` gate) and returns it in the pair JSON; Lion's Share stores it per-bunny and shows `sit-boy <token> 15 $20` (tap-to-copy) in Setup. **Existing direct Collars need a one-time re-pair to provision.**
+- ✅ **A2 direct `/mesh/status` signed** — Collar signs a flat status core with `focus_lock_bunny_privkey`; Lion's Share `verifyStatusSignature` rebuilds + verifies with the stored bunny pubkey and drops forged/unsigned status (keeps last-good). Closes the LAN-spoof of locked/paywall/escapes. **Breaking: old-Collar(empty sig) + new-Lion in direct mode → status rejected until both updated together.**
+- ✅ **A3 exported `FocusActivity` DoS** — lock-state guard at the top of `onCreate` (before immersive / SHOW_WHEN_LOCKED / ControlService start) bounces a not-locked launch to the prior launcher.
+- ✅ **B1 atomic apply** — `MeshOrderApply.orderForApply` writes `lock_active` last → no torn new-lock + stale-message render in FocusActivity's 5s poll.
+- ✅ **B2 Linux desktop mid-lock refresh** — `update_lock` regenerates the KDE lock wallpaper (PNG + `kscreenlockerrc`) when message/pin/paywall change while already locked (previously only poked dead GTK labels).
+- ✅ **B3 E2EE "not encrypted" (warn + allow)** — per-peer banner + plaintext send tag in both apps when no peer pubkey is available.
+
+**Payment matching — credited unrelated transfers (fixed):** fail-OPEN on empty allowlist + substring-against-whole-body matching → generic needle matched every e-transfer. `PaymentIdentity` generic-needle guard + word-boundary matching; scanner now **fails closed**; matched payer logged server-side only (payee/payer privacy split). **Operator action:** too-generic payer entries stop crediting until a specific identifier is set.
+
+**QA / conformance:** Java↔Python conformance harness extended — slave `sign-status` CLI + 2 status-signature tests (`tests/test_android_conformance.py`); new JVM unit tests `MeshOrderApplyTest` (×4) + controller `E2EEHelperTest` (×3). Layer-1 coverage gates (`.coveragerc.mesh` 80% floor), `make qa-android`, CI `build-android` conformance step.
+
+**Verification:** all 3 APKs build + sign + `apksigner verify`; JUnit 13/13; conformance pytest 19/19; regression `test_mesh`+`test_messages`+`test_message_delivery` 171/171. (Full suite still errors under py3.14 in-sandbox — run subsets; CI 3.10–3.12 clean.)
+
+**Next milestone / tracked:** commit + push the working tree (CHANGELOG `[Unreleased]` already carries this whole day); extend JVM/conformance to companion `PairingManager` + slave `SigVerifier`; fix the py3.14 EBADF full-suite test-isolation bug; ratchet `.coveragerc.server` `fail_under` off the CI baseline. Related still-open audit item: **L-4** (`network_security_config.xml` cleartext tightening) complements the new signed direct-status.
+
+---
+
 ## Status — 2026-04-28 (Stream B first pass)
 
 Stream B kicked off this evening on top of the day's Stream A + Stream
@@ -122,7 +205,7 @@ Also addressed this session: **consumer-install design pivot** — the `Settings
 
 Consent + release hygiene: **bunny-initiated pair-reset removed** (violated the *"only Lion or factory reset can release"* contract); **mutual admin re-activation nag wired** on both sides (high-priority full-screen-intent notification when peer admin is removed); **prior-launcher capture now uses `MATCH_DEFAULT_ONLY`** so Release Forever restores the user's actual launcher (Fossify etc.) instead of stock.
 
-Pegasus deploy verified live: `/api/pair/register` + `/api/pair/claim` correctly require `mesh_id`; consumer mesh `DNfs4xCZM-HY` has its own ntfy topic + payment ledger + desktop registry + pair state.
+Pegasus deploy verified live: `/api/pair/register` + `/api/pair/claim` correctly require `mesh_id`; consumer mesh `Cd5gHj8k-Nq3` has its own ntfy topic + payment ledger + desktop registry + pair state.
 
 The per-phase plan below is preserved as historical context. Everything in Phases 0–9 is shipped — search the CHANGELOG or commit log by keyword if You need to trace a specific item.
 
@@ -175,8 +258,8 @@ Three-phase migration — documented in conversation 2026-04-24:
 - ~~**Phase 1 — Lion's Share local state to SharedPreferences**~~ *(2026-04-24 — already done, no change needed)*. Investigation turned up only 2 references to `Settings.Global` in `controller/MainActivity.java` (lines 131, 1742) — both are **legacy-fallback READS** wrapped in try/catch, not writes. `Settings.Global.getString` doesn't require `WRITE_SECURE_SETTINGS`; any permission-denied path just returns null and Lion's Share falls through to its SharedPreferences source of truth. All Lion's Share state (lion privkey, mesh_url, mesh_id, pin, active bunny slot, vault_mode) was already stored in `prefs.edit().put*(...)` via the multi-bunny slot scheme — confirmed by grep of the controller module. Verified on OnePlus (ColorOS, `pm grant` refused) — v70 launches + runs without any security exception. Legacy fallback reads kept in place for migration compat with users upgrading from the pre-multi-bunny adb-provisioned setup.
 - **Phase 2 — Collar + Bunny Tasker client-state redesign** *(multi-session, ~4h + design review)*. Three strategies evaluated:
   - **A.** ContentProvider exposed by Collar, Bunny Tasker queries it. No perm. Loses Clear-Data resistance.
-  - **B.** Hardware-backed AndroidKeyStore + server-authoritative state. Local is cache, authoritative state on mesh server. Clear-Data wipes cache but not enforcement. Needs server-side "suspicious re-pair detected → $500 tamper" logic. **Closest to where P2 paywall hardening (2026-04-17) already moved things.**
-  - **C.** Device Owner via QR provisioning. DPM prevents Clear-Data + uninstall. Requires factory reset at setup. Strongest but highest user cost.
+  - **B.** Hardware-backed AndroidKeyStore + server-authoritative state. Local is cache, authoritative state on mesh server. Clear-Data wipes cache but not enforcement. **Closest to where P2 paywall hardening (2026-04-17) already moved things.** *(The "suspicious re-pair → $500 tamper" idea is **struck** — no financial penalty for tampering/leaving; see § Out of scope at the top of this file.)*
+  - ~~**C.** Device Owner via QR provisioning. DPM prevents Clear-Data + uninstall.~~ **STRUCK** — blocking factory reset / uninstall would remove the guaranteed ultimate exit (the safety floor). Permanently out of scope. Use strategy A or B only.
 - **Phase 3 — Bunny Tasker + Collar migration + server-side tamper-reappear detection**. Dependent on Phase 2 strategy choice. Must preserve the admin-reactivation nag + mutual-admin monitor added 2026-04-24 (independent of `Settings.Global`).
 
 Strategy choice for Phase 2 is deferred — needs a proper design round after reading how much state is already server-authoritative vs phone-authoritative.
@@ -267,7 +350,7 @@ QA is first-class, not an afterthought. Every subsequent phase ends with a regre
   - Mesh gossip convergence (3+ peers)
   - ntfy push latency
   - Release Forever teardown + auto-uninstall
-  - Factory reset @ 150 escapes
+  - Factory reset always available; in-app shortcut after a few escapes
   - Consent screen first-run
 - **Gaps Waydroid can't cover** — real SMS, real Lovense BT, real camera — documented as "manual on-device regression" with a short on-phone checklist
 - **QA as gate** — CI runs the scriptable subset; manual checklist gates release tags

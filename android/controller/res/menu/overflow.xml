@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The kebab: everything that is configuration, administration or teardown —
+  i.e. everything that is NOT an action on the bunny. These seven used to sit on
+  the Advanced scroll between Play Audio and Start Fine, which is how a Lion
+  looking for the writing task ended up reading past Release Forever.
+
+  Shown via PopupMenu anchored to btn_kebab, because the app's theme is
+  Theme.Material.NoActionBar and there is no system overflow to inherit.
+
+  menu_payment_email is homelab-only. It is gated in showOverflow(), which
+  rebuilds this menu on every tap — NOT in applyHomelabGating(), which stopped
+  touching it when it ceased to be a View.
+-->
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <group android:id="@+id/menu_group_bunny">
+        <item android:id="@+id/menu_bunnies" android:title="🐇  Bunnies…" />
+        <item android:id="@+id/menu_vault_nodes" android:title="🔒  Vault Nodes…" />
+    </group>
+
+    <group android:id="@+id/menu_group_setup">
+        <item android:id="@+id/menu_web_remote" android:title="📱  Web Remote…" />
+        <item android:id="@+id/menu_cage" android:title="🔓  Loosen Cage…" />
+        <item android:id="@+id/menu_devotion" android:title="🕯  Devotion…" />
+        <item android:id="@+id/menu_payment_email" android:title="📧  Payment Email…" />
+        <item android:id="@+id/menu_setup" android:title="⚙  Setup…" />
+        <item android:id="@+id/menu_app_pin" android:title="🔑  App PIN…" />
+    </group>
+
+    <!-- Its own group so the framework draws a separator above it. Release
+         Forever is a documented consent guarantee (CLAUDE.md → Safety) and must
+         stay discoverable — a named row one tap away is discoverable AND harder
+         to hit by accident than a button sharing a scroll with Play Audio. -->
+    <group android:id="@+id/menu_group_danger">
+        <item android:id="@+id/menu_release_forever" android:title="RELEASE FOREVER…" />
+    </group>
+
+</menu>

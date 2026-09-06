@@ -42,6 +42,43 @@ mostly polish.
 
 ## Lion's Share (Android controller)
 
+> **2026-08-23 — the tab taxonomy was rebuilt (v83).** The Lion's own verdict
+> on the shipped UI: *"too cluttered, and the buttons don't make sense in their
+> current named sections."* Both halves were structural.
+>
+> The tabs were **Control / Advanced / Inbox** — two named after how dangerous
+> a control was, one after a container. Neither name predicted its contents, so
+> "Advanced" had absorbed the mode spinner and writing task (core), geofencing
+> (situational), payment email and vault nodes (setup/admin), Play Audio and
+> Double or Nothing (occasional), and Entrap and RELEASE FOREVER (destructive)
+> onto one 25-button scroll. The single worst consequence: locking with a
+> writing task spanned two tabs — set the mode in Advanced, type the task in
+> Advanced, return to Control to press Lock.
+>
+> Now every tab answers one question — **Lock** (what is happening, and make it
+> happen) / **Rules** (what must the bunny do to get out?) / **Money** (what do
+> they owe?) / **Inbox** (what have they said?) — and the seven controls that
+> are configuration rather than actions on the bunny moved off the tabs into a
+> kebab (`res/menu/overflow.xml`). Modifiers and Live Pokes collapse to one
+> line each, showing a summary of what is on inside them; Entrap sits in a
+> bordered danger block; the Lock button now states the live state instead of
+> reading "Lock all devices" whether or not the bunny is already locked.
+>
+> One mis-siting found on the way: `paywall_amount` looked like a duplicate of
+> `balance_set_input` because it sat one field away from it in the money row.
+> It is not a money field at all — it stages the balance for the *next lock
+> order* (`buildLockJson`, MainActivity:3067). It now sits with the other lock
+> parameters, which is what made it legible.
+>
+> **Not yet walked on hardware.** No device was attached and Waydroid is
+> uninitialised on this box, so the rows below stay 📱. What *is* verified:
+> `tests/test_android_layout_ids.py` (new) proves every string-based resource
+> lookup resolves, every collapsible section has its three parts, and every
+> button on the main screen is reachable from code — the whole regression class
+> that moving views around can otherwise cause silently, since `MainActivity`
+> resolves views by `getResources().getIdentifier()` with no compile-time link.
+
+
 | # | Finding | Status | Note |
 |---|---|---|---|
 | LS-1 | Onboarding empty state for fresh install | 📱 | Needs operator with Pixel rig + Waydroid. |

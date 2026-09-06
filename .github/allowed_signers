@@ -1,0 +1,15 @@
+# allowed_signers — the SSH signing keys this project trusts.
+#
+# Consumed by CI (.github/workflows/signed-commits.yml) via
+# `git config gpg.ssh.allowedSignersFile`. Without it, git cannot verify an
+# SSH signature at all: `git log --format='%G?'` reports N — the same status
+# it reports for a wholly unsigned commit — so the signed-commits gate would
+# fail every correctly-signed commit alongside the unsigned ones.
+#
+# Format: <principal> <key-type> <key>
+# The principal must match the COMMITTER email on the commits it signs.
+#
+# This file is itself an enforcement-sensitive path in signed-commits.yml.
+# It has to be: a trust list that an unsigned commit can append to is not a
+# trust list. Adding a key requires a signature from a key already here.
+noah@nunyabiznu.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB4u5ACeOsU7qIbgJFbibo5D0Y6fvs2ZPbL4rKzR/Tgx

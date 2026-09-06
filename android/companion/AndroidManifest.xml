@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.bunnytasker"
-    android:versionCode="57"
-    android:versionName="2.24">
+    android:versionCode="71"
+    android:versionName="2.38">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
 
@@ -14,6 +14,19 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
+    <!-- Package visibility (Android 11+). The banking-app picker probes each
+         candidate with getLaunchIntentForPackage(); that returns null for any
+         package we can't "see". QUERY_ALL_PACKAGES alone is fragile (Play-
+         restricted, and can be denied), so also declare visibility of every app
+         that has a launcher activity — this is what lets installed banks like
+         Wise / PayPal / Tangerine actually appear in the picker. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
 
     <application
         android:label="Bunny Tasker"
@@ -33,6 +46,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- First-run warm welcome (started by MainActivity for result).
+             Standard launch mode so it returns its result to the singleTask
+             MainActivity. Independent of the Collar's Terms of Surrender. -->
+        <activity
+            android:name=".BunnyWelcomeActivity"
+            android:exported="false"
+            android:theme="@style/BunnyTheme"
+            android:screenOrientation="portrait" />
 
         <service
             android:name=".BunnyService"

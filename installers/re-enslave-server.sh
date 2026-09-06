@@ -36,8 +36,12 @@ for arg in "$@"; do
 done
 
 check_paywall
-discover_paths
+# load_config BEFORE discover_paths: the config file is where FOCUSLOCK_SRC is
+# documented to live, and discover_paths only honours it if it is already set.
+# Reversed, the pin was dead unless exported into the environment by hand, and
+# autodiscovery quietly deployed whichever checkout it walked to first.
 load_config
+discover_paths
 
 DEPLOY_USER="${DEPLOY_USER:-$USER}"
 HOMELAB_SSH=$(resolve_homelab_ssh) || \
@@ -51,6 +55,30 @@ log "User on remote: $DEPLOY_USER"
 # Reachability probe (10s)
 if ! ssh -o ConnectTimeout=10 -o BatchMode=yes "$DEPLOY_USER@$HOMELAB_SSH" 'echo ok' >/dev/null 2>&1; then
     fail "SSH to $DEPLOY_USER@$HOMELAB_SSH failed."
+fi
+
+# Can this deploy run unattended? Two questions, and the probe has to ask the
+# real ones: whether the install dir is ours to write, and whether the exact
+# service command we need is passwordless. (A bare `sudo -n true` answers
+# neither — on a relay prepared by install-server-sudoers.sh it fails, because
+# only the systemctl forms are NOPASSWD.) When something does need a password
+# and this shell has no terminal, ssh can't allocate a PTY, sudo aborts with "a
+# terminal is required to authenticate", and the deploy would die *after*
+# staging files — reported as "check journalctl", which sends the operator to a
+# service that never restarted. Find out first; say the useful thing instead.
+UNATTENDED=0
+if ssh -o ConnectTimeout=10 -o BatchMode=yes "$DEPLOY_USER@$HOMELAB_SSH" \
+       'test -w /opt/focuslock && { sudo -n systemctl is-active focuslock-mail || sudo -n true; }' \
+       >/dev/null 2>&1; then
+    UNATTENDED=1
+    log "Relay is prepared for unattended deploys (owns /opt/focuslock, NOPASSWD service control)"
+fi
+if [ "$DRY_RUN" != 1 ] && [ "$UNATTENDED" = 0 ] && [ ! -t 0 ]; then
+    fail "This deploy needs a password on $HOMELAB_SSH, but the shell has no terminal to prompt on.
+       Either run it from an interactive terminal window, or prepare the relay once:
+         scp installers/install-server-sudoers.sh $DEPLOY_USER@$HOMELAB_SSH:
+         ssh $DEPLOY_USER@$HOMELAB_SSH 'sudo ./install-server-sudoers.sh'
+       Nothing was changed."
 fi
 
 # Build a list of (local_path, remote_path) tuples for files we deploy.
@@ -104,8 +132,12 @@ NEEDS_RESTART=0
 # remote command in `bash -c` to keep the path-list parsing portable. We also
 # collapse newlines to spaces so the whole thing is one argv array.
 remote_paths=$(printf '%s\n' "${DEPLOY_PAIRS[@]}" | awk -F'|' '{print $2}' | tr '\n' ' ')
+# No sudo here: /opt/focuslock ships 0644 root-owned, so a plain md5sum reads
+# it fine — and this probe runs without a TTY, where a sudo password prompt
+# would fail silently and make every file look MISSING (a full re-push every
+# run). Anything genuinely unreadable still falls through to MISSING → pushed.
 remote_hashes=$(ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
-    bash -c "'sudo md5sum $remote_paths 2>/dev/null || true'")
+    bash -c "'md5sum $remote_paths 2>/dev/null || true'")
 
 for pair in "${DEPLOY_PAIRS[@]}"; do
     local_path="${pair%%|*}"
@@ -133,45 +165,100 @@ if [ "$DRY_RUN" = 1 ]; then
     exit 0
 fi
 
-# Push files via scp + sudo cp (the homelab paths are root-owned)
+# Stage every changed file, then do all the privileged work in ONE remote sudo
+# session. Previously each file was its own `ssh -t … sudo install`, which on a
+# homelab whose sudo asks for a password meant a prompt per file (sudo's
+# timestamps are per-TTY, and every ssh -t is a new TTY). One session = one
+# prompt, and the install/restart can no longer land half-applied because the
+# operator gave up typing passwords midway.
+GIT_COMMIT=$(git -C "$LS" rev-parse HEAD 2>/dev/null || echo "")
+TMPDIR_REMOTE=$(ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" 'mktemp -d')
+
 if [ "${#PUSH_LIST[@]}" -gt 0 ]; then
-    section "Pushing files"
-    TMPDIR_REMOTE=$(ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" 'mktemp -d')
+    section "Staging files"
+    for pair in "${PUSH_LIST[@]}"; do
+        local_path="${pair%%|*}"
+        bn=$(basename "$local_path")
+        # Staged under a per-target name so two DEPLOY_PAIRS sharing a basename
+        # (shared modules land in both / and /shared) don't collide.
+        scp -o ConnectTimeout=10 -q "$local_path" "$DEPLOY_USER@$HOMELAB_SSH:$TMPDIR_REMOTE/$bn"
+    done
+    log "  staged ${#PUSH_LIST[@]} file(s) in $TMPDIR_REMOTE"
+fi
+
+# Build the apply half as a script. It escalates only where it must: on a relay
+# prepared by install-server-sudoers.sh the deploy user owns /opt/focuslock, so
+# every file write is unprivileged and the single sudo left is the service
+# restart (covered by a NOPASSWD rule) — the whole deploy runs unattended. On an
+# unprepared relay the same script falls back to sudo for everything, which is
+# the old behaviour and still needs one password.
+REMOTE_SCRIPT=$(mktemp)
+{
+    echo 'set -e'
+    echo '# Escalate only when the install dir is not ours to write.'
+    echo 'if [ -w /opt/focuslock ]; then SUDO=""; else SUDO="sudo"; fi'
     for pair in "${PUSH_LIST[@]}"; do
         local_path="${pair%%|*}"
         remote_path="${pair##*|}"
         bn=$(basename "$local_path")
-        scp -o ConnectTimeout=10 -q "$local_path" "$DEPLOY_USER@$HOMELAB_SSH:$TMPDIR_REMOTE/$bn"
-        ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
-            "sudo install -D -m 644 $TMPDIR_REMOTE/$bn '$remote_path'"
-        log "  pushed: $bn → $remote_path"
+        printf '$SUDO install -D -m 644 %q %q\n' "$TMPDIR_REMOTE/$bn" "$remote_path"
+        printf 'echo "  installed: %s"\n' "$remote_path"
     done
-    ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" "rm -rf $TMPDIR_REMOTE"
-fi
+    # DURABLE state dirs (vault store + mesh accounts + per-mesh orders). These
+    # hold the only server-side record of mesh membership, so they live on
+    # persistent disk — NOT /run (tmpfs), which wiped every mesh on reboot.
+    # install-server-sudoers.sh pre-creates them, so a prepared relay skips this
+    # rather than escalating for a no-op.
+    # The dir is root-owned 0700, so an unprivileged deploy user cannot even
+    # stat inside it — `[ -d .../meshes ]` reads false whether or not it exists.
+    # Try, and treat failure as information rather than an error: on a prepared
+    # relay install-server-sudoers.sh already made these, and on an unprepared
+    # one $SUDO covers it. Never fatal — a deploy that only touched code files
+    # must not die because it couldn't confirm a directory it doesn't need to
+    # create.
+    echo 'if ! $SUDO mkdir -p /var/lib/focuslock/meshes /var/lib/focuslock/vaults /var/lib/focuslock/mesh-orders 2>/dev/null; then'
+    echo '    echo "  note: /var/lib/focuslock is root-only from here — assuming the installer made it"'
+    echo 'else'
+    echo '    $SUDO chmod 700 /var/lib/focuslock 2>/dev/null || true'
+    echo 'fi'
+    # Git commit hash for /version transparency (P3)
+    if [ -n "$GIT_COMMIT" ]; then
+        printf 'printf %%s %q | $SUDO tee /opt/focuslock/.git_commit > /dev/null\n' "$GIT_COMMIT"
+    fi
+    if [ "$NEEDS_RESTART" = 1 ] || [ "$FORCE_RESTART" = 1 ]; then
+        echo 'echo "  restarting focuslock-mail.service"'
+        # Always sudo: the unit is system-level and root-owned either way.
+        echo 'sudo systemctl restart focuslock-mail'
+        echo 'sleep 3'
+        echo 'sudo systemctl is-active focuslock-mail'
+    else
+        echo 'echo "  no service restart needed"'
+    fi
+} > "$REMOTE_SCRIPT"
 
-# Ensure runtime dirs exist (vault store + meshes + per-mesh orders)
-ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
-    'sudo mkdir -p /run/focuslock/meshes /run/focuslock/vaults /run/focuslock/mesh-orders && sudo chmod 755 /run/focuslock/meshes /run/focuslock/vaults /run/focuslock/mesh-orders' || \
-    warn "Could not create /run/focuslock dirs"
+# Ship the script and run it by path. NOT `sudo bash -s < script`: redirecting
+# stdin makes ssh skip TTY allocation ("Pseudo-terminal will not be allocated
+# because stdin is not a terminal"), and sudo then has nowhere to prompt —
+# fatal on a homelab whose sudo asks for a password. Forcing -tt instead would
+# hand sudo the script text as its password prompt input, which is worse. With
+# the script already on disk, stdin stays the operator's terminal.
+scp -o ConnectTimeout=10 -q "$REMOTE_SCRIPT" "$DEPLOY_USER@$HOMELAB_SSH:$TMPDIR_REMOTE/_apply.sh"
+rm -f "$REMOTE_SCRIPT"
 
-# Write git commit hash for /version transparency (P3)
-GIT_COMMIT=$(git -C "$LS" rev-parse HEAD 2>/dev/null || echo "")
-if [ -n "$GIT_COMMIT" ]; then
-    echo "$GIT_COMMIT" | ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
-        "sudo tee /opt/focuslock/.git_commit > /dev/null"
-    log "  git commit: $GIT_COMMIT"
-fi
-
-# Restart service if focuslock-mail.py changed (or --force-restart)
-if [ "$NEEDS_RESTART" = 1 ] || [ "$FORCE_RESTART" = 1 ]; then
-    section "Restarting focuslock-mail.service"
-    ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
-        'sudo systemctl restart focuslock-mail && sleep 3 && sudo systemctl is-active focuslock-mail' \
-        || fail "Service failed to come back up — check journalctl -u focuslock-mail"
-    log "Service restarted clean."
+if [ "$UNATTENDED" = 1 ]; then
+    section "Applying (unattended — no password needed)"
 else
-    log "No service restart needed."
+    section "Applying (one sudo session — enter the homelab password if prompted)"
 fi
+# The script escalates internally where it must, so it is NOT run under sudo:
+# on a prepared relay that keeps every file write unprivileged.
+if ! ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" "bash '$TMPDIR_REMOTE/_apply.sh'"; then
+    ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" "rm -rf $TMPDIR_REMOTE" || true
+    fail "Remote apply failed. If sudo could not authenticate, re-run from an interactive
+       terminal; otherwise check journalctl -u focuslock-mail on $HOMELAB_SSH."
+fi
+ssh -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" "rm -rf $TMPDIR_REMOTE" || true
+[ -n "$GIT_COMMIT" ] && log "  git commit: $GIT_COMMIT"
 
 # Post-deploy verification: standing-orders + vault since 0 + journal sanity
 # Audit 2026-04-27 H-1 (remainder): /standing-orders requires admin_token.
@@ -198,14 +285,32 @@ else
     fi
 fi
 
-# Check journal for errors in the last 2 minutes
-err_count=$(ssh -t -o ConnectTimeout=10 "$DEPLOY_USER@$HOMELAB_SSH" \
-    'sudo journalctl -u focuslock-mail --since "2 minutes ago" --no-pager 2>/dev/null | grep -ciE "error|exception|traceback" || true' \
-    2>/dev/null | tr -d '\r')
-if [ "${err_count:-0}" -gt 0 ]; then
-    warn "  $err_count error/exception line(s) in last 2 min — investigate with: journalctl -u focuslock-mail --since '2 minutes ago'"
+# Check journal for errors in the last 2 minutes.
+#
+# `sudo -n`, and no `-t`, on purpose. journalctl is NOT in the relay's NOPASSWD
+# grant — that covers `systemctl restart|is-active focuslock-mail` and nothing
+# else, which is correct. This used to run `sudo` under `ssh -t` with stderr
+# sent to /dev/null, so sudo prompted for a password and the prompt was
+# swallowed: the deploy appeared to hang forever at "Verifying server health",
+# after every file had already been installed and the service restarted.
+#
+# So: fail immediately when sudo would prompt, and SAY the check was skipped.
+# Reporting "Journal: clean" for a check that never ran would be worse than
+# hanging — a green line nobody earned.
+journal_out=$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$DEPLOY_USER@$HOMELAB_SSH" \
+    'sudo -n journalctl -u focuslock-mail --since "2 minutes ago" --no-pager 2>&1' \
+    2>&1 | tr -d '\r' || true)
+if printf '%s' "$journal_out" | grep -qiE 'password is required|sudo: a terminal is required|may not run|not allowed'; then
+    warn "  Journal: NOT checked — journalctl needs an interactive sudo on the relay."
+    warn "           Check it yourself with:"
+    warn "             ssh $DEPLOY_USER@$HOMELAB_SSH \"sudo journalctl -u focuslock-mail --since '2 minutes ago'\""
 else
-    log "  Journal: clean (no errors in last 2 min)"
+    err_count=$(printf '%s' "$journal_out" | grep -ciE 'error|exception|traceback' || true)
+    if [ "${err_count:-0}" -gt 0 ]; then
+        warn "  $err_count error/exception line(s) in last 2 min — investigate with: journalctl -u focuslock-mail --since '2 minutes ago'"
+    else
+        log "  Journal: clean (no errors in last 2 min)"
+    fi
 fi
 
 section "Server re-enslave complete"

@@ -20,7 +20,7 @@
 
 ## Scope and safety
 
-- [ ] This does not weaken consent, the Release Forever valve, or the 150-escape factory reset
+- [ ] This does not weaken consent, the Release Forever valve, or the always-available factory-reset valve
 - [ ] I added / updated tests (required for `shared/`, crypto, payment, mesh, enforcement)
 - [ ] I ran `ruff check . && ruff format --check . && mypy shared && pytest tests/` locally and everything passes
 - [ ] I updated `CHANGELOG.md` under `## [Unreleased]` if user-visible

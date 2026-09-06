@@ -28,19 +28,45 @@ if ! command -v adb &>/dev/null; then
     dnf install -y android-tools 2>/dev/null || apt-get install -y android-tools-adb 2>/dev/null || true
 fi
 
+# focuslock-mail.py REQUIRES cryptography (vault encrypt/decrypt/sign/verify).
+# Without it the relay can't serve the vault at all — same gap that crippled the
+# desktop collar. Install from the distro; fall back to pip.
+if ! python3 -c "import cryptography" 2>/dev/null; then
+    echo "Installing python3-cryptography..."
+    dnf install -y python3-cryptography 2>/dev/null \
+        || apt-get install -y python3-cryptography 2>/dev/null \
+        || pip3 install --quiet cryptography 2>/dev/null \
+        || echo "WARNING: could not install cryptography — the relay will not start." >&2
+fi
+
 # Create directories
 mkdir -p /opt/focuslock
-mkdir -p /run/focuslock
-chmod 777 /run/focuslock
-echo "d /run/focuslock 0777 root root -" > /etc/tmpfiles.d/focuslock.conf
+# DURABLE state dir. Mesh accounts + vault node lists are the ONLY server-side
+# record of who is on a mesh — they must survive reboots. The old default of
+# /run/focuslock (tmpfs, RAM) silently erased every mesh on boot. Runs as root,
+# so 700 is enough. If an old ephemeral unit exists, drop it.
+mkdir -p /var/lib/focuslock/meshes /var/lib/focuslock/vaults /var/lib/focuslock/mesh-orders
+chmod 700 /var/lib/focuslock
+rm -f /etc/tmpfiles.d/focuslock.conf
 
 # Copy project files (from parent dir where scripts/python live)
 echo "Copying files..."
 for f in focuslock-bridge.sh focuslock-mail.py focuslock_mesh.py focuslock_ntfy.py focuslock-desktop.py focuslock-tray.py; do
     [ -f "$PROJECT_DIR/$f" ] && cp "$PROJECT_DIR/$f" /opt/focuslock/
 done
-# Copy shared config module
-[ -f "$PROJECT_DIR/shared/focuslock_config.py" ] && cp "$PROJECT_DIR/shared/focuslock_config.py" /opt/focuslock/
+# Copy ALL shared Python modules — focuslock-mail.py imports focuslock_payment,
+# _penalties, _evidence, _llm, _http, _adb, _vault, _config, … not just config.
+# Deploy to BOTH /opt/focuslock/ and /opt/focuslock/shared/ so either import
+# style resolves (mirrors re-enslave-server.sh). Previously only config was
+# copied, so the relay crashed on the first missing import.
+mkdir -p /opt/focuslock/shared
+for sf in "$PROJECT_DIR"/shared/focuslock_*.py; do
+    [ -f "$sf" ] || continue
+    cp "$sf" /opt/focuslock/
+    cp "$sf" /opt/focuslock/shared/
+done
+# Payment-detection keyword DB (145+ banks) — required by focuslock_payment.
+[ -f "$PROJECT_DIR/shared/banks.json" ] && cp "$PROJECT_DIR/shared/banks.json" /opt/focuslock/ && cp "$PROJECT_DIR/shared/banks.json" /opt/focuslock/shared/
 # Copy icon
 [ -f "$PROJECT_DIR/icons/collar-icon.png" ] && cp "$PROJECT_DIR/icons/collar-icon.png" /opt/focuslock/
 [ -f "$PROJECT_DIR/icons/collar-icon-gold.png" ] && cp "$PROJECT_DIR/icons/collar-icon-gold.png" /opt/focuslock/

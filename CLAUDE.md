@@ -37,6 +37,8 @@ Consensual remote device restriction ecosystem. Lion controls, Bunny obeys, Coll
 - `focuslock_vault.py` — Python VaultCrypto (encrypt/decrypt/sign/verify)
 - `focuslock_config.py` — Config loader
 - `focuslock_sync.py` — Mesh sync helpers
+- `focuslock_unpaired_orders.py` — Interim CLAUDE.md overlay for a collared-but-unpaired desktop (tone + escalating pair-now nudge, no enforcement)
+- `focuslock_companion.py` — Bunny Tasker's read-only surface for the desktop collars, served on loopback off the existing mesh HTTP server (`/companion`, `/companion/state`)
 - `banks.json` — Payment detection keywords (145+ banks)
 
 ### Installers
@@ -65,7 +67,7 @@ python build-win.py --skip-sign  # Skip code signing
 - 9 lock modes: Basic, Negotiation, Task, Compliment, Gratitude Journal, Exercise, Love Letter, Photo Task, Random
 - Paywall with compound interest (10%/hr, reduced by subscription)
 - Tiered escape penalties ($5/$10/$15+ stacking)
-- Admin tamper: +$500 attempt, +$1000 removal (stacking)
+- Admin tamper (Android device admin): friction re-lock + Lion notification, no financial penalty — costly-exit, not punish-exit (server bumps `lifetime_tamper` only). Desktop-collar tamper is separate: a server-authoritative $5/tier ratchet capped at $500 (`shared/focuslock_penalties.py`)
 - Lovense integration, max volume enforcement, geofence auto-lock
 - SMS trigger: "sit-boy [mins] [$amount]"
 - Photo tasks verified by Ollama (minicpm-v)
@@ -93,12 +95,28 @@ Runtime config: `~/.config/focuslock/config.json` (Linux) or `%APPDATA%\focusloc
 - **Address refresh**: Re-resolved each gossip tick (handles DHCP/WiFi/Tailscale changes)
 - **Tailscale cache**: 60s hostname refresh interval
 - **WARREN_WHITELIST**: All trusted node IDs including generic seed IDs (`phone`, `homelab`)
-- **Deployment**: `focuslock_mesh.py` + `focuslock_ntfy.py` need updating — desktop collars import both. Windows .exe must be rebuilt via `build-win.py`.
+- **Deployment**: `focuslock_mesh.py` + `focuslock_ntfy.py` need updating — desktop collars import both. `shared/focuslock_companion.py` rides the `shared/focuslock_*.py` glob in both desktop installers, but PyInstaller needs it named in `DEFAULT_HIDDEN_IMPORTS`. Windows .exe must be rebuilt via `build-win.py`.
 - **ntfy push**: Optional instant order delivery via ntfy.sh (or self-hosted). Payload is only `{"v": N}` — zero-knowledge by construction. Config: `ntfy_enabled`, `ntfy_server`, `ntfy_topic` in config.json. Topic auto-derived from `mesh_id`. Gossip remains the consistency layer; ntfy is a latency optimization.
 
 ## Safety
 
 - Terms of Surrender consent screen on first install
 - Release Forever button (Lion only) — full teardown + auto-uninstall
-- Factory reset at 150 escapes
+- Factory reset always available (OS-level, never blocked); in-app shortcut after a few escapes
 - System is consensual. Power dynamic is not.
+
+## Design Priorities
+
+When a feature, default, or fix has more than one reasonable design, favor
+the Lion's interests over the Bunny's. The Bunny already holds the
+underlying technical power — it's their device, their root access, their
+ability to reformat the drive. The software's whole purpose is to
+counterbalance that with something Bunny can't just switch off, so
+ambiguous choices should tilt toward strengthening Lion's authority over
+the system rather than toward making it more convenient to work around.
+When in doubt: does this benefit the Lion?
+
+This doesn't override Safety above — consent and the documented escape
+hatches (Release Forever, safeword, factory reset) are the floor, not
+something this trades away. It's a tie-breaker for everything built on
+top of that floor.

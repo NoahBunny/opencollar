@@ -1,18 +1,37 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Lion's Share — organised by what the Lion is DOING, not by power level.
+
+  The tabs used to be Control / Advanced / Inbox: two names describing how
+  dangerous a control was and one describing a container. Neither predicted its
+  contents, so "Advanced" accumulated the mode spinner (core), writing tasks
+  (core), geofencing (situational), payment email (setup), vault nodes (admin)
+  and RELEASE FOREVER (teardown) on a single scroll.
+
+  Now every tab answers one question:
+
+    LOCK   — what is happening, and make it happen
+    RULES  — what will the bunny have to do to get out?
+    MONEY  — what do they owe?
+    INBOX  — what have they said?
+
+  Anything that is configuration rather than an action on the bunny lives in the
+  kebab (res/menu/overflow.xml), not on a tab.
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#0a0a14"
     android:orientation="vertical">
 
-    <!-- Header -->
+    <!-- ═══ HEADER ═══ -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:gravity="center_vertical"
         android:paddingLeft="20dp"
-        android:paddingRight="20dp"
+        android:paddingRight="12dp"
         android:paddingTop="36dp"
         android:paddingBottom="4dp">
 
@@ -33,13 +52,16 @@
             android:letterSpacing="0.03"
             android:singleLine="true" />
 
-        <Spinner android:id="@+id/phone_spinner" android:layout_width="wrap_content" android:layout_height="32dp" android:backgroundTint="#333" android:layout_marginRight="6dp" />
+        <Spinner android:id="@+id/phone_spinner" android:layout_width="wrap_content" android:layout_height="32dp" android:backgroundTint="#333" android:layout_marginRight="4dp" />
 
-        <Button android:id="@+id/btn_app_pin" android:layout_width="wrap_content" android:layout_height="32dp" android:text="PIN" android:textSize="10sp" android:backgroundTint="#1a1a08" android:textColor="#c8a84e" android:paddingLeft="8dp" android:paddingRight="8dp" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
-        <Button android:id="@+id/btn_setup" android:layout_width="wrap_content" android:layout_height="32dp" android:text="Setup" android:textSize="10sp" android:backgroundTint="#151520" android:textColor="#555" android:paddingLeft="12dp" android:paddingRight="12dp" android:minWidth="0dp" android:minHeight="0dp" />
+        <!-- Setup, App PIN, Web Remote, Payment Email, Vault Nodes, Bunnies and
+             Release Forever all moved off the tabs and behind this. The theme is
+             Theme.Material.NoActionBar, so there is no system overflow to hang
+             them on — this button anchors a PopupMenu instead. -->
+        <Button android:id="@+id/btn_kebab" android:layout_width="40dp" android:layout_height="40dp" android:text="⋮" android:textSize="20sp" android:backgroundTint="#151520" android:textColor="#c8a84e" android:paddingLeft="0dp" android:paddingRight="0dp" android:minWidth="0dp" android:minHeight="0dp" />
     </LinearLayout>
 
-    <!-- Tab bar (3 tabs) -->
+    <!-- ═══ TAB BAR ═══ -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -49,12 +71,13 @@
         android:paddingTop="8dp"
         android:paddingBottom="4dp">
 
-        <Button android:id="@+id/tab_simple" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="Control" android:textSize="13sp" android:backgroundTint="#2a2510" android:textColor="#DAA520" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
-        <Button android:id="@+id/tab_advanced" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="Advanced" android:textSize="13sp" android:backgroundTint="#111118" android:textColor="#555" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
+        <Button android:id="@+id/tab_lock" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="Lock" android:textSize="13sp" android:backgroundTint="#2a2510" android:textColor="#DAA520" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
+        <Button android:id="@+id/tab_rules" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="Rules" android:textSize="13sp" android:backgroundTint="#111118" android:textColor="#555" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
+        <Button android:id="@+id/tab_money" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="Money" android:textSize="13sp" android:backgroundTint="#111118" android:textColor="#555" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
         <Button android:id="@+id/tab_inbox" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="Inbox" android:textSize="13sp" android:backgroundTint="#111118" android:textColor="#555" android:minWidth="0dp" android:minHeight="0dp" />
     </LinearLayout>
 
-    <!-- Status card with tier badge -->
+    <!-- ═══ STATUS (always visible, whatever tab you are on) ═══ -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -100,9 +123,11 @@
             android:visibility="gone" />
     </LinearLayout>
 
-    <!-- ═══ CONTROL PAGE (was Simple) ═══ -->
+    <!-- ══════════════════════════════════════════════════════════════════ -->
+    <!-- ═══ LOCK — what is happening, and make it happen              ═══ -->
+    <!-- ══════════════════════════════════════════════════════════════════ -->
     <ScrollView
-        android:id="@+id/page_simple"
+        android:id="@+id/page_lock"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
@@ -114,31 +139,20 @@
 
             <EditText android:id="@+id/timer_input" android:layout_width="match_parent" android:layout_height="50dp" android:hint="Timer (minutes)" android:textColor="#e0e0e0" android:textColorHint="#3a3a4a" android:textSize="14sp" android:background="#111118" android:paddingLeft="16dp" android:paddingRight="16dp" android:inputType="number" android:layout_marginBottom="6dp" />
 
-            <!-- Bunny Balance -->
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0e1a" android:padding="14dp" android:layout_marginBottom="12dp">
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\uD83D\uDCB0  BUNNY BALANCE" android:textColor="#DAA520" android:textSize="10sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
-                <TextView android:id="@+id/balance_display" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="$0" android:textColor="#FFD700" android:textSize="32sp" android:textStyle="bold" android:textAlignment="center" android:layout_marginBottom="10dp" />
-                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
-                    <Button android:id="@+id/btn_clear_balance" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="Clear" android:textSize="12sp" android:backgroundTint="#1a2a1a" android:textColor="#44cc44" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
-                    <EditText android:id="@+id/balance_set_input" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:hint="Set $" android:textColor="#DAA520" android:textColorHint="#664400" android:textSize="13sp" android:textAlignment="center" android:background="#111118" android:inputType="numberDecimal" android:layout_marginRight="4dp" />
-                    <Button android:id="@+id/btn_set_balance" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="Set" android:textSize="12sp" android:backgroundTint="#2a2510" android:textColor="#DAA520" android:minWidth="0dp" android:minHeight="0dp" />
-                </LinearLayout>
-            </LinearLayout>
+            <!-- This is a LOCK parameter, not a money one: the lock order's
+                 "paywall" field SETS the balance (ControlService.java:1105) and
+                 is read here in buildLockJson (:3067). It used to sit in the
+                 quick-add money row on the old Control tab, one field away from
+                 balance_set_input, which is exactly why the two looked like
+                 duplicates of each other. It belongs with the other things that
+                 describe the lock about to be sent. -->
+            <EditText android:id="@+id/paywall_amount" android:layout_width="match_parent" android:layout_height="50dp" android:hint="Set balance to $… with this lock (optional)" android:textColor="#cc9900" android:textColorHint="#3a3a4a" android:textSize="14sp" android:background="#111118" android:paddingLeft="16dp" android:paddingRight="16dp" android:inputType="numberDecimal" android:layout_marginBottom="10dp" />
 
-            <!-- Quick add $ with compact paywall field -->
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="16dp">
-                <Button android:id="@+id/btn_add_1" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="+$1" android:textSize="12sp" android:backgroundTint="#1a1a2e" android:textColor="#cc9900" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
-                <Button android:id="@+id/btn_add_5" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="+$5" android:textSize="12sp" android:backgroundTint="#1a1a2e" android:textColor="#cc9900" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
-                <Button android:id="@+id/btn_add_10" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="+$10" android:textSize="12sp" android:backgroundTint="#1a1a2e" android:textColor="#cc9900" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
-                <Button android:id="@+id/btn_add_25" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="+$25" android:textSize="12sp" android:backgroundTint="#1a1a2e" android:textColor="#cc9900" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
-                <Button android:id="@+id/btn_add_50" android:layout_width="0dp" android:layout_weight="1" android:layout_height="36dp" android:text="+$50" android:textSize="12sp" android:backgroundTint="#2a1a0a" android:textColor="#ff6600" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
-                <EditText android:id="@+id/paywall_amount" android:layout_width="0dp" android:layout_weight="1.2" android:layout_height="36dp" android:hint="$" android:textColor="#cc9900" android:textColorHint="#664400" android:textSize="13sp" android:textAlignment="center" android:background="#1a1a2e" android:inputType="numberDecimal" android:minWidth="0dp" />
-            </LinearLayout>
+            <!-- The one primary action on this screen. Its label is rewritten
+                 from the live state in refreshLockButton() — it says what will
+                 happen, not merely what it is. -->
+            <Button android:id="@+id/btn_lock" android:layout_width="match_parent" android:layout_height="60dp" android:text="Lock all devices" android:textSize="17sp" android:singleLine="true" android:backgroundTint="#8B6914" android:textColor="#fff" android:layout_marginBottom="6dp" />
 
-            <!-- Lock -->
-            <Button android:id="@+id/btn_lock" android:layout_width="match_parent" android:layout_height="54dp" android:text="Lock all devices" android:textSize="16sp" android:backgroundTint="#8B6914" android:textColor="#fff" android:layout_marginBottom="6dp" />
-
-            <!-- Quick locks -->
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="6dp">
                 <Button android:id="@+id/btn_lock_15" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="15m" android:textSize="13sp" android:backgroundTint="#6b5010" android:textColor="#FFD700" android:layout_marginRight="3dp" />
                 <Button android:id="@+id/btn_lock_30" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="30m" android:textSize="13sp" android:backgroundTint="#6b5010" android:textColor="#FFD700" android:layout_marginRight="3dp" />
@@ -146,25 +160,13 @@
                 <Button android:id="@+id/btn_lock_120" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="2hr" android:textSize="13sp" android:backgroundTint="#6b5010" android:textColor="#FFD700" />
             </LinearLayout>
 
-            <!-- Unlock row: Unlock All + Release Device -->
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="20dp">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="16dp">
                 <Button android:id="@+id/btn_unlock" android:layout_width="0dp" android:layout_weight="1" android:layout_height="54dp" android:text="Unlock All" android:textSize="16sp" android:backgroundTint="#2a2510" android:textColor="#DAA520" android:layout_marginRight="4dp" />
                 <Button android:id="@+id/btn_unlock_device" android:layout_width="0dp" android:layout_weight="1" android:layout_height="54dp" android:text="Release Device..." android:textSize="14sp" android:backgroundTint="#1a1a10" android:textColor="#b8960f" />
             </LinearLayout>
 
-            <!-- Body Check -->
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0e1a" android:padding="14dp" android:layout_marginBottom="12dp">
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\uD83E\uDE7A  BODY CHECK" android:textColor="#DAA520" android:textSize="10sp" android:letterSpacing="0.15" android:layout_marginBottom="6dp" />
-                <TextView android:id="@+id/body_check_status" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Not active" android:textColor="#888" android:textSize="12sp" android:layout_marginBottom="8dp" />
-                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">
-                    <Button android:id="@+id/btn_body_check_start" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="Start" android:textSize="11sp" android:backgroundTint="#2a2510" android:textColor="#DAA520" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
-                    <Button android:id="@+id/btn_body_check_now" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="Check now" android:textSize="11sp" android:backgroundTint="#2a2510" android:textColor="#DAA520" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
-                    <Button android:id="@+id/btn_body_check_baseline" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="Set baseline" android:textSize="11sp" android:backgroundTint="#1a1a2a" android:textColor="#8888cc" android:minWidth="0dp" android:minHeight="0dp" />
-                </LinearLayout>
-            </LinearLayout>
-
-            <!-- Offer response -->
-            <LinearLayout android:id="@+id/offer_section" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone" android:background="#0e0e1a" android:padding="14dp" android:layout_marginBottom="16dp">
+            <!-- Offer response — only exists while an offer is on the table. -->
+            <LinearLayout android:id="@+id/offer_section" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone" android:background="#0e0e1a" android:padding="14dp" android:layout_marginBottom="12dp">
                 <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="OFFER RECEIVED" android:textColor="#DAA520" android:textSize="10sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
                 <TextView android:id="@+id/offer_text" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="#e0e0e0" android:textSize="16sp" android:layout_marginBottom="12dp" />
                 <EditText android:id="@+id/offer_counter" android:layout_width="match_parent" android:layout_height="44dp" android:hint="Counter-offer (optional)" android:textColor="#e0e0e0" android:textColorHint="#3a3a4a" android:textSize="13sp" android:background="#151520" android:paddingLeft="12dp" android:paddingRight="12dp" android:inputType="text" android:layout_marginBottom="8dp" />
@@ -174,12 +176,51 @@
                 </LinearLayout>
             </LinearLayout>
 
+            <!-- ── LIVE POKES — collapsed by default (see sec_pokes_body) ── -->
+            <LinearLayout android:id="@+id/sec_pokes_head" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:paddingTop="10dp" android:paddingBottom="10dp">
+                <TextView android:id="@+id/sec_pokes_chevron" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="▸" android:textColor="#DAA520" android:textSize="12sp" android:layout_marginRight="8dp" />
+                <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="LIVE POKES" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" />
+                <TextView android:id="@+id/sec_pokes_summary" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Speak, Audio" android:textColor="#555" android:textSize="11sp" />
+            </LinearLayout>
+
+            <LinearLayout android:id="@+id/sec_pokes_body" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone" android:layout_marginBottom="8dp">
+
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">
+                    <Button android:id="@+id/btn_play_audio" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Play Audio" android:textSize="12sp" android:backgroundTint="#1a1a2a" android:textColor="#6688cc" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                    <Button android:id="@+id/btn_speak" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Speak" android:textSize="12sp" android:backgroundTint="#1a1a2a" android:textColor="#88aaee" android:minWidth="0dp" android:minHeight="0dp" />
+                </LinearLayout>
+
+                <!-- Lovense — hidden entirely when no toy is reachable (:775). -->
+                <LinearLayout android:id="@+id/toy_section" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="🐰  GOOD BOY" android:textColor="#ff88cc" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginTop="8dp" android:layout_marginBottom="6dp" />
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+                        <Button android:id="@+id/btn_toy_pulse" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Pulse" android:textSize="12sp" android:backgroundTint="#2a1a2a" android:textColor="#ff88cc" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                        <Button android:id="@+id/btn_toy_reward" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Reward" android:textSize="12sp" android:backgroundTint="#1a2a1a" android:textColor="#88ff88" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                        <Button android:id="@+id/btn_toy_punish" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Punish" android:textSize="12sp" android:backgroundTint="#2a1a1a" android:textColor="#ff6666" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                        <Button android:id="@+id/btn_toy_stop" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Stop" android:textSize="12sp" android:backgroundTint="#1a1a1a" android:textColor="#888" android:minWidth="0dp" android:minHeight="0dp" />
+                    </LinearLayout>
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- Body Check — homelab-gated by applyHomelabGating() (:1033). -->
+            <LinearLayout android:id="@+id/body_check_card" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0e1a" android:padding="14dp" android:layout_marginTop="8dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="🩺  BODY CHECK" android:textColor="#DAA520" android:textSize="10sp" android:letterSpacing="0.15" android:layout_marginBottom="6dp" />
+                <TextView android:id="@+id/body_check_status" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Not active" android:textColor="#888" android:textSize="12sp" android:layout_marginBottom="8dp" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+                    <Button android:id="@+id/btn_body_check_start" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="Start" android:textSize="11sp" android:backgroundTint="#2a2510" android:textColor="#DAA520" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
+                    <Button android:id="@+id/btn_body_check_now" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="Check now" android:textSize="11sp" android:backgroundTint="#2a2510" android:textColor="#DAA520" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
+                    <Button android:id="@+id/btn_body_check_baseline" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="Set baseline" android:textSize="11sp" android:backgroundTint="#1a1a2a" android:textColor="#8888cc" android:minWidth="0dp" android:minHeight="0dp" />
+                </LinearLayout>
+            </LinearLayout>
+
         </LinearLayout>
     </ScrollView>
 
-    <!-- ═══ ADVANCED PAGE ═══ -->
+    <!-- ══════════════════════════════════════════════════════════════════ -->
+    <!-- ═══ RULES — what will the bunny have to do to get out?        ═══ -->
+    <!-- ══════════════════════════════════════════════════════════════════ -->
     <ScrollView
-        android:id="@+id/page_advanced"
+        android:id="@+id/page_rules"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
@@ -188,118 +229,165 @@
 
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:paddingLeft="20dp" android:paddingRight="20dp" android:paddingBottom="20dp">
 
-            <!-- ── \uD83C\uDFAD MODE ── -->
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\uD83C\uDFAD  MODE" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="6dp" android:layout_marginTop="4dp" />
+            <!-- ── MODE ── -->
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="🎭  MODE" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="6dp" android:layout_marginTop="4dp" />
             <Spinner android:id="@+id/mode_spinner" android:layout_width="match_parent" android:layout_height="44dp" android:backgroundTint="#333" android:layout_marginBottom="12dp" />
 
-            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />
+            <!-- The Compliment mode's only parameter, so it belongs with the
+                 mode rather than among the modifiers. Revealed by
+                 refreshModeParams() when that mode is selected; hidden
+                 otherwise, so the other eight modes do not carry a field that
+                 does nothing for them. -->
+            <EditText android:id="@+id/compliment_prompt" android:layout_width="match_parent" android:layout_height="50dp" android:hint="Compliment to type to unlock" android:textColor="#e0e0e0" android:textColorHint="#3a3a4a" android:textSize="14sp" android:background="#111118" android:paddingLeft="16dp" android:paddingRight="16dp" android:inputType="text" android:layout_marginBottom="12dp" android:visibility="gone" />
 
-            <!-- ── \u26A1 MODIFIERS ── -->
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\u26A1  MODIFIERS" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="6dp" />
+            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="4dp" />
 
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">
-                <ToggleButton android:id="@+id/toggle_shame" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:textOn="Taunt" android:textOff="Taunt" android:textSize="12sp" android:textColor="#555" android:backgroundTint="#111118" android:layout_marginRight="3dp" />
-                <ToggleButton android:id="@+id/toggle_penalty" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:textOn="+5m/esc" android:textOff="+5m/esc" android:textSize="12sp" android:textColor="#555" android:backgroundTint="#111118" android:layout_marginRight="3dp" />
-                <ToggleButton android:id="@+id/toggle_vibrate" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:textOn="Vibrate" android:textOff="Vibrate" android:textSize="12sp" android:textColor="#555" android:backgroundTint="#111118" />
+            <!-- ── MODIFIERS — collapsed; the summary lists what is on ── -->
+            <LinearLayout android:id="@+id/sec_mods_head" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:paddingTop="10dp" android:paddingBottom="10dp">
+                <TextView android:id="@+id/sec_mods_chevron" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="▸" android:textColor="#DAA520" android:textSize="12sp" android:layout_marginRight="8dp" />
+                <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="⚡  MODIFIERS" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" />
+                <TextView android:id="@+id/sec_mods_summary" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="None" android:textColor="#555" android:textSize="11sp" />
             </LinearLayout>
 
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="12dp">
-                <ToggleButton android:id="@+id/toggle_dim" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:textOn="Dim" android:textOff="Dim" android:textSize="12sp" android:textColor="#555" android:backgroundTint="#111118" android:layout_marginRight="3dp" />
-                <ToggleButton android:id="@+id/toggle_mute" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:textOn="Mute" android:textOff="Mute" android:textSize="12sp" android:textColor="#555" android:backgroundTint="#111118" android:layout_marginRight="3dp" />
-                <View android:layout_width="0dp" android:layout_weight="1" android:layout_height="1dp" />
-            </LinearLayout>
-
-            <EditText android:id="@+id/compliment_prompt" android:layout_width="match_parent" android:layout_height="50dp" android:hint="Compliment to type to unlock" android:textColor="#e0e0e0" android:textColorHint="#3a3a4a" android:textSize="14sp" android:background="#111118" android:paddingLeft="16dp" android:paddingRight="16dp" android:inputType="text" android:layout_marginBottom="12dp" />
-
-            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />
-
-            <!-- ── \uD83D\uDC30 GOOD BOY (Lovense) ── -->
-            <LinearLayout android:id="@+id/toy_section" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
-
-                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\uD83D\uDC30  GOOD BOY" android:textColor="#ff88cc" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="6dp" />
-
-                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="12dp">
-                    <Button android:id="@+id/btn_toy_pulse" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Pulse" android:textSize="12sp" android:backgroundTint="#2a1a2a" android:textColor="#ff88cc" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
-                    <Button android:id="@+id/btn_toy_reward" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Reward" android:textSize="12sp" android:backgroundTint="#1a2a1a" android:textColor="#88ff88" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
-                    <Button android:id="@+id/btn_toy_punish" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Punish" android:textSize="12sp" android:backgroundTint="#2a1a1a" android:textColor="#ff6666" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
-                    <Button android:id="@+id/btn_toy_stop" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Stop" android:textSize="12sp" android:backgroundTint="#1a1a1a" android:textColor="#888" android:minWidth="0dp" android:minHeight="0dp" />
+            <LinearLayout android:id="@+id/sec_mods_body" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">
+                    <ToggleButton android:id="@+id/toggle_shame" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:textOn="Taunt" android:textOff="Taunt" android:textSize="12sp" android:textColor="#555" android:backgroundTint="#111118" android:layout_marginRight="3dp" />
+                    <ToggleButton android:id="@+id/toggle_penalty" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:textOn="+5m/esc" android:textOff="+5m/esc" android:textSize="12sp" android:textColor="#555" android:backgroundTint="#111118" android:layout_marginRight="3dp" />
+                    <ToggleButton android:id="@+id/toggle_vibrate" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:textOn="Vibrate" android:textOff="Vibrate" android:textSize="12sp" android:textColor="#555" android:backgroundTint="#111118" />
                 </LinearLayout>
 
-                <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="12dp">
+                    <ToggleButton android:id="@+id/toggle_dim" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:textOn="Dim" android:textOff="Dim" android:textSize="12sp" android:textColor="#555" android:backgroundTint="#111118" android:layout_marginRight="3dp" />
+                    <ToggleButton android:id="@+id/toggle_mute" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:textOn="Mute" android:textOff="Mute" android:textSize="12sp" android:textColor="#555" android:backgroundTint="#111118" android:layout_marginRight="3dp" />
+                    <View android:layout_width="0dp" android:layout_weight="1" android:layout_height="1dp" />
+                </LinearLayout>
+
             </LinearLayout>
 
-            <!-- ── \u270D\uFE0F WRITING TASK ── -->
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\u270D\uFE0F  WRITING TASK" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
+            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />
+
+            <!-- ── WRITING TASK ── -->
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="✍️  WRITING TASK" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
 
             <EditText android:id="@+id/task_input" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Text to type to unlock" android:textColor="#e0e0e0" android:textColorHint="#3a3a4a" android:textSize="14sp" android:background="#111118" android:paddingLeft="16dp" android:paddingRight="16dp" android:paddingTop="14dp" android:paddingBottom="14dp" android:layout_marginBottom="6dp" android:inputType="textMultiLine" android:minLines="2" android:gravity="top" />
 
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="12dp">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="6dp">
                 <EditText android:id="@+id/task_reps" android:layout_width="0dp" android:layout_weight="1" android:layout_height="44dp" android:hint="Reps" android:textColor="#e0e0e0" android:textColorHint="#3a3a4a" android:textSize="14sp" android:background="#111118" android:paddingLeft="16dp" android:inputType="number" android:layout_marginRight="4dp" />
                 <ToggleButton android:id="@+id/task_randomize" android:layout_width="0dp" android:layout_weight="1" android:layout_height="44dp" android:textOn="Random caps" android:textOff="Random caps" android:textSize="12sp" android:textColor="#555" android:backgroundTint="#111118" android:layout_marginRight="4dp" />
                 <Button android:id="@+id/btn_task" android:layout_width="0dp" android:layout_weight="1" android:layout_height="44dp" android:text="TASK" android:textSize="13sp" android:backgroundTint="#2244aa" android:textColor="#fff" android:minWidth="0dp" android:minHeight="0dp" android:singleLine="true" />
             </LinearLayout>
 
+            <!-- 144 preloaded venerations, drawn by category. Sits with the
+                 writing task because that is what it fills in — the Lion picks
+                 a flavour instead of composing a line, and the exact string
+                 (capitalised pronouns included) goes across without retyping. -->
+            <Button android:id="@+id/btn_veneration" android:layout_width="match_parent" android:layout_height="42dp" android:text="🎲 Draw a veneration…" android:textSize="12sp" android:backgroundTint="#2a2510" android:textColor="#DAA520" android:minWidth="0dp" android:minHeight="0dp" android:layout_marginBottom="4dp" />
+
+            <Button android:id="@+id/btn_deadline_task" android:layout_width="match_parent" android:layout_height="42dp" android:text="⏰ Deadline Task" android:textSize="12sp" android:backgroundTint="#2a1a2a" android:textColor="#cc88cc" android:minWidth="0dp" android:minHeight="0dp" android:layout_marginBottom="12dp" />
+
             <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />
 
-            <!-- ── \uD83D\uDD27 POWER TOOLS ── -->
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\uD83D\uDD27  POWER TOOLS" android:textColor="#cc9900" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
+            <!-- ── WHERE ── -->
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="📍  WHERE" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
 
-            <!-- Row 1: Clear Paywall | Double or Nothing -->
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">
-                <Button android:id="@+id/btn_clear_paywall" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Clear Paywall" android:textSize="12sp" android:backgroundTint="#1a2a1a" android:textColor="#44cc44" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
-                <Button android:id="@+id/btn_gamble" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Double or Nothing" android:textSize="12sp" android:backgroundTint="#2a2a0a" android:textColor="#cccc44" android:minWidth="0dp" android:minHeight="0dp" />
-            </LinearLayout>
-
-            <!-- Row 2: Play Audio | Speak -->
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">
-                <Button android:id="@+id/btn_play_audio" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Play Audio" android:textSize="12sp" android:backgroundTint="#1a1a2a" android:textColor="#6688cc" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
-                <Button android:id="@+id/btn_speak" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Speak" android:textSize="12sp" android:backgroundTint="#1a1a2a" android:textColor="#88aaee" android:minWidth="0dp" android:minHeight="0dp" />
-            </LinearLayout>
-
-            <!-- Row 3: Set Geofence | Confine Home -->
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="16dp">
                 <Button android:id="@+id/btn_set_geofence" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Set Geofence" android:textSize="12sp" android:backgroundTint="#2a1a1a" android:textColor="#cc8844" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
                 <Button android:id="@+id/btn_confine_home" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Confine Home" android:textSize="12sp" android:backgroundTint="#2a1a1a" android:textColor="#cc8844" android:minWidth="0dp" android:minHeight="0dp" />
             </LinearLayout>
 
-            <!-- Row 4: Pin Message | Subscription -->
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">
-                <Button android:id="@+id/btn_pin_message" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Pin Message" android:textSize="12sp" android:backgroundTint="#1a1a2a" android:textColor="#aa88cc" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
-                <Button android:id="@+id/btn_force_sub" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Subscription" android:textSize="12sp" android:backgroundTint="#1a1a08" android:textColor="#ccaa44" android:minWidth="0dp" android:minHeight="0dp" />
+            <!-- ── DANGER — its own visual language, not merely a redder tint ── -->
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/danger_block" android:padding="14dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="⚠  NO WAY OUT" android:textColor="#cc4444" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="4dp" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="The next lock has no unlock condition the bunny can meet." android:textColor="#886666" android:textSize="11sp" android:layout_marginBottom="10dp" />
+                <Button android:id="@+id/btn_entrap_adv" android:layout_width="match_parent" android:layout_height="42dp" android:text="🪤  Entrap" android:textSize="13sp" android:backgroundTint="#2a0a0a" android:textColor="#cc4444" android:minWidth="0dp" android:minHeight="0dp" />
             </LinearLayout>
-
-            <!-- Deadline Task: do-or-lock with rolling deadline (server-side authority). -->
-            <Button android:id="@+id/btn_deadline_task" android:layout_width="match_parent" android:layout_height="42dp" android:text="\u23F0 Deadline Task" android:textSize="12sp" android:backgroundTint="#2a1a2a" android:textColor="#cc88cc" android:minWidth="0dp" android:minHeight="0dp" android:layout_marginBottom="4dp" />
-
-            <!-- Web Remote: scan QR to approve web session -->
-            <Button android:id="@+id/btn_web_remote" android:layout_width="match_parent" android:layout_height="42dp" android:text="\uD83D\uDCF1 Web Remote" android:textSize="12sp" android:backgroundTint="#1a1408" android:textColor="#b8860b" android:minWidth="0dp" android:minHeight="0dp" android:layout_marginBottom="4dp" />
-
-            <!-- Payment Email: Lion sets IMAP creds for payment detection -->
-            <Button android:id="@+id/btn_payment_email" android:layout_width="match_parent" android:layout_height="42dp" android:text="\uD83D\uDCE7 Payment Email" android:textSize="12sp" android:backgroundTint="#1a1a08" android:textColor="#88cc44" android:minWidth="0dp" android:minHeight="0dp" android:layout_marginBottom="4dp" />
-
-            <!-- Row 5: Vault Nodes (Phase B/C approval queue) | Bunnies (multi-bunny switcher) -->
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">
-                <Button android:id="@+id/btn_vault_nodes" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="\uD83D\uDD12 Vault Nodes" android:textSize="12sp" android:backgroundTint="#0a1a1a" android:textColor="#66cccc" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
-                <Button android:id="@+id/btn_bunnies" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="\uD83D\uDC07 Bunnies" android:textSize="12sp" android:backgroundTint="#1a0a1a" android:textColor="#cc66cc" android:minWidth="0dp" android:minHeight="0dp" />
-            </LinearLayout>
-
-            <!-- Fine control -->
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="8dp" android:layout_marginBottom="4dp">
-                <Button android:id="@+id/btn_start_fine" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="\uD83D\uDCB8 Start Fine" android:textSize="11sp" android:backgroundTint="#1a1608" android:textColor="#ee8833" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
-                <Button android:id="@+id/btn_stop_fine" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Stop Fine" android:textSize="11sp" android:backgroundTint="#1a1608" android:textColor="#c8a84e" android:minWidth="0dp" android:minHeight="0dp" />
-            </LinearLayout>
-            <TextView android:id="@+id/fine_status" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="#ee8833" android:textSize="10sp" android:visibility="gone" android:layout_marginBottom="4dp" />
-
-            <!-- Entrap (standalone) -->
-            <Button android:id="@+id/btn_entrap_adv" android:layout_width="match_parent" android:layout_height="42dp" android:text="\uD83E\uDEA4  Entrap" android:textSize="13sp" android:backgroundTint="#2a0a0a" android:textColor="#cc4444" android:minWidth="0dp" android:minHeight="0dp" android:layout_marginTop="8dp" />
-
-            <!-- Release Forever -->
-            <Button android:id="@+id/btn_release_forever" android:layout_width="match_parent" android:layout_height="54dp" android:text="RELEASE FOREVER" android:textSize="14sp" android:backgroundTint="#330000" android:textColor="#cc2222" android:minWidth="0dp" android:minHeight="0dp" android:layout_marginTop="24dp" />
 
         </LinearLayout>
     </ScrollView>
 
-    <!-- ═══ INBOX PAGE ═══ -->
+    <!-- ══════════════════════════════════════════════════════════════════ -->
+    <!-- ═══ MONEY — what do they owe?                                 ═══ -->
+    <!-- ══════════════════════════════════════════════════════════════════ -->
+    <ScrollView
+        android:id="@+id/page_money"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true"
+        android:visibility="gone">
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:paddingLeft="20dp" android:paddingRight="20dp" android:paddingBottom="20dp">
+
+            <!-- Balance — the primary thing on this screen. -->
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="#0e0e1a" android:padding="14dp" android:layout_marginTop="4dp" android:layout_marginBottom="8dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="💰  BUNNY BALANCE" android:textColor="#DAA520" android:textSize="10sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
+                <TextView android:id="@+id/balance_display" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="$0" android:textColor="#FFD700" android:textSize="36sp" android:textStyle="bold" android:textAlignment="center" android:layout_marginBottom="12dp" />
+
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+                    <!-- Confirms before firing. The balance is money the Lion is owed, and
+                         this button sits a thumb-width from "+$1" — see doClearPaywall. -->
+                    <Button android:id="@+id/btn_clear_balance" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="Clear" android:textSize="12sp" android:backgroundTint="#1a2a1a" android:textColor="#44cc44" android:layout_marginRight="4dp" android:minWidth="0dp" android:minHeight="0dp" />
+                    <EditText android:id="@+id/balance_set_input" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:hint="Set $" android:textColor="#DAA520" android:textColorHint="#664400" android:textSize="13sp" android:textAlignment="center" android:background="#111118" android:inputType="numberDecimal" android:layout_marginRight="4dp" />
+                    <Button android:id="@+id/btn_set_balance" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="Set" android:textSize="12sp" android:backgroundTint="#2a2510" android:textColor="#DAA520" android:minWidth="0dp" android:minHeight="0dp" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="ADD TO THE BALANCE" android:textColor="#DAA520" android:textSize="10sp" android:letterSpacing="0.15" android:layout_marginBottom="6dp" />
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">
+                <Button android:id="@+id/btn_add_1" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="+$1" android:textSize="12sp" android:backgroundTint="#1a1a2e" android:textColor="#cc9900" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                <Button android:id="@+id/btn_add_5" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="+$5" android:textSize="12sp" android:backgroundTint="#1a1a2e" android:textColor="#cc9900" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                <Button android:id="@+id/btn_add_10" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="+$10" android:textSize="12sp" android:backgroundTint="#1a1a2e" android:textColor="#cc9900" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                <Button android:id="@+id/btn_add_25" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="+$25" android:textSize="12sp" android:backgroundTint="#1a1a2e" android:textColor="#cc9900" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                <Button android:id="@+id/btn_add_50" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:text="+$50" android:textSize="12sp" android:backgroundTint="#2a1a0a" android:textColor="#ff6600" android:minWidth="0dp" android:minHeight="0dp" />
+            </LinearLayout>
+
+            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />
+
+            <!-- ── FINES ── -->
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="💸  FINES" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="6dp" />
+            <TextView android:id="@+id/fine_status" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="#ee8833" android:textSize="11sp" android:visibility="gone" android:layout_marginBottom="6dp" />
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="16dp">
+                <Button android:id="@+id/btn_start_fine" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Start Fine" android:textSize="12sp" android:backgroundTint="#1a1608" android:textColor="#ee8833" android:layout_marginRight="3dp" android:minWidth="0dp" android:minHeight="0dp" />
+                <Button android:id="@+id/btn_stop_fine" android:layout_width="0dp" android:layout_weight="1" android:layout_height="42dp" android:text="Stop Fine" android:textSize="12sp" android:backgroundTint="#1a1608" android:textColor="#c8a84e" android:minWidth="0dp" android:minHeight="0dp" />
+            </LinearLayout>
+
+            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />
+
+            <!-- ── SUBSCRIPTION ── -->
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="💳  SUBSCRIPTION" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="6dp" />
+            <TextView android:id="@+id/sub_status_text" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="No subscription active" android:textColor="#888" android:textSize="13sp" android:background="#0e0e1a" android:padding="12dp" android:layout_marginBottom="6dp" />
+            <Button android:id="@+id/btn_force_sub" android:layout_width="match_parent" android:layout_height="42dp" android:text="Change Subscription" android:textSize="12sp" android:backgroundTint="#1a1a08" android:textColor="#ccaa44" android:minWidth="0dp" android:minHeight="0dp" android:layout_marginBottom="16dp" />
+
+            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />
+
+            <!-- ── BALANCE HISTORY ──
+                 Not "payment history" any more: since 2026-08-23 this lists
+                 every movement — charges, fines, tributes and penalties as well
+                 as payments — so naming it after one direction described half
+                 of it. -->
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="💰  BALANCE HISTORY" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
+            <LinearLayout android:id="@+id/lion_payment_history" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginBottom="16dp" />
+
+            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />
+
+            <!-- ── CHANCE ── -->
+            <!-- Clear Paywall used to live here as well, POSTing the identical
+                 payload to the identical endpoint as the balance card's Clear.
+                 The two sat on different tabs, so nothing made the duplication
+                 visible. See the note on btn_clear_balance above. -->
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="🎲  CHANCE" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+                <Button android:id="@+id/btn_gamble" android:layout_width="match_parent" android:layout_height="42dp" android:text="Double or Nothing" android:textSize="12sp" android:backgroundTint="#2a2a0a" android:textColor="#cccc44" android:minWidth="0dp" android:minHeight="0dp" />
+            </LinearLayout>
+
+        </LinearLayout>
+    </ScrollView>
+
+    <!-- ══════════════════════════════════════════════════════════════════ -->
+    <!-- ═══ INBOX — what have they said?                              ═══ -->
+    <!-- ══════════════════════════════════════════════════════════════════ -->
     <ScrollView
         android:id="@+id/page_inbox"
         android:layout_width="match_parent"
@@ -311,15 +399,16 @@
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:paddingLeft="20dp" android:paddingRight="20dp" android:paddingBottom="20dp">
 
             <!-- ── Devices ── -->
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\uD83D\uDCF1  COLLARED DEVICES" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" android:layout_marginTop="4dp" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="📱  COLLARED DEVICES" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" android:layout_marginTop="4dp" />
 
-            <!-- Device cards container (populated programmatically) -->
             <LinearLayout android:id="@+id/device_cards_container" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginBottom="12dp" />
 
             <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />
 
             <!-- ── Message ── -->
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\u2709  MESSAGE" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="✉  MESSAGE" android:textColor="#DAA520" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
+
+            <TextView android:id="@+id/inbox_e2ee_warning" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="⚠ Not encrypted — Bunny's key not yet exchanged" android:textColor="#ff8866" android:textSize="11sp" android:background="#2a1010" android:padding="8dp" android:layout_marginBottom="6dp" android:visibility="gone" />
 
             <EditText android:id="@+id/inbox_message_input" android:layout_width="match_parent" android:layout_height="80dp" android:hint="Message to bunny..." android:textColor="#e0e0e0" android:textColorHint="#3a3a4a" android:textSize="14sp" android:background="#111118" android:paddingLeft="16dp" android:paddingRight="16dp" android:paddingTop="12dp" android:inputType="textMultiLine" android:gravity="top" android:layout_marginBottom="6dp" />
 
@@ -331,7 +420,12 @@
             </LinearLayout>
             <TextView android:id="@+id/schedule_label" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" android:textColor="#aa8844" android:textSize="10sp" android:visibility="gone" android:layout_marginBottom="4dp" />
 
-            <!-- ── Message Thread (SMS-style scrollable bubbles) ── -->
+            <!-- Pin a standing message the bunny cannot dismiss. Lives here,
+                 with the other things that put words on their screen, rather
+                 than in the old Advanced junk drawer. -->
+            <Button android:id="@+id/btn_pin_message" android:layout_width="match_parent" android:layout_height="38dp" android:text="📌 Pin a standing message" android:textSize="11sp" android:backgroundTint="#1a1a2a" android:textColor="#aa88cc" android:minWidth="0dp" android:minHeight="0dp" android:layout_marginBottom="12dp" />
+
+            <!-- ── Message Thread ── -->
             <ScrollView
                 android:id="@+id/lion_message_scroll"
                 android:layout_width="match_parent"
@@ -346,20 +440,6 @@
                     android:layout_height="wrap_content"
                     android:orientation="vertical" />
             </ScrollView>
-
-            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginBottom="12dp" />
-
-            <!-- ── Subscription ── -->
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="\uD83D\uDCB3  SUBSCRIPTION" android:textColor="#cc9900" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
-
-            <TextView android:id="@+id/sub_status_text" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="No subscription active" android:textColor="#888" android:textSize="13sp" android:background="#0e0e1a" android:padding="12dp" />
-
-            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#1a1a28" android:layout_marginTop="12dp" android:layout_marginBottom="12dp" />
-
-            <!-- ── Payment History ── -->
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="&#x1F4B0;  PAYMENT HISTORY" android:textColor="#cc9900" android:textSize="11sp" android:letterSpacing="0.15" android:layout_marginBottom="8dp" />
-
-            <LinearLayout android:id="@+id/lion_payment_history" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginBottom="12dp" />
 
         </LinearLayout>
     </ScrollView>

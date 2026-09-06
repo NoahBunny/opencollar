@@ -7,12 +7,12 @@
 # ── Version constants ──
 # Update these when bumping APK / desktop versions. The watcher daemon and
 # all sub-scripts read from here so there's exactly one place to change.
-TARGET_SLAVE_VERSIONCODE=70
-TARGET_SLAVE_APK="focuslock-v70.apk"
-TARGET_CONTROLLER_VERSIONCODE=67
-TARGET_CONTROLLER_APK="focusctl-v67.apk"
-TARGET_COMPANION_VERSIONCODE=51
-TARGET_COMPANION_APK="bunnytasker-v51.apk"
+TARGET_SLAVE_VERSIONCODE=87
+TARGET_SLAVE_APK="focuslock-v87.apk"
+TARGET_CONTROLLER_VERSIONCODE=87
+TARGET_CONTROLLER_APK="focusctl-v87.apk"
+TARGET_COMPANION_VERSIONCODE=71
+TARGET_COMPANION_APK="bunnytasker-v71.apk"
 
 # Server-side files that re-enslave-server.sh deploys
 SERVER_FILES=(
@@ -26,8 +26,15 @@ SERVER_ICON="collar-icon.png"
 # focuslock_ntfy.py is also deployed via the shared/focuslock_*.py glob in
 # re-enslave-desktops.sh — listed explicitly here so the entrypoint deploy
 # loop picks it up even on installs that skip the shared glob.
+# focuslock-tray.py is NOT covered by that glob (hyphen, not underscore), so
+# leaving it out of this list meant the crown was never deployed by a
+# re-enslave at all — not locally, and not pushed to peers either, since the
+# remote loop builds its file list from this same array. Every tray fix since
+# the original install-desktop-collar.sh run stayed on the operator's disk
+# while the header comment claimed otherwise.
 DESKTOP_FILES=(
     "focuslock-desktop.py"
+    "focuslock-tray.py"
     "focuslock_mesh.py"
     "focuslock_ntfy.py"
 )
@@ -47,14 +54,54 @@ section() { printf '\n=== %s ===\n' "$*"; }
 #   ICONS       — $LS/icons
 #   APKS        — $LS/apks (preferred) or $FL/apks (legacy fallback)
 discover_paths() {
+    # Explicit source override, from the environment or re-enslave.config.
+    # Autodiscovery picks the *Nextcloud* copy, which on a machine with more
+    # than one checkout is not necessarily the tree the operator has been
+    # working in — and a re-enslave silently sourced from a stale checkout
+    # rolls production back to whatever that copy last held. Set FOCUSLOCK_SRC
+    # to the checkout you actually mean and this stops being a coin flip.
+    if [ -n "${FOCUSLOCK_SRC:-}" ]; then
+        [ -d "$FOCUSLOCK_SRC" ] || fail "FOCUSLOCK_SRC is not a directory: $FOCUSLOCK_SRC"
+        [ -f "$FOCUSLOCK_SRC/focuslock-mail.py" ] || \
+            fail "FOCUSLOCK_SRC does not look like the project (no focuslock-mail.py): $FOCUSLOCK_SRC"
+        LS="$FOCUSLOCK_SRC"
+        NC="$(dirname "$(dirname "$LS")")"
+        FL="$NC/Scripts/FocusLock"
+        ICONS="$LS/icons"
+        if [ -d "$LS/apks" ]; then APKS="$LS/apks"
+        elif [ -d "$FL/apks" ]; then APKS="$FL/apks"
+        else APKS="$_REAL_HOME/Desktop"
+        fi
+        log "Source override: FOCUSLOCK_SRC=$LS"
+        return 0
+    fi
+
+    # Gather every candidate rather than stopping at the first: ~/Desktop is a
+    # normal place to keep the working checkout, and a machine that has both it
+    # and a Nextcloud copy gets whichever this list names first. FOCUSLOCK_SRC
+    # above is the fix and it returns before we ever reach here — this only
+    # runs unpinned, so say out loud which tree won and what it beat. Warn
+    # rather than fail: one checkout is still the common case, and a deploy
+    # that refuses to run is worse than one that announces its choice.
+    local _candidates=()
     NC=""
-    for p in "$_REAL_HOME/Nextcloud" "$_REAL_HOME/rclone_mounts/Nextcloud" /mnt/CargoBay8/NC-BFC; do
+    for p in "$_REAL_HOME/Nextcloud" "$_REAL_HOME/rclone_mounts/Nextcloud" \
+             /mnt/CargoBay8/NC-BFC "$_REAL_HOME/Desktop"; do
         if [ -d "$p/Scripts/FocusLock" ] || [ -d "$p/Scripts/Lion's Share + Bunny Tasker" ]; then
-            NC="$p"
-            break
+            [ -z "$NC" ] && NC="$p"
+            _candidates+=("$p")
         fi
     done
-    [ -z "$NC" ] && fail "Nextcloud not found. Checked ~/Nextcloud, ~/rclone_mounts/Nextcloud, /mnt/CargoBay8/NC-BFC."
+    [ -z "$NC" ] && fail "Project not found. Checked ~/Nextcloud, ~/rclone_mounts/Nextcloud, /mnt/CargoBay8/NC-BFC, ~/Desktop."
+
+    if [ "${#_candidates[@]}" -gt 1 ]; then
+        warn "More than one checkout present and FOCUSLOCK_SRC is not pinned."
+        warn "  deploying from: $NC"
+        for p in "${_candidates[@]}"; do
+            [ "$p" = "$NC" ] || warn "  ignoring:       $p"
+        done
+        warn "  pin FOCUSLOCK_SRC in ~/.config/focuslock/re-enslave.config to choose deliberately."
+    fi
 
     FL="$NC/Scripts/FocusLock"
     LS="$NC/Scripts/Lion's Share + Bunny Tasker"
@@ -125,6 +172,12 @@ load_config() {
     if [ -f "$RE_CONFIG" ]; then
         # shellcheck disable=SC1090
         source "$RE_CONFIG"
+        # Sourcing sets shell variables, which child processes do not inherit —
+        # so install-standing-orders.sh (invoked as a separate bash) saw none of
+        # this and failed with "Set FOCUSLOCK_HOMELAB…" on a machine whose
+        # config named the relay perfectly well. Export the ones sub-scripts read.
+        export FOCUSLOCK_SRC FOCUSLOCK_MESH_URL FOCUSLOCK_ADMIN_TOKEN \
+               FOCUSLOCK_HOMELAB FOCUSLOCK_HOMELAB_SSH FOCUSLOCK_HOMELAB_HOST DEPLOY_USER
         log "Loaded config: $RE_CONFIG"
     fi
 }

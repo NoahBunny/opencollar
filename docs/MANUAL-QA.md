@@ -37,7 +37,7 @@ SecurityException: Starting FGS with type location requires FOREGROUND_SERVICE_L
 ## 2. Device admin / invisibility
 
 - [ ] Settings → Apps → shows Collar as "Device admin active"
-- [ ] Attempt to disable device admin → tamper penalty applied ($500), Lion notified
+- [ ] Attempt to disable device admin → friction re-lock, Lion notified, NO financial penalty (costly-exit)
 - [ ] Attempt to uninstall Collar → blocked by device admin
 - [ ] Fossify Launcher shows only Bunny Tasker + system icons — no Collar
 
@@ -97,7 +97,7 @@ SecurityException: Starting FGS with type location requires FOREGROUND_SERVICE_L
 - [ ] Lion taps Release Forever → dialog confirms
 - [ ] On confirm: Collar self-uninstalls, Bunny Tasker self-uninstalls, device admin revoked, mesh state cleared
 - [ ] Verify no residual Collar files in `/sdcard/` or `/data/data/` (requires adb root on dev device)
-- [ ] 150 escape attempts → factory reset dialog appears
+- [ ] A few escape attempts (3+) → in-app factory-reset shortcut appears
 - [ ] Factory reset dialog: pressing "reset" actually wipes the device (don't test this on a device you need!)
 
 ## 11. Offline / recovery

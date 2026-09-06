@@ -27,6 +27,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Without this, git cannot verify an SSH signature and reports %G?=N —
+      # indistinguishable from unsigned — so the check below would fail every
+      # correctly-signed commit. Verified 2026-08-17: SSH-signed commit reads N
+      # with no allowedSignersFile and G with one.
+      #
+      # NOTE: this makes CI able to verify SSH signatures only. A GPG-signed
+      # commit still reports E (missing key) here, because nothing imports the
+      # signer's public key into the runner's keyring. CONTRIBUTING.md points
+      # contributors at SSH signing for that reason.
+      - name: Trust the project's SSH signing keys
+        run: git config gpg.ssh.allowedSignersFile .github/allowed_signers
+
       - name: Check signatures on commits touching sensitive paths
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -36,7 +48,7 @@ jobs:
 
           # Sensitive paths — regex alternation. Matches any path that STARTS
           # with one of these prefixes. Kept in sync with .github/CODEOWNERS.
-          SENSITIVE_REGEX='^(shared/focuslock_vault\.py|shared/focuslock_mesh\.py|shared/focuslock_payment\.py|shared/focuslock_penalties\.py|shared/focuslock_config\.py|shared/focuslock_sync\.py|shared/banks\.json|focuslock_mesh\.py|focuslock_ntfy\.py|focuslock-mail\.py|focuslock-desktop\.py|focuslock-desktop-win\.py|watchdog-win\.pyw|build-win\.py|android/(slave|controller|companion)/|installers/|\.github/workflows/|\.github/dependabot\.yml|\.github/CODEOWNERS)'
+          SENSITIVE_REGEX='^(shared/focuslock_vault\.py|shared/focuslock_mesh\.py|shared/focuslock_payment\.py|shared/focuslock_penalties\.py|shared/focuslock_config\.py|shared/focuslock_sync\.py|shared/banks\.json|focuslock_mesh\.py|focuslock_ntfy\.py|focuslock-mail\.py|focuslock-desktop\.py|focuslock-desktop-win\.py|watchdog-win\.pyw|build-win\.py|android/(slave|controller|companion)/|installers/|\.github/workflows/|\.github/dependabot\.yml|\.github/CODEOWNERS|\.github/allowed_signers)'
 
           echo "Checking commits in range ${BASE_SHA}..${HEAD_SHA}"
           mapfile -t COMMITS < <(git rev-list "${BASE_SHA}..${HEAD_SHA}")

@@ -3,7 +3,7 @@
 # Copyright (C) 2024-2026 The FocusLock Contributors
 """
 FocusLock Desktop Collar — Windows Edition.
-Mesh node + system tray crown + session lock enforcement.
+Mesh node + system tray bunny + session lock enforcement.
 Node ID: {hostname}-win (distinct from Linux collar on same machine).
 
 Dependencies: pystray, Pillow, cryptography (optional for RSA verify)
@@ -38,6 +38,7 @@ LOCK_WALLPAPER = os.path.join(CONFIG_DIR, "lock-wallpaper.png")
 ORIGINAL_WALLPAPER_FILE = os.path.join(CONFIG_DIR, "original-wallpaper")
 CONSENT_FILE = os.path.join(CONFIG_DIR, "desktop-consent")
 FIRST_RUN_FILE = os.path.join(CONFIG_DIR, ".initialized")
+LOG_FILE = os.path.join(CONFIG_DIR, "collar.log")
 
 os.makedirs(CONFIG_DIR, exist_ok=True)
 os.makedirs(ICONS_DIR, exist_ok=True)
@@ -64,6 +65,20 @@ from focuslock_http import JSONResponseMixin
 from focuslock_sync import direct_sync_poll as _shared_direct_sync_poll
 from focuslock_sync import relay_to_phones as _shared_relay_to_phones
 from focuslock_sync import try_sync as _shared_try_sync
+
+# Interim marching orders for a collared-but-unpaired machine. Optional: a
+# collar shipped without the module just skips the overlay.
+try:
+    import focuslock_unpaired_orders as unpaired_orders_mod
+except ImportError:
+    unpaired_orders_mod = None
+
+# Bunny Tasker's read-only surface, served on loopback off the mesh server.
+# Optional on the same terms: no module, no companion page.
+try:
+    import focuslock_companion as companion_mod
+except ImportError:
+    companion_mod = None
 
 # Vault crypto for E2E encrypted mesh (Phase D desktop support)
 try:
@@ -105,6 +120,7 @@ MESH_NODE_ID = socket.gethostname().lower() + "-win"
 MESH_NODE_TYPE = "desktop"
 POLL_INTERVAL = _cfg.get("poll_interval", 5)
 GOSSIP_INTERVAL = _cfg.get("gossip_interval", 10)
+MEMORY_SYNC_INTERVAL = 300  # 5 minutes — matches the Linux collar's standing-orders re-sync cadence
 
 MESH_URL = _cfg.get("mesh_url", "")
 HOMELAB_URL = _cfg.get("homelab_url", "")
@@ -143,6 +159,19 @@ mesh_peers = mesh.PeerRegistry(persist_path=PEERS_FILE, trust_store=_trust_store
 # ── Lion's Share Pubkey ──
 
 _lion_pubkey = ""
+
+
+def _is_paired():
+    """True once the Lion has approved this node — Their pubkey is on file.
+
+    Mirrors focuslock-tray.py's `_is_paired()`. Read off disk rather than the
+    `_lion_pubkey` cache because pairing usually happens well after start-up,
+    and the tray must notice without a restart.
+    """
+    try:
+        return os.path.exists(LION_PUBKEY_FILE) and os.path.getsize(LION_PUBKEY_FILE) > 0
+    except OSError:
+        return False
 
 
 def get_lion_pubkey():
@@ -198,6 +227,33 @@ _vault_privkey_pem = ""
 _vault_pubkey_der = b""
 
 
+def _restrict_to_owner_windows(path):
+    """Lock a secret file down to the current user via icacls.
+
+    On Windows os.chmod cannot express POSIX-style 0600 (it only toggles the
+    read-only bit), so the private key inherited %APPDATA%'s ACLs. icacls
+    removes inheritance and grants Full control to just this user. Best-effort
+    and fully guarded: if icacls is unavailable or the username can't be
+    resolved we log and leave the file as-is rather than risk locking the
+    owner out — %APPDATA% is already per-user, so this is defense in depth."""
+    user = os.environ.get("USERNAME", "")
+    if not user:
+        logger.warning("Could not resolve USERNAME — leaving %s ACLs as inherited", path)
+        return
+    try:
+        # grant + inheritance-removal in one atomic call so the DACL is never
+        # left empty: the end state is exactly "<user>: Full control".
+        subprocess.run(
+            ["icacls", path, "/inheritance:r", "/grant:r", f"{user}:F"],
+            check=True,
+            capture_output=True,
+            timeout=10,
+        )
+    except Exception as e:
+        # Best-effort hardening — never fatal (icacls missing, odd username, etc.)
+        logger.warning("icacls hardening of %s failed (%s) — file uses inherited ACLs", path, e)
+
+
 def _vault_init_keypair():
     """Load or generate RSA keypair for vault mode."""
     global _vault_privkey_pem, _vault_pubkey_der
@@ -216,6 +272,7 @@ def _vault_init_keypair():
         priv, pub, der = vault_keygen()
         with open(VAULT_PRIVKEY_FILE, "w") as f:
             f.write(priv)
+        _restrict_to_owner_windows(VAULT_PRIVKEY_FILE)
         with open(VAULT_PUBKEY_FILE, "w") as f:
             f.write(pub)
         _vault_privkey_pem = priv
@@ -389,6 +446,7 @@ class CollarState:
     countdown_lock_at = 0  # epoch ms — 0 means no countdown
     countdown_message = ""
     countdown_last_warn = 0  # epoch ms of last warning beep
+    liberating = False  # runtime release in progress — fire execute_liberation once
     _bedtime_locked = False
 
 
@@ -546,23 +604,27 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
 
 def needs_first_run_config():
-    """Check if we need to collect config from the user."""
-    if os.path.exists(CONFIG_FILE):
+    """True when no mesh is configured yet. Mirrors the Linux installer's
+    'Mesh ID + relay URL' prompt (install-desktop-collar.sh): a collar that
+    already has a mesh — via config.json or env — skips straight to consent and
+    joins. No PIN is involved; on a vault mesh each device authenticates with
+    its own registered key, not a shared secret."""
+    if os.environ.get("FOCUSLOCK_MESH_ID") and os.environ.get("FOCUSLOCK_MESH_URL"):
         return False
-    # Also skip if PIN already set via env var
-    if os.environ.get("FOCUSLOCK_PIN") or os.environ.get("PHONE_PIN"):
-        return False
-    return not _cfg.get("pin")
+    return not (_cfg.get("mesh_id") and _cfg.get("mesh_url"))
 
 
 def show_first_run_config():
-    """Show first-run config dialog to collect PIN and optional endpoints."""
+    """Collect the two mesh-join values the Linux installer asks for — Mesh ID
+    and Mesh relay URL — and nothing else. No PIN prompt. Writes config.json
+    with vault_mode enabled, then reloads the live globals so consent gating and
+    registration see the new mesh immediately (no restart needed)."""
+    global _cfg, MESH_ID, MESH_URL, HOMELAB_URL, PHONE_ADDRESSES, VAULT_MODE, _ntfy_topic, _ntfy_enabled
     try:
         import tkinter as tk
         from tkinter import messagebox, simpledialog
     except ImportError:
-        # No tkinter — fall back to simple input box
-        # Can't do text input with just MessageBox — save empty config and let user edit
+        # No tkinter — can't collect input here; let the user edit config.json.
         logger.warning("No tkinter available. Please edit config.json manually.")
         return False
 
@@ -570,50 +632,66 @@ def show_first_run_config():
     root.withdraw()
 
     messagebox.showinfo(
-        "FocusLock Setup",
-        "First-time setup.\n\n"
-        "You need a mesh PIN (shared secret between all your devices).\n"
-        "Optionally configure your homelab URL or phone IP.",
+        "The Collar — Join a Mesh",
+        "Let's get this collar onto your Lion's mesh.\n\n"
+        "Grab two values from the mesh-join info the Lion gave you:\n"
+        "    •  the Mesh ID\n"
+        "    •  the Mesh relay URL\n\n"
+        "(No PIN needed — the mesh knows this device by its own key.)",
     )
 
-    pin = simpledialog.askstring("Mesh PIN", "Enter mesh PIN (required):", parent=root)
-    if not pin:
-        messagebox.showerror("Setup", "PIN is required. Exiting.")
+    mesh_id = simpledialog.askstring("Mesh ID", "Enter the Mesh ID:", parent=root)
+    if not mesh_id or not mesh_id.strip():
+        messagebox.showinfo("The Collar", "No Mesh ID entered — leaving this collar unpaired for now.")
         root.destroy()
-        return False
+        return True  # idle, mesh-less — same as a bare Linux collar
 
-    homelab = (
-        simpledialog.askstring(
-            "Homelab URL",
-            "Homelab URL (optional — leave empty for P2P only):\ne.g. http://192.168.1.100:8434",
-            parent=root,
+    mesh_url = (
+        (
+            simpledialog.askstring(
+                "Mesh relay URL",
+                # The example belongs in the prompt, not in the field: an
+                # initialvalue is an answer the user can accept by pressing
+                # Enter, and this one used to be the author's own relay.
+                "Enter the Mesh relay URL\n(for example: https://collar.example.com):",
+                initialvalue="",
+                parent=root,
+            )
+            or ""
         )
-        or ""
+        .strip()
+        .rstrip("/")
     )
+    if not mesh_url:
+        messagebox.showinfo("The Collar", "No relay URL entered — leaving this collar unpaired for now.")
+        root.destroy()
+        return True
 
-    phone_ip = (
-        simpledialog.askstring("Phone IP", "Phone LAN IP (optional if homelab set):\ne.g. 192.168.1.50", parent=root)
-        or ""
-    )
-
-    config = {
-        "pin": pin,
-        "homelab_url": homelab,
-        "phone_addresses": [phone_ip] if phone_ip else [],
-    }
+    config = dict(_cfg)  # preserve any existing keys; just set the mesh ones
+    config["mesh_id"] = mesh_id.strip()
+    config["mesh_url"] = mesh_url
+    config["vault_mode"] = True
 
     os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=2)
-    logger.info("Config saved to %s", CONFIG_FILE)
+    logger.info("Mesh config saved to %s", CONFIG_FILE)
 
-    # Reload config
-    global _cfg, MESH_URL, HOMELAB_URL, PHONE_ADDRESSES
+    # Reload live globals so consent + registration pick up the new mesh now.
     _cfg = load_config()
+    MESH_ID = _cfg.get("mesh_id", "")
     MESH_URL = _cfg.get("mesh_url", "")
     HOMELAB_URL = _cfg.get("homelab_url", "")
     PHONE_ADDRESSES = _cfg.get("phone_addresses", [])
+    VAULT_MODE = _cfg.get("vault_mode", False) and VAULT_CRYPTO_OK and bool(MESH_ID)
+    _ntfy_topic = _cfg.get("ntfy_topic") or (f"focuslock-{MESH_ID}" if MESH_ID else "")
+    _ntfy_enabled = _cfg.get("ntfy_enabled", False) and bool(_ntfy_topic) and ntfy_mod is not None
 
+    messagebox.showinfo(
+        "The Collar — Joined!",
+        f"Configured for mesh {mesh_id.strip()}.\n\n"
+        "The collar will register with the relay now, and the mesh approves it automatically.",
+    )
     root.destroy()
     return True
 
@@ -641,7 +719,7 @@ def show_consent():
         "- Lock your Windows session on command\n"
         "- Display a custom lock screen\n"
         "- Report status to the enforcement mesh\n"
-        "- Show a crown icon in your system tray\n\n"
+        "- Show a bunny icon in your system tray\n\n"
         "This is consensual. You can be released at any time\n"
         "by the Lion via Lion's Share.\n\n"
         "Do you accept these terms?"
@@ -658,6 +736,25 @@ def show_consent():
 
 
 # ── Mesh Local Status ──
+
+
+def _companion_local():
+    """Runtime bits the order store never sees, for the companion page.
+
+    Windows drives veneration tasks through the lock screen rather than
+    tracking them in CollarState, so the task card stays empty here — the
+    module treats every one of these keys as optional.
+    """
+    return {
+        "locked": state.locked,
+        "message": state.message,
+        "pinned": state.pinned,
+        "node_id": MESH_NODE_ID,
+        "platform": "Windows",
+        "connected": state.connected,
+        "nodes_online": state.nodes_online,
+        "last_sync_ms": int(state.last_sync * 1000) if state.last_sync else 0,
+    }
 
 
 def mesh_local_status():
@@ -971,6 +1068,70 @@ def hide_lock():
 # ── Liberation (Permanent Removal) ──
 
 
+def _schedule_install_dir_removal():
+    """Remove scheduled tasks, the firewall rule, and C:\\focuslock after this
+    process exits. That directory is ACL-locked to SYSTEM/Administrators by
+    self_install() and holds the exe that's currently running it, so a
+    detached elevated helper has to outlive this process to take ownership
+    and delete it. Fire-and-forget: doesn't block liberation on UAC consent.
+    """
+    if not get_exe_path():
+        return "script-mode"  # nothing installed under INSTALL_DIR_SYSTEM
+
+    # Note the netsh rule name: the whole `name=<value>` is passed as ONE quoted
+    # token so PowerShell's native-arg quoting doesn't split it on the spaces /
+    # parens and leave the firewall rule behind. Also clears the collar's forced
+    # HKLM lock-screen policy (set_lock_wallpaper), which otherwise lingers as a
+    # visible residual pointing at a deleted PNG.
+    script = f'''
+while (Get-Process -Id {os.getpid()} -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 300 }}
+Unregister-ScheduledTask -TaskName "FocusLockCollar" -Confirm:$false -ErrorAction SilentlyContinue
+Unregister-ScheduledTask -TaskName "FocusLockWatchdog" -Confirm:$false -ErrorAction SilentlyContinue
+netsh advfirewall firewall delete rule "name=FocusLock Mesh (TCP 8435)" | Out-Null
+Remove-ItemProperty -Path "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Personalization" -Name "LockScreenImage" -ErrorAction SilentlyContinue
+takeown /F "{INSTALL_DIR_SYSTEM}" /R /D Y | Out-Null
+icacls "{INSTALL_DIR_SYSTEM}" /reset /T /C /Q | Out-Null
+Remove-Item -Path "{INSTALL_DIR_SYSTEM}" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
+'''
+    script_path = os.path.join(os.environ.get("TEMP", os.path.expanduser("~")), "focuslock-liberate.ps1")
+    try:
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write(script)
+    except Exception:
+        logger.warning("Failed to write liberation helper script")
+        return "failed"
+
+    try:
+        if is_admin():
+            subprocess.Popen(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    script_path,
+                ],
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
+            )
+            logger.info("Scheduled tasks/firewall/%s removal after exit (elevated)", INSTALL_DIR_SYSTEM)
+            return "elevated"
+        else:
+            # UAC elevate — same pattern as self_install()'s re-launch. The user
+            # may decline this prompt, so the caller must not claim the durable
+            # teardown is guaranteed done.
+            ps_args = f'-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{script_path}"'
+            ctypes.windll.shell32.ShellExecuteW(None, "runas", "powershell.exe", ps_args, None, 0)
+            logger.info("Requested elevation for scheduled-task/firewall/%s removal", INSTALL_DIR_SYSTEM)
+            return "uac-requested"
+    except Exception:
+        logger.warning("Failed to schedule install dir removal")
+        return "failed"
+
+
 def execute_liberation():
     """Permanent removal — clean up everything and exit."""
     logger.warning("LIBERATION — removing collar permanently")
@@ -978,6 +1139,20 @@ def execute_liberation():
 
     # Restore wallpaper
     hide_lock()
+
+    # Remove registry Run key (user-writable, no elevation needed)
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE
+        )
+        winreg.DeleteValue(key, "FocusLockCollar")
+        winreg.CloseKey(key)
+        logger.info("Registry Run key removed")
+    except Exception:
+        pass
+
+    # Kill the watchdog so it can't respawn the collar mid-teardown
+    subprocess.run(["taskkill", "/F", "/IM", "FocusLock-Watchdog.exe"], capture_output=True)
 
     # Remove autostart
     try:
@@ -998,13 +1173,27 @@ def execute_liberation():
     except Exception:
         logger.warning("Failed to remove config directory during liberation")
 
-    # Show farewell
-    ctypes.windll.user32.MessageBoxW(
-        0,
-        "All restrictions lifted.\nThe collar is gone. You are free.",
-        "LIBERATED",
-        0x40,  # MB_ICONINFORMATION
-    )
+    # Scheduled tasks + firewall rule + C:\focuslock — needs an elevated
+    # helper that outlives this process (see _schedule_install_dir_removal)
+    teardown = _schedule_install_dir_removal()
+
+    # Show farewell — but be HONEST when the durable teardown still depends on a
+    # UAC prompt the wearer might decline. Claiming "you are free" while the
+    # FocusLockCollar scheduled task is still registered (and would relaunch the
+    # collar at next logon) is the one message this screen must never get wrong.
+    if teardown == "uac-requested":
+        msg = (
+            "The collar is being removed.\n\n"
+            "A Windows admin (UAC) prompt will appear — you MUST accept it to "
+            "finish removing the collar's autostart and its C:\\focuslock files. "
+            "If you dismiss it, the collar will come back at next sign-in; re-run "
+            "Release Forever (or safeword.exe) and accept the prompt."
+        )
+        icon = 0x30  # MB_ICONWARNING
+    else:
+        msg = "All restrictions lifted.\nThe collar is gone. You are free."
+        icon = 0x40  # MB_ICONINFORMATION
+    ctypes.windll.user32.MessageBoxW(0, msg, "LIBERATED", icon)
     os._exit(0)
 
 
@@ -1037,6 +1226,21 @@ def poll_status():
         "bedtime_unlock_hour",
     ]:
         snap[k] = mesh_orders.get(k, "")
+
+    # Safety floor: honor a release that arrived as ORDER STATE. Only the direct
+    # `release-device` action fires liberation; a release delivered via gossip
+    # (apply_remote) or a vault order snapshot just copies the `released` key
+    # into orders, so without this the desktop keeps enforcing until its next
+    # restart. The safeword-from-phone case propagates exactly this way. Fire
+    # liberation once, then never enforce again while released. See THREAT-MODEL:
+    # the mesh/vault order-apply path honors `released`.
+    released = str(mesh_orders.get("released", "") or "")
+    if released == "all" or released == MESH_NODE_ID:
+        if not state.liberating:
+            state.liberating = True
+            logger.warning("Release received at runtime (via mesh) — liberating")
+            execute_liberation()
+        return
 
     hostname = MESH_NODE_ID
     desktop_active = str(snap.get("desktop_active") or 0)
@@ -1329,6 +1533,9 @@ class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             resp = mesh.handle_mesh_ping(MESH_NODE_ID, mesh_orders)
         elif path == "/mesh/status":
             resp = mesh.handle_mesh_status(mesh_orders, mesh_peers, MESH_NODE_ID, mesh_local_status())
+        elif companion_mod is not None and path in companion_mod.COMPANION_PATHS:
+            self._serve_companion(path)
+            return
         elif path in ("/", "/index.html"):
             self._serve_web_ui()
             return
@@ -1340,6 +1547,22 @@ class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             return
 
         self.respond_json(200, resp, cors=True)
+
+    def _serve_companion(self, path):
+        """Serve the read-only companion surface. Loopback-gated in the module."""
+        result = companion_mod.handle_get(path, self.client_address, mesh_orders.get, _companion_local())
+        if result is None:
+            self.respond_json(404, {"error": "not found"})
+            return
+        status, ctype, body = result
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        # The balance changes minute to minute; a cached page showing yesterday's
+        # figure is worse than no page.
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _serve_web_ui(self):
         """Serve Lion's Share web UI from install dir."""
@@ -1429,7 +1652,16 @@ def start_mesh_server():
 
 
 def create_tray_icon():
-    """Create the system tray icon with gold/gray crown."""
+    """Create the system tray icon, logging (rather than swallowing) any failure
+    so a --noconsole build doesn't fail invisibly."""
+    try:
+        return _create_tray_icon_impl()
+    except Exception:
+        logger.exception("Tray icon creation failed")
+        return None
+
+
+def _create_tray_icon_impl():
     try:
         import pystray
         from PIL import Image
@@ -1437,12 +1669,12 @@ def create_tray_icon():
         logger.warning("pystray or Pillow not installed — no tray icon")
         return None
 
-    # Load or generate crown icons
-    gold_path = os.path.join(ICONS_DIR, "crown-gold.png")
-    gray_path = os.path.join(ICONS_DIR, "crown-gray.png")
+    # Load or generate bunny icons
+    purple_path = os.path.join(ICONS_DIR, "bunny-purple.png")
+    gray_path = os.path.join(ICONS_DIR, "bunny-gray.png")
 
     # Try to find icons from known locations
-    for icon_name, dest in [("crown-gold.png", gold_path), ("crown-gray.png", gray_path)]:
+    for icon_name, dest in [("bunny-purple.png", purple_path), ("bunny-gray.png", gray_path)]:
         if not os.path.exists(dest):
             for src_dir in [
                 os.path.dirname(os.path.abspath(__file__)),
@@ -1456,21 +1688,42 @@ def create_tray_icon():
                     shutil.copy2(src, dest)
                     break
 
-    # Generate fallback icons if missing
-    if not os.path.exists(gold_path):
-        img = Image.new("RGBA", (64, 64), (200, 168, 78, 255))
-        img.save(gold_path)
+    # Generate fallback icons if missing — flat squares in the same two
+    # colours the real art uses, so a collar with no assets still signals the
+    # right state instead of showing the wrong one.
+    if not os.path.exists(purple_path):
+        img = Image.new("RGBA", (64, 64), (138, 92, 217, 255))
+        img.save(purple_path)
     if not os.path.exists(gray_path):
-        img = Image.new("RGBA", (64, 64), (100, 100, 100, 255))
+        img = Image.new("RGBA", (64, 64), (138, 138, 138, 255))
         img.save(gray_path)
 
-    icon_gold = Image.open(gold_path)
+    # Force the decode now, on this thread. Image.open() is lazy — leaving it
+    # lazy meant pystray's own icon rendering and the _update_loop thread below
+    # both triggered the first real decode concurrently on the same Image
+    # object, and Pillow's decoder isn't thread-safe for that (intermittent
+    # "unrecognized data stream contents" errors on .copy()).
+    icon_purple = Image.open(purple_path)
+    icon_purple.load()
     icon_gray = Image.open(gray_path)
+    icon_gray.load()
+
+    def _is_live():
+        """PURPLE only when the device is BOTH claimed and connected.
+
+        This used to be `state.connected` alone, so a registered-but-unclaimed
+        Windows collar wore the "held" colour while no Lion had approved it —
+        the display asserting a state the system was not in. Linux never had
+        that bug; the two now agree.
+        """
+        return _is_paired() and state.connected
 
     def get_icon():
-        return icon_gold if state.connected else icon_gray
+        return icon_purple if _is_live() else icon_gray
 
     def get_title():
+        if not _is_paired():
+            return "The Collar \u2014 Not paired, waiting for your Lion"
         if state.connected:
             tip = f"The Collar \u2014 {state.nodes_online} peer{'s' if state.nodes_online != 1 else ''}"
             if state.sub_tier:
@@ -1484,7 +1737,7 @@ def create_tray_icon():
             if state.paywall:
                 tip += f" | ${state.paywall} owed"
             return tip
-        return "The Collar \u2014 Disconnected (0 peers)"
+        return "The Collar \u2014 Paired \u00b7 disconnected (0 peers)"
 
     def on_self_lock(mins):
         def _lock(icon, item):
@@ -1509,8 +1762,23 @@ def create_tray_icon():
 
         return _lock
 
+    def on_open_companion(icon, item):
+        """Open the local companion page in the default browser.
+
+        Loopback URL on purpose: the module refuses anything else, and this is
+        the address that works whether or not the mesh is reachable.
+        """
+        try:
+            import webbrowser
+
+            webbrowser.open(f"http://127.0.0.1:{MESH_PORT}/companion")
+        except Exception as e:
+            logger.warning("Could not open companion page: %s", e)
+
     menu = pystray.Menu(
         pystray.MenuItem("Status", lambda icon, item: None, enabled=False),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Open companion", on_open_companion, default=True),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Self-lock 15m", on_self_lock(15)),
         pystray.MenuItem("Self-lock 30m", on_self_lock(30)),
@@ -1527,22 +1795,25 @@ def create_tray_icon():
     )
 
     # Background updater — only set icon when state changes to force Win32 redraw
-    _prev = [None, None]  # [connected, title]
+    _prev = [None, None]  # [live, title]
 
     def _update_loop():
         while True:
             try:
-                new_connected = state.connected
+                # Keyed on the same combined signal get_icon() uses. Watching
+                # state.connected alone would leave the gray bunny in place
+                # through the pairing that is supposed to turn it purple.
+                new_live = _is_live()
                 new_title = get_title()
-                if new_connected != _prev[0]:
-                    _prev[0] = new_connected
+                if new_live != _prev[0]:
+                    _prev[0] = new_live
                     # Assign a fresh copy to ensure pystray detects the change
                     icon.icon = get_icon().copy()
                 if new_title != _prev[1]:
                     _prev[1] = new_title
                     icon.title = new_title
             except Exception:
-                logger.warning("Tray icon update failed")
+                logger.warning("Tray icon update failed", exc_info=True)
             time.sleep(3)
 
     threading.Thread(target=_update_loop, daemon=True).start()
@@ -1586,6 +1857,281 @@ def needs_install():
         return True
 
 
+_SO_UNPAIRED_SINCE = os.path.join(CONFIG_DIR, "unpaired-since")
+_SO_BACKUP = os.path.join(CONFIG_DIR, "claude-md.preuser")  # bunny's own CLAUDE.md, if any
+
+_JOIN_HINT_WINDOWS = """1. Open `%APPDATA%\\focuslock\\config.json` and set `mesh_id` and `mesh_url` to the values the Lion gave you.
+2. Restart the collar (right-click the tray icon → **Exit tray**, then launch FocusLock again) — it shows the **Terms of Surrender** on the way back up.
+3. Tell the Lion to confirm this device in **Lion's Share → Vault Nodes** — they get a notification when it registers."""
+
+
+def _claude_md_path():
+    return os.path.join(os.environ.get("USERPROFILE", os.path.expanduser("~")), ".claude", "CLAUDE.md")
+
+
+def _unpaired_hours():
+    """Hours since this machine was first seen collared-but-unpaired, stamped on
+    first call so the escalation clock starts with the collar, not with the
+    bunny's first Claude session."""
+    now = time.time()
+    try:
+        if os.path.exists(_SO_UNPAIRED_SINCE):
+            with open(_SO_UNPAIRED_SINCE, "r", encoding="utf-8") as f:
+                since = float(f.read().strip() or now)
+        else:
+            since = now
+            with open(_SO_UNPAIRED_SINCE, "w", encoding="utf-8") as f:
+                f.write(str(int(now)))
+    except Exception:
+        return 0.0
+    return max(0.0, (now - since) / 3600.0)
+
+
+def _fetch_lion_pubkey():
+    """Claim this machine: ask the relay for the mesh's Lion pubkey, proving
+    membership by signing with our own registered vault node key.
+
+    Mirrors the Linux collar's _fetch_lion_pubkey(). Without it a desktop that
+    registered itself into a mesh stayed unclaimed forever — the Lion's key only
+    ever arrived via the invite-code join or the passphrase pairing flow, so the
+    collar could not verify a Lion-signed order until someone hand-copied a PEM
+    onto the box. Quiet on failure: not claimed yet is a normal state, and the
+    interim marching orders cover it."""
+    if not MESH_URL or not MESH_ID or not _vault_privkey_pem:
+        return False
+    if os.path.exists(LION_PUBKEY_FILE) and os.path.getsize(LION_PUBKEY_FILE) > 0:
+        return True
+    try:
+        import base64 as _b64
+
+        from cryptography.hazmat.primitives import hashes as _hh
+        from cryptography.hazmat.primitives import serialization as _ser
+        from cryptography.hazmat.primitives.asymmetric import padding as _pad
+
+        ts_ms = int(time.time() * 1000)
+        payload = f"{MESH_ID}|{MESH_NODE_ID}|lion-pubkey|{ts_ms}"
+        priv = _ser.load_pem_private_key(_vault_privkey_pem.encode(), password=None)
+        sig = _b64.b64encode(priv.sign(payload.encode("utf-8"), _pad.PKCS1v15(), _hh.SHA256())).decode()
+        body = json.dumps({"node_id": MESH_NODE_ID, "ts": ts_ms, "signature": sig}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{MESH_URL}/vault/{MESH_ID}/lion-pubkey",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        key_b64 = (data.get("lion_pubkey") or "").strip()
+        if not key_b64:
+            return False
+        # PEM on disk, and loading it here proves the relay handed us a real RSA
+        # key rather than an error page from a reverse proxy.
+        pub = _ser.load_der_public_key(_b64.b64decode(key_b64))
+        pem = pub.public_bytes(_ser.Encoding.PEM, _ser.PublicFormat.SubjectPublicKeyInfo).decode()
+        tmp = LION_PUBKEY_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(pem)
+        os.replace(tmp, LION_PUBKEY_FILE)
+        logger.warning("Lion's pubkey claimed from the mesh — this machine is under a Lion now")
+        return True
+    except urllib.error.HTTPError as e:
+        logger.debug("lion-pubkey fetch HTTP %s (not claimed yet)", e.code)
+    except Exception as e:
+        logger.debug("lion-pubkey fetch failed: %s", e)
+    return False
+
+
+def apply_unpaired_orders():
+    """Install the interim marching orders while no Lion holds this machine.
+
+    The Lion's real orders live on Their mesh; an unpaired PC could not fetch
+    them and so ran with no collar voice at all. This writes the floor — the
+    Lion/bunny frame plus an escalating push to pair — and nothing else. It
+    enforces nothing; Terms of Surrender still gate real enforcement at
+    mesh-join.
+
+    A CLAUDE.md the bunny wrote themselves is backed up before being replaced,
+    mirroring the Linux collar's _apply_standing_orders.
+    """
+    if unpaired_orders_mod is None:
+        return
+    try:
+        target = _claude_md_path()
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        existing = ""
+        if os.path.exists(target):
+            with open(target, "r", encoding="utf-8") as f:
+                existing = f.read()
+        if existing and not unpaired_orders_mod.is_our_overlay(existing) and not os.path.exists(_SO_BACKUP):
+            with open(_SO_BACKUP, "w", encoding="utf-8") as f:
+                f.write(existing)
+            logger.info("Backed up the bunny's own CLAUDE.md before the interim orders")
+        content = unpaired_orders_mod.unpaired_orders(
+            hostname=MESH_NODE_ID,
+            hours_unpaired=_unpaired_hours(),
+            join_hint=_JOIN_HINT_WINDOWS,
+            # mesh_id set but no Lion key = registered, waiting to be claimed.
+            mesh_configured=bool(MESH_ID),
+        )
+        if content != existing:
+            tmp = target + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(content)
+            os.replace(tmp, target)
+            logger.info("Interim (unpaired) standing orders applied (%d bytes)", len(content))
+    except Exception as e:
+        logger.warning("Interim (unpaired) standing orders failed: %s", e)
+
+
+def _fetch_standing_orders_signed():
+    """Pull the Lion's standing orders by proving membership with our own vault
+    node key, instead of by holding Their admin token.
+
+    Mirrors the Linux collar's _fetch_standing_orders_signed(). GET
+    /standing-orders is admin-gated, so reading its own orders used to require
+    this machine to keep ADMIN_TOKEN — a credential for the whole admin API —
+    in the collar's config, which is the wrong way round. Returns the orders
+    text or None; quiet on failure, the caller falls back to the Bearer path."""
+    if not MESH_URL or not MESH_ID or not _vault_privkey_pem:
+        return None
+    try:
+        import base64 as _b64
+
+        from cryptography.hazmat.primitives import hashes as _hh
+        from cryptography.hazmat.primitives import serialization as _ser
+        from cryptography.hazmat.primitives.asymmetric import padding as _pad
+
+        ts_ms = int(time.time() * 1000)
+        payload = f"{MESH_ID}|{MESH_NODE_ID}|standing-orders|{ts_ms}"
+        priv = _ser.load_pem_private_key(_vault_privkey_pem.encode(), password=None)
+        sig = _b64.b64encode(priv.sign(payload.encode("utf-8"), _pad.PKCS1v15(), _hh.SHA256())).decode()
+        body = json.dumps({"node_id": MESH_NODE_ID, "ts": ts_ms, "signature": sig}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{MESH_URL}/vault/{MESH_ID}/standing-orders",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        content = data.get("content") or ""
+        return content if len(content) > 50 else None
+    except urllib.error.HTTPError as e:
+        logger.debug("standing-orders node fetch HTTP %s", e.code)
+    except Exception as e:
+        logger.debug("standing-orders node fetch failed: %s", e)
+    return None
+
+
+def _write_claude_file(claude_dir, filename, content):
+    """Write one synced file, only when it changed. Atomic: temp in the same
+    dir then os.replace, so a kill mid-write cannot truncate the live file."""
+    target = os.path.join(claude_dir, filename)
+    existing = ""
+    if os.path.exists(target):
+        with open(target, "r", encoding="utf-8") as f:
+            existing = f.read()
+    if content == existing:
+        return
+    tmp = target + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(content)
+    os.replace(tmp, target)
+    logger.info("Standing orders synced: %s (%d bytes)", filename, len(content))
+
+
+def sync_standing_orders():
+    """Pull CLAUDE.md + settings.json from the mesh server into ~/.claude.
+
+    Audit 2026-04-27 H-1 (remainder): /standing-orders + /settings both
+    require admin_token; skipped silently when it isn't configured. Called
+    once at install time and again every MEMORY_SYNC_INTERVAL from a
+    background thread (see main()) so operator edits actually propagate —
+    matches the Linux collar's sync_standing_orders() cadence. Only writes
+    when content changed, to avoid needless disk churn / log spam.
+    """
+    # Unpaired: no Lion's key on file means there is nothing to fetch and nobody
+    # to fetch it from. Install the interim orders instead of leaving the machine
+    # silent, re-rendered each tick so the nudge escalates with the clock.
+    if not get_lion_pubkey():
+        # Claim the key first — an unclaimed member should not settle for
+        # interim orders while the relay will hand over the Lion's key.
+        _fetch_lion_pubkey()
+    if not get_lion_pubkey():
+        apply_unpaired_orders()
+        return
+    try:
+        os.remove(_SO_UNPAIRED_SINCE)  # paired — a later unpairing escalates from zero
+    except OSError:
+        pass
+    # Claimed now, so the overlay's own "collared, unpaired" text is false —
+    # drop it even if the real orders can't be fetched below, restoring the
+    # bunny's own CLAUDE.md if they had one. Only ever touches our file.
+    if unpaired_orders_mod is not None:
+        try:
+            _target = _claude_md_path()
+            if os.path.exists(_target):
+                with open(_target, "r", encoding="utf-8") as f:
+                    _cur = f.read()
+                if unpaired_orders_mod.is_our_overlay(_cur):
+                    if os.path.exists(_SO_BACKUP):
+                        with open(_SO_BACKUP, "r", encoding="utf-8") as f:
+                            _prev = f.read()
+                        with open(_target, "w", encoding="utf-8") as f:
+                            f.write(_prev)
+                        os.remove(_SO_BACKUP)
+                    else:
+                        os.remove(_target)
+                    logger.info("Interim (unpaired) orders revoked — this machine has a Lion now")
+        except Exception as e:
+            logger.warning("Could not revoke interim orders: %s", e)
+    claude_dir = os.path.join(os.environ.get("USERPROFILE", ""), ".claude")
+    os.makedirs(claude_dir, exist_ok=True)
+    # Node-signed first: it needs only the key this collar already has, so the
+    # admin token stops being a prerequisite for a machine to hear its orders.
+    signed = _fetch_standing_orders_signed()
+    if signed:
+        try:
+            _write_claude_file(claude_dir, "CLAUDE.md", signed)
+        except Exception as e:
+            logger.warning("Could not write standing orders: %s", e)
+    if not ADMIN_TOKEN:
+        if not signed:
+            logger.debug("Standing orders sync: node-signed fetch failed and no admin_token configured")
+        return
+    # settings.json has no node-signed route (it is not orders), so it still
+    # needs the token; CLAUDE.md is re-fetched here only if the signed path
+    # came back empty.
+    endpoints = (
+        [("/settings", "settings.json")]
+        if signed
+        else [("/standing-orders", "CLAUDE.md"), ("/settings", "settings.json")]
+    )
+    for endpoint, filename in endpoints:
+        try:
+            req = urllib.request.Request(
+                f"{MESH_URL}{endpoint}",
+                headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
+            )
+            resp = urllib.request.urlopen(req, timeout=10)
+            content = resp.read().decode()
+            if len(content) <= 50:
+                continue
+            # Validate structured payloads before trusting them. A reverse proxy
+            # in front of MESH_URL can answer 200 with a non-JSON maintenance/error
+            # page; writing that over a good settings.json corrupts Claude Code's
+            # config. Only the .json file needs this — CLAUDE.md is free-form.
+            if filename.endswith(".json"):
+                try:
+                    json.loads(content)
+                except Exception:
+                    logger.warning("Standing orders: %s response was not valid JSON — skipping", filename)
+                    continue
+            _write_claude_file(claude_dir, filename, content)
+        except Exception:
+            logger.warning("Failed to fetch standing orders: %s", endpoint)
+
+
 def self_install():
     """Install collar to C:\\focuslock with scheduled tasks, firewall, ACLs."""
     import shutil
@@ -1603,20 +2149,33 @@ def self_install():
     shutil.copy2(exe, installed_exe)
     logger.info("Copied %s", exe_name)
 
-    # Copy watchdog if next to the exe
-    for wd_name in ["FocusLock-Watchdog.exe"]:
+    # Copy watchdog + the bunny's safeword tool if next to the exe. safeword.exe
+    # is the double-click local-uninstall escape hatch — it must actually land on
+    # the collared machine, or the escape path the docs promise isn't deployed.
+    for wd_name in ["FocusLock-Watchdog.exe", "safeword.exe"]:
         wd_src = os.path.join(exe_dir, wd_name)
         if os.path.exists(wd_src):
             shutil.copy2(wd_src, os.path.join(INSTALL_DIR_SYSTEM, wd_name))
             logger.info("Copied %s", wd_name)
 
+    # Copy the tamper-report helper (CLAUDE-stub.md references it at this
+    # stable path so it works whether or not the source repo is on this
+    # machine — see report_tamper.py's docstring).
+    tamper_src = os.path.join(exe_dir, "report_tamper.py")
+    if os.path.exists(tamper_src):
+        shutil.copy2(tamper_src, os.path.join(INSTALL_DIR_SYSTEM, "report_tamper.py"))
+        logger.info("Copied report_tamper.py")
+
     # Copy icons to appdata
     os.makedirs(ICONS_DIR, exist_ok=True)
-    for icon_name in ["crown-gold.png", "crown-gray.png", "collar-icon.png"]:
+    for icon_name in ["bunny-purple.png", "bunny-gray.png", "collar-icon.png"]:
         for search_dir in [exe_dir, os.path.join(exe_dir, "icons"), os.path.join(exe_dir, "..", "icons")]:
             src = os.path.join(search_dir, icon_name)
             if os.path.exists(src):
-                dest_dir = ICONS_DIR if "crown" in icon_name else CONFIG_DIR
+                # Tray art goes to ICONS_DIR, app art to CONFIG_DIR. This test
+                # keyed on "crown" and would have quietly filed both bunnies
+                # under CONFIG_DIR, where the tray does not look for them.
+                dest_dir = ICONS_DIR if icon_name.startswith("bunny-") else CONFIG_DIR
                 shutil.copy2(src, os.path.join(dest_dir, icon_name))
                 break
 
@@ -1706,31 +2265,8 @@ Register-ScheduledTask -TaskName "FocusLockWatchdog" -Action $a -Trigger $t -Set
     )
     logger.info("ACL lockdown applied")
 
-    # Standing orders sync
-    # Audit 2026-04-27 H-1 (remainder): /standing-orders + /settings
-    # both require admin_token. Skip silently when not configured.
-    if not ADMIN_TOKEN:
-        logger.warning("Standing orders sync skipped: no admin_token configured")
-    else:
-        try:
-            claude_dir = os.path.join(os.environ.get("USERPROFILE", ""), ".claude")
-            os.makedirs(claude_dir, exist_ok=True)
-            for endpoint, filename in [("/standing-orders", "CLAUDE.md"), ("/settings", "settings.json")]:
-                try:
-                    req = urllib.request.Request(
-                        f"{MESH_URL}{endpoint}",
-                        headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
-                    )
-                    resp = urllib.request.urlopen(req, timeout=10)
-                    content = resp.read().decode()
-                    if len(content) > 50:
-                        with open(os.path.join(claude_dir, filename), "w", encoding="utf-8") as f:
-                            f.write(content)
-                        logger.info("Standing orders: %s", filename)
-                except Exception:
-                    logger.warning("Failed to fetch standing orders: %s", endpoint)
-        except Exception:
-            logger.warning("Failed to set up standing orders sync")
+    # Standing orders sync (re-synced every MEMORY_SYNC_INTERVAL — see main())
+    sync_standing_orders()
 
     # Remove old startup entries (from legacy installers)
     startup = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs\Startup")
@@ -1812,6 +2348,7 @@ def main():
         level=logging.INFO,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=[logging.FileHandler(LOG_FILE, encoding="utf-8")],
     )
     logger.info("FocusLock Desktop Collar (Windows) starting")
     logger.info("Node ID: %s", MESH_NODE_ID)
@@ -1837,16 +2374,20 @@ def main():
     # First run check
     first_run_check()
 
-    # Consent (before elevation — runs in user session)
-    if not has_consent():
-        if not show_consent():
-            logger.info("No consent — exiting")
-            sys.exit(0)
-
-    # First-run config (collect PIN, homelab URL, phone IP)
+    # Mesh join info first — same stage as the Linux installer's 'Mesh ID +
+    # relay URL' prompt. No PIN. A collar that already has a mesh skips this.
     if needs_first_run_config():
         if not show_first_run_config():
             logger.info("No config — exiting")
+            sys.exit(0)
+
+    # Consent (Terms of Surrender) — only meaningful once a mesh is configured,
+    # and shown right before the collar registers and the mesh auto-approves it.
+    # A mesh-less collar just idles in the tray, so we don't demand surrender.
+    # Mirrors the Linux collar's do_activate gate: `if MESH_ID and not consented`.
+    if MESH_ID and not has_consent():
+        if not show_consent():
+            logger.info("No consent — exiting")
             sys.exit(0)
 
     # Self-install if needed (exe mode only)
@@ -1975,14 +2516,30 @@ def main():
 
     threading.Thread(target=_poll_loop, daemon=True).start()
 
+    # Standing orders periodic re-sync — self_install() only does this once,
+    # at install time, so operator-side edits to CLAUDE-stub.md/settings.json
+    # would otherwise never reach an already-installed machine.
+    # Syncs once up front, then on the interval: an unpaired machine should get
+    # its interim marching orders at boot, not five minutes into the session.
+    def _standing_orders_loop():
+        while True:
+            try:
+                sync_standing_orders()
+            except Exception:
+                logger.exception("Standing orders sync loop error")
+            time.sleep(MEMORY_SYNC_INTERVAL)
+
+    threading.Thread(target=_standing_orders_loop, daemon=True).start()
+    logger.info("Standing orders re-sync started (%ss interval)", MEMORY_SYNC_INTERVAL)
+
     # Create and run tray icon (blocks on main thread)
     icon = create_tray_icon()
     if icon:
-        logger.info("Tray icon started — gold crown visible in system tray")
+        logger.info("Tray icon started — bunny visible in system tray")
         icon.run()
     else:
         # No pystray — just run forever
-        logger.info("Running without tray icon (install pystray for crown)")
+        logger.info("Running without tray icon (install pystray for the bunny)")
         try:
             while True:
                 time.sleep(60)

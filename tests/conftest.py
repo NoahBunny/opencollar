@@ -51,3 +51,51 @@ def sample_order():
         "action": "lock",
         "params": {"minutes": 30, "reason": "testing"},
     }
+
+
+def pytest_collection_modifyitems(session, config, items):
+    """Refuse to run tests whose bytecode was compiled in another checkout.
+
+    This repo is mirrored into ``~/Nextcloud`` (a different repo, on a different
+    branch) and the sync carries ``__pycache__`` along with the sources. A
+    ``.pyc`` records the *compiling* checkout's absolute path in ``co_filename``,
+    and Python revalidates it against the local source's mtime+size only — which
+    a file-level sync preserves. The result is a run that collects our files but
+    reports every skip location and traceback against the mirror.
+
+    Audited 2026-08-17: 99 of 130 in-tree ``.pyc`` carried the mirror's path.
+    None was executing different code (the sources matched byte for byte), so
+    this guards a live trap rather than a past failure. The Makefile keeps
+    bytecode outside the tree; this catches a bare ``pytest`` run that skips it.
+
+    Escape hatch: set ``FOCUSLOCK_ALLOW_FOREIGN_PYC=1`` to downgrade to a warning.
+    """
+    foreign: dict[str, int] = {}
+    for item in items:
+        code = getattr(getattr(item, "function", None), "__code__", None)
+        if code is None:
+            continue
+        origin = Path(code.co_filename)
+        if origin.is_absolute() and not origin.is_relative_to(REPO_ROOT):
+            foreign[str(origin)] = foreign.get(str(origin), 0) + 1
+
+    if not foreign:
+        return
+
+    detail = "\n".join(
+        f"    {path}  ({count} test{'s' if count != 1 else ''})" for path, count in sorted(foreign.items())
+    )
+    message = (
+        "test bytecode was compiled in a different checkout than the one under test.\n"
+        f"  this checkout: {REPO_ROOT}\n"
+        "  bytecode from:\n"
+        f"{detail}\n"
+        "  Reported line numbers and tracebacks would point at the wrong repo.\n"
+        "  Fix: find . -name __pycache__ -type d -not -path './.venv/*' -exec rm -rf {} +\n"
+        "  Prevent: export PYTHONPYCACHEPREFIX=$HOME/.cache/focuslock/pycache (the Makefile does this)\n"
+        "  Override: FOCUSLOCK_ALLOW_FOREIGN_PYC=1"
+    )
+    if os.environ.get("FOCUSLOCK_ALLOW_FOREIGN_PYC") == "1":
+        config.issue_config_time_warning(UserWarning(message), stacklevel=1)
+        return
+    raise pytest.UsageError(message)

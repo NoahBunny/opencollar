@@ -1,0 +1,588 @@
+{
+  "passed": 97,
+  "failed": 0,
+  "results": [
+    {
+      "row": "3.1",
+      "check": "app launches",
+      "ok": true,
+      "detail": "com.focusctl/.MainActivity"
+    },
+    {
+      "row": "3.1",
+      "check": "four tabs, named by verb",
+      "ok": true,
+      "detail": "tab_inbox,tab_lock,tab_money,tab_rules"
+    },
+    {
+      "row": "3.1",
+      "check": "old power-level tab names are gone",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.1",
+      "check": "lands on Lock",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.1",
+      "check": "kebab present in the header",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.1",
+      "check": "status bar renders",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.2",
+      "check": "Lock has message_input",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.2",
+      "check": "Lock has timer_input",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.2",
+      "check": "Lock has paywall_amount",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.2",
+      "check": "Lock has btn_lock",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.2",
+      "check": "Lock has btn_lock_15",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.2",
+      "check": "Lock has btn_lock_30",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.2",
+      "check": "Lock has btn_lock_60",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.2",
+      "check": "Lock has btn_lock_120",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.2",
+      "check": "Lock has btn_unlock",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.2",
+      "check": "Lock has btn_unlock_device",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.2",
+      "check": "the lock-order paywall field moved off the money row",
+      "ok": true,
+      "detail": "it stages the NEXT lock's balance, not the current one"
+    },
+    {
+      "row": "3.8",
+      "check": "Live Pokes collapsed on arrival",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.8",
+      "check": "Live Pokes opens when tapped",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.8",
+      "check": "toy row stays hidden with no Lovense",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.12",
+      "check": "Body Check hidden with no homelab attached",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6",
+      "check": "Rules has mode_spinner",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6",
+      "check": "Rules has task_input",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6",
+      "check": "Rules has task_reps",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6",
+      "check": "Rules has btn_task",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6",
+      "check": "Rules has btn_veneration",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6",
+      "check": "Rules has btn_deadline_task",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6",
+      "check": "Rules has btn_set_geofence",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6",
+      "check": "Rules has btn_confine_home",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6",
+      "check": "Rules has btn_entrap_adv",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6",
+      "check": "the whole compose-a-lock flow is on one tab",
+      "ok": true,
+      "detail": "this used to span Advanced -> Control"
+    },
+    {
+      "row": "3.7",
+      "check": "Modifiers collapsed on arrival",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.7",
+      "check": "Modifiers opens when tapped",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.7",
+      "check": "collapsed summary names what is switched on",
+      "ok": true,
+      "detail": "Taunt, Mute"
+    },
+    {
+      "row": "3.10b",
+      "check": "compliment field hidden for other modes",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.10b",
+      "check": "picking Compliment reveals its field",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.10b",
+      "check": "switching away hides it again",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6a",
+      "check": "veneration picker opens",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6a",
+      "check": "offers Anything across all 144",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6a",
+      "check": "offers category Ownership & belonging",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6a",
+      "check": "offers category Obedience",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6a",
+      "check": "offers category Long-form",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6a",
+      "check": "draws a task with its id and suggested reps",
+      "ok": true,
+      "detail": "ven-008  \u00b7  suggested 5 reps"
+    },
+    {
+      "row": "3.6a",
+      "check": "offers another draw",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6a",
+      "check": "drawing again gives a different task",
+      "ok": true,
+      "detail": "ven-008  \u00b7  suggested 5 reps -> ven-014  \u00b7  suggested 3 reps"
+    },
+    {
+      "row": "3.6a",
+      "check": "task text landed in the writing field",
+      "ok": true,
+      "detail": "I am Their property in the only sense that m"
+    },
+    {
+      "row": "3.6a",
+      "check": "suggested reps landed",
+      "ok": true,
+      "detail": "3"
+    },
+    {
+      "row": "3.6a",
+      "check": "random caps switched on with it",
+      "ok": true,
+      "detail": "the catalogue's capitalisation IS the enforced form"
+    },
+    {
+      "row": "3.6a",
+      "check": "the task text lands",
+      "ok": true,
+      "detail": "I am His to keep and Theirs to command."
+    },
+    {
+      "row": "3.6a",
+      "check": "the suggested reps land",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.6a",
+      "check": "random caps comes on with it",
+      "ok": true,
+      "detail": "the catalogue's capitalisation IS the enforced form"
+    },
+    {
+      "row": "3.9",
+      "check": "Money has balance_display",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.9",
+      "check": "Money has btn_clear_balance",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.9",
+      "check": "Money has balance_set_input",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.9",
+      "check": "Money has btn_set_balance",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.9",
+      "check": "Money has btn_add_1",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.9",
+      "check": "Money has btn_add_5",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.9",
+      "check": "Money has btn_add_10",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.9",
+      "check": "Money has btn_add_25",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.9",
+      "check": "Money has btn_add_50",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.9",
+      "check": "Money has btn_start_fine",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.9",
+      "check": "Money has btn_stop_fine",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.9",
+      "check": "Money has btn_force_sub",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.9",
+      "check": "Money has sub_status_text",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.9",
+      "check": "Money has btn_gamble",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.9",
+      "check": "Money has the BALANCE HISTORY section",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.9",
+      "check": "the duplicate clear is gone",
+      "ok": true,
+      "detail": "two buttons used to POST the identical clear"
+    },
+    {
+      "row": "3.10d",
+      "check": "charging $5 moves the balance",
+      "ok": true,
+      "detail": "$35 -> $40"
+    },
+    {
+      "row": "3.10d",
+      "check": "payment history populates without leaving the tab",
+      "ok": true,
+      "detail": "this is what regressed: the widget moved to Money, its refresh stayed on Inbox"
+    },
+    {
+      "row": "3.9",
+      "check": "clearing the balance asks first",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.11",
+      "check": "Inbox has inbox_message_input",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.11",
+      "check": "Inbox has btn_send_message",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.11",
+      "check": "Inbox has btn_schedule_message",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.11",
+      "check": "Inbox has btn_pin_message",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.11",
+      "check": "Inbox has toggle_pin_notif",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.11",
+      "check": "Inbox has toggle_mandatory",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.11",
+      "check": "Inbox has the COLLARED DEVICES section",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.11",
+      "check": "subscription/history no longer live on Inbox",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.12",
+      "check": "kebab opens",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.12",
+      "check": "kebab offers Bunnies",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.12",
+      "check": "kebab offers Vault Nodes",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.12",
+      "check": "kebab offers Web Remote",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.12",
+      "check": "kebab offers Setup",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.12",
+      "check": "kebab offers App PIN",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.12",
+      "check": "Payment Email hidden with no homelab",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.13",
+      "check": "Release Forever still reachable",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.13",
+      "check": "Release Forever confirms before doing anything",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.10d",
+      "check": "the charge lands",
+      "ok": true,
+      "detail": "$40 -> $65"
+    },
+    {
+      "row": "3.10d",
+      "check": "a history row appears",
+      "ok": true,
+      "detail": "\u2191 $25.00  Added by the Lion   \u2192 $65.00  just now"
+    },
+    {
+      "row": "3.10d",
+      "check": "the row says what caused it",
+      "ok": true,
+      "detail": "the collar reports the action; the relay names it"
+    },
+    {
+      "row": "3.10d",
+      "check": "the row carries the resulting balance",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "row": "3.10d",
+      "check": "no second balance contradicting the card",
+      "ok": true,
+      "detail": "a screen that argues with itself"
+    },
+    {
+      "row": "3.17",
+      "check": "app is in front for screenshots",
+      "ok": true,
+      "detail": "com.focusctl/.MainActivity"
+    },
+    {
+      "row": "3.17",
+      "check": "screenshot lock",
+      "ok": true,
+      "detail": "/home/<user>/Desktop/Scripts/Lion's Share + Bunny Tasker/docs/Screenshots/lions-share-83-lock.png"
+    },
+    {
+      "row": "3.17",
+      "check": "screenshot rules",
+      "ok": true,
+      "detail": "/home/<user>/Desktop/Scripts/Lion's Share + Bunny Tasker/docs/Screenshots/lions-share-83-rules.png"
+    },
+    {
+      "row": "3.17",
+      "check": "screenshot money",
+      "ok": true,
+      "detail": "/home/<user>/Desktop/Scripts/Lion's Share + Bunny Tasker/docs/Screenshots/lions-share-83-money.png"
+    },
+    {
+      "row": "3.17",
+      "check": "screenshot inbox",
+      "ok": true,
+      "detail": "/home/<user>/Desktop/Scripts/Lion's Share + Bunny Tasker/docs/Screenshots/lions-share-83-inbox.png"
+    }
+  ]
+}

@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import random
+import re
 import signal
 import socket as _socket
 import subprocess
@@ -98,11 +99,48 @@ except ImportError:
         return {}
 
 
+# Interim marching orders for an unpaired machine. Imported after the shared/
+# path insert above; a collar deployed without it simply skips the overlay
+# rather than failing to start.
+try:
+    import focuslock_unpaired_orders as unpaired_orders_mod
+except ImportError:
+    unpaired_orders_mod = None
+
+# Bunny Tasker's read-only surface, served on loopback off the mesh server. Same
+# optional-import contract as the overlay above: a collar without the module
+# just has no companion page.
+try:
+    import focuslock_companion as companion_mod
+except ImportError:
+    companion_mod = None
+
 _cfg = load_config()
+
+# config.json may hold admin_token + mesh secrets. We don't silently rewrite a
+# file the user created, but warn loudly if it's group/other-readable so they
+# can `chmod 600` it. (The config dir is tightened to 0700 in _vault_init_keypair.)
+_CFG_PATH = os.path.expanduser("~/.config/focuslock/config.json")
+try:
+    if os.path.exists(_CFG_PATH) and (os.stat(_CFG_PATH).st_mode & 0o077):
+        logger.warning(
+            "%s is group/other-readable — it may hold admin_token/secrets. Run: chmod 600 %s",
+            _CFG_PATH,
+            _CFG_PATH,
+        )
+except OSError:
+    pass
 
 MESH_URL = _cfg.get("mesh_url", "") or os.environ.get("FOCUSLOCK_MESH_URL", "")
 HOMELAB_URL = _cfg.get("homelab_url", "") or os.environ.get("FOCUSLOCK_HOMELAB", "")
 ADMIN_TOKEN = _cfg.get("admin_token", "") or os.environ.get("FOCUSLOCK_ADMIN_TOKEN", "")
+# When set, the Lion's standing orders (~/.claude/CLAUDE.md) are an OVERLAY that
+# exists only while this PC can reach the mesh/Lion: applied on a successful sync,
+# and reverted after the connection stays down (see sync_standing_orders). So a
+# disconnected bunny stops following directives the Lion can no longer update or
+# revoke — consistent with feedback_offline_no_lock. Default off = legacy behavior
+# (orders persist once synced).
+STANDING_ORDERS_REQUIRE_CONNECTION = _cfg.get("standing_orders_require_connection", False)
 PHONE_ADDRESSES = _cfg.get("phone_addresses", [])
 PHONE_PORT = _cfg.get("phone_port", 8432)
 POLL_INTERVAL = _cfg.get("poll_interval", 5)
@@ -142,6 +180,53 @@ except ImportError:
 _ntfy_server = _cfg.get("ntfy_server", "https://ntfy.sh")
 _ntfy_topic = _cfg.get("ntfy_topic") or (f"focuslock-{MESH_ID}" if MESH_ID else "")
 _ntfy_enabled = _cfg.get("ntfy_enabled", False) and bool(_ntfy_topic) and ntfy_mod is not None
+
+
+def _refresh_ntfy_topic():
+    """Ask the relay what this mesh's wake-up topic is, before subscribing.
+
+    The topic used to be `focuslock-{mesh_id}` — computable by anyone who had
+    ever seen the mesh id, and ntfy topics are world-readable, so the mesh id
+    published the mesh's lock/unlock timing. The relay can now hold a stored
+    random topic instead, which a node has to be told.
+
+    Local config still wins: an operator who pinned a topic meant it. A relay
+    that predates the route 404s, and the derived topic already in
+    `_ntfy_topic` stays — so an old relay keeps working unchanged.
+    """
+    global _ntfy_topic
+    if _cfg.get("ntfy_topic"):
+        return
+    if not (MESH_URL and MESH_ID and _vault_privkey_pem):
+        return
+    try:
+        import base64 as _b64
+
+        from cryptography.hazmat.primitives import hashes as _hh
+        from cryptography.hazmat.primitives import serialization as _ser
+        from cryptography.hazmat.primitives.asymmetric import padding as _pad
+
+        ts_ms = int(time.time() * 1000)
+        payload = f"{MESH_ID}|{MESH_NODE_ID}|ntfy-topic|{ts_ms}"
+        priv = _ser.load_pem_private_key(_vault_privkey_pem.encode(), password=None)
+        sig = _b64.b64encode(priv.sign(payload.encode("utf-8"), _pad.PKCS1v15(), _hh.SHA256())).decode()
+        req = urllib.request.Request(
+            f"{MESH_URL}/vault/{MESH_ID}/ntfy-topic",
+            data=json.dumps({"node_id": MESH_NODE_ID, "ts": ts_ms, "signature": sig}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            topic = (json.loads(resp.read().decode()) or {}).get("topic", "")
+    except urllib.error.HTTPError as e:
+        logger.info("ntfy topic not served (HTTP %s) — keeping %s", e.code, _ntfy_topic)
+        return
+    except Exception as e:
+        logger.info("ntfy topic fetch failed (%s) — keeping %s", e, _ntfy_topic)
+        return
+    if topic and topic != _ntfy_topic:
+        logger.info("ntfy topic updated from relay")
+        _ntfy_topic = topic
 
 
 def _ntfy_fn(version):
@@ -214,6 +299,15 @@ _vault_pubkey_der = b""
 def _vault_init_keypair():
     """Load or generate RSA keypair for vault mode."""
     global _vault_privkey_pem, _vault_pubkey_der
+    # Owner-only config dir. The private key file itself is chmod 0600 below,
+    # but orders.json / peers.json / config.json (which holds admin_token) live
+    # here too. Done every start (idempotent) so it also tightens dirs created
+    # by older versions that didn't set the mode.
+    os.makedirs(MESH_CONFIG_DIR, exist_ok=True)
+    try:
+        os.chmod(MESH_CONFIG_DIR, 0o700)
+    except OSError as e:
+        logger.warning("Could not chmod %s to 0700: %s", MESH_CONFIG_DIR, e)
     if os.path.exists(VAULT_PRIVKEY_FILE) and os.path.exists(VAULT_PUBKEY_FILE):
         with open(VAULT_PRIVKEY_FILE) as f:
             _vault_privkey_pem = f.read()
@@ -228,7 +322,6 @@ def _vault_init_keypair():
         logger.info("Loaded vault keypair (slot=%s)", vault_slot_id(_vault_pubkey_der))
     else:
         priv, pub, der = vault_keygen()
-        os.makedirs(MESH_CONFIG_DIR, exist_ok=True)
         with open(VAULT_PRIVKEY_FILE, "w") as f:
             f.write(priv)
         os.chmod(VAULT_PRIVKEY_FILE, 0o600)
@@ -569,6 +662,40 @@ def mesh_local_status():
     }
 
 
+# Freshness window matches focuslock-tray.py's CONNECTED_THRESHOLD_MS and Bunny
+# Tasker's `mesh_last_sync_ms`, so the crown, the phone and this page cannot
+# disagree about whether the mesh is alive.
+COMPANION_CONNECTED_THRESHOLD_MS = 90_000
+
+
+def _companion_local():
+    """Runtime bits the order store never sees, for the companion page."""
+    last_sync = 0
+    try:
+        last_sync = int(os.path.getmtime(MESH_HEARTBEAT_FILE) * 1000)
+    except OSError:
+        pass
+    fresh = last_sync > 0 and (time.time() * 1000 - last_sync) < COMPANION_CONNECTED_THRESHOLD_MS
+    # Same 120s peer-liveness window the Windows collar uses for its tray count,
+    # so the two companions do not report different mesh sizes on one mesh.
+    now = time.time()
+    online = sum(1 for peer in mesh_peers.get_all_except(MESH_NODE_ID) if (now - peer.last_seen) < 120)
+    return {
+        "locked": state.locked,
+        "message": state.message,
+        "pinned": state.pinned,
+        "task_text": state.task_text,
+        "task_reps": state.task_reps,
+        "task_reps_done": state.task_reps_done,
+        "task_status": state.task_status,
+        "node_id": MESH_NODE_ID,
+        "platform": "Linux",
+        "connected": fresh,
+        "nodes_online": online,
+        "last_sync_ms": last_sync,
+    }
+
+
 def _try_sync(url, name, my_addrs, lion_pubkey):
     """Attempt mesh sync with a single endpoint. Returns True on success."""
     return _shared_try_sync(
@@ -588,8 +715,18 @@ def _try_sync(url, name, my_addrs, lion_pubkey):
     )
 
 
+_preferred_endpoint = None
+
+
+def _set_preferred_endpoint(url):
+    """Sticky last-good endpoint — remember what worked so the next tick tries
+    it first instead of paying a direct-probe timeout when off-network."""
+    global _preferred_endpoint
+    _preferred_endpoint = url
+
+
 def direct_sync_poll():
-    """Poll mesh — try configured endpoints in priority order, then discovered peers."""
+    """Poll mesh DIRECT-FIRST (LAN/Tailscale), relay/homelab as fallback."""
     logger.debug("Direct sync: polling (local v%s)", mesh_orders.version)
     _shared_direct_sync_poll(
         mesh_url=MESH_URL,
@@ -608,6 +745,8 @@ def direct_sync_poll():
         pin=_cfg.get("pin", "") or str(mesh_orders.get("pin", "")),
         get_tailscale_ip_fn=mesh.get_tailscale_ip_for_node,
         mesh_id=MESH_ID,
+        preferred_endpoint=_preferred_endpoint,
+        on_preferred_endpoint=_set_preferred_endpoint,
     )
 
 
@@ -1254,12 +1393,30 @@ class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             self._respond(200, mesh.handle_mesh_status(mesh_orders, mesh_peers, MESH_NODE_ID, mesh_local_status()))
         elif path == "/mesh/vouchers" and mesh_vouchers:
             self._respond(200, mesh.handle_get_vouchers(mesh_vouchers))
+        elif companion_mod is not None and path in companion_mod.COMPANION_PATHS:
+            self._serve_companion(path)
         elif path in ("/", "/index.html"):
             self._serve_web_ui()
         elif path.startswith("/api/pair/") and len(path) > len("/api/pair/"):
             self._serve_pairing_code(path.split("/")[-1])
         else:
             self._respond(404, {"error": "not found"})
+
+    def _serve_companion(self, path):
+        """Serve the read-only companion surface. Loopback-gated in the module."""
+        result = companion_mod.handle_get(path, self.client_address, mesh_orders.get, _companion_local())
+        if result is None:
+            self._respond(404, {"error": "not found"})
+            return
+        status, ctype, body = result
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        # The balance changes minute to minute; a cached page showing yesterday's
+        # figure is worse than no page.
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _serve_web_ui(self):
         """Serve Lion's Share web UI."""
@@ -1323,9 +1480,19 @@ class CollarState:
     taunt_counter = 0
     unreachable_count = 0  # consecutive poll failures before locking
     countdown_lock_at = 0  # epoch ms — 0 means no countdown
+    liberating = False  # runtime release in progress — fire _execute_liberation once
     _bedtime_locked = False
     countdown_message = ""
     countdown_last_warn = 0  # epoch ms of last warning beep
+    task_text = ""  # veneration text bunny must type to clear the lock
+    task_reps = 0  # times through; 0 and 1 both mean once
+    task_randcaps = 0  # 1 = capitalisation must match exactly
+    word_min = 0  # freeform floor, only used when task_text is empty
+    task_reps_done = 0  # LOCAL progress; reset when task_text changes
+    task_gated_on = ""  # the task_text task_reps_done is counting against
+    paste_warned = 0  # warnings spent this lock session
+    paste_billable = 0  # proven attempts past the warning, this lock session
+    task_status = ""  # feedback line under the entry
 
 
 state = CollarState()
@@ -1393,17 +1560,317 @@ def send_heartbeat():
         logger.debug("Heartbeat failed: %s", e)
 
 
-def sync_standing_orders():
-    """Pull CLAUDE.md from homelab and install locally.
+# Standing-orders overlay files (see STANDING_ORDERS_REQUIRE_CONNECTION).
+_SO_TARGET = os.path.expanduser("~/.claude/CLAUDE.md")
+_SO_BACKUP = os.path.expanduser("~/.config/focuslock/claude-md.preuser")  # user's own file, if any
+_SO_APPLIED = os.path.expanduser("~/.config/focuslock/standing-orders.applied")  # sha256 of what WE wrote
+_so_fail_streak = 0
+_SO_REVOKE_AFTER = 3  # consecutive failed syncs (~POLL_INTERVAL each) before revoking
+# When the collar first found itself unpaired. Drives how hard the interim
+# overlay pushes (see shared/focuslock_unpaired_orders.py) and is cleared the
+# moment the Lion's key lands, so a re-pair later starts the clock fresh.
+_SO_UNPAIRED_SINCE = os.path.expanduser("~/.config/focuslock/unpaired-since")
 
-    Audit 2026-04-27 H-1 (remainder): /standing-orders now requires
-    admin_token. Send the locally-loaded ADMIN_TOKEN via
-    Authorization: Bearer. Without ADMIN_TOKEN configured the sync
-    is skipped silently (the collar can run without it; only the
-    standing-orders sync path needs it).
+_JOIN_HINT_LINUX = """1. Click the crown in the system tray (it is **gray** because this machine is unpaired).
+2. Choose **Join / Configure Mesh…**, and enter the mesh id + relay URL the Lion gave you.
+3. The collar restarts, shows the **Terms of Surrender**, and asks the Lion to approve this device.
+4. Tell the Lion to confirm it in **Lion's Share → Vault Nodes** — they get a notification when it lands."""
+
+
+def _so_sha(s):
+    import hashlib
+
+    return hashlib.sha256(s.encode()).hexdigest()
+
+
+def _apply_standing_orders(content):
+    """Install the Lion's standing orders as ~/.claude/CLAUDE.md. The first time,
+    back up any pre-existing user CLAUDE.md so _revoke_standing_orders can restore
+    it. Records a hash of what we wrote so revoke never clobbers a file the user
+    edited out from under us."""
+    os.makedirs(os.path.dirname(_SO_TARGET), exist_ok=True)
+    existing = ""
+    if os.path.exists(_SO_TARGET):
+        with open(_SO_TARGET) as f:
+            existing = f.read()
+    already_ours = os.path.exists(_SO_APPLIED)
+    # First application only: preserve the user's own CLAUDE.md (if any, and not ours).
+    if not already_ours and existing and _so_sha(existing) != _so_sha(content):
+        try:
+            with open(_SO_BACKUP, "w") as f:
+                f.write(existing)
+        except Exception as e:
+            logger.warning("Could not back up existing CLAUDE.md: %s", e)
+    if existing != content:
+        with open(_SO_TARGET, "w") as f:
+            f.write(content)
+        logger.info("Standing orders applied (%d bytes)", len(content))
+    with open(_SO_APPLIED, "w") as f:
+        f.write(_so_sha(content))
+
+
+def _revoke_standing_orders():
+    """Remove the standing-orders overlay while disconnected from the Lion:
+    restore the user's pre-existing CLAUDE.md, or delete ours if there was none.
+    No-op if we never applied anything, or if the current file isn't the one we
+    wrote (user replaced it — leave it alone)."""
+    if not os.path.exists(_SO_APPLIED):
+        return  # nothing of ours to revoke
+    with open(_SO_APPLIED) as f:
+        applied_hash = f.read().strip()
+    cur = ""
+    if os.path.exists(_SO_TARGET):
+        with open(_SO_TARGET) as f:
+            cur = f.read()
+    if cur and _so_sha(cur) != applied_hash:
+        # User replaced it since we applied — don't clobber; just drop our markers.
+        for p in (_SO_APPLIED, _SO_BACKUP):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        return
+    try:
+        if os.path.exists(_SO_BACKUP):
+            with open(_SO_BACKUP) as f:
+                prev = f.read()
+            with open(_SO_TARGET, "w") as f:
+                f.write(prev)
+            os.remove(_SO_BACKUP)
+        elif os.path.exists(_SO_TARGET):
+            os.remove(_SO_TARGET)
+        os.remove(_SO_APPLIED)
+        logger.warning("Standing orders revoked — disconnected from the mesh/Lion")
+    except Exception as e:
+        logger.warning("Standing orders revoke failed: %s", e)
+
+
+def _unpaired_hours():
+    """Hours since this machine was first seen collared-but-unpaired. Stamps the
+    marker file on first call so the escalation clock starts at the collar's
+    first tick, not at whenever the bunny happens to open a Claude session."""
+    now = time.time()
+    try:
+        if os.path.exists(_SO_UNPAIRED_SINCE):
+            with open(_SO_UNPAIRED_SINCE) as f:
+                since = float(f.read().strip() or now)
+        else:
+            since = now
+            os.makedirs(os.path.dirname(_SO_UNPAIRED_SINCE), exist_ok=True)
+            with open(_SO_UNPAIRED_SINCE, "w") as f:
+                f.write(str(int(now)))
+    except Exception:
+        return 0.0
+    return max(0.0, (now - since) / 3600.0)
+
+
+def _clear_unpaired_marker():
+    """Paired now — drop the clock so a future unpairing escalates from zero."""
+    try:
+        os.remove(_SO_UNPAIRED_SINCE)
+    except OSError:
+        pass
+
+
+def apply_unpaired_orders():
+    """Install the interim marching orders on a collared-but-unpaired machine.
+
+    The Lion's real orders live on Their mesh, so an unpaired PC used to get
+    nothing at all — collar installed, every Claude session on it behaving as
+    though there were no Lion. This writes the floor instead: the Lion/bunny
+    frame plus a standing, escalating push to pair. It is not enforcement, and
+    it never speaks for the Lion beyond that.
+
+    Refuses to clobber a CLAUDE.md the bunny wrote themselves — _apply_standing_orders
+    backs that up first, exactly as it does for the real orders.
     """
+    if unpaired_orders_mod is None:
+        return
+    try:
+        content = unpaired_orders_mod.unpaired_orders(
+            hostname=MESH_NODE_ID,
+            hours_unpaired=_unpaired_hours(),
+            join_hint=_JOIN_HINT_LINUX,
+            # mesh_id set but no Lion key = registered, waiting to be claimed.
+            mesh_configured=bool(MESH_ID),
+        )
+        _apply_standing_orders(content)
+    except Exception as e:
+        logger.warning("Interim (unpaired) standing orders failed: %s", e)
+
+
+def _fetch_lion_pubkey():
+    """Claim this machine: ask the relay for the mesh's Lion pubkey, proving
+    membership by signing with our own registered vault node key.
+
+    Without this a desktop could join a mesh and stay unclaimed forever — the
+    Lion's key only ever arrived via the invite-code join or the passphrase
+    pairing flow, so a collar that registered itself (the normal path) had a
+    gray crown, no standing orders, and no way to verify a Lion-signed order
+    until a human hand-copied a PEM onto the box.
+
+    Writes MESH_CONFIG_DIR/lion_pubkey.pem on success. Returns True if the key
+    is on disk afterwards. Quiet on failure — an unreachable relay or a node
+    the Lion hasn't approved just means "not claimed yet", and the interim
+    marching orders cover that case."""
+    if not MESH_URL or not MESH_ID or not _vault_privkey_pem:
+        return False
+    if os.path.exists(LION_PUBKEY_FILE) and os.path.getsize(LION_PUBKEY_FILE) > 0:
+        return True
+    try:
+        import base64 as _b64
+
+        from cryptography.hazmat.primitives import hashes as _hh
+        from cryptography.hazmat.primitives import serialization as _ser
+        from cryptography.hazmat.primitives.asymmetric import padding as _pad
+
+        ts_ms = int(time.time() * 1000)
+        payload = f"{MESH_ID}|{MESH_NODE_ID}|lion-pubkey|{ts_ms}"
+        priv = _ser.load_pem_private_key(_vault_privkey_pem.encode(), password=None)
+        sig = _b64.b64encode(priv.sign(payload.encode("utf-8"), _pad.PKCS1v15(), _hh.SHA256())).decode()
+        body = json.dumps({"node_id": MESH_NODE_ID, "ts": ts_ms, "signature": sig}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{MESH_URL}/vault/{MESH_ID}/lion-pubkey",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        key_b64 = (data.get("lion_pubkey") or "").strip()
+        if not key_b64:
+            return False
+        # Store as PEM: that is what get_lion_pubkey()'s consumers expect, and
+        # loading it here also validates the relay handed us a real RSA key
+        # rather than an error page or a truncated string.
+        pub = _ser.load_der_public_key(_b64.b64decode(key_b64))
+        pem = pub.public_bytes(_ser.Encoding.PEM, _ser.PublicFormat.SubjectPublicKeyInfo).decode()
+        os.makedirs(os.path.dirname(LION_PUBKEY_FILE), exist_ok=True)
+        tmp = LION_PUBKEY_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(pem)
+        os.replace(tmp, LION_PUBKEY_FILE)
+        logger.warning("Lion's pubkey claimed from the mesh — this machine is under a Lion now")
+        return True
+    except urllib.error.HTTPError as e:
+        logger.debug("lion-pubkey fetch HTTP %s (not claimed yet)", e.code)
+    except Exception as e:
+        logger.debug("lion-pubkey fetch failed: %s", e)
+    return False
+
+
+def _fetch_standing_orders_signed():
+    """Pull the Lion's standing orders by proving membership with our own vault
+    node key, instead of by holding Their admin token.
+
+    GET /standing-orders is admin-gated, so the only way this machine could read
+    its own orders was to keep ADMIN_TOKEN — a credential for the entire admin
+    API, on every mesh the relay serves — in the collar's config. That is the
+    wrong way round: the bunny ended up holding the keys to the relay in order
+    to be told what to do. POST /vault/{mesh}/standing-orders asks for the same
+    text and proves only what actually matters here, that we are a registered
+    node on this mesh.
+
+    Returns the orders text, or None. Quiet on failure — the caller falls back
+    to the admin-token path and then to its own failure accounting."""
+    if not MESH_URL or not MESH_ID or not _vault_privkey_pem:
+        return None
+    try:
+        import base64 as _b64
+
+        from cryptography.hazmat.primitives import hashes as _hh
+        from cryptography.hazmat.primitives import serialization as _ser
+        from cryptography.hazmat.primitives.asymmetric import padding as _pad
+
+        ts_ms = int(time.time() * 1000)
+        payload = f"{MESH_ID}|{MESH_NODE_ID}|standing-orders|{ts_ms}"
+        priv = _ser.load_pem_private_key(_vault_privkey_pem.encode(), password=None)
+        sig = _b64.b64encode(priv.sign(payload.encode("utf-8"), _pad.PKCS1v15(), _hh.SHA256())).decode()
+        body = json.dumps({"node_id": MESH_NODE_ID, "ts": ts_ms, "signature": sig}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{MESH_URL}/vault/{MESH_ID}/standing-orders",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        content = data.get("content") or ""
+        # Same sanity floor the admin path uses: a truncated body or a proxy
+        # error page must never be installed as the Lion's orders.
+        return content if len(content) > 50 else None
+    except urllib.error.HTTPError as e:
+        logger.debug("standing-orders node fetch HTTP %s", e.code)
+    except Exception as e:
+        logger.debug("standing-orders node fetch failed: %s", e)
+    return None
+
+
+def _revoke_unpaired_overlay():
+    """Drop the interim orders once a Lion has claimed this machine.
+
+    The overlay's own text says "collared, unpaired" — false the moment a Lion
+    key lands — so it must go even when the real orders can't be fetched (no
+    admin_token, unreachable homelab). Without this, a machine could sit
+    claimed while telling every Claude session on it that nobody owns it.
+
+    Only ever touches our own file: the marker check gates it, and
+    _revoke_standing_orders restores the bunny's pre-existing CLAUDE.md."""
+    if unpaired_orders_mod is None or not os.path.exists(_SO_TARGET):
+        return
+    try:
+        with open(_SO_TARGET) as f:
+            current = f.read()
+        if unpaired_orders_mod.is_our_overlay(current):
+            _revoke_standing_orders()
+            logger.info("Interim (unpaired) orders revoked — this machine has a Lion now")
+    except Exception as e:
+        logger.warning("Could not revoke interim orders: %s", e)
+
+
+def sync_standing_orders():
+    """Pull CLAUDE.md from the mesh/homelab and install it as the Lion's standing
+    orders for Claude Code sessions on this machine.
+
+    Audit 2026-04-27 H-1 (remainder): /standing-orders now requires admin_token.
+    Send the locally-loaded ADMIN_TOKEN via Authorization: Bearer. Without
+    ADMIN_TOKEN configured the sync is skipped silently (the collar runs fine
+    without it; only this path needs it).
+
+    When STANDING_ORDERS_REQUIRE_CONNECTION is set, the orders are an overlay
+    that only exists while connected: applied on a successful sync, and reverted
+    after _SO_REVOKE_AFTER consecutive failures so a disconnected bunny stops
+    following directives the Lion can no longer reach to change.
+    """
+    global _so_fail_streak
+    # Unpaired: no Lion's key on file means there is nothing to fetch and nobody
+    # to fetch it from. Install the interim orders instead of leaving the machine
+    # silent, and re-render each tick so the nudge escalates with the clock.
+    if not get_lion_pubkey():
+        # Try to claim the key first — an unclaimed member should not settle
+        # for interim orders while the relay is willing to hand over the Lion's
+        # key it already trusts us enough to store.
+        _fetch_lion_pubkey()
+    if not get_lion_pubkey():
+        apply_unpaired_orders()
+        return
+    _clear_unpaired_marker()
+    _revoke_unpaired_overlay()
+    # Node-signed first: it needs nothing but the key this collar already has,
+    # so the admin token stops being a prerequisite for a machine to hear its
+    # own orders. The Bearer path stays as the fallback for a separate homelab
+    # box (HOMELAB_URL != MESH_URL) and for operators who do configure a token.
+    content = _fetch_standing_orders_signed()
+    if content:
+        _so_fail_streak = 0
+        _apply_standing_orders(content)
+        return
     if not ADMIN_TOKEN:
-        logger.debug("Standing orders sync skipped: no admin_token configured")
+        logger.debug("Standing orders sync: node-signed fetch failed and no admin_token configured")
+        if STANDING_ORDERS_REQUIRE_CONNECTION:
+            _so_fail_streak += 1
+            if _so_fail_streak >= _SO_REVOKE_AFTER:
+                _revoke_standing_orders()
         return
     try:
         req = urllib.request.Request(
@@ -1412,22 +1879,16 @@ def sync_standing_orders():
             headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
         )
         resp = urllib.request.urlopen(req, timeout=10)
+        _so_fail_streak = 0  # reachable — we're connected to the mesh/Lion
         content = resp.read().decode()
         if content and len(content) > 50:  # sanity check
-            claude_dir = os.path.expanduser("~/.claude")
-            os.makedirs(claude_dir, exist_ok=True)
-            target = os.path.join(claude_dir, "CLAUDE.md")
-            # Only write if different
-            existing = ""
-            if os.path.exists(target):
-                with open(target, "r") as f:
-                    existing = f.read()
-            if content != existing:
-                with open(target, "w") as f:
-                    f.write(content)
-                logger.info("Standing orders synced (%d bytes)", len(content))
+            _apply_standing_orders(content)
     except Exception as e:
         logger.debug("Standing orders sync failed: %s", e)
+        if STANDING_ORDERS_REQUIRE_CONNECTION:
+            _so_fail_streak += 1
+            if _so_fail_streak >= _SO_REVOKE_AFTER:
+                _revoke_standing_orders()
 
 
 # ── Wallpaper Persistence ──
@@ -1533,14 +1994,26 @@ class CollarApp(Gtk.Application):
         self.webview = None
         self.lock_process = None
         self.lock_active = False
+        # (message, pinned, paywall) last rendered onto the lock wallpaper; lets
+        # update_lock detect mid-lock content changes and regenerate the PNG.
+        self._prev_display = None
         self.consented = has_consent()
         self.allow_close = False
         self.original_wallpaper = _load_saved_wallpaper()  # persisted to disk
+        # Built lazily in _clipboard_watch, once a display exists to read from.
+        self._paste_clipboards = None
 
     def do_activate(self):
         self.hold()
 
-        if not self.consented:
+        # Terms of Surrender is only meaningful once the device is set to join a
+        # Lion's mesh — don't demand surrender on a bare, mesh-less install. When
+        # the wearer joins a mesh (installer prompt, or the tray's "Join /
+        # Configure Mesh"), MESH_ID gets set and the collar restarts into this
+        # path, prompting consent BEFORE it does any enforcement. A mesh-less
+        # collar just idles in the tray (nothing to enforce without a mesh), so
+        # running start_collar without consent there is safe.
+        if MESH_ID and not self.consented:
             self.show_consent()
             return
 
@@ -1597,6 +2070,9 @@ class CollarApp(Gtk.Application):
                 else:
                     GLib.idle_add(_direct_sync_tick)
 
+            # Learn the relay's topic before subscribing, or we subscribe to
+            # the derived one and hear nothing after a rotation.
+            _refresh_ntfy_topic()
             self.ntfy_sub = ntfy_mod.NtfySubscribeThread(_ntfy_topic, on_wake=_ntfy_wake, server=_ntfy_server)
             self.ntfy_sub.start()
             logger.info("Subscribed to ntfy %s/%s", _ntfy_server, _ntfy_topic)
@@ -1697,12 +2173,23 @@ class CollarApp(Gtk.Application):
         self.start_collar()
 
     def on_consent_decline(self, btn, win):
-        """Declining costs $30. They can come back and accept later."""
+        """Declining costs $30. They can come back and accept later.
+
+        Reported through the node-signed vault route first, which needs no
+        admin token — a vault-mode collar holds none, so this penalty simply
+        never landed on those machines. The webhook stays as the fallback for
+        a collar that still has a token and an older relay to send it to.
+
+        The amount is no longer passed: the relay holds the 30 now. It was
+        sitting in this file, on the machine the bunny has root over.
+        """
         try:
             import socket
 
-            if not ADMIN_TOKEN:
-                logger.warning("desktop-penalty webhook skipped: admin_token not configured")
+            if _vault_privkey_pem and MESH_URL and MESH_ID:
+                threading.Thread(target=self._post_vault_penalty, args=("consent-decline", 0), daemon=True).start()
+            elif not ADMIN_TOKEN:
+                logger.warning("consent-decline penalty skipped: no vault key and no admin_token")
             else:
                 payload = {
                     "amount": 30,
@@ -1739,11 +2226,32 @@ class CollarApp(Gtk.Application):
             "bedtime_enabled",
             "bedtime_lock_hour",
             "bedtime_unlock_hour",
+            "task_text",
+            "task_reps",
+            "task_randcaps",
+            "word_min",
         ]
         if hasattr(mesh_orders, "get_snapshot"):
             snap = mesh_orders.get_snapshot(_keys)
         else:
             snap = {k: mesh_orders.get(k, "") for k in _keys}
+
+        # Safety floor: honor a release that arrived as ORDER STATE. Only the
+        # direct `release-device` action fires liberation; a release delivered
+        # via gossip (apply_remote) or a vault order snapshot just copies the
+        # `released` key into orders, so without this the desktop keeps enforcing
+        # (bedtime / countdown / desktop_active) until its next restart catches
+        # it at __main__. The safeword-from-phone case propagates exactly this
+        # way. Fire liberation once, then never enforce again while released.
+        # See THREAT-MODEL: the mesh/vault order-apply path honors `released`.
+        released = str(mesh_orders.get("released", "") or "")
+        if released == "all" or released == MESH_NODE_ID:
+            if not state.liberating:
+                state.liberating = True
+                logger.warning("Release received at runtime (via mesh) — liberating")
+                _execute_liberation()
+            return True
+
         hostname = MESH_NODE_ID
         desktop_active = str(snap.get("desktop_active") or 0)
         desktop_devices = str(snap.get("desktop_locked_devices") or "")
@@ -1860,6 +2368,31 @@ class CollarApp(Gtk.Application):
         state.pinned = pinned if pinned != "null" else ""
         state.sub_tier = str(snap.get("sub_tier") or "")
 
+        # Veneration task. A change to task_text is a NEW task: drop local rep
+        # progress so a fresh order never inherits a stale count.
+        task_text = str(snap.get("task_text") or "")
+        if task_text == "null":
+            task_text = ""
+        if task_text != state.task_gated_on:
+            state.task_gated_on = task_text
+            state.task_reps_done = 0
+            state.task_status = ""
+        state.task_text = task_text
+        for _f, _d in (
+            ("task_reps", 0),
+            ("task_randcaps", 0),
+            ("word_min", 0),
+            ("paste_fine_active", 0),
+            ("paste_fine_amount", 0),
+            ("paste_free_warnings", 1),
+        ):
+            try:
+                setattr(state, _f, int(snap.get(_f) or _d))
+            except (TypeError, ValueError):
+                setattr(state, _f, _d)
+        if state.locked and (state.task_text or state.word_min) and not int(snap.get("unlock_at") or 0):
+            logger.warning("Task gate active with no unlock_at — no time backstop on this lock")
+
         if state.locked != was_locked:
             logger.info("State change: locked=%s paywall=%s", state.locked, state.paywall)
         if state.locked and not was_locked:
@@ -1885,17 +2418,64 @@ class CollarApp(Gtk.Application):
         send_heartbeat()
         return True
 
+    def _apply_kde_lock_wallpaper(self, img_path):
+        """Point kscreenlockerrc at img_path (Image + PreviewImage in the
+        org.kde.image Greeter section). Idempotent — safe to call mid-lock to
+        refresh the greeter wallpaper after regenerating the PNG in place."""
+        cfg_path = os.path.expanduser("~/.config/kscreenlockerrc")
+        try:
+            lines = []
+            if os.path.exists(cfg_path):
+                with open(cfg_path, "r") as f:
+                    lines = f.readlines()
+            in_section = False
+            updated = False
+            new_lines = []
+            for line in lines:
+                if line.strip() == "[Greeter][Wallpaper][org.kde.image][General]":
+                    in_section = True
+                    new_lines.append(line)
+                    continue
+                if in_section and line.strip().startswith("["):
+                    in_section = False
+                if in_section and line.strip().startswith("Image="):
+                    new_lines.append(f"Image={img_path}\n")
+                    updated = True
+                    continue
+                if in_section and line.strip().startswith("PreviewImage="):
+                    new_lines.append(f"PreviewImage={img_path}\n")
+                    continue
+                new_lines.append(line)
+            if not updated:
+                # Section exists but no Image key, or section doesn't exist — append it.
+                new_lines.append("\n[Greeter][Wallpaper][org.kde.image][General]\n")
+                new_lines.append(f"Image={img_path}\n")
+                new_lines.append(f"PreviewImage={img_path}\n")
+            with open(cfg_path, "w") as f:
+                f.writelines(new_lines)
+            logger.info("Lock wallpaper set: %s", img_path)
+        except Exception as e:
+            logger.warning("Wallpaper config error: %s", e)
+
     def show_lock(self):
         if self.lock_active:
             return
 
         logger.info("SHOW LOCK — generating wallpaper + locking session")
         self.lock_active = True
+        # One warning per lock session — not per rep, which would give a 5-rep
+        # task five free attempts, and not lifetime, which would make the first
+        # curious middle-click cost money months later.
+        state.paste_warned = 0
+        state.paste_billable = 0
         try:
             import subprocess
 
             # Generate custom lock screen image
             self.generate_lock_wallpaper()
+            # Track what we just rendered so update_lock() can detect mid-lock
+            # content changes (new message / pin / paywall) and refresh.
+            self._prev_display = (state.message, state.pinned, state.paywall)
             # Set as KDE lock screen wallpaper — write directly to kscreenlockerrc
             # KDE uses nested bracket format: [Greeter][Wallpaper][org.kde.image][General]
             img_path = os.path.expanduser("~/.local/share/focuslock/lock-wallpaper.png")
@@ -1926,40 +2506,19 @@ class CollarApp(Gtk.Application):
                     if self.original_wallpaper:
                         _save_original_wallpaper(self.original_wallpaper)
                         logger.info("Using KDE default wallpaper as restore target: %s", self.original_wallpaper)
-
-                # Find and update the Image= line in the right section
-                in_section = False
-                updated = False
-                new_lines = []
-                for line in lines:
-                    if line.strip() == "[Greeter][Wallpaper][org.kde.image][General]":
-                        in_section = True
-                        new_lines.append(line)
-                        continue
-                    if in_section and line.strip().startswith("["):
-                        in_section = False
-                    if in_section and line.strip().startswith("Image="):
-                        new_lines.append(f"Image={img_path}\n")
-                        updated = True
-                        continue
-                    if in_section and line.strip().startswith("PreviewImage="):
-                        new_lines.append(f"PreviewImage={img_path}\n")
-                        continue
-                    new_lines.append(line)
-                if not updated:
-                    # Section exists but no Image key, or section doesn't exist
-                    # Append it
-                    new_lines.append("\n[Greeter][Wallpaper][org.kde.image][General]\n")
-                    new_lines.append(f"Image={img_path}\n")
-                    new_lines.append(f"PreviewImage={img_path}\n")
-                with open(cfg_path, "w") as f:
-                    f.writelines(new_lines)
-                logger.info("Lock wallpaper set: %s", img_path)
             except Exception as e:
-                logger.warning("Wallpaper config error: %s", e)
+                logger.warning("Wallpaper original-save error: %s", e)
+            # Point kscreenlockerrc at our lock PNG (extracted so update_lock can
+            # re-point after a mid-lock regeneration).
+            self._apply_kde_lock_wallpaper(img_path)
             # Lock the session
             subprocess.run(["loginctl", "lock-session"], capture_output=True, timeout=5)
             logger.info("Session locked via loginctl")
+            # Veneration overlay rides ON TOP of the session lock — the greeter
+            # still guards the session, this is what bunny faces after auth.
+            # Locks with no task pending are untouched: no overlay, no change.
+            if state.task_text or state.word_min:
+                self._present_veneration_overlay()
         except Exception as e:
             logger.warning("Session lock error: %s", e)
         # Re-lock every 1s in case user enters their password
@@ -1969,6 +2528,12 @@ class CollarApp(Gtk.Application):
         """If still locked, re-lock the session — password won't save you."""
         if not self.lock_active:
             return False
+        # Stand down ONLY while the veneration overlay is actually up and a task
+        # is pending: otherwise the greeter re-asserts every second and bunny
+        # never reaches a keyboard. Kill the overlay and re-locking resumes on
+        # the next tick, so this is a pause, not a hole.
+        if self.windows and (state.task_text or state.word_min):
+            return True
         try:
             import subprocess
 
@@ -2132,7 +2697,9 @@ for (var i = 0; i < c.length; i++) {
 
     def create_lock_window(self, primary=True):
         win = Gtk.ApplicationWindow(application=self)
-        win.set_title("FocusLock")
+        # force_lock_fullscreen() matches this exact caption via KWin scripting.
+        # It was written for the old browser lock; the GTK window must claim it.
+        win.set_title("FOCUSLOCK-COLLAR-ACTIVE")
         win.set_decorated(False)
         win.set_resizable(False)
         win.set_deletable(False)
@@ -2157,6 +2724,15 @@ for (var i = 0; i < c.length; i++) {
             .collar-pinned { color: #cc9900; font-size: 16px; font-weight: 400; }
             .collar-tier { color: #c8a84e; font-size: 12px; font-weight: 300; letter-spacing: 3px; }
             .collar-divider { background-color: rgba(200, 168, 78, 0.1); min-height: 1px; }
+            .collar-task { color: #c8a84e; font-size: 15px; font-weight: 300; }
+            .collar-task-reps { color: #c8a84e; font-size: 12px; letter-spacing: 3px; }
+            .collar-task-entry textview, .collar-task-entry text {
+                background-color: rgba(0, 0, 0, 0.45); color: #ddccaa; font-size: 14px; font-weight: 300;
+            }
+            .collar-task-entry { border: 1px solid rgba(200, 168, 78, 0.25); border-radius: 8px; padding: 8px; }
+            .collar-task-status { color: #aa8866; font-size: 13px; font-weight: 300; }
+            .collar-task-status-bad { color: #cc4422; font-size: 13px; font-weight: 300; }
+            .collar-task-status-good { color: #66aa44; font-size: 13px; font-weight: 300; }
         """)
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
@@ -2233,6 +2809,17 @@ for (var i = 0; i < c.length; i++) {
         self.taunt_label.add_css_class("collar-taunt")
         card.append(self.taunt_label)
 
+        # Veneration panel. Primary window only — type it once, not once per
+        # monitor. Guarded because create_lock_window runs per display and an
+        # unconditional reset would null the primary window's entry reference.
+        if primary:
+            self.task_view = None
+            self.task_label = None
+            self.task_reps_label = None
+            self.task_status_label = None
+            if state.task_text or state.word_min:
+                self._build_veneration_panel(card)
+
         overlay.append(card)
 
         if primary and WEBKIT_OK and state.paywall:
@@ -2266,6 +2853,391 @@ for (var i = 0; i < c.length; i++) {
         win.set_child(overlay)
         return win
 
+    def _build_veneration_panel(self, card):
+        """Task text + entry + submit, appended to the lock card."""
+        div = Gtk.Box()
+        div.add_css_class("collar-divider")
+        div.set_margin_top(8)
+        div.set_margin_bottom(8)
+        card.append(div)
+
+        self.task_label = Gtk.Label(label=state.task_text or f"Write at least {state.word_min} words for Them.")
+        self.task_label.add_css_class("collar-task")
+        self.task_label.set_wrap(True)
+        self.task_label.set_max_width_chars(64)
+        self.task_label.set_justify(Gtk.Justification.CENTER)
+        self.task_label.set_selectable(False)  # nothing to select and copy out of
+        card.append(self.task_label)
+
+        self.task_reps_label = Gtk.Label(label=self._veneration_reps_text())
+        self.task_reps_label.add_css_class("collar-task-reps")
+        card.append(self.task_reps_label)
+
+        self.task_view = Gtk.TextView()
+        self.task_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self.task_view.set_size_request(560, 180)
+        self.task_view.set_accepts_tab(False)  # Tab stays a blocked nav key
+        self.task_view.add_css_class("collar-task-entry")
+
+        # PASTE IS NOT TYPING. One veto on insert-text catches every vector:
+        # Ctrl+V, middle-click primary selection, drag-and-drop, and the
+        # context menu all arrive as a single lump insertion. Real typing
+        # arrives one character at a time (a couple, with compose/IME).
+        self.task_view.get_buffer().connect("insert-text", self._on_task_insert)
+
+        # CAPTURE phase: a focused TextView consumes Return before a BUBBLE-phase
+        # window controller ever sees it, which is why Ctrl+Enter did nothing.
+        keys = Gtk.EventControllerKey()
+        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", self._on_task_key)
+        self.task_view.add_controller(keys)
+
+        # Middle-click pastes the primary selection; right-click offers Paste.
+        clicks = Gtk.GestureClick()
+        clicks.set_button(0)  # listen to every button
+        clicks.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        clicks.connect("pressed", self._on_task_click)
+        self.task_view.add_controller(clicks)
+
+        self.task_scroller = Gtk.ScrolledWindow()
+        self.task_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.task_scroller.set_size_request(560, 180)
+        self.task_scroller.set_child(self.task_view)
+        card.append(self.task_scroller)
+
+        self.task_status_label = Gtk.Label(label=state.task_status or "")
+        self.task_status_label.add_css_class("collar-task-status")
+        self.task_status_label.set_wrap(True)
+        self.task_status_label.set_max_width_chars(64)
+        card.append(self.task_status_label)
+
+        self.task_submit = Gtk.Button(label="Submit to Them")
+        self.task_submit.set_margin_top(8)
+        self.task_submit.connect("clicked", self._on_veneration_submit)
+        card.append(self.task_submit)
+        self.task_completed = False
+
+        def _focus_task_view():
+            if self.task_view:
+                self.task_view.grab_focus()
+            return False  # once only: grab_focus() returns True and would repeat
+
+        GLib.idle_add(_focus_task_view)
+
+    def _clipboard_watch(self):
+        """Lazily build the clipboard cache, once a display exists to read from.
+
+        GTK4 has no synchronous clipboard read — read_text_async only, and no
+        `changed` signal, so notify::formats stands in — while insert-text has
+        to decide before it can veto. So the contents are read in the background
+        and answered from cache. A cold cache means "cannot prove", which is not
+        the same as "not a paste" and is never charged as either.
+        """
+        if self._paste_clipboards is None and self.task_view is not None:
+            display = self.task_view.get_display()
+            self._paste_clipboards = {}
+            for name, cb in (
+                ("clipboard", display.get_clipboard()),
+                ("primary", display.get_primary_clipboard()),
+            ):
+                self._paste_clipboards[name] = None
+                cb.connect("notify::formats", self._on_clipboard_formats, name)
+                self._read_clipboard(cb, name)
+        return self._paste_clipboards
+
+    def _on_clipboard_formats(self, cb, _pspec, name):
+        # Contents changed: a stale cached copy is worse than none, because it
+        # could clear a real paste. Blank it until the fresh read lands.
+        self._paste_clipboards[name] = None
+        self._read_clipboard(cb, name)
+
+    def _read_clipboard(self, cb, name):
+        def _done(clipboard, res):
+            try:
+                self._paste_clipboards[name] = clipboard.read_text_finish(res)
+            except GLib.Error:
+                self._paste_clipboards[name] = None  # non-text, or read refused
+
+        cb.read_text_async(None, _done)
+
+    def _proves_paste(self, inserted):
+        """True if `inserted` is on a clipboard, False if demonstrably not,
+        None if nothing can be proved right now."""
+        norm = " ".join((inserted or "").split())
+        if not norm:
+            return None
+        cache = self._clipboard_watch() or {}
+        known = [v for v in cache.values() if v]
+        if not known:
+            return None
+        for value in known:
+            whole = " ".join(value.split())
+            if norm == whole or (len(norm) > 8 and norm in whole):
+                return True
+        return False
+
+    def _paste_attempt(self, route, proven):
+        """Block, then decide whether this one is chargeable.
+
+        Blocking is unconditional — enforcement must not weaken because the
+        clipboard could not be read. Charging needs proof: an explicit paste
+        keystroke or gesture proves intent by itself, a lump insertion only
+        proves it when the text is demonstrably what is on a clipboard.
+
+        Unproven attempts do not spend a warning. A dead-key or IME commit on a
+        layout like Canadian Multilingual Standard arrives as a lump insertion,
+        and bunny should not lose the free pass to their own keyboard.
+        """
+        self._set_veneration_status("Type it. Pasting is not typing.", "bad")
+        if not proven:
+            logger.info("Veneration paste blocked (%s) — unproven, not chargeable", route)
+            return
+        free = max(0, int(getattr(state, "paste_free_warnings", 1) or 0))
+        if state.paste_warned < free:
+            state.paste_warned += 1
+            self._set_veneration_status("Type it. Pasting is not typing. That is your warning.", "bad")
+            logger.warning(
+                "Veneration paste blocked (%s) — proven; warning %s of %s spent", route, state.paste_warned, free
+            )
+            return
+        state.paste_billable += 1
+        self._set_veneration_status("Type it. Pasting is not typing. That one counts.", "bad")
+        self._report_paste_penalty(route)
+
+    def _report_paste_penalty(self, route):
+        """Hand a proven attempt to the relay, and let the relay price it.
+
+        Deliberately reports the EVENT and nothing else. The amount lives in
+        this mesh's orders, which only the Lion writes, so this machine — which
+        bunny has root on — cannot set what its own slip costs. Never charges
+        locally either: fines are applied relay-side, and a counter kept on the
+        collar is not a counter.
+
+        Off the GTK thread: this fires from a keystroke handler while the lock
+        is up, and a stalled relay must not freeze the panel bunny is being
+        asked to type into.
+        """
+        logger.warning(
+            "VENERATION PASTE: proven attempt #%s via %s — reporting to the relay",
+            state.paste_billable,
+            route,
+        )
+        count = state.paste_billable
+        threading.Thread(target=self._post_vault_penalty, args=("veneration-paste", count), daemon=True).start()
+
+    @staticmethod
+    def _post_vault_penalty(kind, count):
+        if not MESH_URL or not MESH_ID or not _vault_privkey_pem:
+            logger.info("%s penalty not reported: mesh or vault key not configured", kind)
+            return
+        try:
+            import base64 as _b64
+
+            from cryptography.hazmat.primitives import hashes as _hh
+            from cryptography.hazmat.primitives import serialization as _ser
+            from cryptography.hazmat.primitives.asymmetric import padding as _pad
+
+            ts_ms = int(time.time() * 1000)
+            payload = f"{MESH_ID}|{MESH_NODE_ID}|penalty|{ts_ms}|{kind}|{count}"
+            priv = _ser.load_pem_private_key(_vault_privkey_pem.encode(), password=None)
+            sig = _b64.b64encode(priv.sign(payload.encode("utf-8"), _pad.PKCS1v15(), _hh.SHA256())).decode()
+            body = json.dumps(
+                {"node_id": MESH_NODE_ID, "ts": ts_ms, "signature": sig, "kind": kind, "count": count}
+            ).encode("utf-8")
+            req = urllib.request.Request(
+                f"{MESH_URL}/vault/{MESH_ID}/penalty",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            # 404 means the relay predates this route. Worth a warning rather
+            # than a debug line: the incident happened and went unpriced.
+            logger.warning("%s penalty report rejected: HTTP %s", kind, e.code)
+            return
+        except Exception as e:
+            logger.warning("%s penalty report failed: %s", kind, e)
+            return
+        if not result.get("armed"):
+            logger.info("%s penalty reported; They have not armed it — nothing charged", kind)
+        else:
+            logger.warning(
+                "%s penalty applied: $%s (paywall now %s)", kind, result.get("amount"), result.get("paywall")
+            )
+
+    def _on_task_insert(self, buf, location, text, length):
+        """Veto lump insertions — that is what a paste looks like.
+
+        Lump-ness alone is not evidence, though: a dead-key or IME commit is
+        also a lump insertion. Block on the shape, charge only on the match.
+        """
+        if len(text) > 2:
+            buf.stop_emission_by_name("insert-text")
+            self._paste_attempt("insert", self._proves_paste(text) is True)
+
+    def _on_task_key(self, controller, keyval, keycode, mod):
+        ctrl = bool(mod & Gdk.ModifierType.CONTROL_MASK)
+        shift = bool(mod & Gdk.ModifierType.SHIFT_MASK)
+        if ctrl and keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            self._on_veneration_submit()
+            return True
+        # Belt to the insert-text braces: refuse the paste bindings outright so
+        # the message is honest rather than a silently swallowed keystroke.
+        if (ctrl and keyval in (Gdk.KEY_v, Gdk.KEY_V, Gdk.KEY_Insert)) or (shift and keyval == Gdk.KEY_Insert):
+            self._paste_attempt("keyboard", True)
+            return True
+        return False
+
+    def _on_task_click(self, gesture, n_press, x, y):
+        """Middle-click pastes primary; right-click offers a Paste item."""
+        if gesture.get_current_button() in (2, 3):
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            self._paste_attempt("mouse", True)
+
+    def _veneration_reps_text(self):
+        total = max(1, int(state.task_reps or 0))
+        return f"REP {min(state.task_reps_done + 1, total)} OF {total}"
+
+    @staticmethod
+    def _normalise_veneration(text, randcaps):
+        """Collapse whitespace so line wrapping never fails a correct answer."""
+        out = re.sub(r"\s+", " ", (text or "")).strip()
+        return out if randcaps else out.casefold()
+
+    def _set_veneration_status(self, text, kind=""):
+        state.task_status = text
+        if not getattr(self, "task_status_label", None):
+            return
+        for cls in ("collar-task-status", "collar-task-status-bad", "collar-task-status-good"):
+            self.task_status_label.remove_css_class(cls)
+        self.task_status_label.add_css_class(
+            "collar-task-status-bad"
+            if kind == "bad"
+            else "collar-task-status-good"
+            if kind == "good"
+            else "collar-task-status"
+        )
+        self.task_status_label.set_label(text)
+
+    def _on_veneration_submit(self, _button=None):
+        if getattr(self, "task_completed", False):
+            return  # accepted already; the release is on its way
+        if not getattr(self, "task_view", None):
+            return
+        buf = self.task_view.get_buffer()
+        typed = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+
+        if state.task_text:
+            want = self._normalise_veneration(state.task_text, state.task_randcaps)
+            got = self._normalise_veneration(typed, state.task_randcaps)
+            if got != want:
+                self._set_veneration_status(
+                    "Nothing typed. They are waiting."
+                    if not got
+                    else "That is not what They asked for. Read it again and type it in full.",
+                    "bad",
+                )
+                return
+        else:
+            words = len((typed or "").split())
+            if words < state.word_min:
+                self._set_veneration_status(f"{words} of {state.word_min} words. Keep going.", "bad")
+                return
+
+        state.task_reps_done += 1
+        total = max(1, int(state.task_reps or 0))
+        buf.set_text("", 0)
+
+        if state.task_reps_done < total:
+            if self.task_reps_label:
+                self.task_reps_label.set_label(self._veneration_reps_text())
+            self._set_veneration_status(f"Accepted. {total - state.task_reps_done} to go.", "good")
+            return
+
+        # Accepted. Take the input away so there is nothing left to type into,
+        # and count down out loud rather than sitting silent — a dead field and
+        # an unexplained pause both read as "it broke".
+        self.task_completed = True
+        for _w in (
+            getattr(self, "task_scroller", None),
+            getattr(self, "task_submit", None),
+            getattr(self, "task_reps_label", None),
+        ):
+            if _w is not None:
+                _w.set_visible(False)
+        self._release_countdown = 3
+        self._set_veneration_status("Accepted. Thank Them. Releasing in 3\u2026", "good")
+        GLib.timeout_add(1000, self._veneration_release_tick)
+
+    def _veneration_release_tick(self):
+        self._release_countdown -= 1
+        if self._release_countdown > 0:
+            self._set_veneration_status(f"Accepted. Thank Them. Releasing in {self._release_countdown}\u2026", "good")
+            return True
+        self._release_after_veneration()
+        return False
+
+    def _present_veneration_overlay(self):
+        """Bring the GTK overlay up over the session lock. Additive, never a
+        replacement: loginctl/the KDE greeter are untouched."""
+        if self.windows:
+            return
+        try:
+            win = self.create_lock_window(primary=True)
+            self.windows.append(win)
+            win.present()
+            win.fullscreen()
+            self.force_lock_fullscreen()
+            GLib.timeout_add(3000, self.enforce_fullscreen_loop)
+            logger.info("Veneration overlay presented over session lock")
+        except Exception as e:
+            # If the overlay cannot come up, do NOT stand the greeter down.
+            # A task bunny cannot reach is a lock with no exit but the timer.
+            self.windows = []
+            logger.warning("Veneration overlay failed to present: %s", e)
+
+    def _teardown_veneration_overlay(self):
+        for w in list(self.windows):
+            try:
+                self.allow_close = True
+                w.destroy()
+            except Exception:
+                pass
+        self.windows = []
+        self.task_view = None
+        self.task_label = None
+        self.task_reps_label = None
+        self.task_status_label = None
+        self.task_scroller = None
+        self.task_submit = None
+        self.task_completed = False
+        self.allow_close = False
+
+    def _release_after_veneration(self):
+        """Task complete — end the lock. Mirrors the unlock_at timer path."""
+        logger.info("Veneration completed (%s reps) — releasing lock", state.task_reps_done)
+        try:
+            mesh_orders.set("task_done", 1)
+            mesh_orders.set("task_text", "")
+            mesh_orders.set("lock_active", 0)
+            mesh_orders.set("desktop_active", 0)
+            mesh_orders.set("desktop_locked_devices", "")
+            mesh_orders.set("unlock_at", 0)
+            mesh_orders.set("message", "")
+            mesh.bump_and_broadcast(mesh_orders, MESH_NODE_ID, mesh_peers, ntfy_fn=_ntfy_fn)
+        except Exception as e:
+            # Never strand bunny behind a broadcast failure — drop the local lock
+            # and let the next sync reconcile.
+            logger.warning("Veneration release broadcast failed: %s", e)
+        state.task_gated_on = ""
+        state.task_reps_done = 0
+        state.task_text = ""
+        state.word_min = 0
+        state.locked = False
+        self.hide_lock()
+
     def enforce_fullscreen_loop(self):
         """Re-enforce every 3s while locked — re-minimize other windows, keep lock above."""
         if not self.lock_active:
@@ -2283,10 +3255,29 @@ for (var i = 0; i < c.length; i++) {
 
     def update_lock(self):
         """Update existing lock windows with new state."""
+        # A task assigned mid-lock still needs a surface to be typed on.
+        if self.lock_active and (state.task_text or state.word_min) and not self.windows:
+            self._present_veneration_overlay()
         state.taunt_counter += 1
         if state.taunt_counter >= 6 and TAUNTS:  # Rotate taunt every 30s
             state.current_taunt = random.choice(TAUNTS)
             state.taunt_counter = 0
+
+        # Mid-lock content refresh: when the Lion changes the message, pins a
+        # message, or updates the paywall WHILE already locked, regenerate the
+        # KDE lock wallpaper in place and re-point kscreenlockerrc. The cairo
+        # wallpaper is the live lock surface, but the KDE greeter loads the PNG
+        # at lock time — so the new text shows on the next greeter paint (e.g.
+        # the 1s enforce re-lock after any unlock attempt, or the next lock).
+        # Mirrors the Windows collar's _prev_display guard (set_lock_wallpaper).
+        cur = (state.message, state.pinned, state.paywall)
+        if self.lock_active and self._prev_display != cur:
+            self._prev_display = cur
+            try:
+                self.generate_lock_wallpaper()
+                self._apply_kde_lock_wallpaper(os.path.expanduser("~/.local/share/focuslock/lock-wallpaper.png"))
+            except Exception as e:
+                logger.warning("mid-lock wallpaper refresh failed: %s", e)
 
         for _win in self.windows:
             try:
@@ -2298,6 +3289,10 @@ for (var i = 0; i < c.length; i++) {
                     self.pinned_label.set_label(state.pinned or "")
                 if hasattr(self, "taunt_label") and self.taunt_label:
                     self.taunt_label.set_label(state.current_taunt)
+                if getattr(self, "task_label", None) and state.task_text:
+                    self.task_label.set_label(state.task_text)
+                if getattr(self, "task_reps_label", None):
+                    self.task_reps_label.set_label(self._veneration_reps_text())
             except Exception:
                 logger.warning("failed to update lock window labels")
 
@@ -2309,6 +3304,7 @@ for (var i = 0; i < c.length; i++) {
 
     def hide_lock(self):
         logger.info("HIDE LOCK — unlocking session")
+        self._teardown_veneration_overlay()
         try:
             import subprocess
 

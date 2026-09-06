@@ -54,13 +54,26 @@ public class MainActivity extends Activity {
     private TextView pairingFingerprint, pairedFingerprint, pairingHint;
     private LinearLayout pinnedSection, messagesContainer;
     private View sectionStats, sectionSelflock, sectionMessages, sectionPairing, sectionPaired, sectionMainContent;
+    private View messagesBody;
     private android.widget.ImageView qrCodeView;
     private EditText messageInput;
-    private Button btnPay, btnSend, btnFreeUnlock, btnShowQr, btnPrepay, btnSetupImap;
-    private TextView balanceAmount, balanceDetail, imapStatus, tierBadge, messagesHeader;
-    private boolean messagesExpanded = true;
+    private Button btnPay, btnSend, btnFreeUnlock, btnShowQr, btnPrepay, btnSetupPayerIdentity;
+    private Button btnGamble, tabNow, tabOwe, tabTalk, tabMe;
+    private View pageNow, pageOwe, pageTalk, pageMe;
+    private TextView gambleStatus, costToWait;
+    private Sparkline balanceSpark;
+    private int currentTab = 0;
+    /** Flip budget from the relay; -1 until a /payments read fills it in. */
+    private int gambleCooldownS = -1, gambleRemainingToday = -1;
+    private TextView balanceAmount, balanceDetail, imapStatus, tierBadge, messagesHeader, payerIdentityStatus;
+    // Collapsed by default — the messaging block runs to ~440dp (input row +
+    // 380dp scroll) and was overwhelming the home view. User flips it open
+    // when they want to compose. State persists across launches via
+    // prefs.messages_expanded so the choice sticks.
+    private boolean messagesExpanded = false;
     private static final int PICK_IMAGE = 1001;
     private static final int TAKE_PHOTO = 1002;
+    private static final int REQ_BUNNY_ONBOARD = 1003;
     private LinearLayout paymentHistory;
     private View balanceCard;
     private View statusBar;
@@ -116,6 +129,7 @@ public class MainActivity extends Activity {
         btnDeadlineTaskClear.setOnClickListener(v -> doDeadlineTaskClear());
         pinnedMessage = (TextView) findViewById(fid("pinned_message"));
         messagesContainer = (LinearLayout) findViewById(fid("messages_container"));
+        messagesBody = findViewById(fid("messages_body"));
         messageInput = (EditText) findViewById(fid("message_input"));
         btnPay = (Button) findViewById(fid("btn_pay"));
         btnSend = (Button) findViewById(fid("btn_send"));
@@ -141,6 +155,13 @@ public class MainActivity extends Activity {
         btnShowQr.setText("Join Mesh");
         btnShowQr.setOnClickListener(v -> showJoinMeshDialog());
         btnShowQr.setOnLongClickListener(v -> { showDirectPairingInfo(); return true; });
+
+        // Post-pairing display-name editor: long-press the paired fingerprint.
+        // Gives already-joined devices (which never see the join dialog again) a
+        // way to set/change how they appear to the Lion.
+        if (pairedFingerprint != null) {
+            pairedFingerprint.setOnLongClickListener(v -> { showEditNameDialog(); return true; });
+        }
 
         // Pair-reset button intentionally hidden: per the consensual design
         // (CLAUDE.md: "Release Forever button (Lion only)"), only the Lion
@@ -169,12 +190,23 @@ public class MainActivity extends Activity {
             sectionPairing.setVisibility(View.VISIBLE);
             sectionPaired.setVisibility(View.GONE);
             sectionMainContent.setVisibility(View.GONE);
-            // No cable in production — when Bunny Tasker opens unpaired and
-            // the Collar isn't yet device-admin, kick the user into the
-            // Collar's Terms-of-Surrender screen so the full flow happens
-            // inside the normal UI path. Safe to call repeatedly.
-            maybeLaunchCollarConsent();
+            // Always render the pairing QR FIRST so it's ready underneath — the
+            // onboarding must never gate the user out of pairing.
+            renderPairingQr();
+            // First-run: show Bunny Tasker's own warm welcome (independent of the
+            // Collar's Terms of Surrender), THEN hand off to the Collar consent.
+            // Ordering: welcome → Terms of Surrender → device-admin.
+            if (!prefs.getBoolean("bunny_onboarded", false)) {
+                startActivityForResult(new Intent(this, BunnyWelcomeActivity.class), REQ_BUNNY_ONBOARD);
+            } else {
+                // No cable in production — when Bunny Tasker opens unpaired and
+                // the Collar isn't yet device-admin, kick the user into the
+                // Collar's Terms-of-Surrender screen so the full flow happens
+                // inside the normal UI path. Safe to call repeatedly.
+                maybeLaunchCollarConsent();
+            }
         }
+        updateCrownConnectionState();
 
         // Subscription buttons
         findViewById(fid("btn_sub_bronze")).setOnClickListener(v -> doSubscribe("bronze", 25));
@@ -189,15 +221,51 @@ public class MainActivity extends Activity {
         balanceCard = findViewById(fid("balance_card"));
         paymentHistory = (LinearLayout) findViewById(fid("payment_history"));
         imapStatus = (TextView) findViewById(fid("imap_status"));
-        btnSetupImap = (Button) findViewById(fid("btn_setup_imap"));
-        btnSetupImap.setOnClickListener(v -> doSetupImap());
+
+        payerIdentityStatus = (TextView) findViewById(fid("payer_identity_status"));
+        btnSetupPayerIdentity = (Button) findViewById(fid("btn_setup_payer_identity"));
+        btnSetupPayerIdentity.setOnClickListener(v -> doSetupPayerIdentity());
+        refreshPayerIdentityStatus();
+
+        // ── Tabs (Now / Owe / Talk / Me) ──
+        pageNow = findViewById(fid("page_now"));
+        pageOwe = findViewById(fid("page_owe"));
+        pageTalk = findViewById(fid("page_talk"));
+        pageMe = findViewById(fid("page_me"));
+        tabNow = (Button) findViewById(fid("tab_now"));
+        tabOwe = (Button) findViewById(fid("tab_owe"));
+        tabTalk = (Button) findViewById(fid("tab_talk"));
+        tabMe = (Button) findViewById(fid("tab_me"));
+        if (tabNow != null) tabNow.setOnClickListener(v -> selectTab(0));
+        if (tabOwe != null) tabOwe.setOnClickListener(v -> selectTab(1));
+        if (tabTalk != null) tabTalk.setOnClickListener(v -> selectTab(2));
+        if (tabMe != null) tabMe.setOnClickListener(v -> selectTab(3));
+        selectTab(prefs.getInt("last_tab", 0));
+
+        // ── Owe tab extras ──
+        costToWait = (TextView) findViewById(fid("cost_to_wait"));
+        balanceSpark = (Sparkline) findViewById(fid("balance_spark"));
+        gambleStatus = (TextView) findViewById(fid("gamble_status"));
+        btnGamble = (Button) findViewById(fid("btn_gamble"));
+        if (btnGamble != null) btnGamble.setOnClickListener(v -> doGamble());
+
+        View btnOffer = findViewById(fid("btn_make_offer"));
+        if (btnOffer != null) btnOffer.setOnClickListener(v -> doMakeOffer());
+
+        View btnDev = findViewById(fid("btn_devotion"));
+        if (btnDev != null) btnDev.setOnClickListener(v -> doDevotion());
+
+        View btnTighten = findViewById(fid("btn_tighten"));
+        if (btnTighten != null) btnTighten.setOnClickListener(v -> doTighten());
         tierBadge = (TextView) findViewById(fid("tier_badge"));
         messagesHeader = (TextView) findViewById(fid("messages_header"));
+        messagesExpanded = prefs.getBoolean("messages_expanded", false);
+        applyMessagesExpanded();
         if (messagesHeader != null) {
             messagesHeader.setOnClickListener(v -> {
                 messagesExpanded = !messagesExpanded;
-                messagesContainer.setVisibility(messagesExpanded ? View.VISIBLE : View.GONE);
-                messagesHeader.setText(messagesExpanded ? "MESSAGE YOUR LION  \u25B2" : "MESSAGE YOUR LION  \u25BC");
+                prefs.edit().putBoolean("messages_expanded", messagesExpanded).apply();
+                applyMessagesExpanded();
             });
         }
 
@@ -258,7 +326,21 @@ public class MainActivity extends Activity {
 
         // Start polling
         poller = () -> {
+            // Cost-to-wait is pure local arithmetic over Settings.Global, so
+            // it is cheap enough to recompute each tick — but only while the
+            // tab showing it is actually open.
+            if (currentTab == 0) {
+                refreshLiveState();
+            } else if (currentTab == 1) {
+                refreshCostToWait();
+                refreshCharges();
+                renderGambleBudget();
+            } else if (currentTab == 3) {
+                refreshDesktops();
+            }
             executor.execute(() -> refreshStats());
+            executor.execute(this::drainEvidenceOutbox);  // serverless evidence → Lion's inbox
+            executor.execute(this::maybeSendPendingPayerIdentity);  // deferred onboarding payer identity
             handler.postDelayed(poller, 5000);
         };
         handler.post(poller);
@@ -350,12 +432,1018 @@ public class MainActivity extends Activity {
         return getResources().getIdentifier(name, "id", getPackageName());
     }
 
+    // ── Devotion: voluntary tasks, a subscriber perk ──
+    //
+    // Everything up to here is state the bunny is SUBJECT to. This is the one
+    // thing they can choose to do. They draw from the same 144-line veneration
+    // catalogue the Lion imposes from, type it out, and earn a rank.
+    //
+    // The reward is points and never money. A voluntary task that took money
+    // off the balance would be a discount the bunny writes for themselves,
+    // which is the one thing this system exists not to hand over — they
+    // already hold the device, the root and the drive. Points are a record of
+    // effort they chose; the Lion may reward it, convert it, or ignore it.
+    // Standing is earnable, a discount is not.
+    //
+    // The weekly cap and the counter live on the relay, in a file this device
+    // cannot reach. The typing discipline below is client-side and a tampered
+    // client can always lie about it — which is precisely why what it buys is
+    // a rank rather than a dollar.
+
+    private VenerationTasks catalogue;
+    private String devotionRank = "", devotionNextRank = "";
+    private int devotionPoints = -1, devotionWeekUsed = 0, devotionWeekCap = 0, devotionToNext = 0;
+    private int devotionStreak = 0, devotionBestStreak = 0, devotionBrokeFrom = 0, devotionFreezes = 0;
+    private boolean devotionAvailable = false, devotionAtRisk = false;
+    private JSONArray devotionClaims = null;
+
+    /** Lazily parsed; the resource ships with the app so this cannot fail at
+     *  runtime for any reason a retry would fix. */
+    private VenerationTasks catalogue() {
+        if (catalogue != null) return catalogue;
+        try (java.io.InputStream in = getResources().openRawResource(
+                getResources().getIdentifier("veneration_tasks", "raw", getPackageName()))) {
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            catalogue = VenerationTasks.parse(new String(out.toByteArray(), "UTF-8"));
+        } catch (Exception e) {
+            android.util.Log.e("BunnyTasker", "veneration catalogue unreadable", e);
+        }
+        return catalogue;
+    }
+
+    private void applyDevotionStatus(JSONObject resp) {
+        if (resp == null || !resp.has("devotion_points")) return;
+        devotionPoints = resp.optInt("devotion_points", 0);
+        devotionRank = resp.optString("devotion_rank", "");
+        devotionNextRank = resp.optString("devotion_next_rank", "");
+        devotionToNext = resp.optInt("devotion_to_next", 0);
+        devotionWeekUsed = resp.optInt("devotion_week_used", 0);
+        devotionWeekCap = resp.optInt("devotion_week_cap", 0);
+        devotionAvailable = resp.optBoolean("devotion_available", false);
+        devotionStreak = resp.optInt("devotion_streak", 0);
+        devotionBestStreak = resp.optInt("devotion_best_streak", 0);
+        devotionBrokeFrom = resp.optInt("devotion_broke_from", 0);
+        devotionFreezes = resp.optInt("devotion_freezes", 0);
+        devotionAtRisk = resp.optBoolean("devotion_streak_at_risk", false);
+        devotionClaims = resp.optJSONArray("devotion_claims");
+    }
+
+    private String weeks(int n) {
+        return n + (n == 1 ? " week" : " weeks");
+    }
+
+    /** The streak line, and what it says when it ends.
+     *
+     *  Deliberately never a bare "0". A zero counter after a long run reads as
+     *  a quit moment rather than a restart — the documented response is shame
+     *  and abandonment — so a break names what ended and invites the next one
+     *  instead of displaying a hole where the number was. UI thread. */
+    private void renderDevotionStreak() {
+        TextView t = (TextView) findViewById(fid("devotion_streak_text"));
+        if (t == null) return;
+        StringBuilder s = new StringBuilder();
+        int colour = 0xFF8a7a9a;
+        if (devotionStreak > 0) {
+            s.append(weeks(devotionStreak)).append(" running");
+            if (devotionAtRisk) {
+                s.append(" \u00b7 nothing offered this week yet");
+                colour = 0xFFffaa66;
+            } else {
+                colour = 0xFF66aa66;
+            }
+        } else if (devotionBrokeFrom > 0) {
+            s.append("A run of ").append(weeks(devotionBrokeFrom)).append(" ended. Start another.");
+        } else {
+            s.append("No run yet.");
+        }
+        if (devotionBestStreak > devotionStreak && devotionBestStreak > 0) {
+            s.append("  \u00b7  best ").append(weeks(devotionBestStreak));
+        }
+        // Freezes are granted, never bought and never earned, so they are
+        // stated plainly rather than dangled.
+        if (devotionFreezes > 0) {
+            s.append("\n").append(devotionFreezes == 1 ? "1 missed week covered" : devotionFreezes + " missed weeks covered");
+        }
+        t.setText(s.toString());
+        t.setTextColor(colour);
+    }
+
+    /** What the Lion actually said. UI thread. */
+    private void renderCommendations() {
+        LinearLayout box = (LinearLayout) findViewById(fid("devotion_commends"));
+        if (box == null) return;
+        box.removeAllViews();
+        if (devotionClaims == null) return;
+        int shown = 0;
+        for (int i = 0; i < devotionClaims.length() && shown < 3; i++) {
+            JSONObject c = devotionClaims.optJSONObject(i);
+            if (c == null || !c.optBoolean("commended", false)) continue;
+            String note = c.optString("note", "");
+            TextView tv = new TextView(this);
+            tv.setText(note.isEmpty()
+                ? "\u2713 Your Lion marked one of these seen."
+                : "\u201c" + note + "\u201d");
+            tv.setTextColor(0xFFc8a84e);
+            tv.setTextSize(12);
+            tv.setPadding(0, 3, 0, 3);
+            box.addView(tv);
+            shown++;
+        }
+    }
+
+    /** UI thread. */
+    private void refreshDevotion() {
+        if (devotionPoints < 0) {
+            show("section_devotion", false);  // relay has not answered yet
+            return;
+        }
+        show("section_devotion", true);
+        // Goal gradient: the next rung and the distance to it move people more
+        // than the total behind them does.
+        String rankLine = devotionRank + "  \u00b7  " + devotionPoints
+            + (devotionPoints == 1 ? " point" : " points");
+        if (!devotionNextRank.isEmpty() && devotionToNext > 0) {
+            rankLine += "  \u00b7  " + devotionToNext + " to " + devotionNextRank;
+        }
+        setText("devotion_rank_text", rankLine);
+        String sub;
+        if (devotionWeekCap == 0) {
+            sub = "A subscription opens this. Bronze 3/week, Silver 7, Gold unlimited.";
+        } else if (devotionWeekCap < 0) {
+            sub = devotionWeekUsed + " offered this week \u00b7 unlimited";
+        } else {
+            int left = Math.max(0, devotionWeekCap - devotionWeekUsed);
+            sub = left + " of " + devotionWeekCap + " left this week";
+        }
+        setText("devotion_sub_text", sub);
+        Button b = (Button) findViewById(fid("btn_devotion"));
+        if (b != null) {
+            b.setEnabled(devotionAvailable);
+            b.setText(devotionWeekCap == 0 ? "Subscribers Only"
+                : devotionAvailable ? "Offer Devotion" : "Nothing Left This Week");
+        }
+        renderDevotionStreak();
+        renderCommendations();
+    }
+
+    /** Draw a task, then make them type it. */
+    private void doDevotion() {
+        VenerationTasks cat = catalogue();
+        if (cat == null) {
+            statusText.setText("Task catalogue unavailable");
+            return;
+        }
+        java.util.List<VenerationTasks.Category> cats = cat.categories();
+        final String[] labels = new String[cats.size() + 1];
+        final String[] keys = new String[cats.size() + 1];
+        labels[0] = "Anything";
+        keys[0] = VenerationTasks.ANY;
+        for (int i = 0; i < cats.size(); i++) {
+            labels[i + 1] = cats.get(i).title;
+            keys[i + 1] = cats.get(i).key;
+        }
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Offer what?")
+            .setItems(labels, (d, which) -> showDevotionTask(keys[which]))
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    private void showDevotionTask(String categoryKey) {
+        VenerationTasks cat = catalogue();
+        if (cat == null) return;
+        final VenerationTasks.Task task = cat.draw(categoryKey, new java.util.Random());
+        if (task == null) {
+            statusText.setText("Nothing in that category");
+            return;
+        }
+
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(48, 24, 48, 24);
+
+        TextView prompt = new TextView(this);
+        prompt.setText(task.text);
+        prompt.setTextColor(0xFFe0d0f0);
+        prompt.setTextSize(15);
+        prompt.setPadding(0, 0, 0, 16);
+        layout.addView(prompt);
+
+        final EditText input = new EditText(this);
+        input.setHint("Type it exactly");
+        input.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+            | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        input.setMinLines(2);
+        // Typing is the task. Pasting it is not doing it — the desktop collar
+        // takes the same line on enforced veneration, and blocks unconditionally
+        // there. Here there is no penalty to apply (this is voluntary), so the
+        // paste is simply refused rather than charged.
+        input.setCustomSelectionActionModeCallback(new android.view.ActionMode.Callback() {
+            public boolean onCreateActionMode(android.view.ActionMode m, android.view.Menu menu) { return false; }
+            public boolean onPrepareActionMode(android.view.ActionMode m, android.view.Menu menu) { return false; }
+            public boolean onActionItemClicked(android.view.ActionMode m, android.view.MenuItem i) { return false; }
+            public void onDestroyActionMode(android.view.ActionMode m) { }
+        });
+        input.setLongClickable(false);
+        input.setTextIsSelectable(false);
+        layout.addView(input);
+
+        final TextView note = new TextView(this);
+        note.setText("Type it. Pasting is not typing.");
+        note.setTextColor(0xFF5a4a6a);
+        note.setTextSize(10);
+        note.setPadding(0, 12, 0, 0);
+        layout.addView(note);
+
+        android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(this)
+            .setTitle("Offer devotion")
+            .setView(layout)
+            .setPositiveButton("Offer", null)   // wired below so it can refuse
+            .setNeutralButton("Another", (d, w) -> showDevotionTask(categoryKey))
+            .setNegativeButton("Cancel", null)
+            .create();
+        dlg.setOnShowListener(dd -> dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE)
+            .setOnClickListener(v -> {
+                String typed = input.getText().toString().trim();
+                // Exact match, capitals included. The catalogue strings are the
+                // enforced form everywhere else in this system; accepting a
+                // near-miss here would make devotion the one place Their
+                // pronouns are optional.
+                if (!typed.equals(task.text.trim())) {
+                    note.setText("Not exactly it \u2014 capitals and punctuation count.");
+                    note.setTextColor(0xFFcc4444);
+                    return;
+                }
+                dlg.dismiss();
+                executor.execute(() -> postDevotion(task.id));
+            }));
+        dlg.show();
+    }
+
+    /** Blocking — call from an executor thread. */
+    private void postDevotion(String taskId) {
+        String meshId = gstr("focus_lock_mesh_id");
+        String meshUrl = gstr("focus_lock_mesh_url");
+        String nodeId = gstr("focus_lock_mesh_node_id");
+        if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty()) {
+            handler.post(() -> statusText.setText("Mesh not configured"));
+            return;
+        }
+        long ts = System.currentTimeMillis();
+        String signature = PairingManager.sign(getContentResolver(),
+            meshId + "|" + nodeId + "|devotion|" + taskId + "|" + ts);
+        if (signature == null || signature.isEmpty()) {
+            handler.post(() -> statusText.setText("Sign failed \u2014 pairing key missing"));
+            return;
+        }
+        try {
+            JSONObject body = new JSONObject();
+            body.put("node_id", nodeId);
+            body.put("task_id", taskId);
+            body.put("ts", ts);
+            body.put("signature", signature);
+            URL url = new URL(meshUrl + "/api/mesh/" + meshId + "/devotion");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(10000);
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.getOutputStream().write(body.toString().getBytes("UTF-8"));
+            int code = conn.getResponseCode();
+            java.io.InputStream is = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
+            StringBuilder sb = new StringBuilder();
+            if (is != null) {
+                BufferedReader r = new BufferedReader(new InputStreamReader(is));
+                String line;
+                while ((line = r.readLine()) != null) sb.append(line);
+                r.close();
+            }
+            conn.disconnect();
+            JSONObject resp = sb.length() > 0 ? new JSONObject(sb.toString()) : new JSONObject();
+            applyDevotionStatus(resp);
+            final boolean ok = code == 200 && resp.optBoolean("ok", false);
+            final String err = resp.optString("error", "HTTP " + code);
+            handler.post(() -> {
+                statusText.setText(ok ? "Offered. " + devotionRank + ", " + devotionPoints + "." : err);
+                refreshDevotion();
+            });
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "devotion post failed", e);
+            handler.post(() -> statusText.setText("Could not reach the relay"));
+        }
+    }
+
+    // ── Live state the Collar tracks and this app never showed ──
+    //
+    // Every value below already existed in Settings.Global, written by the
+    // Collar or projected there by the relay. A sweep of the keys the Collar
+    // writes against the keys this app reads turned up 83 it never touched —
+    // the same class of gap as the STREAK tile that read a pref nobody wrote.
+    // These are the ones the bunny is actually being held to.
+    //
+    // Every section hides when its feature is off, so the tab shows what is
+    // being enforced rather than a menu of dormant subsystems.
+
+    private int gint(String key) {
+        return Settings.Global.getInt(getContentResolver(), key, 0);
+    }
+
+    private long glong(String key) {
+        return Settings.Global.getLong(getContentResolver(), key, 0L);
+    }
+
+    private void show(String sectionId, boolean visible) {
+        View v = findViewById(fid(sectionId));
+        if (v != null) v.setVisibility(visible ? View.VISIBLE : View.GONE);
+    }
+
+    private void setText(String viewId, String text) {
+        TextView t = (TextView) findViewById(fid(viewId));
+        if (t != null) t.setText(text);
+    }
+
+    /** The cage ceiling, and how much of it the Lion has given back.
+     *
+     *  Read-only on this side. The ceiling lives in the Collar's app-private
+     *  SharedPreferences — the one store the Lion's ADB bridge cannot write —
+     *  which is exactly what makes "They can loosen but never tighten"
+     *  enforceable. Letting this app write it, or routing a request through
+     *  Settings.Global for the Collar to pick up, would hand that capability
+     *  straight back to a `settings put global`. So the button launches the
+     *  Collar's own screen and the write happens over there. UI thread. */
+    private void refreshCage() {
+        TextView t = (TextView) findViewById(fid("cage_text"));
+        View btn = findViewById(fid("btn_tighten"));
+        int ceiling = gint("focus_lock_cage_ceiling");
+        int effective = gint("focus_lock_cage_level_effective");
+        int lionReq = Settings.Global.getInt(getContentResolver(), "focus_lock_cage_level_lion", -1);
+        boolean collared = isCollarInstalled();
+        show("section_cage", collared);
+        if (t == null) return;
+        StringBuilder s = new StringBuilder();
+        s.append("Your ceiling: ").append(cageName(ceiling));
+        if (lionReq >= 0 && effective < ceiling) {
+            s.append("\nYour Lion has loosened it to ").append(cageName(effective))
+             .append(" \u2014 They can put it back to your ceiling, never past it.");
+        } else {
+            s.append("\nIn force: ").append(cageName(effective));
+        }
+        if (ceiling >= 2) {
+            s.append("\nSealed is the tightest there is.");
+        }
+        t.setText(s.toString());
+        if (btn != null) btn.setEnabled(ceiling < 2);
+    }
+
+    private String cageName(int level) {
+        return level >= 2 ? "Sealed" : level == 1 ? "Collar" : "Leash";
+    }
+
+    private boolean isCollarInstalled() {
+        try {
+            getPackageManager().getPackageInfo("com.focuslock", 0);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Hand off to the Collar's own screen, which owns the boundary. */
+    private void doTighten() {
+        try {
+            android.content.Intent i = new android.content.Intent();
+            i.setComponent(new android.content.ComponentName(
+                "com.focuslock", "com.focuslock.TightenActivity"));
+            i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "tighten launch failed", e);
+            statusText.setText("Could not open the Collar");
+        }
+    }
+
+    /** What the lock is actually doing to the phone right now.
+     *
+     *  Nine modes and a stack of modifiers, and the bunny's own app never said
+     *  which were switched on — so "why is my screen dim" or "why did that
+     *  vibrate" had no answer on the device it was happening to. */
+    private void refreshModifiers() {
+        StringBuilder s = new StringBuilder();
+        if (gint("focus_lock_active") == 1) {
+            String mode = gstr("focus_lock_mode");
+            if (!mode.isEmpty()) s.append(mode.substring(0, 1).toUpperCase()).append(mode.substring(1)).append(" lock");
+        }
+        java.util.List<String> on = new java.util.ArrayList<>();
+        if (gint("focus_lock_shame") == 1) on.add("shame");
+        if (gint("focus_lock_dim") == 1) on.add("dimmed");
+        if (gint("focus_lock_mute") == 1) on.add("muted");
+        if (gint("focus_lock_vibrate") == 1) on.add("vibrate");
+        if (gint("focus_lock_penalty") == 1) on.add("penalties");
+        if (gint("focus_lock_lovense_available") == 1) on.add("toy connected");
+        if (!on.isEmpty()) {
+            if (s.length() > 0) s.append("\n");
+            s.append(String.join(" \u00b7 ", on));
+        }
+        // A geofence breach is a thing that HAPPENED, so it stays on screen
+        // afterwards; the stats tile only ever said whether a fence exists.
+        long breach = glong("focus_lock_geofence_breach_at");
+        if (breach > 0) {
+            long agoH = (System.currentTimeMillis() - breach) / 3600000L;
+            if (agoH < 72) {
+                if (s.length() > 0) s.append("\n");
+                s.append("Geofence breached ").append(agoH < 1 ? "under an hour ago" : agoH + "h ago");
+            }
+        }
+        boolean any = s.length() > 0;
+        show("section_modifiers", any);
+        if (any) setText("modifiers_text", s.toString());
+    }
+
+    /** Tamper the system noticed.
+     *
+     *  Consent runs both ways: if device admin came off and the Collar logged
+     *  it, the bunny should see that it was seen rather than find out from a
+     *  friction re-lock they cannot explain. Admin tamper is costly-exit by
+     *  design — no financial penalty, a re-lock and a note to the Lion — and
+     *  saying so plainly is part of that being honest rather than a trap. */
+    private void refreshTamper() {
+        boolean adminTamper = gint("focus_lock_admin_tamper") == 1;
+        boolean adminRemoved = gint("focus_lock_admin_removed") == 1;
+        boolean btRemoved = gint("focus_lock_bt_admin_removed") == 1;
+        if (!adminTamper && !adminRemoved && !btRemoved) {
+            show("section_tamper", false);
+            return;
+        }
+        java.util.List<String> what = new java.util.ArrayList<>();
+        if (adminRemoved) what.add("the Collar's device admin was removed");
+        if (btRemoved) what.add("Bunny Tasker's device admin was removed");
+        if (adminTamper && what.isEmpty()) what.add("a device-admin change");
+        show("section_tamper", true);
+        setText("tamper_text", "Your Lion has been told " + String.join(", and ", what)
+            + ".\nNo charge for it \u2014 it re-locks, that is all.");
+    }
+
+    /** Everything on the Now tab that is derived from local state. Cheap
+     *  (Settings.Global reads + arithmetic), so it runs on the poller while
+     *  that tab is open. UI thread. */
+    private void refreshLiveState() {
+        refreshScreenTime();
+        refreshActiveTask();
+        refreshCountdown();
+        refreshSchedule();
+        refreshBodyCheck();
+        refreshOffer();
+        refreshModifiers();
+        refreshTamper();
+        refreshCage();
+        refreshDevotion();
+    }
+
+    /** How much of today is left.
+     *
+     *  The Collar accumulates `screen_time_used_today` in minutes whenever the
+     *  phone is UNLOCKED and auto-locks at `screen_time_quota_minutes` — it
+     *  even reports both in its own state JSON. The bunny's app never showed
+     *  the one number they are being measured against, so the leash was
+     *  invisible right up to the moment it pulled. */
+    private void refreshScreenTime() {
+        int quota = gint("focus_lock_screen_time_quota_minutes");
+        if (quota <= 0) {
+            show("section_screentime", false);
+            return;
+        }
+        int used = Math.max(0, gint("focus_lock_screen_time_used_today"));
+        int left = Math.max(0, quota - used);
+        // The reset hour matters most exactly when the quota is spent, which
+        // is when "until reset" would otherwise mean nothing.
+        int resetHour = gint("focus_lock_screen_time_reset_hour");
+        String resetAt = " \u00b7 resets " + hh(resetHour);
+        show("section_screentime", true);
+        setText("screentime_text", left > 0
+            ? left + " min left of " + quota + " today" + resetAt
+            : "Quota spent \u2014 locked until" + resetAt.replace(" \u00b7 resets", ""));
+        TextView t = (TextView) findViewById(fid("screentime_text"));
+        if (t != null) t.setTextColor(left == 0 ? 0xFFcc4444 : left <= quota / 5 ? 0xFFffaa66 : 0xFFcc99ee);
+        android.widget.ProgressBar bar =
+            (android.widget.ProgressBar) findViewById(fid("screentime_bar"));
+        if (bar != null) bar.setProgress(Math.min(100, (int) (used * 100L / quota)));
+    }
+
+    /** The unlock condition, in the app that has to satisfy it.
+     *
+     *  Nine lock modes exist and only the deadline task was ever surfaced
+     *  here: the bunny could see THAT they were locked and not what would
+     *  end it. task_text/reps/done cover task + exercise modes, and the
+     *  mode-specific keys cover the rest. */
+    private void refreshActiveTask() {
+        if (gint("focus_lock_active") != 1) {
+            show("section_task", false);
+            return;
+        }
+        String mode = gstr("focus_lock_mode");
+        String task = gstr("focus_lock_task_text");
+        if (task.isEmpty()) task = gstr("focus_lock_photo_task");
+        if (task.isEmpty()) task = gstr("focus_lock_exercise");
+        if (task.isEmpty()) {
+            String c = gstr("focus_lock_compliment");
+            if (!c.isEmpty()) task = "Say it, and mean it: " + c;
+        }
+        if (task.isEmpty()) {
+            // Basic/timer locks have no condition to state; the countdown and
+            // balance already say what ends them.
+            show("section_task", false);
+            return;
+        }
+        show("section_task", true);
+        setText("task_text", task);
+
+        StringBuilder sub = new StringBuilder();
+        int reps = gint("focus_lock_task_reps");
+        int done = gint("focus_lock_task_done");
+        if (reps > 0) sub.append(done).append(" of ").append(reps).append(" done");
+        String hint = gstr("focus_lock_photo_hint");
+        if (!hint.isEmpty()) {
+            if (sub.length() > 0) sub.append("  \u00b7  ");
+            sub.append(hint);
+        }
+        if (sub.length() == 0 && !mode.isEmpty()) sub.append(mode).append(" lock");
+        setText("task_progress", sub.toString());
+    }
+
+    /** A lock is scheduled and nothing said so.
+     *
+     *  `countdown_lock_at` is set when the Lion arms a delayed lock; the
+     *  Collar warns at tiers as it approaches and then locks. The warnings
+     *  went to a notification the bunny may have dismissed — this is the
+     *  standing version. */
+    private void refreshCountdown() {
+        long at = glong("focus_lock_countdown_lock_at");
+        long now = System.currentTimeMillis();
+        if (at <= 0 || at <= now) {
+            show("section_countdown", false);
+            return;
+        }
+        long left = at - now;
+        long h = left / 3600000L;
+        long m = (left % 3600000L) / 60000L;
+        String when = h > 0 ? h + "h " + m + "m" : m + "m";
+        String msg = gstr("focus_lock_countdown_message");
+        show("section_countdown", true);
+        setText("countdown_text", "Locking in " + when + (msg.isEmpty() ? "" : " \u2014 " + msg));
+    }
+
+    /** Bedtime and curfew, so the bunny knows when they turn into a pumpkin.
+     *
+     *  Both are hour-of-day windows the Collar enforces on its own poll:
+     *  bedtime locks the phone, curfew drops a geofence around wherever they
+     *  are (or a configured point). Neither was visible from this side. */
+    private void refreshSchedule() {
+        boolean bed = gint("focus_lock_bedtime_enabled") == 1;
+        boolean cur = gint("focus_lock_curfew_enabled") == 1;
+        if (!bed && !cur) {
+            show("section_schedule", false);
+            return;
+        }
+        StringBuilder s = new StringBuilder();
+        if (bed) {
+            int lh = Settings.Global.getInt(getContentResolver(), "focus_lock_bedtime_lock_hour", -1);
+            int uh = Settings.Global.getInt(getContentResolver(), "focus_lock_bedtime_unlock_hour", -1);
+            boolean locked = gint("focus_lock_bedtime_locked") == 1;
+            if (lh >= 0 && uh >= 0) {
+                s.append("Bedtime ").append(hh(lh)).append("\u2013").append(hh(uh));
+                if (locked) s.append(" \u00b7 active now");
+            }
+        }
+        if (cur) {
+            int ch = Settings.Global.getInt(getContentResolver(), "focus_lock_curfew_confine_hour", -1);
+            int rh = Settings.Global.getInt(getContentResolver(), "focus_lock_curfew_release_hour", -1);
+            if (ch >= 0 && rh >= 0) {
+                if (s.length() > 0) s.append("\n");
+                s.append("Curfew ").append(hh(ch)).append("\u2013").append(hh(rh));
+                if (!gstr("focus_lock_geofence_lat").isEmpty()) s.append(" \u00b7 confined now");
+            }
+        }
+        if (s.length() == 0) {
+            show("section_schedule", false);
+            return;
+        }
+        show("section_schedule", true);
+        setText("schedule_text", s.toString());
+    }
+
+    private String hh(int hour) {
+        return (hour < 10 ? "0" : "") + hour + ":00";
+    }
+
+    /** Body check: its own cadence, its own streak, invisible here until now. */
+    private void refreshBodyCheck() {
+        if (gint("focus_lock_body_check_active") != 1) {
+            show("section_bodycheck", false);
+            return;
+        }
+        int intervalH = gint("focus_lock_body_check_interval_h");
+        long last = glong("focus_lock_body_check_last");
+        int streak = gint("focus_lock_body_check_streak");
+        String area = gstr("focus_lock_body_check_area");
+        String result = gstr("focus_lock_body_check_last_result");
+        StringBuilder s = new StringBuilder();
+        s.append(area.isEmpty() ? "Body" : area);
+        if (intervalH > 0) s.append(" \u00b7 every ").append(intervalH).append("h");
+        if (last > 0 && intervalH > 0) {
+            long due = last + intervalH * 3600000L;
+            long left = due - System.currentTimeMillis();
+            s.append(left > 0 ? "\nNext in " + (left / 3600000L) + "h" + ((left % 3600000L) / 60000L) + "m" : "\nDue now");
+        }
+        if (streak > 0) s.append("\nStreak: ").append(streak);
+        if (!result.isEmpty()) s.append(" \u00b7 last: ").append(result);
+        show("section_bodycheck", true);
+        setText("bodycheck_text", s.toString());
+    }
+
+    /** Negotiation, from the side that does the negotiating.
+     *
+     *  Lion's Share has had accept/decline buttons for offers all along; the
+     *  bunny had no way to make one. The Collar's doOffer sets exactly these
+     *  three keys, and its 60-second minimum before an accept is enforced
+     *  Collar-side, so writing them here is the same act by a different door. */
+    private void refreshOffer() {
+        String offer = gstr("focus_lock_offer");
+        String status = gstr("focus_lock_offer_status");
+        boolean locked = gint("focus_lock_active") == 1;
+        if (offer.isEmpty() && !locked) {
+            show("section_offer", false);
+            return;
+        }
+        show("section_offer", true);
+        Button b = (Button) findViewById(fid("btn_make_offer"));
+        if (offer.isEmpty()) {
+            setText("offer_text", "Nothing on the table. You can put something there.");
+            if (b != null) { b.setEnabled(true); b.setText("Make an Offer"); }
+            return;
+        }
+        String pretty = "pending".equals(status) ? "Waiting on your Lion"
+            : "accepted".equals(status) ? "Accepted"
+            : "declined".equals(status) ? "Declined"
+            : status;
+        String response = gstr("focus_lock_offer_response");
+        setText("offer_text", "\u201c" + offer + "\u201d\n" + pretty
+            + (response.isEmpty() ? "" : " \u2014 " + response));
+        if (b != null) {
+            boolean pending = "pending".equals(status);
+            b.setEnabled(!pending);
+            b.setText(pending ? "Offer Pending" : "Make Another Offer");
+        }
+    }
+
+    private void doMakeOffer() {
+        final EditText input = new EditText(this);
+        input.setHint("What are you offering?");
+        input.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+            | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        input.setMinLines(2);
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Make an offer")
+            .setMessage("Your Lion decides. An accepted offer cannot be acted on for "
+                + "60 seconds after you make it.")
+            .setView(input)
+            .setPositiveButton("Offer", (d, w) -> {
+                String text = input.getText().toString().trim();
+                if (text.isEmpty()) return;
+                if (text.length() > 300) text = text.substring(0, 300);
+                try {
+                    Settings.Global.putString(getContentResolver(), "focus_lock_offer", text);
+                    Settings.Global.putString(getContentResolver(), "focus_lock_offer_status", "pending");
+                    Settings.Global.putLong(getContentResolver(), "focus_lock_offer_time",
+                        System.currentTimeMillis());
+                    statusText.setText("Offer sent");
+                } catch (Exception e) {
+                    android.util.Log.w("BunnyTasker", "offer write failed", e);
+                    statusText.setText("Could not send the offer");
+                }
+                refreshOffer();
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    /** What is scheduled to grow the balance next.
+     *
+     *  Fines and tributes are recurring server-side charges; sub_total_owed is
+     *  what the subscription has run up. The bunny could see the balance and
+     *  never what was queued to raise it. UI thread. */
+    private void refreshCharges() {
+        int fineActive = gint("focus_lock_fine_active");
+        int fineAmt = gint("focus_lock_fine_amount");
+        int fineIntervalM = gint("focus_lock_fine_interval_m");
+        long subOwed = glong("focus_lock_sub_total_owed");
+        String tier = gstr("focus_lock_sub_tier");
+        long subDue = glong("focus_lock_sub_due");
+
+        StringBuilder s = new StringBuilder();
+        if (fineActive == 1 && fineAmt > 0) {
+            s.append("Fine: $").append(fineAmt);
+            if (fineIntervalM > 0) {
+                s.append(fineIntervalM % 60 == 0
+                    ? " every " + (fineIntervalM / 60) + "h"
+                    : " every " + fineIntervalM + "m");
+            }
+            long lastFine = glong("focus_lock_fine_last_applied");
+            if (lastFine > 0 && fineIntervalM > 0) {
+                long next = lastFine + fineIntervalM * 60000L - System.currentTimeMillis();
+                if (next > 0) s.append(" \u00b7 next in ").append(Math.max(1, next / 60000L)).append("m");
+            }
+        }
+        if (!tier.isEmpty()) {
+            if (s.length() > 0) s.append("\n");
+            int amt = "bronze".equals(tier) ? 25 : "silver".equals(tier) ? 35 : 50;
+            s.append(tier.toUpperCase()).append(": $").append(amt).append("/wk");
+            if (subDue > 0) {
+                long left = subDue - System.currentTimeMillis();
+                s.append(left > 0
+                    ? " \u00b7 next in " + Math.max(1, left / 86400000L) + "d"
+                    : " \u00b7 due now");
+            }
+        }
+        if (subOwed > 0) {
+            if (s.length() > 0) s.append("\n");
+            s.append("Subscription has cost you $").append(subOwed).append(" so far.");
+        }
+        boolean any = s.length() > 0;
+        show("section_charges", any);
+        if (any) setText("charges_text", s.toString());
+    }
+
+    /** Which of their own machines are collared, and which are locked. */
+    private void refreshDesktops() {
+        String desktops = gstr("focus_lock_desktops");
+        String lockedDevices = gstr("focus_lock_desktop_locked_devices");
+        boolean anyLocked = gint("focus_lock_desktop_active") == 1;
+        if (desktops.isEmpty() && !anyLocked) {
+            show("section_desktops", false);
+            return;
+        }
+        StringBuilder s = new StringBuilder();
+        if (!desktops.isEmpty()) s.append(desktops.replace(",", ", "));
+        else s.append("Collared");
+        if (anyLocked) {
+            s.append("\nLocked");
+            if (!lockedDevices.isEmpty()) s.append(": ").append(lockedDevices.replace(",", ", "));
+        } else {
+            s.append("\nUnlocked");
+        }
+        String dmsg = gstr("focus_lock_desktop_message");
+        if (!dmsg.isEmpty()) s.append("\n\u201c").append(dmsg).append("\u201d");
+        show("section_desktops", true);
+        setText("desktops_text", s.toString());
+    }
+
+    /** Show one page, style its tab, and refresh what that page shows.
+     *
+     *  Messages already refresh on their own 10s cadence, so Talk needs no
+     *  kick; Owe pulls the ledger because the sparkline and history are only
+     *  worth a round-trip when someone is looking at them. */
+    private void selectTab(int index) {
+        if (pageNow == null) return;  // pre-inflate call, or an older layout
+        if (index < 0 || index > 3) index = 0;
+        currentTab = index;
+        View[] pages = {pageNow, pageOwe, pageTalk, pageMe};
+        Button[] tabs = {tabNow, tabOwe, tabTalk, tabMe};
+        for (int i = 0; i < pages.length; i++) {
+            if (pages[i] != null) pages[i].setVisibility(i == index ? View.VISIBLE : View.GONE);
+            if (tabs[i] == null) continue;
+            tabs[i].setBackgroundTintList(android.content.res.ColorStateList.valueOf(
+                i == index ? 0xFF241a33 : 0xFF0e0c16));
+            tabs[i].setTextColor(i == index ? 0xFFcc99ee : 0xFF555555);
+        }
+        prefs.edit().putInt("last_tab", index).apply();
+        if (index == 0) {
+            refreshLiveState();
+        } else if (index == 1) {
+            refreshCostToWait();
+            refreshCharges();
+            renderGambleBudget();
+            refreshPaymentHistory();  // already hops to the executor itself
+        } else if (index == 3) {
+            refreshDesktops();
+        }
+    }
+
+    /** What waiting costs, in the only unit that matters.
+     *
+     *  Every input is already on the device — `paywall`, `paywall_original`,
+     *  `sub_tier`, `locked_at` — and the relay's compound-interest tick uses
+     *  exactly this arithmetic (compounded = paywall_original * rate**hours,
+     *  applied when it exceeds the current balance). It was simply never put
+     *  in front of the bunny as a number they could act on: the balance said
+     *  what they owed now and nothing said what it becomes by tomorrow.
+     *
+     *  Silent when there is no balance, or when the tier earns no interest —
+     *  a line that always says "+$0" trains people to stop reading it.
+     *
+     *  RATES ARE NOT FREE-CHOSEN HERE. They mirror COMPOUND_INTEREST_RATE_BY_TIER
+     *  in shared/focuslock_penalties.py, which is what the relay's
+     *  check_compound_interest() actually charges. Bronze read 1.08 here from
+     *  the day this shipped while the relay charged 1.10, so the one screen
+     *  that exists to tell a bunny what waiting costs quoted them low — on the
+     *  tier most likely to be carrying a balance. tests/test_android_conformance.py
+     *  now fails if these drift apart again. */
+    private void refreshCostToWait() {
+        if (costToWait == null) return;
+        double pw = parseD(gstr("focus_lock_paywall"));
+        double orig = parseD(gstr("focus_lock_paywall_original"));
+        long lockedAt = Settings.Global.getLong(getContentResolver(), "focus_lock_locked_at", 0L);
+        String tier = gstr("focus_lock_sub_tier").toLowerCase();
+        double rate = "gold".equals(tier) ? 1.00 : "silver".equals(tier) ? 1.05 : "bronze".equals(tier) ? 1.10 : 1.10;
+        if (pw <= 0 || orig <= 0 || lockedAt <= 0 || rate <= 1.0) {
+            costToWait.setVisibility(View.GONE);
+            return;
+        }
+        double hours = (System.currentTimeMillis() - lockedAt) / 3600000.0;
+        if (hours < 0) hours = 0;
+        double in24 = Math.floor(orig * Math.pow(rate, hours + 24));
+        double delta = in24 - pw;
+        if (delta < 1) {
+            costToWait.setVisibility(View.GONE);
+            return;
+        }
+        costToWait.setText("$" + (long) pw + " clears it today. Leave it 24h and it is $"
+            + (long) in24 + " \u2014 " + Math.round((rate - 1) * 100) + "%/hr adds $" + (long) delta + ".");
+        costToWait.setVisibility(View.VISIBLE);
+    }
+
+    private double parseD(String s) {
+        try {
+            return (s == null || s.isEmpty()) ? 0d : Double.parseDouble(s);
+        } catch (Exception e) {
+            return 0d;
+        }
+    }
+
+    /** Double or nothing, bunny-signed straight to the relay.
+     *
+     *  The endpoint has always been bunny-authed (payload
+     *  mesh|node|gamble|ts, verified against bunny_pubkey), but the only
+     *  button anywhere was in Lion's Share, which drives it through the
+     *  Collar's local /api/gamble. So the bunny could be made to flip and
+     *  could not choose to.
+     *
+     *  Heads halves the balance, tails doubles it: +25% EV to the Lion per
+     *  flip. That edge is only meaningful if the number of flips is bounded
+     *  — over enough attempts variance clears any balance, which would turn
+     *  a Lion-favourable bet into an escape hatch — so the relay enforces a
+     *  cooldown and a daily cap and answers 429 with how long is left. The
+     *  client mirrors that state to grey the button out, but never decides
+     *  it. */
+    private void doGamble() {
+        double pw = parseD(gstr("focus_lock_paywall"));
+        if (pw <= 0) {
+            statusText.setText("Nothing to gamble");
+            return;
+        }
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Flip for it?")
+            .setMessage("Heads: your $" + (long) pw + " becomes $" + (long) Math.ceil(pw / 2) + ".\n"
+                + "Tails: it becomes $" + (long) (pw * 2) + ".\n\n"
+                + "Even odds. Your Lion keeps the edge.")
+            .setPositiveButton("FLIP", (d, w) -> executor.execute(this::postGamble))
+            .setNegativeButton("Keep my balance", null)
+            .show();
+    }
+
+    /** Blocking — call from an executor thread. */
+    private void postGamble() {
+        String meshId = gstr("focus_lock_mesh_id");
+        String meshUrl = gstr("focus_lock_mesh_url");
+        String nodeId = gstr("focus_lock_mesh_node_id");
+        if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty()) {
+            handler.post(() -> statusText.setText("Mesh not configured"));
+            return;
+        }
+        long ts = System.currentTimeMillis();
+        String signature = PairingManager.sign(getContentResolver(), meshId + "|" + nodeId + "|gamble|" + ts);
+        if (signature == null || signature.isEmpty()) {
+            handler.post(() -> statusText.setText("Sign failed \u2014 pairing key missing"));
+            return;
+        }
+        handler.post(() -> {
+            if (gambleStatus != null) gambleStatus.setText("Flipping\u2026");
+            if (btnGamble != null) btnGamble.setEnabled(false);
+        });
+        try {
+            JSONObject body = new JSONObject();
+            body.put("node_id", nodeId);
+            body.put("ts", ts);
+            body.put("signature", signature);
+            URL url = new URL(meshUrl + "/api/mesh/" + meshId + "/gamble");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(10000);
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.getOutputStream().write(body.toString().getBytes("UTF-8"));
+            int code = conn.getResponseCode();
+            java.io.InputStream is = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
+            StringBuilder sb = new StringBuilder();
+            if (is != null) {
+                BufferedReader r = new BufferedReader(new InputStreamReader(is));
+                String line;
+                while ((line = r.readLine()) != null) sb.append(line);
+                r.close();
+            }
+            conn.disconnect();
+            JSONObject resp = sb.length() > 0 ? new JSONObject(sb.toString()) : new JSONObject();
+            applyGambleBudget(resp);
+
+            if (code == 200 && resp.optBoolean("ok", false)) {
+                final boolean heads = "heads".equals(resp.optString("result"));
+                final int newPw = resp.optInt("new_paywall", 0);
+                handler.post(() -> {
+                    if (gambleStatus != null) {
+                        gambleStatus.setText(heads
+                            ? "\u2713 Heads \u2014 halved to $" + newPw
+                            : "\u2717 Tails \u2014 doubled to $" + newPw);
+                        gambleStatus.setTextColor(heads ? 0xFF66aa66 : 0xFFcc4444);
+                    }
+                    statusText.setText(heads ? "Heads. Balance halved." : "Tails. Balance doubled.");
+                    renderGambleBudget();
+                });
+                // The relay wrote the new balance through gamble-resolved; pull
+                // it rather than guessing locally.
+                refreshStats();
+                refreshPaymentHistory();
+            } else {
+                final String err = resp.optString("error", "HTTP " + code);
+                handler.post(() -> {
+                    if (gambleStatus != null) {
+                        gambleStatus.setText(err);
+                        gambleStatus.setTextColor(0xFFaa6644);
+                    }
+                    renderGambleBudget();
+                });
+            }
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "gamble failed", e);
+            handler.post(() -> {
+                if (gambleStatus != null) gambleStatus.setText("Could not reach the relay");
+                renderGambleBudget();
+            });
+        }
+    }
+
+    /** Absorb whatever flip budget a response carried. Both /gamble and
+     *  /payments report it, so the button knows its state without having to
+     *  be refused first. */
+    private void applyGambleBudget(JSONObject resp) {
+        if (resp == null) return;
+        if (resp.has("gamble_cooldown_s")) gambleCooldownS = resp.optInt("gamble_cooldown_s", 0);
+        if (resp.has("gamble_remaining_today")) gambleRemainingToday = resp.optInt("gamble_remaining_today", 0);
+    }
+
+    /** UI thread. */
+    private void renderGambleBudget() {
+        if (btnGamble == null) return;
+        double pw = parseD(gstr("focus_lock_paywall"));
+        if (pw <= 0) {
+            btnGamble.setEnabled(false);
+            btnGamble.setText("Nothing To Flip For");
+            return;
+        }
+        if (gambleCooldownS > 0) {
+            btnGamble.setEnabled(false);
+            long m = gambleCooldownS / 60;
+            btnGamble.setText(m >= 60 ? "Again in " + (m / 60) + "h" : "Again in " + Math.max(1, m) + "m");
+            return;
+        }
+        if (gambleRemainingToday == 0) {
+            btnGamble.setEnabled(false);
+            btnGamble.setText("No Flips Left Today");
+            return;
+        }
+        btnGamble.setEnabled(true);
+        btnGamble.setText(gambleRemainingToday > 0
+            ? "Flip For It (" + gambleRemainingToday + " left)"
+            : "Flip For It");
+    }
+
     private void refreshStats() {
         try {
-            // Mutual admin monitoring — penalize + alert if Collar admin removed
+            // Mutual admin monitoring — penalize + alert if Collar admin removed.
+            // Suppressed during an authorized teardown (release_authorized), after a
+            // terminal release (`released`), and — crucially — when NOT yet paired:
+            // an unpaired device has no Lion, so the Collar's admin being absent (or
+            // being provisioned before the Lion pairs) is not tamper, and re-locking
+            // it would trap the wearer with active=1 and no unlock path.
+            String lionPub = Settings.Global.getString(getContentResolver(), "focus_lock_lion_pubkey");
+            boolean paired = lionPub != null && !lionPub.isEmpty() && !"null".equals(lionPub);
             long breakglassUntil = Settings.Global.getLong(getContentResolver(), "focus_lock_breakglass_until", 0);
             int releaseAuth = Settings.Global.getInt(getContentResolver(), "focus_lock_release_authorized", 0);
-            if (System.currentTimeMillis() > breakglassUntil && releaseAuth == 0) {
+            int released = Settings.Global.getInt(getContentResolver(), "focus_lock_released", 0);
+            if (paired && System.currentTimeMillis() > breakglassUntil && releaseAuth == 0 && released == 0) {
                 try {
                     android.content.ComponentName collarAdmin = new android.content.ComponentName(
                         "com.focuslock", "com.focuslock.AdminReceiver");
@@ -496,7 +1584,24 @@ public class MainActivity extends Activity {
             long todayLockedMs = prefs.getLong("today_locked_ms", 0);
             long weekLockedMs = prefs.getLong("week_locked_ms", 0);
             long totalPaid = Settings.Global.getLong(getContentResolver(), "focus_lock_total_paid_cents", prefs.getLong("total_paid_cents", 0));
-            int streakDays = prefs.getInt("streak_days", 0);
+            // Streak, read from the state that actually tracks one.
+            //
+            // This tile used to read prefs "streak_days" — a key NOTHING in
+            // any of the three apps has ever written, so it rendered "0d" on
+            // every device forever. The real streak lives in the Collar's
+            // Settings.Global, driven by the relay: `start-streak` stamps
+            // streak_start + streak_escapes_at_start, and the server clears
+            // streak_enabled via the `streak-break` order the moment lifetime
+            // escapes exceed that baseline. Days are derived from the start
+            // timestamp rather than counted, so nothing drifts if the app is
+            // closed.
+            boolean streakOn = Settings.Global.getInt(getContentResolver(), "focus_lock_streak_enabled", 0) == 1;
+            long streakStart = Settings.Global.getLong(getContentResolver(), "focus_lock_streak_start", 0L);
+            int streakDays = (streakOn && streakStart > 0)
+                ? (int) ((System.currentTimeMillis() - streakStart) / 86400000L)
+                : 0;
+            boolean streak7 = Settings.Global.getInt(getContentResolver(), "focus_lock_streak_7d_claimed", 0) == 1;
+            boolean streak30 = Settings.Global.getInt(getContentResolver(), "focus_lock_streak_30d_claimed", 0) == 1;
             long lastTrackTime = prefs.getLong("last_track_time", 0);
 
             // Track current session
@@ -526,6 +1631,9 @@ public class MainActivity extends Activity {
             final long fWeekMs = weekLockedMs;
             final long fTotalPaid = totalPaid;
             final int fStreak = streakDays;
+            final boolean fStreakOn = streakOn;
+            final boolean fStreak7 = streak7;
+            final boolean fStreak30 = streak30;
             final boolean hasGeofence = !geofenceLat.isEmpty();
             final String fMode = mode;
             final long fUnlockAt = unlockAt;
@@ -563,7 +1671,7 @@ public class MainActivity extends Activity {
                     statusText.setText("Unlocked");
                     statusBar.setBackgroundColor(0xFF9977bb);
                 }
-                connectionCrown.setAlpha(1.0f);
+                updateCrownConnectionState();
 
                 // Stats
                 statToday.setText(formatHours(fTodayMs));
@@ -575,7 +1683,22 @@ public class MainActivity extends Activity {
                 statPaid.setText("$" + (fTotalPaid / 100));
                 statPaid.setTextColor(0xFFaa88cc);
                 statInterest.setText(fInterest > 0 ? String.format("+$%.0f", fInterest) : "+$0");
-                statStreak.setText(fStreak + "d");
+                // A number that only ever goes up is wallpaper. Show the
+                // streak as something with a state: running (and how close to
+                // the next bonus), or broken and needing the Lion to restart
+                // it — which is the half that gives it any weight.
+                if (!fStreakOn) {
+                    statStreak.setText(fStreak > 0 ? "broken" : "off");
+                    statStreak.setTextColor(fStreak > 0 ? 0xFFcc4444 : 0xFF555555);
+                } else {
+                    int nextMilestone = !fStreak7 ? 7 : !fStreak30 ? 30 : 0;
+                    if (nextMilestone > 0 && fStreak < nextMilestone) {
+                        statStreak.setText(fStreak + "d \u2192 " + nextMilestone);
+                    } else {
+                        statStreak.setText(fStreak + "d");
+                    }
+                    statStreak.setTextColor(0xFF66aa66);
+                }
                 statGeofence.setText(hasGeofence ? "active" : "off");
                 statGeofence.setTextColor(hasGeofence ? 0xFFaa88cc : 0xFF555555);
 
@@ -678,14 +1801,6 @@ public class MainActivity extends Activity {
                 sectionMessages.setVisibility(hasSub ? View.VISIBLE : View.GONE);
                 noSubPrompt.setVisibility(hasSub ? View.GONE : View.VISIBLE);
 
-                // IMAP status
-                String savedEmail = prefs.getString("imap_email", "");
-                if (!savedEmail.isEmpty()) {
-                    imapStatus.setText("Connected: " + savedEmail);
-                    imapStatus.setTextColor(0xFF44aa44);
-                    btnSetupImap.setText("Update Email");
-                }
-
                 // Payment history + messages: refresh every 2nd poll (~10s).
                 // Was a flaky `% 25000 < 5000` time-of-day gate that fired ~20%
                 // of polls with high variance — sometimes 5s gap, sometimes
@@ -710,6 +1825,7 @@ public class MainActivity extends Activity {
                     sectionPairing.setVisibility(View.VISIBLE);
                     sectionPaired.setVisibility(View.GONE);
                     sectionMainContent.setVisibility(View.GONE);
+                    renderPairingQr();
                 }
 
                 // Pinned message
@@ -726,7 +1842,7 @@ public class MainActivity extends Activity {
 
         } catch (Exception e) {
             handler.post(() -> {
-                connectionCrown.setAlpha(0.2f);
+                updateCrownConnectionState();
             });
         }
     }
@@ -771,6 +1887,8 @@ public class MainActivity extends Activity {
                 conn.getOutputStream().write(payload.getBytes());
 
                 if (conn.getResponseCode() == 200) {
+                    Settings.Global.putLong(getContentResolver(),
+                        "focus_lock_mesh_last_sync_ms", System.currentTimeMillis());
                     try (java.io.BufferedReader br = new java.io.BufferedReader(
                             new java.io.InputStreamReader(conn.getInputStream()))) {
                         StringBuilder sb = new StringBuilder();
@@ -883,6 +2001,77 @@ public class MainActivity extends Activity {
     // at /api/pair-reset now falls through to 403. Half-completed-pair
     // recovery requires reinstalling the Collar, which is gated on the
     // Lion releasing the device admin first.
+
+    /**
+     * Render the bunny's pairing QR into the inline qr_code ImageView shown in
+     * section_pairing. Same payload Lion's Share scans via the LAN-direct path.
+     */
+    private void renderPairingQr() {
+        if (qrCodeView == null) return;
+        String lanIp = "";
+        try {
+            android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager) getSystemService(WIFI_SERVICE);
+            android.net.wifi.WifiInfo wi = wm != null ? wm.getConnectionInfo() : null;
+            int ip = wi != null ? wi.getIpAddress() : 0;
+            if (ip != 0) {
+                lanIp = (ip & 0xff) + "." + ((ip >> 8) & 0xff) + "."
+                    + ((ip >> 16) & 0xff) + "." + ((ip >> 24) & 0xff);
+            }
+        } catch (Exception e) {}
+        String tsIp = "";
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> nets = java.net.NetworkInterface.getNetworkInterfaces();
+            while (nets.hasMoreElements()) {
+                java.net.NetworkInterface ni = nets.nextElement();
+                if (ni.getName().startsWith("tun")) {
+                    java.util.Enumeration<java.net.InetAddress> addrs = ni.getInetAddresses();
+                    while (addrs.hasMoreElements()) {
+                        java.net.InetAddress a = addrs.nextElement();
+                        if (a instanceof java.net.Inet4Address) tsIp = a.getHostAddress();
+                    }
+                }
+            }
+        } catch (Exception e) {}
+        try {
+            String payload = PairingManager.buildQrPayload(getContentResolver(), lanIp, tsIp);
+            Bitmap bmp = QrEncoder.encode(payload, 8);
+            if (bmp != null) qrCodeView.setImageBitmap(bmp);
+            String fp = PairingManager.getFingerprint(getContentResolver());
+            if (pairingFingerprint != null && fp != null) {
+                pairingFingerprint.setText("Key: " + fp);
+            }
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "QR render failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Crown is gold when paired AND we've seen the Lion (or a successful
+     * mesh poll) recently; gray (desaturated) otherwise. The Collar's
+     * vaultSync writes focus_lock_lion_last_seen each time it verifies a
+     * Lion-signed blob, which is the authoritative signal on vault-only
+     * meshes (BT's plaintext /api/mesh/.../sync returns 410 Gone there).
+     * BT's own meshSync still bumps mesh_last_sync_ms when it does work,
+     * so we accept either signal within the last 90s.
+     */
+    private void updateCrownConnectionState() {
+        if (connectionCrown == null) return;
+        boolean paired = PairingManager.isPaired(getContentResolver());
+        long lastSync = Settings.Global.getLong(getContentResolver(), "focus_lock_mesh_last_sync_ms", 0);
+        long lastLion = Settings.Global.getLong(getContentResolver(), "focus_lock_lion_last_seen", 0);
+        long mostRecent = Math.max(lastSync, lastLion);
+        boolean meshOk = (System.currentTimeMillis() - mostRecent) < 90_000L;
+        boolean connected = paired && meshOk;
+        if (connected) {
+            connectionCrown.clearColorFilter();
+            connectionCrown.setAlpha(1.0f);
+        } else {
+            android.graphics.ColorMatrix cm = new android.graphics.ColorMatrix();
+            cm.setSaturation(0f);
+            connectionCrown.setColorFilter(new android.graphics.ColorMatrixColorFilter(cm));
+            connectionCrown.setAlpha(0.6f);
+        }
+    }
 
     /**
      * Serverless pairing info: show the bunny's IP/port + key fingerprint so the Lion can
@@ -1030,6 +2219,25 @@ public class MainActivity extends Activity {
             | android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
         layout.addView(inviteInput);
 
+        // How the bunny wants to appear to their Lion (shown in the Bunnies list
+        // instead of the raw device model). Prefilled with any saved name.
+        EditText nameInput = new EditText(this);
+        nameInput.setHint("Your name (how your Lion sees you)");
+        nameInput.setTextSize(15);
+        nameInput.setTextColor(0xFFe0e0e0);
+        nameInput.setHintTextColor(0xFF555555);
+        nameInput.setBackgroundColor(0xFF111118);
+        nameInput.setPadding(24, 18, 24, 18);
+        try {
+            String savedName = Settings.Global.getString(getContentResolver(), "focus_lock_bunny_name");
+            if (savedName != null && !savedName.isEmpty() && !"null".equals(savedName)) nameInput.setText(savedName);
+        } catch (Exception ignored) {}
+        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        nlp.topMargin = 12;
+        nameInput.setLayoutParams(nlp);
+        layout.addView(nameInput);
+
         EditText serverInput = new EditText(this);
         serverInput.setHint("Server URL (e.g. https://your-relay.example)");
         serverInput.setTextSize(13);
@@ -1093,6 +2301,7 @@ public class MainActivity extends Activity {
             .setPositiveButton("Join", (d, w) -> {
                 String code = inviteInput.getText().toString().trim().toUpperCase();
                 String server = serverInput.getText().toString().trim();
+                String name = nameInput.getText().toString().trim();
                 if (code.isEmpty()) {
                     statusText.setText("Enter an invite code");
                     return;
@@ -1100,6 +2309,11 @@ public class MainActivity extends Activity {
                 if (server.isEmpty()) {
                     statusText.setText("Enter the server URL");
                     return;
+                }
+                // Persist the bunny's chosen display name so joinMesh/meshSync send it.
+                if (!name.isEmpty()) {
+                    try { Settings.Global.putString(getContentResolver(), "focus_lock_bunny_name", name); }
+                    catch (Exception ignored) {}
                 }
                 // Persist vault toggle before kicking off the join
                 writeVaultModeFlag(vaultCheckFinal.isChecked());
@@ -1109,8 +2323,19 @@ public class MainActivity extends Activity {
                 executor.execute(() -> joinMesh(code, fServer));
             })
             .setNeutralButton("Save", (d, w) -> {
-                // Persist vault toggle without re-joining the mesh
+                // Persist vault toggle AND the typed display name without re-joining
+                // (previously the name was silently discarded here — the "Save"
+                // button reported success while dropping the edit).
                 writeVaultModeFlag(vaultCheckFinal.isChecked());
+                String nm = nameInput.getText().toString().trim();
+                if (nm.length() > 40) nm = nm.substring(0, 40);
+                try { Settings.Global.putString(getContentResolver(), "focus_lock_bunny_name", nm); }
+                catch (Exception ignored) {}
+                // If already paired, push it to the relay so the Lion sees it now.
+                if (PairingManager.isPaired(getContentResolver())) {
+                    final String fnm = nm;
+                    executor.execute(() -> setDisplayName(fnm));
+                }
                 statusText.setText("Saved" + (vaultCheckFinal.isChecked() ? " (vault on)" : ""));
             })
             .setNegativeButton("Cancel", null)
@@ -1134,12 +2359,21 @@ public class MainActivity extends Activity {
             // Get device node_id
             String nodeId = android.os.Build.MODEL.toLowerCase().replace(" ", "-");
 
+            // The bunny's self-chosen display name (Issue 4) — shown to the Lion
+            // instead of the raw device model.
+            String displayName = "";
+            try {
+                String dn = Settings.Global.getString(getContentResolver(), "focus_lock_bunny_name");
+                if (dn != null && !"null".equals(dn)) displayName = dn.trim();
+            } catch (Exception ignored) {}
+
             // Build join request
             JSONObject body = new JSONObject();
             body.put("invite_code", inviteCode);
             body.put("node_id", nodeId);
             body.put("node_type", "phone");
             body.put("bunny_pubkey", bunnyPubKey != null ? bunnyPubKey : "");
+            body.put("display_name", displayName);
 
             // POST /api/mesh/join
             URL url = new URL(serverUrl + "/api/mesh/join");
@@ -1184,12 +2418,16 @@ public class MainActivity extends Activity {
 
             // Store mesh config in Settings.Global (survives app data clears)
             ContentResolver cr = getContentResolver();
+            // node_id FIRST, and it must be the same one we just sent in the join
+            // body. The Collar's ControlService starts talking to the relay the
+            // moment mesh_id + mesh_url are readable; if node_id were still empty
+            // in that window it would label itself with its own fallback and could
+            // leave a phantom node row behind under the wrong identity. Writing it
+            // ahead of mesh_id closes the window.
+            Settings.Global.putString(cr, "focus_lock_mesh_node_id", nodeId);
             Settings.Global.putString(cr, "focus_lock_mesh_id", meshId);
             Settings.Global.putString(cr, "focus_lock_mesh_url", serverUrl);
             Settings.Global.putString(cr, "focus_lock_pin", pin);
-            // Store node_id so ControlService identifies this device in mesh gossip
-            String deviceNodeId = android.os.Build.MODEL.toLowerCase().replace(" ", "-");
-            Settings.Global.putString(cr, "focus_lock_mesh_node_id", deviceNodeId);
 
             // Store Lion's public key — this makes PairingManager.isPaired() return true
             if (!lionPubKey.isEmpty()) {
@@ -1232,7 +2470,7 @@ public class MainActivity extends Activity {
                 (tier.equals("bronze") ? "Perks: Stats + messaging" :
                  tier.equals("silver") ? "Perks: Reduced compound interest (5% instead of 10%)" :
                  "Perks: No compound interest + 1 free unlock/month") +
-                "\n\nCancel fee: $" + (amount * 2) + "\n\nFirst charge in 7 days. Overdue = warnings then auto-lock.")
+                "\n\nCancel fee: $" + (amount * 2) + "\n\nFirst charge now, then weekly. Overdue = warnings then auto-lock.")
             .setPositiveButton("SUBSCRIBE", (d, w) -> {
                 executor.execute(() -> postSubscribeToMesh(tier, amount));
             })
@@ -1572,6 +2810,13 @@ public class MainActivity extends Activity {
         String task = gstr("focus_lock_deadline_task_text");
         String hint = gstr("focus_lock_deadline_task_proof_hint");
         String prompt = task + (hint.isEmpty() ? "" : " (" + hint + ")");
+        // No homelab Ollama to auto-verify → route to the Lion for manual
+        // approval instead of the (dead) /webhook/verify-photo. The task is held
+        // until the Lion replies "approve" (see maybeHandleDeadlineApproval).
+        if (gstr("focus_lock_webhook_host").isEmpty()) {
+            submitPhotoForLionReview(bitmap, prompt);
+            return;
+        }
         handler.post(() -> setDeadlineTaskStatus("Verifying photo..."));
         try {
             // Audit 2026-04-27 M-4: bunny-signed.
@@ -1619,9 +2864,57 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** Direct-mode (no-homelab) photo proof: there is no Ollama to auto-verify,
+     *  so save the proof locally and notify the Lion via the message channel,
+     *  holding the deadline until the Lion approves. Reuses postMeshMessage —
+     *  no new server surface. Blocking; call from an executor thread. */
+    private void submitPhotoForLionReview(Bitmap bitmap, String prompt) {
+        try {
+            java.io.File dir = new java.io.File(getFilesDir(), "deadline-proofs");
+            dir.mkdirs();
+            java.io.File f = new java.io.File(dir, "proof-" + System.currentTimeMillis() + ".jpg");
+            try (java.io.FileOutputStream fos = new java.io.FileOutputStream(f)) {
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, fos);
+            }
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "save proof failed", e);
+        }
+        Settings.Global.putString(getContentResolver(), "focus_lock_deadline_review_pending", "1");
+        String msg = "📸 Photo proof ready for: " + prompt
+            + "\nReply \"approve\" to clear it, or \"redo\" to send me back.";
+        boolean sent = postMeshMessage(msg, true, false, null);
+        final boolean fsent = sent;
+        handler.post(() -> setDeadlineTaskStatus(fsent
+            ? "Sent to your Lion for approval — waiting…"
+            : "Saved proof; couldn't reach your Lion (will retry next time)"));
+    }
+
+    /** Direct-mode photo review: clear the deadline on the Lion's "approve"
+     *  reply, or re-arm on "redo"/"reject". No-op unless a review is pending.
+     *  Called per unread Lion message from refreshMeshMessages (executor). */
+    private void maybeHandleDeadlineApproval(String lionText) {
+        if (!"1".equals(gstr("focus_lock_deadline_review_pending")) || lionText == null) return;
+        String t = lionText.trim().toLowerCase();
+        if (t.startsWith("approve") || t.startsWith("pass") || t.equals("ok")) {
+            Settings.Global.putString(getContentResolver(), "focus_lock_deadline_review_pending", "0");
+            postDeadlineClear();
+            handler.post(() -> setDeadlineTaskStatus("Approved by your Lion ✓ — task cleared"));
+        } else if (t.startsWith("redo") || t.startsWith("reject") || t.startsWith("re-arm") || t.startsWith("fail")) {
+            Settings.Global.putString(getContentResolver(), "focus_lock_deadline_review_pending", "0");
+            handler.post(() -> setDeadlineTaskStatus("Your Lion asked you to redo it"));
+        }
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_BUNNY_ONBOARD) {
+            // The warm welcome is done — now hand off to the Collar's Terms of
+            // Surrender exactly as before (regardless of skip/back). The welcome
+            // never replaces the ToS; it leads into it.
+            maybeLaunchCollarConsent();
+            return;
+        }
         if (resultCode != RESULT_OK) return;
 
         executor.execute(() -> {
@@ -1683,60 +2976,313 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void doSetupImap() {
-        View v = getLayoutInflater().inflate(android.R.layout.simple_list_item_1, null);
-        // Build a simple dialog with email + password fields
+    /** Bunny → server signed POST that tells the IMAP scanner which sender
+     *  strings count as "actually from this bunny." Without this, the
+     *  scanner credits every incoming payment notice (WorldRemit
+     *  remittances, refunds, random Generic deposit emails) as a payment.
+     *  The allowlist stays in a server-only file the Lion's Share app
+     *  cannot read — defense in depth so the Lion never learns the
+     *  bunny's email through the app surface. */
+    private void doSetupPayerIdentity() {
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding(48, 24, 48, 24);
 
-        EditText emailInput = new EditText(this);
-        emailInput.setHint("Email address");
-        emailInput.setInputType(android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
-        String savedEmail = prefs.getString("imap_email", "");
-        if (!savedEmail.isEmpty()) emailInput.setText(savedEmail);
-        layout.addView(emailInput);
+        TextView help = new TextView(this);
+        help.setText("Your email or display name as it appears on Lion's bank "
+            + "notifications. One per line. Used only to filter incoming "
+            + "payment emails — never shown to the Lion.");
+        help.setTextColor(0xFF888888);
+        help.setTextSize(11);
+        help.setPadding(0, 0, 0, 16);
+        layout.addView(help);
 
-        EditText passInput = new EditText(this);
-        passInput.setHint("App password");
-        passInput.setInputType(android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        layout.addView(passInput);
-
-        EditText hostInput = new EditText(this);
-        hostInput.setHint("IMAP host (default: imap.migadu.com)");
-        String savedHost = prefs.getString("imap_host", "imap.migadu.com");
-        hostInput.setText(savedHost);
-        layout.addView(hostInput);
+        EditText allowInput = new EditText(this);
+        allowInput.setHint("info@example.com\nYour Name");
+        allowInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+            | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        allowInput.setMinLines(3);
+        allowInput.setGravity(android.view.Gravity.TOP | android.view.Gravity.START);
+        String saved = prefs.getString("payer_identity_text", "");
+        if (!saved.isEmpty()) allowInput.setText(saved);
+        layout.addView(allowInput);
 
         new android.app.AlertDialog.Builder(this)
-            .setTitle("Connect Payment Email")
-            .setMessage("Sign in so your Lion's system can detect e-Transfer payments.\n\nAll past payments will be invalidated — only future payments count.")
+            .setTitle("Set Your Payer Identity")
             .setView(layout)
-            .setPositiveButton("Connect", (d, w) -> {
-                String email = emailInput.getText().toString().trim();
-                String pass = passInput.getText().toString();
-                String host = hostInput.getText().toString().trim();
-                if (email.isEmpty() || pass.isEmpty()) {
-                    statusText.setText("Email and password required");
-                    return;
+            .setPositiveButton("SAVE", (d, w) -> {
+                String raw = allowInput.getText().toString();
+                java.util.List<String> lines = new java.util.ArrayList<>();
+                for (String line : raw.split("\\r?\\n")) {
+                    String t = line.trim();
+                    if (!t.isEmpty()) lines.add(t);
                 }
-                if (host.isEmpty()) host = "imap.migadu.com";
-                prefs.edit().putString("imap_email", email).putString("imap_host", host).apply();
-                final String fHost = host;
-                executor.execute(() -> {
-                    String json = "{\"user\":\"" + escJson(email) + "\",\"password\":\"" + escJson(pass)
-                        + "\",\"host\":\"" + escJson(fHost) + "\"}";
-                    sendWebhook("/mesh/set-imap-creds", json);
-                    handler.post(() -> {
-                        imapStatus.setText("Connected: " + email);
-                        imapStatus.setTextColor(0xFF44aa44);
-                        btnSetupImap.setText("Update Email");
-                    });
-                });
+                if (lines.size() > 16) lines = lines.subList(0, 16);
+                // Snapshot the saved text so the dialog reopens with the
+                // bunny's last input (lets them edit instead of re-typing).
+                prefs.edit().putString("payer_identity_text", raw).apply();
+                final java.util.List<String> finalLines = lines;
+                executor.execute(() -> postSetPayerIdentity(finalLines));
             })
             .setNegativeButton("Cancel", null)
             .show();
     }
+
+    /** Post-pairing editor for the bunny's display name (how they appear to the
+     *  Lion). Fixes the write-once/undeletable name: reachable any time via a
+     *  long-press on the paired fingerprint, and pushes the change to the relay. */
+    private void showEditNameDialog() {
+        final EditText input = new EditText(this);
+        input.setHint("Your name (how your Lion sees you)");
+        try {
+            String cur = Settings.Global.getString(getContentResolver(), "focus_lock_bunny_name");
+            if (cur != null && !"null".equals(cur)) input.setText(cur.trim());
+        } catch (Exception ignored) {}
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Display name")
+            .setMessage("How you appear to your Lion. Leave blank to show your device model.")
+            .setView(input)
+            .setPositiveButton("Save", (d, w) -> {
+                String nm = input.getText().toString().trim();
+                if (nm.length() > 40) nm = nm.substring(0, 40);
+                try { Settings.Global.putString(getContentResolver(), "focus_lock_bunny_name", nm); }
+                catch (Exception ignored) {}
+                final String fnm = nm;
+                executor.execute(() -> setDisplayName(fnm));
+                statusText.setText("Name updated");
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    /** Sign + POST a display-name change (bunny-authed). Wire format matches the
+     *  server set-display-name handler:
+     *    payload = mesh|node|set-display-name|ts|sha256(display_name). */
+    private void setDisplayName(String name) {
+        String meshId = gstr("focus_lock_mesh_id");
+        String meshUrl = gstr("focus_lock_mesh_url");
+        String nodeId = gstr("focus_lock_mesh_node_id");
+        if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty()) return;
+        if (name == null) name = "";
+        if (name.length() > 40) name = name.substring(0, 40);
+        long ts = System.currentTimeMillis();
+        String contentHash;
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] dig = md.digest(name.getBytes("UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : dig) sb.append(String.format("%02x", b));
+            contentHash = sb.toString();
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "display-name hash failed", e);
+            return;
+        }
+        String payload = meshId + "|" + nodeId + "|set-display-name|" + ts + "|" + contentHash;
+        String signature = PairingManager.sign(getContentResolver(), payload);
+        if (signature == null || signature.isEmpty()) {
+            handler.post(() -> statusText.setText("Sign failed — pairing key missing"));
+            return;
+        }
+        try {
+            JSONObject body = new JSONObject();
+            body.put("node_id", nodeId);
+            body.put("ts", ts);
+            body.put("display_name", name);
+            body.put("signature", signature);
+            URL url = new URL(meshUrl + "/api/mesh/" + meshId + "/set-display-name");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(10000);
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.getOutputStream().write(body.toString().getBytes("UTF-8"));
+            int code = conn.getResponseCode();
+            conn.disconnect();
+            android.util.Log.i("BunnyTasker", "set-display-name -> " + code);
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "set-display-name failed: " + e.getMessage());
+        }
+    }
+
+    /** Sign + POST the payer-allow list. Matches the wire format the server
+     *  expects in focuslock-mail.py set-payer-identity handler:
+     *    payload = mesh|node|set-payer-identity|ts|sha256(allow_canonical)
+     *  with allow_canonical = lines joined by "\n". */
+    private void postSetPayerIdentity(java.util.List<String> allow) {
+        String meshId = gstr("focus_lock_mesh_id");
+        String meshUrl = gstr("focus_lock_mesh_url");
+        String nodeId = gstr("focus_lock_mesh_node_id");
+        if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty()) {
+            handler.post(() -> statusText.setText("Mesh not configured"));
+            return;
+        }
+        long ts = System.currentTimeMillis();
+        StringBuilder canonical = new StringBuilder();
+        for (int i = 0; i < allow.size(); i++) {
+            if (i > 0) canonical.append("\n");
+            canonical.append(allow.get(i));
+        }
+        String contentHash;
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] dig = md.digest(canonical.toString().getBytes("UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : dig) sb.append(String.format("%02x", b));
+            contentHash = sb.toString();
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "payer identity hash failed", e);
+            return;
+        }
+        String payload = meshId + "|" + nodeId + "|set-payer-identity|" + ts + "|" + contentHash;
+        String signature = PairingManager.sign(getContentResolver(), payload);
+        if (signature == null || signature.isEmpty()) {
+            handler.post(() -> statusText.setText("Sign failed — pairing key missing"));
+            return;
+        }
+        try {
+            JSONObject body = new JSONObject();
+            body.put("node_id", nodeId);
+            body.put("ts", ts);
+            JSONArray arr = new JSONArray();
+            for (String s : allow) arr.put(s);
+            body.put("allow", arr);
+            body.put("signature", signature);
+            URL url = new URL(meshUrl + "/api/mesh/" + meshId + "/set-payer-identity");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(10000);
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.getOutputStream().write(body.toString().getBytes("UTF-8"));
+            int code = conn.getResponseCode();
+            // Parse the server summary so we can warn when entries are too
+            // generic to identify the payer (channel/domain/short tokens now
+            // match nothing — they'd never credit a payment).
+            int effective = allow.size();
+            int generic = 0;
+            if (code < 400) {
+                try {
+                    java.io.BufferedReader br = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(conn.getInputStream(), "UTF-8"));
+                    StringBuilder sb = new StringBuilder();
+                    String ln;
+                    while ((ln = br.readLine()) != null) sb.append(ln);
+                    JSONObject resp = new JSONObject(sb.toString());
+                    effective = resp.optInt("effective_count", allow.size());
+                    generic = resp.optInt("generic_rejected", 0);
+                } catch (Exception ignored) {}
+            }
+            conn.disconnect();
+            if (code < 400) {
+                final int eff = effective;
+                final int gen = generic;
+                prefs.edit()
+                    .putLong("payer_identity_set_at", System.currentTimeMillis())
+                    .putInt("payer_identity_count", allow.size())
+                    .putInt("payer_identity_effective", eff)
+                    .apply();
+                handler.post(() -> {
+                    if (eff == 0) {
+                        statusText.setText("Saved, but none of your entries identify you — "
+                            + "payments won't be credited. Use your full payment email or name "
+                            + "(not a bank/'interac' or bare domain).");
+                    } else if (gen > 0) {
+                        statusText.setText("Saved · " + eff + " usable, " + gen + " too generic to match");
+                    } else {
+                        statusText.setText("Payer identity saved (" + allow.size() + " entries)");
+                    }
+                    refreshPayerIdentityStatus();
+                });
+            } else {
+                handler.post(() -> statusText.setText("Save failed (HTTP " + code + ")"));
+            }
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "postSetPayerIdentity failed", e);
+            handler.post(() -> statusText.setText("Save failed: " + e.getMessage()));
+        }
+    }
+
+    /** Render whether payments can be detected at all, from the relay's own
+     *  view of it (the three booleans on /api/mesh/{id}/payments).
+     *
+     *  Both halves have to be configured before one payment is ever credited:
+     *  the Lion connects the inbox the bank notifications land in (Lion's
+     *  Share -> Payment Email), and the bunny sets the payer identity that
+     *  tells the scanner which of those notifications are theirs. With either
+     *  half missing the scanner fails closed and credits nothing — which,
+     *  until this line existed, looked from here exactly like paying your Lion
+     *  and being ignored.
+     *
+     *  This replaces applyHomelabGating(), which hid this whole section — and
+     *  the payer-identity setup with it — whenever no homelab was configured.
+     *  Neither one talks to the homelab: payer identity is a signed POST to
+     *  the relay. On a vault mesh with no homelab (the normal setup) that
+     *  meant a bunny could never set the identity their payments are matched
+     *  by, so the scanner fail-closed on every payment they made, invisibly.
+     *  UI thread. */
+    private void renderDetectionStatus(boolean payeeOk, boolean payerOk, boolean payerEffective) {
+        if (imapStatus == null) return;
+        if (!payeeOk) {
+            imapStatus.setText("Your Lion hasn't connected the inbox payments arrive in \u2014 "
+                + "nothing can be credited until they do");
+            imapStatus.setTextColor(0xFFcc4444);
+        } else if (!payerOk) {
+            imapStatus.setText("Set your payer identity so the scanner knows which payments are yours");
+            imapStatus.setTextColor(0xFFaa6644);
+        } else if (!payerEffective) {
+            imapStatus.setText("\u26a0 Your payer identity is too generic to match anything");
+            imapStatus.setTextColor(0xFFcc4444);
+        } else {
+            imapStatus.setText("\u2713 Payment detection active");
+            imapStatus.setTextColor(0xFF44aa44);
+        }
+    }
+
+    private void refreshPayerIdentityStatus() {
+        if (payerIdentityStatus == null) return;
+        long setAt = prefs.getLong("payer_identity_set_at", 0);
+        int count = prefs.getInt("payer_identity_count", 0);
+        int effective = prefs.getInt("payer_identity_effective", count);
+        if (setAt == 0 || count == 0) {
+            // Fail-closed: until the payer is configured, the server credits
+            // nothing (was: counted every matched payment email).
+            payerIdentityStatus.setText("Not set — payments won't be credited until you add your payment email/name");
+            payerIdentityStatus.setTextColor(0xFFaa6644);
+        } else if (effective == 0) {
+            payerIdentityStatus.setText("⚠ Set, but entries too generic — payments won't be credited");
+            payerIdentityStatus.setTextColor(0xFFcc4444);
+        } else {
+            long ageMs = System.currentTimeMillis() - setAt;
+            String ago;
+            if (ageMs < 60_000L) ago = "just now";
+            else if (ageMs < 3_600_000L) ago = (ageMs / 60_000L) + "m ago";
+            else if (ageMs < 86_400_000L) ago = (ageMs / 3_600_000L) + "h ago";
+            else ago = (ageMs / 86_400_000L) + "d ago";
+            payerIdentityStatus.setText("Set · " + count + " entries · " + ago);
+            payerIdentityStatus.setTextColor(0xFF44aa44);
+        }
+    }
+
+    // doSetupImap() was removed here. It POSTed the bunny's own IMAP
+    // credentials to /mesh/set-imap-creds — an endpoint that exists in no
+    // server in this repo, so every "Connected: <email>" it printed was a lie
+    // (it never read the response code either). Two things were wrong with it
+    // beyond the dead route:
+    //
+    //   1. The mailbox the scanner reads is the LION's. "You received $40"
+    //      landing in the payee's inbox is what proves an incoming transfer;
+    //      a confirmation in the payer's own mailbox proves only that the
+    //      payer's mailbox says so. Lion's Share -> Payment Email is the one
+    //      place it is configured (relay: set-payee-identity, Lion-signed).
+    //   2. Wiring it up would have handed the bunny the ability to point the
+    //      scanner at a mailbox they control, and mint their own payment
+    //      confirmations straight off the balance.
+    //
+    // What the bunny legitimately owns on this screen is the payer identity
+    // (doSetupPayerIdentity), which is kept. Detection state is reported
+    // read-only by renderDetectionStatus.
 
     private void refreshPaymentHistory() {
         // Roadmap #2 — bunny-authed payment history fetch. Signs a read
@@ -1778,10 +3324,45 @@ public class MainActivity extends Activity {
                 conn.disconnect();
 
                 JSONObject resp = new JSONObject(sb.toString());
+
+                // Is payment detection actually wired up? Defaults to true so
+                // a relay predating these fields doesn't cry wolf.
+                final boolean payeeOk = resp.optBoolean("payee_configured", true);
+                final boolean payerOk = resp.optBoolean("payer_configured", true);
+                final boolean payerEff = resp.optBoolean("payer_effective", true);
+                handler.post(() -> renderDetectionStatus(payeeOk, payerOk, payerEff));
+
+                // Flip budget rides this response too, so the gamble button
+                // renders its real state on load instead of after a refusal.
+                applyGambleBudget(resp);
+                applyDevotionStatus(resp);
+                handler.post(() -> {
+                    renderGambleBudget();
+                    refreshDevotion();
+                });
+
                 JSONArray entries = resp.optJSONArray("entries");
                 if (entries == null) return;
 
+                // Balance trend. `entries` is newest-first and only some rows
+                // carry balance_after (older ones predate it), so walk
+                // backwards and keep the ones that do — oldest-first is what
+                // the sparkline wants.
+                java.util.List<Float> trend = new java.util.ArrayList<>();
+                for (int i = entries.length() - 1; i >= 0; i--) {
+                    JSONObject e = entries.optJSONObject(i);
+                    if (e != null && e.has("balance_after")) {
+                        trend.add((float) e.optDouble("balance_after", 0));
+                    }
+                }
+                final float[] spark = new float[trend.size()];
+                for (int i = 0; i < trend.size(); i++) spark[i] = trend.get(i);
+
                 handler.post(() -> {
+                    if (balanceSpark != null) {
+                        balanceSpark.setValues(spark);
+                        balanceSpark.setVisibility(spark.length >= 2 ? View.VISIBLE : View.GONE);
+                    }
                     paymentHistory.removeAllViews();
                     int shown = Math.min(entries.length(), 20);
                     for (int i = 0; i < shown; i++) {
@@ -1790,19 +3371,35 @@ public class MainActivity extends Activity {
                         double amount = e.optDouble("amount", 0);
                         String desc = e.optString("description", "");
                         long ets = e.optLong("timestamp", 0);
+                        String type = e.optString("type", "payment");
+
+                        // The ledger carries charges as well as payments now,
+                        // so the sign and colour have to come from the type. A
+                        // fine rendered "+$5" in green reads as money paid off
+                        // rather than money owed — the exact opposite.
+                        boolean owedMore = "charge".equals(type);
+                        boolean reversal = "reversal".equals(type);
+                        String sign = owedMore ? "+$" : "\u2212$";   // − for anything that reduces it
+                        int colour = owedMore ? 0xFFcc7755 : reversal ? 0xFFaa8844 : 0xFF66aa66;
+
+                        StringBuilder row = new StringBuilder();
+                        row.append(sign).append(String.format("%.2f", Math.abs(amount)));
+                        if (!desc.isEmpty()) row.append("  ").append(desc);
+                        if (e.has("balance_after")) {
+                            row.append("   \u2192 $").append(String.format("%.2f", e.optDouble("balance_after", 0)));
+                        }
+                        row.append("  ").append(formatRelativeTime(ets));
 
                         TextView tv = new TextView(MainActivity.this);
-                        tv.setText("+$" + String.format("%.2f", amount)
-                            + "  " + desc
-                            + "  " + formatRelativeTime(ets));
-                        tv.setTextColor(0xFF66aa66);
+                        tv.setText(row.toString());
+                        tv.setTextColor(colour);
                         tv.setTextSize(10);
                         tv.setPadding(0, 4, 0, 4);
                         paymentHistory.addView(tv);
                     }
                     if (entries.length() == 0) {
                         TextView tv = new TextView(MainActivity.this);
-                        tv.setText("No payments yet");
+                        tv.setText("Nothing on the balance yet");
                         tv.setTextColor(0xFF3a3a4a);
                         tv.setTextSize(11);
                         paymentHistory.addView(tv);
@@ -2113,11 +3710,26 @@ public class MainActivity extends Activity {
      *  Returns true on 200, false otherwise. Blocking — call from executor. */
     private boolean postMeshMessage(String text, boolean pinned, boolean mandatory,
                                     E2EEHelper.EncryptedMessage enc) {
+        return postMeshMessageAt(text, pinned, mandatory, enc, System.currentTimeMillis());
+    }
+
+    /** Variant that takes an explicit ts so the caller can key a local
+     *  plaintext cache against the same ts the server will persist. */
+    private boolean postMeshMessageAt(String text, boolean pinned, boolean mandatory,
+                                      E2EEHelper.EncryptedMessage enc, long ts) {
+        return postMeshMessageAt(text, pinned, mandatory, enc, ts, null);
+    }
+
+    /** Full variant. clientMsgId is a stable idempotency key: a retried send
+     *  (same ts + signature + clientMsgId) dedups to a single stored message
+     *  server-side (see MessageStore.add), so the caller can retry safely
+     *  without spamming the Lion's inbox. Pass null to opt out. */
+    private boolean postMeshMessageAt(String text, boolean pinned, boolean mandatory,
+                                      E2EEHelper.EncryptedMessage enc, long ts, String clientMsgId) {
         String meshId = gstr("focus_lock_mesh_id");
         String meshUrl = gstr("focus_lock_mesh_url");
         String nodeId = gstr("focus_lock_mesh_node_id");
         if (meshId.isEmpty() || meshUrl.isEmpty() || nodeId.isEmpty()) return false;
-        long ts = System.currentTimeMillis();
         String signedText = (enc != null) ? "[e2ee]" : text;
         String payload = meshId + "|" + nodeId + "|bunny|" + signedText
             + "|" + (pinned ? "1" : "0") + "|" + (mandatory ? "1" : "0") + "|" + ts;
@@ -2135,8 +3747,10 @@ public class MainActivity extends Activity {
                 body.put("ciphertext", enc.ciphertext);
                 body.put("encrypted_key", enc.encryptedKey);
                 body.put("iv", enc.iv);
+                if (enc.encryptedKeySelf != null) body.put("encrypted_key_bunny", enc.encryptedKeySelf);
             }
             body.put("ts", ts);
+            if (clientMsgId != null && !clientMsgId.isEmpty()) body.put("client_msg_id", clientMsgId);
             body.put("signature", signature);
             URL url = new URL(meshUrl + "/api/mesh/" + meshId + "/messages/send");
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
@@ -2152,6 +3766,65 @@ public class MainActivity extends Activity {
         } catch (Exception e) {
             android.util.Log.w("BunnyTasker", "postMeshMessage failed", e);
             return false;
+        }
+    }
+
+    /** Deferred payer-identity send: the Bunny welcome (BunnyWelcomeActivity)
+     *  collects the payer email/name BEFORE pairing, so it can't reach the
+     *  server-only payer allowlist yet. Once paired (mesh configured), send it
+     *  via the existing signed postSetPayerIdentity. Retries each poll until
+     *  postSetPayerIdentity records success (payer_identity_set_at), then clears
+     *  the pending flag. The payer identity never reaches the Lion's app.
+     *  Blocking — call from an executor thread. */
+    private void maybeSendPendingPayerIdentity() {
+        if (!prefs.getBoolean("payer_identity_pending", false)) return;
+        if (prefs.getLong("payer_identity_set_at", 0) > 0) {  // already set on server
+            prefs.edit().putBoolean("payer_identity_pending", false).apply();
+            return;
+        }
+        if (gstr("focus_lock_mesh_id").isEmpty() || gstr("focus_lock_mesh_url").isEmpty()
+                || gstr("focus_lock_mesh_node_id").isEmpty()) {
+            return;  // not paired yet — try again next poll
+        }
+        String raw = prefs.getString("payer_identity_text", "");
+        java.util.ArrayList<String> lines = new java.util.ArrayList<>();
+        for (String line : raw.split("\\r?\\n")) {
+            String t = line.trim();
+            if (!t.isEmpty()) lines.add(t);
+        }
+        if (lines.isEmpty()) {
+            prefs.edit().putBoolean("payer_identity_pending", false).apply();
+            return;
+        }
+        postSetPayerIdentity(lines);  // sets payer_identity_set_at on success → cleared next poll
+    }
+
+    /** Serverless evidence log: drain the Collar's shared evidence outbox
+     *  (focus_lock_evidence_outbox, populated by FocusActivity.enqueueEvidenceForLion
+     *  when no homelab is configured) into the Lion's in-app inbox via the signed
+     *  message channel. Best-effort: entries that fail to send are kept for the
+     *  next tick. Blocking — call from an executor thread. */
+    private void drainEvidenceOutbox() {
+        try {
+            String cur = gstr("focus_lock_evidence_outbox");
+            if (cur.isEmpty()) return;
+            // Only drain when Lion is reachable (mesh configured), else keep queued.
+            if (gstr("focus_lock_mesh_url").isEmpty() || gstr("focus_lock_mesh_id").isEmpty()) return;
+            JSONArray arr = new JSONArray(cur);
+            if (arr.length() == 0) { Settings.Global.putString(getContentResolver(), "focus_lock_evidence_outbox", ""); return; }
+            JSONArray remaining = new JSONArray();
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject e = arr.optJSONObject(i);
+                if (e == null) continue;
+                String text = e.optString("text", "");
+                if (text.isEmpty()) continue;
+                boolean sent = postMeshMessage("📋 " + text, false, false, null);
+                if (!sent) remaining.put(e);  // retry next tick
+            }
+            Settings.Global.putString(getContentResolver(), "focus_lock_evidence_outbox",
+                remaining.length() == 0 ? "" : remaining.toString());
+        } catch (Exception ex) {
+            android.util.Log.w("BunnyTasker", "drainEvidenceOutbox", ex);
         }
     }
 
@@ -2236,19 +3909,57 @@ public class MainActivity extends Activity {
     }
 
     private void sendMessage(String msg) {
+        long ts = System.currentTimeMillis();
+        // Stable idempotency key so the bounded retry below can re-POST without
+        // the Lion seeing duplicates (server dedups on client_msg_id).
+        final String clientMsgId = java.util.UUID.randomUUID().toString();
+        // Cache the plaintext keyed by ts BEFORE the network call so even if
+        // the send races with the next refresh we can still re-render it.
+        // postMeshMessage signs over the same ts so the lookup is exact.
+        cacheSentPlaintext(ts, msg);
+        // E2EE is per-peer: with no Lion pubkey yet, this reply goes in plaintext.
+        // Warn + allow — tell her immediately (the persistent banner also shows).
+        final boolean plaintext = !E2EEHelper.canEncrypt(gstr("focus_lock_lion_pubkey"));
+        // Render optimistically so she immediately sees what she typed; the
+        // delivery side-effects below are gated on the send actually landing.
+        handler.post(() -> {
+            addMessageBubble(msg, true, ts);
+            if (plaintext) android.widget.Toast.makeText(this,
+                "Sending unencrypted — Lion's key not yet exchanged",
+                android.widget.Toast.LENGTH_SHORT).show();
+        });
         executor.execute(() -> {
             String lionPubKey = gstr("focus_lock_lion_pubkey");
             E2EEHelper.EncryptedMessage enc = null;
             if (E2EEHelper.canEncrypt(lionPubKey)) {
-                enc = E2EEHelper.encrypt(msg, lionPubKey);
+                // Wrap the same AES key a second time for ourselves, so our own
+                // side of the thread survives a cache eviction, a reinstall or
+                // a new device. Same fix Lion's Share already carries.
+                enc = E2EEHelper.encrypt(msg, lionPubKey, ownBunnyPub());
             }
-            postMeshMessage(msg, false, false, enc);
-            // Record check-in timestamp (any message counts as check-in)
-            Settings.Global.putLong(getContentResolver(), "focus_lock_checkin_timestamp",
-                System.currentTimeMillis());
-            // Mark any pending mandatory replies as answered
-            markMandatoryReplied();
-            handler.post(() -> addMessageBubble(msg, true, System.currentTimeMillis()));
+            // Bounded retry. Reuse ts + clientMsgId every attempt so the
+            // signature stays valid and the server dedups to one message.
+            boolean ok = false;
+            for (int attempt = 0; attempt < 3 && !ok; attempt++) {
+                if (attempt > 0) {
+                    try { Thread.sleep(1000L * attempt); }
+                    catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+                }
+                ok = postMeshMessageAt(msg, false, false, enc, ts, clientMsgId);
+            }
+            if (ok) {
+                // Only a delivered reply counts: record the check-in and clear
+                // any outstanding mandatory-reply obligation. Previously these
+                // ran unconditionally, so a failed send still cleared the
+                // obligation and suppressed the auto-lock while the Lion never
+                // received the reply.
+                Settings.Global.putLong(getContentResolver(), "focus_lock_checkin_timestamp", ts);
+                markMandatoryReplied();
+            } else {
+                handler.post(() -> android.widget.Toast.makeText(this,
+                    "Message not delivered — check your connection and resend.",
+                    android.widget.Toast.LENGTH_LONG).show());
+            }
         });
     }
 
@@ -2335,6 +4046,9 @@ public class MainActivity extends Activity {
                             notifText = decrypted != null ? decrypted : "[encrypted message]";
                         }
                         showLionMessageNotification(notifText, pinnedFlag, mandatoryFlag);
+                        // Direct-mode photo review: a Lion "approve"/"redo" reply
+                        // clears or re-arms a pending deadline-proof review.
+                        maybeHandleDeadlineApproval(notifText);
                         if (!mid.isEmpty()) toMarkRead.add(mid);
                     }
 
@@ -2353,6 +4067,14 @@ public class MainActivity extends Activity {
                         }
                     }
                 }
+
+                // Surface unread count on the collapsed header so the bunny
+                // sees a "• N new" hint without having to expand to find out.
+                // Counted BEFORE we fire the read-acks below — once those land
+                // the next refresh will reset this to 0 naturally.
+                int unreadCount = toMarkRead.size();
+                prefs.edit().putInt("messages_unread_lion", unreadCount).apply();
+                handler.post(() -> applyMessagesExpanded());
 
                 // Ack reads — fire-and-forget per message.
                 for (String mid : toMarkRead) markMeshMessage(mid, "read");
@@ -2386,7 +4108,30 @@ public class MainActivity extends Activity {
                                 text = "[encrypted — missing key]";
                             }
                         } else if (m.optBoolean("encrypted", false) && fromBunny) {
-                            text = "[encrypted — sent by you]";
+                            // Our own copy, wrapped for us at send time. The
+                            // local plaintext cache is now only a fast path:
+                            // it is per-device and evictable, so it was never
+                            // able to survive a reinstall or a device change.
+                            // Messages sent before the second wrap existed
+                            // carry no encrypted_key_bunny and stay unreadable
+                            // — say so plainly rather than implying the whole
+                            // feature is broken.
+                            String cached = lookupSentPlaintext(ts);
+                            if (cached != null) {
+                                text = cached;
+                            } else {
+                                String ekSelf = m.optString("encrypted_key_bunny", "");
+                                if (!ekSelf.isEmpty() && E2EEHelper.canDecrypt(bunnyPrivKey)) {
+                                    String dec = E2EEHelper.decrypt(
+                                        m.optString("ciphertext", ""), ekSelf,
+                                        m.optString("iv", ""), bunnyPrivKey);
+                                    text = dec != null ? dec : "[encrypted — could not read your own copy]";
+                                    // Re-seed the cache so the next render is free.
+                                    if (dec != null) cacheSentPlaintext(ts, dec);
+                                } else {
+                                    text = "[encrypted — sent before your copy was kept]";
+                                }
+                            }
                         }
                         boolean isMandatory = m.optBoolean("mandatory_reply", false)
                             && !m.optBoolean("replied", false) && !deleted;
@@ -2465,6 +4210,81 @@ public class MainActivity extends Activity {
                 if (!mid.isEmpty()) markMeshMessage(mid, "replied");
             }
         } catch (Exception e) { android.util.Log.e("BunnyTasker", "Mark replied", e); }
+    }
+
+    /** Apply current messagesExpanded state to header + body visibility.
+     *  Toggles the wrapper (input row + 380dp scroll) rather than the inner
+     *  container so collapsed actually shrinks the section. */
+    private void applyMessagesExpanded() {
+        if (messagesBody != null) {
+            messagesBody.setVisibility(messagesExpanded ? View.VISIBLE : View.GONE);
+        }
+        if (messagesHeader != null) {
+            int unread = prefs.getInt("messages_unread_lion", 0);
+            String suffix = (!messagesExpanded && unread > 0) ? "  • " + unread + " new" : "";
+            messagesHeader.setText("MESSAGE YOUR LION" + suffix
+                + (messagesExpanded ? "  ▲" : "  ▼"));
+        }
+        updateMsgE2eeWarning();
+    }
+
+    /** Show the "not encrypted" banner when there's no Lion pubkey to encrypt to
+     *  (E2EE is per-peer; canEncrypt is false until pairing exchanges the key).
+     *  Warn + allow — replies still send in plaintext. UI thread only. */
+    private void updateMsgE2eeWarning() {
+        View warn = findViewById(fid("messages_e2ee_warning"));
+        if (warn != null) {
+            warn.setVisibility(E2EEHelper.canEncrypt(gstr("focus_lock_lion_pubkey")) ? View.GONE : View.VISIBLE);
+        }
+    }
+
+    /** Cache plaintext for a bunny-sent message keyed by ts. Lets the chat
+     *  thread render the bunny's own outgoing messages after the next refresh
+     *  wipes the bubble — the server-stored copy is ciphertext (encrypted to
+     *  Lion's pubkey) and the bunny can't decrypt it.
+     *
+     *  Kept in SharedPreferences (cap 200 entries) so it survives an app
+     *  restart but doesn't grow forever. Storing only the bunny's own
+     *  plaintext on the bunny's own device adds no new exposure surface —
+     *  the bunny already authored it. */
+    private static final int SENT_PLAINTEXT_CAP = 200;
+
+    /** Our own public key, in the same form the mesh registered us with, so a
+     *  self-wrap is readable by the private key PairingManager already holds. */
+    private String ownBunnyPub() {
+        try {
+            return PairingManager.getPublicKey(getContentResolver());
+        } catch (Exception e) {
+            android.util.Log.w("BunnyTasker", "own pubkey unavailable for self-wrap", e);
+            return null;
+        }
+    }
+
+    private void cacheSentPlaintext(long ts, String plaintext) {
+        if (plaintext == null) return;
+        SharedPreferences sp = getSharedPreferences("bunny_sent_plain", MODE_PRIVATE);
+        SharedPreferences.Editor ed = sp.edit();
+        ed.putString("t" + ts, plaintext);
+        // Cheap eviction: when we cross the cap, drop the oldest ~50.
+        java.util.Map<String, ?> all = sp.getAll();
+        if (all.size() > SENT_PLAINTEXT_CAP) {
+            java.util.TreeSet<Long> tsKeys = new java.util.TreeSet<>();
+            for (String k : all.keySet()) {
+                if (k.startsWith("t")) {
+                    try { tsKeys.add(Long.parseLong(k.substring(1))); } catch (Exception ignored) {}
+                }
+            }
+            int toDrop = tsKeys.size() - (SENT_PLAINTEXT_CAP - 50);
+            java.util.Iterator<Long> it = tsKeys.iterator();
+            while (toDrop-- > 0 && it.hasNext()) ed.remove("t" + it.next());
+        }
+        ed.apply();
+    }
+
+    private String lookupSentPlaintext(long ts) {
+        if (ts <= 0) return null;
+        SharedPreferences sp = getSharedPreferences("bunny_sent_plain", MODE_PRIVATE);
+        return sp.getString("t" + ts, null);
     }
 
     private void addMessageBubble(String text, boolean fromBunny, long timestamp) {
@@ -2853,6 +4673,8 @@ public class MainActivity extends Activity {
     private void showBankingPicker() {
         executor.execute(() -> {
             java.util.List<String[]> installed = new java.util.ArrayList<>();
+            int totalCandidates = 0;
+            int regionsScanned = 0;
             android.content.pm.PackageManager pm = getPackageManager();
             try {
                 java.io.InputStream is = getAssets().open("banks.json");
@@ -2869,6 +4691,7 @@ public class MainActivity extends Activity {
                     if (region.startsWith("_")) continue;
                     Object val = root.opt(region);
                     if (!(val instanceof JSONArray)) continue;
+                    regionsScanned++;
                     JSONArray arr = (JSONArray) val;
                     for (int i = 0; i < arr.length(); i++) {
                         JSONObject b = arr.optJSONObject(i);
@@ -2876,21 +4699,35 @@ public class MainActivity extends Activity {
                         String pkg = b.optString("package", "");
                         String name = b.optString("name", pkg);
                         if (pkg.isEmpty() || !seen.add(pkg)) continue;
+                        totalCandidates++;
                         if (pm.getLaunchIntentForPackage(pkg) != null) {
                             installed.add(new String[]{pkg, name});
+                            android.util.Log.i("BunnyTasker", "banking-picker: matched " + name + " (" + pkg + ")");
                         }
                     }
                 }
+                android.util.Log.i("BunnyTasker", "banking-picker: " + regionsScanned + " regions, "
+                    + totalCandidates + " unique packages, " + installed.size() + " installed");
             } catch (Exception e) {
-                android.util.Log.w("BunnyTasker", "banks.json read failed: " + e.getMessage());
+                android.util.Log.w("BunnyTasker", "banks.json read failed: " + e.getMessage(), e);
             }
+            // Diagnostic: surface the count to the user — silent "no apps" was
+            // the original symptom; now tap count + per-package log line +
+            // user-visible counter make it obvious whether banks.json was
+            // read, how many candidates it had, and what the PackageManager
+            // saw as installed.
+            final int fTotal = totalCandidates;
+            final int fInstalled = installed.size();
             handler.post(() -> {
                 if (installed.isEmpty()) {
                     new android.app.AlertDialog.Builder(this)
                         .setTitle("No banking app detected")
-                        .setMessage("None of the apps in shared/banks.json appear to be installed. "
-                            + "Install your bank's app, then tap Pay again. "
-                            + "If your bank isn't on the list, send a PR to shared/banks.json.")
+                        .setMessage("Scanned banks.json: " + fTotal + " candidate packages.\n"
+                            + "PackageManager reports 0 of them installed.\n\n"
+                            + "If your bank IS installed, the most likely cause is that "
+                            + "Bunny Tasker can't see it through Android's package-visibility "
+                            + "filter. Check logcat for `banking-picker:` lines. "
+                            + "If your bank isn't in shared/banks.json, send a PR.")
                         .setPositiveButton("OK", null)
                         .show();
                     return;

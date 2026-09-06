@@ -25,7 +25,10 @@ cd "$SCRIPT_DIR"
 
 # Auto-detect SDK paths
 ANDROID_SDK="${ANDROID_SDK:-/tmp/android-sdk}"
-BUILD_TOOLS="$ANDROID_SDK/build-tools/35.0.0"
+# Default build-tools 35.0.0; override with FOCUSLOCK_BUILD_TOOLS. The optional
+# A3 Tor AAR (tor-android 0.4.9.x) ships Java-24 bytecode, which only d8 from
+# build-tools >= 36.0.0 can dex — set FOCUSLOCK_BUILD_TOOLS=36.0.0 for Tor builds.
+BUILD_TOOLS="$ANDROID_SDK/build-tools/${FOCUSLOCK_BUILD_TOOLS:-35.0.0}"
 ANDROID_JAR="$ANDROID_SDK/platforms/android-36/android.jar"
 
 # Verify tools exist
@@ -77,6 +80,50 @@ else
     KEY_ALIAS="focusctl"
 fi
 
+# Optional embedded Tor (A3 — see docs/TOR-ONION.md). DEFAULT OFF: when
+# FOCUSLOCK_TOR_AAR is unset, TOR_CP/TOR_DEX_INPUTS/TOR_LIB_DIR stay empty and
+# the build is byte-identical to before.
+TOR_CP=""
+TOR_DEX_INPUTS=""
+TOR_LIB_DIR=""
+if [ -n "${FOCUSLOCK_TOR_AAR:-}" ]; then
+    echo "Embedding Tor from $FOCUSLOCK_TOR_AAR ..."
+    TOR_WORK="$(mktemp -d)"
+    unzip -o -q "$FOCUSLOCK_TOR_AAR" -d "$TOR_WORK"          # AAR → classes.jar + jni/<abi>/*.so
+    TOR_CP=":$TOR_WORK/classes.jar"
+    TOR_DEX_INPUTS="$TOR_WORK/classes.jar"
+    if [ -n "${FOCUSLOCK_JTORCTL_JAR:-}" ]; then
+        TOR_CP="$TOR_CP:$FOCUSLOCK_JTORCTL_JAR"
+        TOR_DEX_INPUTS="$TOR_DEX_INPUTS $FOCUSLOCK_JTORCTL_JAR"
+    fi
+    if [ -n "${FOCUSLOCK_BCPROV_JAR:-}" ]; then          # raw Ed25519/X25519 + SHA3
+        TOR_CP="$TOR_CP:$FOCUSLOCK_BCPROV_JAR"
+        TOR_DEX_INPUTS="$TOR_DEX_INPUTS $FOCUSLOCK_BCPROV_JAR"
+    fi
+    # androidx.localbroadcastmanager — a HARD runtime dependency of the AAR's
+    # org.torproject.jni.TorService (onCreate → broadcastStatus). Without it the
+    # first Tor start throws NoClassDefFoundError and kills the process. Gradle
+    # would resolve this transitively; this build has no resolver, so list it.
+    # See android/slave/build.sh for the on-device write-up.
+    if [ -n "${FOCUSLOCK_LBM_JAR:-}" ]; then
+        TOR_CP="$TOR_CP:$FOCUSLOCK_LBM_JAR"
+        TOR_DEX_INPUTS="$TOR_DEX_INPUTS $FOCUSLOCK_LBM_JAR"
+    else
+        echo "WARNING: FOCUSLOCK_LBM_JAR unset — Tor will crash on first start." >&2
+    fi
+    TOR_LIB_DIR="$TOR_WORK/jni"
+fi
+
+# Source set: base app + (Tor-enabled only) the A3 files. OnionKeys/OnionControl/
+# TorManager import bcprov/tor/jtorctl (classpath only when FOCUSLOCK_TOR_AAR is
+# set) so they are excluded otherwise; TorHook (reflection, no Tor imports) is
+# always compiled. find-based so the net/freehaven package is included.
+if [ -n "${FOCUSLOCK_TOR_AAR:-}" ]; then
+    SRCS="$(find src -name '*.java')"
+else
+    SRCS="$(find src -name '*.java' ! -name 'OnionKeys.java' ! -name 'OnionControl.java' ! -name 'TorManager.java')"
+fi
+
 echo "Compiling resources..."
 aapt2 compile --dir res -o compiled.zip
 
@@ -85,16 +132,28 @@ aapt2 link -o unaligned.apk -I "$ANDROID_JAR" --manifest AndroidManifest.xml \
     --java src compiled.zip --auto-add-overlay
 
 echo "Compiling Java..."
-javac -encoding UTF-8 -source 17 -target 17 -classpath "$ANDROID_JAR" -d classes src/com/focusctl/*.java
+javac -encoding UTF-8 -source 17 -target 17 -classpath "$ANDROID_JAR$TOR_CP" -d classes $SRCS
 
 echo "Dexing..."
-d8 --min-api 33 --output classes.zip classes/com/focusctl/*.class
+d8 --min-api 33 --output classes.zip $(find classes -name '*.class') $TOR_DEX_INPUTS
 
 echo "Packaging..."
 cp unaligned.apk app.apk
 unzip -o classes.zip classes.dex
 zip -u app.apk classes.dex
-zipalign -f 4 app.apk aligned.apk
+if [ -n "$TOR_LIB_DIR" ] && [ -d "$TOR_LIB_DIR" ]; then
+    # Stage native libs under lib/<abi>/ and add uncompressed (-0) so Android can
+    # mmap them directly; zipalign -p page-aligns them below.
+    rm -rf libstage && mkdir -p libstage/lib
+    for abidir in "$TOR_LIB_DIR"/*/; do
+        abi="$(basename "$abidir")"
+        mkdir -p "libstage/lib/$abi"
+        cp "$abidir"*.so "libstage/lib/$abi/" 2>/dev/null || true
+    done
+    (cd libstage && zip -0 -r -q ../app.apk lib)
+    rm -rf libstage
+fi
+zipalign -p -f 4 app.apk aligned.apk
 
 echo "Signing ($([ "$RELEASE" = "1" ] && echo release || echo debug))..."
 apksigner sign --ks "$KEYSTORE_PATH" --ks-pass "pass:$KEYSTORE_PASS" \

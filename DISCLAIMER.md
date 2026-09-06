@@ -35,8 +35,9 @@ other safety practice. It is not therapy, relationship counselling, or
 professional advice of any kind. If a dynamic becomes harmful, **stop
 using the Software and seek appropriate support.**
 
-The Software includes a Release Forever function and a factory reset
-path (after 150 escape attempts) as safety valves. These exist because
+The Software includes a Release Forever function and an always-available
+factory-reset path (the OS factory reset is never blocked; the app also
+surfaces a shortcut after a few escape attempts) as safety valves. These exist because
 consent can be withdrawn at any time. If you are a Lion: honour that.
 
 ### No warranty

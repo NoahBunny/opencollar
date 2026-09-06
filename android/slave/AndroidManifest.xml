@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.focuslock"
-    android:versionCode="75"
-    android:versionName="8.32">
+    android:versionCode="87"
+    android:versionName="8.44">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
 
@@ -17,7 +17,8 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
-    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- CAMERA removed: covert front-camera capture is gone. The wearer-driven
+         photo-task uses ACTION_IMAGE_CAPTURE, which needs no CAMERA permission. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
@@ -32,6 +33,17 @@
 
         <activity
             android:name=".ConsentActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:theme="@android:style/Theme.Material.NoActionBar" />
+
+        <!-- Exported so Bunny Tasker can launch it. Safe to export: it writes
+             the ceiling only behind an on-screen confirmation, and only ever
+             upward — a bridge that can start an activity still cannot tap
+             through a dialog, and tightening is the wearer's own direction. -->
+        <activity
+            android:name=".TightenActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
@@ -52,6 +64,25 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Confirms pin-shortcut requests (Chrome's "Add to Home screen").
+             Android routes these to the DEFAULT home app; the Collar claims
+             CATEGORY_HOME to intercept the home button during a lock, so
+             without this the whole device reports pinning unsupported and no
+             PWA can be installed. Exported because the system starts it.
+             excludeFromRecents + NoDisplay-ish: it accepts or refuses and
+             finishes, and must never look like a screen the wearer landed on. -->
+        <activity
+            android:name=".PinShortcutActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.content.pm.action.CONFIRM_PIN_SHORTCUT" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
@@ -86,6 +117,32 @@
             android:name=".ControlService"
             android:exported="true"
             android:foregroundServiceType="specialUse|location" />
+
+        <!-- Notification-shade guard (non-device-owner shade blocking). The system
+             binds accessibility services, so it must be exported and protected by
+             BIND_ACCESSIBILITY_SERVICE. Enabled by the operator via adb in recage. -->
+        <service
+            android:name=".ShadeGuardService"
+            android:label="@string/shade_guard_label"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/shade_guard_accessibility" />
+        </service>
+
+        <!-- A3 (optional embedded Tor). Declared exactly as the tor-android AAR
+             does (no foregroundServiceType — there is no manifest merger in this
+             no-Gradle pipeline). Inert when the APK was built without
+             FOCUSLOCK_TOR_AAR: the class is absent and the service is never
+             started. C3 device-validation: confirm whether TorService calls
+             startForeground() under API 34+ and, if so, add the matching type. -->
+        <service
+            android:name="org.torproject.jni.TorService"
+            android:exported="false" />
 
         <receiver
             android:name=".SmsReceiver"
