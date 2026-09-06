@@ -2670,6 +2670,16 @@ public class ControlService extends Service {
         return json.substring(i, e).trim();
     }
 
+    /** jval + parse-to-long, null when the key is absent or not numeric.
+     *  Lets a handler tell "the server sent 0" apart from "the server sent
+     *  nothing", which is the difference between an absolute SET and a
+     *  fall-back local increment. */
+    private Long jlong(String json, String key) {
+        String v = jval(json, key);
+        if (v == null || v.isEmpty()) return null;
+        try { return Long.valueOf(v.trim()); } catch (Exception e) { return null; }
+    }
+
     private String webUI() {
         return "<!DOCTYPE html><html lang=en><head>\n"
 + "<meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1,user-scalable=no'>\n"
@@ -3372,20 +3382,40 @@ public class ControlService extends Service {
                 else if ("silver".equals(tier)) amt = 35;
                 else if ("gold".equals(tier)) amt = 50;
                 if (amt > 0) {
-                    String pw = gstr("focus_lock_paywall");
-                    int curPw = 0;
-                    try { curPw = Integer.parseInt(pw); } catch (Exception e) {}
-                    Settings.Global.putString(getContentResolver(),
-                        "focus_lock_paywall", String.valueOf(curPw + amt));
+                    // The server stamps the authoritative post-charge numbers into
+                    // params (paywall / sub_due / sub_total_owed). SET them rather
+                    // than re-deriving with `paywall += amt`: a blob that gets
+                    // re-delivered — a vault replay, a resumed sync, a restart that
+                    // re-reads the same version — then lands on the same balance
+                    // instead of charging a second time. Only fall back to the local
+                    // increment for an older relay that sends tier alone.
+                    long nowMs = System.currentTimeMillis();
+                    Long srvPw = jlong(body, "paywall");
+                    Long srvDue = jlong(body, "sub_due");
+                    Long srvOwed = jlong(body, "sub_total_owed");
+                    if (srvPw != null) {
+                        Settings.Global.putString(getContentResolver(),
+                            "focus_lock_paywall", String.valueOf(srvPw.longValue()));
+                    } else {
+                        String pw = gstr("focus_lock_paywall");
+                        int curPw = 0;
+                        try { curPw = Integer.parseInt(pw); } catch (Exception e) {}
+                        Settings.Global.putString(getContentResolver(),
+                            "focus_lock_paywall", String.valueOf(curPw + amt));
+                    }
+                    Settings.Global.putLong(getContentResolver(), "focus_lock_sub_due",
+                        srvDue != null ? srvDue.longValue() : nowMs + 7L * 24 * 3600 * 1000);
+                    if (srvOwed != null) {
+                        Settings.Global.putLong(getContentResolver(),
+                            "focus_lock_sub_total_owed", srvOwed.longValue());
+                    } else {
+                        long totalOwed = Settings.Global.getLong(getContentResolver(),
+                            "focus_lock_sub_total_owed", 0);
+                        Settings.Global.putLong(getContentResolver(),
+                            "focus_lock_sub_total_owed", totalOwed + amt);
+                    }
                     Settings.Global.putLong(getContentResolver(),
-                        "focus_lock_sub_due",
-                        System.currentTimeMillis() + 7L * 24 * 3600 * 1000);
-                    long totalOwed = Settings.Global.getLong(getContentResolver(),
-                        "focus_lock_sub_total_owed", 0);
-                    Settings.Global.putLong(getContentResolver(),
-                        "focus_lock_sub_total_owed", totalOwed + amt);
-                    Settings.Global.putLong(getContentResolver(),
-                        "focus_lock_sub_last_charged", System.currentTimeMillis());
+                        "focus_lock_sub_last_charged", nowMs);
                     result = "{\"ok\":true,\"action\":\"subscribe_charged\",\"tier\":\""
                         + tier + "\",\"amount\":" + amt + "}";
                 } else {
@@ -3754,17 +3784,27 @@ public class ControlService extends Service {
      * is the on-device DRIVER that fires the charge when sub_due passes, so
      * recurring tribute works fully serverless.
      *
-     * Disabled when a webhook host (homelab) is configured — the homelab's
-     * server-side ticker is then the single authoritative charger, avoiding a
-     * double charge. Idempotent: advances sub_due by 7 days from the previous
-     * due (so a brief offline gap still charges), but caps catch-up to one
-     * cycle so a long-powered-off device doesn't lump-charge months at once.
+     * Disabled whenever ANY server-side charger exists — a homelab webhook host
+     * or a mesh relay — since either one runs its own weekly ticker and is then
+     * the single authoritative charger. Idempotent: advances sub_due by 7 days
+     * from the previous due (so a brief offline gap still charges), but caps
+     * catch-up to one cycle so a long-powered-off device doesn't lump-charge
+     * months at once.
      * Runtime state (paywall/sub_due) propagates to Lion via /mesh/status and
      * the vault runtime push, so no orders-version bump is needed.
      */
     private void maybeFireLocalSubscriptionCharge() {
         // Homelab present → its server-side ticker is the charger.
         if (!gstr("focus_lock_webhook_host").isEmpty()) return;
+        // Relay present → so is focuslock-mail.py's check_subscription_charges(),
+        // which scans EVERY mesh carrying a sub_tier, homelab or not. This guard
+        // used to test the homelab alone, so a plain vault mesh (mesh_url set, no
+        // webhook host) had two chargers: the relay bumped the balance and pushed
+        // a subscribe-charge blob, and 30s later this driver bumped it again —
+        // then state-mirror carried the doubled figure back up to the relay. A
+        // $50/wk gold tier billed $100. Serverless means serverless: no webhook
+        // host AND no relay.
+        if (!gstr("focus_lock_mesh_url").isEmpty()) return;
         String tier = gstr("focus_lock_sub_tier");
         if (tier == null || tier.isEmpty()) return;  // no active subscription
         tier = tier.toLowerCase();

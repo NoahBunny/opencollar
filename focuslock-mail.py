@@ -1029,11 +1029,25 @@ def mesh_apply_order(action, params, orders):
         except (ValueError, TypeError):
             total_owed = 0
         now_ms = int(t_sc.time() * 1000)
-        orders.set("paywall", str(current_pw + amount))
-        orders.set("sub_due", now_ms + 7 * 24 * 3600 * 1000)
-        orders.set("sub_total_owed", str(total_owed + amount))
+        new_pw = current_pw + amount
+        new_due = now_ms + 7 * 24 * 3600 * 1000
+        new_owed = total_owed + amount
+        orders.set("paywall", str(new_pw))
+        orders.set("sub_due", new_due)
+        orders.set("sub_total_owed", str(new_owed))
         orders.set("sub_last_charged", now_ms)
-        return {"applied": action, "tier": tier, "amount": amount, "paywall": current_pw + amount}
+        # Stamp the authoritative result into `params` — _server_apply_order
+        # hands this same dict to _admin_order_to_vault_blob, so the Collar
+        # SETS the number the server computed instead of re-deriving it with a
+        # local `paywall += amount`. Same trick as payment-received above, and
+        # here it also makes the order idempotent: re-applying a replayed or
+        # re-delivered blob lands on the same balance instead of charging twice.
+        if isinstance(params, dict):
+            params["paywall"] = new_pw
+            params["sub_due"] = new_due
+            params["sub_total_owed"] = new_owed
+            params["charged_at"] = now_ms
+        return {"applied": action, "tier": tier, "amount": amount, "paywall": new_pw}
     elif action == "tribute-charge":
         # Daily tribute: accrues while phone unlocked. Fired by
         # check_tributes_and_fines once per 24h unlocked window.
