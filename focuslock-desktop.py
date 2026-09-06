@@ -107,6 +107,14 @@ try:
 except ImportError:
     unpaired_orders_mod = None
 
+# Bunny Tasker's read-only surface, served on loopback off the mesh server. Same
+# optional-import contract as the overlay above: a collar without the module
+# just has no companion page.
+try:
+    import focuslock_companion as companion_mod
+except ImportError:
+    companion_mod = None
+
 _cfg = load_config()
 
 # config.json may hold admin_token + mesh secrets. We don't silently rewrite a
@@ -651,6 +659,40 @@ def mesh_local_status():
         "type": "desktop",
         "hostname": MESH_NODE_ID,
         "locked": state.locked,
+    }
+
+
+# Freshness window matches focuslock-tray.py's CONNECTED_THRESHOLD_MS and Bunny
+# Tasker's `mesh_last_sync_ms`, so the crown, the phone and this page cannot
+# disagree about whether the mesh is alive.
+COMPANION_CONNECTED_THRESHOLD_MS = 90_000
+
+
+def _companion_local():
+    """Runtime bits the order store never sees, for the companion page."""
+    last_sync = 0
+    try:
+        last_sync = int(os.path.getmtime(MESH_HEARTBEAT_FILE) * 1000)
+    except OSError:
+        pass
+    fresh = last_sync > 0 and (time.time() * 1000 - last_sync) < COMPANION_CONNECTED_THRESHOLD_MS
+    # Same 120s peer-liveness window the Windows collar uses for its tray count,
+    # so the two companions do not report different mesh sizes on one mesh.
+    now = time.time()
+    online = sum(1 for peer in mesh_peers.get_all_except(MESH_NODE_ID) if (now - peer.last_seen) < 120)
+    return {
+        "locked": state.locked,
+        "message": state.message,
+        "pinned": state.pinned,
+        "task_text": state.task_text,
+        "task_reps": state.task_reps,
+        "task_reps_done": state.task_reps_done,
+        "task_status": state.task_status,
+        "node_id": MESH_NODE_ID,
+        "platform": "Linux",
+        "connected": fresh,
+        "nodes_online": online,
+        "last_sync_ms": last_sync,
     }
 
 
@@ -1351,12 +1393,30 @@ class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             self._respond(200, mesh.handle_mesh_status(mesh_orders, mesh_peers, MESH_NODE_ID, mesh_local_status()))
         elif path == "/mesh/vouchers" and mesh_vouchers:
             self._respond(200, mesh.handle_get_vouchers(mesh_vouchers))
+        elif companion_mod is not None and path in companion_mod.COMPANION_PATHS:
+            self._serve_companion(path)
         elif path in ("/", "/index.html"):
             self._serve_web_ui()
         elif path.startswith("/api/pair/") and len(path) > len("/api/pair/"):
             self._serve_pairing_code(path.split("/")[-1])
         else:
             self._respond(404, {"error": "not found"})
+
+    def _serve_companion(self, path):
+        """Serve the read-only companion surface. Loopback-gated in the module."""
+        result = companion_mod.handle_get(path, self.client_address, mesh_orders.get, _companion_local())
+        if result is None:
+            self._respond(404, {"error": "not found"})
+            return
+        status, ctype, body = result
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        # The balance changes minute to minute; a cached page showing yesterday's
+        # figure is worse than no page.
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _serve_web_ui(self):
         """Serve Lion's Share web UI."""

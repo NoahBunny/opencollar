@@ -38,6 +38,7 @@ Consensual remote device restriction ecosystem. Lion controls, Bunny obeys, Coll
 - `focuslock_config.py` — Config loader
 - `focuslock_sync.py` — Mesh sync helpers
 - `focuslock_unpaired_orders.py` — Interim CLAUDE.md overlay for a collared-but-unpaired desktop (tone + escalating pair-now nudge, no enforcement)
+- `focuslock_companion.py` — Bunny Tasker's read-only surface for the desktop collars, served on loopback off the existing mesh HTTP server (`/companion`, `/companion/state`)
 - `banks.json` — Payment detection keywords (145+ banks)
 
 ### Installers
@@ -94,7 +95,7 @@ Runtime config: `~/.config/focuslock/config.json` (Linux) or `%APPDATA%\focusloc
 - **Address refresh**: Re-resolved each gossip tick (handles DHCP/WiFi/Tailscale changes)
 - **Tailscale cache**: 60s hostname refresh interval
 - **WARREN_WHITELIST**: All trusted node IDs including generic seed IDs (`phone`, `homelab`)
-- **Deployment**: `focuslock_mesh.py` + `focuslock_ntfy.py` need updating — desktop collars import both. Windows .exe must be rebuilt via `build-win.py`.
+- **Deployment**: `focuslock_mesh.py` + `focuslock_ntfy.py` need updating — desktop collars import both. `shared/focuslock_companion.py` rides the `shared/focuslock_*.py` glob in both desktop installers, but PyInstaller needs it named in `DEFAULT_HIDDEN_IMPORTS`. Windows .exe must be rebuilt via `build-win.py`.
 - **ntfy push**: Optional instant order delivery via ntfy.sh (or self-hosted). Payload is only `{"v": N}` — zero-knowledge by construction. Config: `ntfy_enabled`, `ntfy_server`, `ntfy_topic` in config.json. Topic auto-derived from `mesh_id`. Gossip remains the consistency layer; ntfy is a latency optimization.
 
 ## Safety

@@ -14,7 +14,10 @@ State source: polls the configured relay's `/admin/status` endpoint every
 ownership; same source the desktop collar's vault sync uses), so the tray
 matches whatever the desktop collar is enforcing.
 
-Icons: gold crown when locked, gray crown when unlocked. Tooltip shows
+Icons: purple bunny when the device is BOTH claimed by a Lion and connected;
+gray bunny otherwise. Gray deliberately covers two states — unclaimed and
+disconnected — because a device nobody has claimed must never wear the colour
+that means "held". Right-click for which one it is. Tooltip shows
 status + paywall + sub tier. Right-click menu has shortcuts to open the
 web remote, the log file, and quit.
 
@@ -66,8 +69,8 @@ except (ValueError, ImportError) as exc:
     )
     sys.exit(1)
 
-# Cairo + Pango for the paywall badge composited onto the crown. Optional —
-# missing libs just disable the badge, the bare crown still renders.
+# Cairo + Pango for the paywall badge composited onto the bunny. Optional —
+# missing libs just disable the badge, the bare bunny still renders.
 try:
     import cairo  # pycairo
 
@@ -88,13 +91,17 @@ ORDERS_FILE = CONFIG_DIR / "orders.json"
 HEARTBEAT_FILE = CONFIG_DIR / "last_sync_ms"
 # The Lion's pubkey lands here once They approve/pair this node — the collar reads
 # it (get_lion_pubkey). Its presence is the "paired" signal: no Lion key = the
-# device isn't actually under a Lion yet, so the crown stays gray.
+# device isn't actually under a Lion yet, so the bunny stays gray.
 LION_PUBKEY_FILE = CONFIG_DIR / "lion_pubkey.pem"
 ICONS_DIR = CONFIG_DIR / "icons"
-# Crown asset paths used for the startup existence sanity check; runtime
+# Bunny asset paths used for the startup existence sanity check; runtime
 # icon swapping uses bare names + IconThemePath (KDE/SNI requirement).
-ICON_CONNECTED = ICONS_DIR / "crown-gold.png"
-ICON_DISCONNECTED = ICONS_DIR / "crown-gray.png"
+# Purple (#8A5CD9) and gray (#8A8A8A) were picked for luminance separation at
+# 22px: the brand lavender #A18BC4 sits 21 luma off the old gray and the two
+# were indistinguishable on a dark panel, which defeats the point of a state
+# indicator.
+ICON_CONNECTED = ICONS_DIR / "bunny-purple.png"
+ICON_DISCONNECTED = ICONS_DIR / "bunny-gray.png"
 
 POLL_INTERVAL_S = 5
 HTTP_TIMEOUT_S = 4
@@ -117,7 +124,7 @@ def load_config():
 
 def _is_paired():
     """True once the Lion has paired/approved this node — i.e. Their pubkey is on
-    file. Until then the device is registered-but-unclaimed and the crown must
+    file. Until then the device is registered-but-unclaimed and the bunny must
     stay gray no matter how reachable the relay is."""
     try:
         return LION_PUBKEY_FILE.exists() and LION_PUBKEY_FILE.stat().st_size > 0
@@ -144,7 +151,7 @@ def _heartbeat_age_ms():
 def _is_mesh_connected():
     """True if focuslock-desktop.py heartbeated a successful mesh poll
     within CONNECTED_THRESHOLD_MS. Combined with _is_paired() to drive the
-    gold/gray crown (gold requires BOTH)."""
+    purple/gray bunny (purple requires BOTH)."""
     age_ms = _heartbeat_age_ms()
     if age_ms is not None:
         return age_ms < CONNECTED_THRESHOLD_MS
@@ -188,7 +195,7 @@ def _rounded_rect(ctx, x, y, w, h, r):
     ctx.close_path()
 
 
-def _render_badged_crown(base_png, out_png, text):
+def _render_badged_icon(base_png, out_png, text):
     """Composite `text` as a red badge in the bottom-right of `base_png`,
     write the result to `out_png`. Caller decides when to invoke."""
     base = cairo.ImageSurface.create_from_png(str(base_png))
@@ -284,7 +291,7 @@ class StatusPoller:
             # when the relay has nothing new. Judging liveness by it therefore
             # reported "stale" on any mesh the Lion had simply left alone for a
             # minute. Ask the heartbeat instead, and keep the same threshold the
-            # crown uses so the icon and the label can never disagree.
+            # bunny uses so the icon and the label can never disagree.
             age_ms = _heartbeat_age_ms()
             if age_ms is not None:
                 if age_ms > CONNECTED_THRESHOLD_MS:
@@ -332,7 +339,7 @@ class FocusLockTray:
         # path to our icons dir, then reference by basename without ext.
         self.indicator = AppIndicator.Indicator.new(
             self.APP_ID,
-            "crown-gray",
+            "bunny-gray",
             AppIndicator.IndicatorCategory.APPLICATION_STATUS,
         )
         self.indicator.set_icon_theme_path(str(ICONS_DIR))
@@ -343,6 +350,10 @@ class FocusLockTray:
         self.menu_status.set_sensitive(False)
         self.menu.append(self.menu_status)
         self.menu.append(Gtk.SeparatorMenuItem())
+
+        item_companion = Gtk.MenuItem(label="Open Companion")
+        item_companion.connect("activate", self._on_open_companion)
+        self.menu.append(item_companion)
 
         item_open = Gtk.MenuItem(label="Open Web Remote")
         item_open.connect("activate", self._on_open_web)
@@ -372,7 +383,7 @@ class FocusLockTray:
         self._badge_path = None  # Path to delete on next rotation
         # Best-effort sweep of leftover badge files from prior runs.
         try:
-            for stale in ICONS_DIR.glob("crown-g*-b*.png"):
+            for stale in ICONS_DIR.glob("bunny-*-b*.png"):
                 stale.unlink()
         except Exception:
             pass
@@ -383,9 +394,9 @@ class FocusLockTray:
     def _select_icon(self, connected, amount):
         """Return icon-name to pass to set_icon_full. Renders a badged
         variant if (badge libs available) and (amount > 0); otherwise
-        falls back to the bare crown. Caller still owns the gold/gray
+        falls back to the bare bunny. Caller still owns the purple/gray
         selection — we just composite on top."""
-        base = "crown-gold" if connected else "crown-gray"
+        base = "bunny-purple" if connected else "bunny-gray"
         if not _BADGE_AVAILABLE:
             return base
         text = _format_badge_text(amount)
@@ -402,9 +413,9 @@ class FocusLockTray:
         if not base_path.exists():
             return base
         try:
-            _render_badged_crown(base_path, out_path, text)
+            _render_badged_icon(base_path, out_path, text)
         except Exception:
-            logger.exception("badge render failed; falling back to bare crown")
+            logger.exception("badge render failed; falling back to bare bunny")
             return base
         # Delete previous badge file (only one outstanding at a time).
         if self._badge_path and self._badge_path != out_path:
@@ -419,20 +430,20 @@ class FocusLockTray:
     def _on_state(self, state):
         """Called on the GTK thread by GLib.idle_add.
 
-        Icon = crown, GOLD only when the device is BOTH paired (the Lion's pubkey
-        is on file) AND connected (recent mesh heartbeat); GRAY otherwise — so an
-        unpaired-but-reachable node reads gray, not gold. A red paywall badge is
-        composited over gold when an amount is owed.
+        Icon = bunny, PURPLE only when the device is BOTH paired (the Lion's
+        pubkey is on file) AND connected (recent mesh heartbeat); GRAY otherwise
+        — so an unpaired-but-reachable node reads gray, not purple. A red paywall
+        badge is composited over purple when an amount is owed.
         """
         paired = _is_paired()
         connected = _is_mesh_connected()
-        gold = paired and connected
+        live = paired and connected
         # Shared status suffix for the accessibility/hover text.
-        astext = "under-lion" if gold else ("unpaired" if not paired else "disconnected")
+        astext = "under-lion" if live else ("unpaired" if not paired else "disconnected")
 
         if state is None or "error" in (state or {}):
             err = (state or {}).get("error", "no-data")
-            icon_name = self._select_icon(gold, 0)
+            icon_name = self._select_icon(live, 0)
             self.indicator.set_icon_full(icon_name, astext)
             if not paired:
                 label = "Not paired — waiting for your Lion"
@@ -452,7 +463,7 @@ class FocusLockTray:
             paywall_f = 0.0
         tier = orders.get("sub_tier") or ""
 
-        icon_name = self._select_icon(gold, paywall_f)
+        icon_name = self._select_icon(live, paywall_f)
         self.indicator.set_icon_full(icon_name, astext)
 
         if not paired:
@@ -469,6 +480,19 @@ class FocusLockTray:
         return False
 
     # ── Menu callbacks ──
+
+    def _on_open_companion(self, _item):
+        """Open the collar's local companion page.
+
+        Loopback, and the collar's own mesh port — the page is served by the
+        running collar, so it works with no relay and no network at all, which
+        is exactly the state a bunny is most likely to be checking it from.
+        """
+        port = load_config().get("mesh_port", 8435)
+        try:
+            subprocess.Popen(["xdg-open", f"http://127.0.0.1:{port}/companion"], close_fds=True)
+        except Exception:
+            logger.exception("xdg-open companion failed")
 
     def _on_open_web(self, _item):
         cfg = load_config()
@@ -591,7 +615,7 @@ def main():
     )
     if not ICON_CONNECTED.exists() and not ICON_DISCONNECTED.exists():
         logger.warning(
-            "Neither %s nor %s found — install crown icons or run installers/install-desktop-collar.sh",
+            "Neither %s nor %s found — install bunny icons or run installers/install-desktop-collar.sh",
             ICON_CONNECTED,
             ICON_DISCONNECTED,
         )

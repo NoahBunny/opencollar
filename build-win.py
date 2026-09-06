@@ -102,7 +102,13 @@ def _stage_sources():
             if fname.startswith("focuslock_") and fname.endswith(".py"):
                 shutil.copy2(os.path.join(shared_dir, fname), BUILD_ROOT)
     # Icons
-    for icon_name in ["collar-icon.png", "collar-icon-gold.png", "crown-gold.png", "crown-gray.png"]:
+    for icon_name in [
+        "collar-icon.png",
+        "collar-icon-gold.png",
+        "crown-gold.png",
+        "bunny-purple.png",
+        "bunny-gray.png",
+    ]:
         for search_dir in [os.path.join(SCRIPT_DIR, "icons"), SCRIPT_DIR]:
             src = os.path.join(search_dir, icon_name)
             if os.path.exists(src):
@@ -124,6 +130,7 @@ DEFAULT_HIDDEN_IMPORTS = [
     "focuslock_transport",
     "focuslock_ntfy",
     "focuslock_unpaired_orders",
+    "focuslock_companion",
 ]
 
 
@@ -157,7 +164,14 @@ def pyinstaller_build(name, script, ico_path=None, windowed=True, hidden_imports
         cmd.extend(["--add-data", f"{ico_path}{os.pathsep}."])
 
     # Bundle assets from the staged build dir
-    assets = ["collar-icon.png", "collar-icon-gold.png", "crown-gold.png", "crown-gray.png", "Lexend.ttf"]
+    assets = [
+        "collar-icon.png",
+        "collar-icon-gold.png",
+        "crown-gold.png",
+        "bunny-purple.png",
+        "bunny-gray.png",
+        "Lexend.ttf",
+    ]
     # Include all staged focuslock_*.py modules so PyInstaller ships them alongside the exe
     for fname in os.listdir(BUILD_ROOT):
         if fname.startswith("focuslock_") and fname.endswith(".py"):

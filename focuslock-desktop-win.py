@@ -3,7 +3,7 @@
 # Copyright (C) 2024-2026 The FocusLock Contributors
 """
 FocusLock Desktop Collar — Windows Edition.
-Mesh node + system tray crown + session lock enforcement.
+Mesh node + system tray bunny + session lock enforcement.
 Node ID: {hostname}-win (distinct from Linux collar on same machine).
 
 Dependencies: pystray, Pillow, cryptography (optional for RSA verify)
@@ -38,6 +38,7 @@ LOCK_WALLPAPER = os.path.join(CONFIG_DIR, "lock-wallpaper.png")
 ORIGINAL_WALLPAPER_FILE = os.path.join(CONFIG_DIR, "original-wallpaper")
 CONSENT_FILE = os.path.join(CONFIG_DIR, "desktop-consent")
 FIRST_RUN_FILE = os.path.join(CONFIG_DIR, ".initialized")
+LOG_FILE = os.path.join(CONFIG_DIR, "collar.log")
 
 os.makedirs(CONFIG_DIR, exist_ok=True)
 os.makedirs(ICONS_DIR, exist_ok=True)
@@ -71,6 +72,13 @@ try:
     import focuslock_unpaired_orders as unpaired_orders_mod
 except ImportError:
     unpaired_orders_mod = None
+
+# Bunny Tasker's read-only surface, served on loopback off the mesh server.
+# Optional on the same terms: no module, no companion page.
+try:
+    import focuslock_companion as companion_mod
+except ImportError:
+    companion_mod = None
 
 # Vault crypto for E2E encrypted mesh (Phase D desktop support)
 try:
@@ -151,6 +159,19 @@ mesh_peers = mesh.PeerRegistry(persist_path=PEERS_FILE, trust_store=_trust_store
 # ── Lion's Share Pubkey ──
 
 _lion_pubkey = ""
+
+
+def _is_paired():
+    """True once the Lion has approved this node — Their pubkey is on file.
+
+    Mirrors focuslock-tray.py's `_is_paired()`. Read off disk rather than the
+    `_lion_pubkey` cache because pairing usually happens well after start-up,
+    and the tray must notice without a restart.
+    """
+    try:
+        return os.path.exists(LION_PUBKEY_FILE) and os.path.getsize(LION_PUBKEY_FILE) > 0
+    except OSError:
+        return False
 
 
 def get_lion_pubkey():
@@ -698,7 +719,7 @@ def show_consent():
         "- Lock your Windows session on command\n"
         "- Display a custom lock screen\n"
         "- Report status to the enforcement mesh\n"
-        "- Show a crown icon in your system tray\n\n"
+        "- Show a bunny icon in your system tray\n\n"
         "This is consensual. You can be released at any time\n"
         "by the Lion via Lion's Share.\n\n"
         "Do you accept these terms?"
@@ -715,6 +736,25 @@ def show_consent():
 
 
 # ── Mesh Local Status ──
+
+
+def _companion_local():
+    """Runtime bits the order store never sees, for the companion page.
+
+    Windows drives veneration tasks through the lock screen rather than
+    tracking them in CollarState, so the task card stays empty here — the
+    module treats every one of these keys as optional.
+    """
+    return {
+        "locked": state.locked,
+        "message": state.message,
+        "pinned": state.pinned,
+        "node_id": MESH_NODE_ID,
+        "platform": "Windows",
+        "connected": state.connected,
+        "nodes_online": state.nodes_online,
+        "last_sync_ms": int(state.last_sync * 1000) if state.last_sync else 0,
+    }
 
 
 def mesh_local_status():
@@ -1493,6 +1533,9 @@ class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             resp = mesh.handle_mesh_ping(MESH_NODE_ID, mesh_orders)
         elif path == "/mesh/status":
             resp = mesh.handle_mesh_status(mesh_orders, mesh_peers, MESH_NODE_ID, mesh_local_status())
+        elif companion_mod is not None and path in companion_mod.COMPANION_PATHS:
+            self._serve_companion(path)
+            return
         elif path in ("/", "/index.html"):
             self._serve_web_ui()
             return
@@ -1504,6 +1547,22 @@ class MeshHandler(JSONResponseMixin, BaseHTTPRequestHandler):
             return
 
         self.respond_json(200, resp, cors=True)
+
+    def _serve_companion(self, path):
+        """Serve the read-only companion surface. Loopback-gated in the module."""
+        result = companion_mod.handle_get(path, self.client_address, mesh_orders.get, _companion_local())
+        if result is None:
+            self.respond_json(404, {"error": "not found"})
+            return
+        status, ctype, body = result
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        # The balance changes minute to minute; a cached page showing yesterday's
+        # figure is worse than no page.
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _serve_web_ui(self):
         """Serve Lion's Share web UI from install dir."""
@@ -1593,7 +1652,16 @@ def start_mesh_server():
 
 
 def create_tray_icon():
-    """Create the system tray icon with gold/gray crown."""
+    """Create the system tray icon, logging (rather than swallowing) any failure
+    so a --noconsole build doesn't fail invisibly."""
+    try:
+        return _create_tray_icon_impl()
+    except Exception:
+        logger.exception("Tray icon creation failed")
+        return None
+
+
+def _create_tray_icon_impl():
     try:
         import pystray
         from PIL import Image
@@ -1601,12 +1669,12 @@ def create_tray_icon():
         logger.warning("pystray or Pillow not installed — no tray icon")
         return None
 
-    # Load or generate crown icons
-    gold_path = os.path.join(ICONS_DIR, "crown-gold.png")
-    gray_path = os.path.join(ICONS_DIR, "crown-gray.png")
+    # Load or generate bunny icons
+    purple_path = os.path.join(ICONS_DIR, "bunny-purple.png")
+    gray_path = os.path.join(ICONS_DIR, "bunny-gray.png")
 
     # Try to find icons from known locations
-    for icon_name, dest in [("crown-gold.png", gold_path), ("crown-gray.png", gray_path)]:
+    for icon_name, dest in [("bunny-purple.png", purple_path), ("bunny-gray.png", gray_path)]:
         if not os.path.exists(dest):
             for src_dir in [
                 os.path.dirname(os.path.abspath(__file__)),
@@ -1620,21 +1688,42 @@ def create_tray_icon():
                     shutil.copy2(src, dest)
                     break
 
-    # Generate fallback icons if missing
-    if not os.path.exists(gold_path):
-        img = Image.new("RGBA", (64, 64), (200, 168, 78, 255))
-        img.save(gold_path)
+    # Generate fallback icons if missing — flat squares in the same two
+    # colours the real art uses, so a collar with no assets still signals the
+    # right state instead of showing the wrong one.
+    if not os.path.exists(purple_path):
+        img = Image.new("RGBA", (64, 64), (138, 92, 217, 255))
+        img.save(purple_path)
     if not os.path.exists(gray_path):
-        img = Image.new("RGBA", (64, 64), (100, 100, 100, 255))
+        img = Image.new("RGBA", (64, 64), (138, 138, 138, 255))
         img.save(gray_path)
 
-    icon_gold = Image.open(gold_path)
+    # Force the decode now, on this thread. Image.open() is lazy — leaving it
+    # lazy meant pystray's own icon rendering and the _update_loop thread below
+    # both triggered the first real decode concurrently on the same Image
+    # object, and Pillow's decoder isn't thread-safe for that (intermittent
+    # "unrecognized data stream contents" errors on .copy()).
+    icon_purple = Image.open(purple_path)
+    icon_purple.load()
     icon_gray = Image.open(gray_path)
+    icon_gray.load()
+
+    def _is_live():
+        """PURPLE only when the device is BOTH claimed and connected.
+
+        This used to be `state.connected` alone, so a registered-but-unclaimed
+        Windows collar wore the "held" colour while no Lion had approved it —
+        the display asserting a state the system was not in. Linux never had
+        that bug; the two now agree.
+        """
+        return _is_paired() and state.connected
 
     def get_icon():
-        return icon_gold if state.connected else icon_gray
+        return icon_purple if _is_live() else icon_gray
 
     def get_title():
+        if not _is_paired():
+            return "The Collar \u2014 Not paired, waiting for your Lion"
         if state.connected:
             tip = f"The Collar \u2014 {state.nodes_online} peer{'s' if state.nodes_online != 1 else ''}"
             if state.sub_tier:
@@ -1648,7 +1737,7 @@ def create_tray_icon():
             if state.paywall:
                 tip += f" | ${state.paywall} owed"
             return tip
-        return "The Collar \u2014 Disconnected (0 peers)"
+        return "The Collar \u2014 Paired \u00b7 disconnected (0 peers)"
 
     def on_self_lock(mins):
         def _lock(icon, item):
@@ -1673,8 +1762,23 @@ def create_tray_icon():
 
         return _lock
 
+    def on_open_companion(icon, item):
+        """Open the local companion page in the default browser.
+
+        Loopback URL on purpose: the module refuses anything else, and this is
+        the address that works whether or not the mesh is reachable.
+        """
+        try:
+            import webbrowser
+
+            webbrowser.open(f"http://127.0.0.1:{MESH_PORT}/companion")
+        except Exception as e:
+            logger.warning("Could not open companion page: %s", e)
+
     menu = pystray.Menu(
         pystray.MenuItem("Status", lambda icon, item: None, enabled=False),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Open companion", on_open_companion, default=True),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Self-lock 15m", on_self_lock(15)),
         pystray.MenuItem("Self-lock 30m", on_self_lock(30)),
@@ -1691,22 +1795,25 @@ def create_tray_icon():
     )
 
     # Background updater — only set icon when state changes to force Win32 redraw
-    _prev = [None, None]  # [connected, title]
+    _prev = [None, None]  # [live, title]
 
     def _update_loop():
         while True:
             try:
-                new_connected = state.connected
+                # Keyed on the same combined signal get_icon() uses. Watching
+                # state.connected alone would leave the gray bunny in place
+                # through the pairing that is supposed to turn it purple.
+                new_live = _is_live()
                 new_title = get_title()
-                if new_connected != _prev[0]:
-                    _prev[0] = new_connected
+                if new_live != _prev[0]:
+                    _prev[0] = new_live
                     # Assign a fresh copy to ensure pystray detects the change
                     icon.icon = get_icon().copy()
                 if new_title != _prev[1]:
                     _prev[1] = new_title
                     icon.title = new_title
             except Exception:
-                logger.warning("Tray icon update failed")
+                logger.warning("Tray icon update failed", exc_info=True)
             time.sleep(3)
 
     threading.Thread(target=_update_loop, daemon=True).start()
@@ -2061,11 +2168,14 @@ def self_install():
 
     # Copy icons to appdata
     os.makedirs(ICONS_DIR, exist_ok=True)
-    for icon_name in ["crown-gold.png", "crown-gray.png", "collar-icon.png"]:
+    for icon_name in ["bunny-purple.png", "bunny-gray.png", "collar-icon.png"]:
         for search_dir in [exe_dir, os.path.join(exe_dir, "icons"), os.path.join(exe_dir, "..", "icons")]:
             src = os.path.join(search_dir, icon_name)
             if os.path.exists(src):
-                dest_dir = ICONS_DIR if "crown" in icon_name else CONFIG_DIR
+                # Tray art goes to ICONS_DIR, app art to CONFIG_DIR. This test
+                # keyed on "crown" and would have quietly filed both bunnies
+                # under CONFIG_DIR, where the tray does not look for them.
+                dest_dir = ICONS_DIR if icon_name.startswith("bunny-") else CONFIG_DIR
                 shutil.copy2(src, os.path.join(dest_dir, icon_name))
                 break
 
@@ -2238,6 +2348,7 @@ def main():
         level=logging.INFO,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=[logging.FileHandler(LOG_FILE, encoding="utf-8")],
     )
     logger.info("FocusLock Desktop Collar (Windows) starting")
     logger.info("Node ID: %s", MESH_NODE_ID)
@@ -2424,11 +2535,11 @@ def main():
     # Create and run tray icon (blocks on main thread)
     icon = create_tray_icon()
     if icon:
-        logger.info("Tray icon started — gold crown visible in system tray")
+        logger.info("Tray icon started — bunny visible in system tray")
         icon.run()
     else:
         # No pystray — just run forever
-        logger.info("Running without tray icon (install pystray for crown)")
+        logger.info("Running without tray icon (install pystray for the bunny)")
         try:
             while True:
                 time.sleep(60)

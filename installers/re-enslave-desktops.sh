@@ -66,7 +66,7 @@ restart_collar_unit() {
 # Two-phase: user-side first (icons, autostart, lion_pubkey to ~/.config —
 # always succeeds), then system-side (/opt/focuslock — needs sudo, soft-fails
 # if not available so the user-side install still completes). Ordering matters:
-# the crown tray icon is the visible "is this thing alive" signal, so getting
+# the bunny tray icon is the visible "is this thing alive" signal, so getting
 # it into ~/.config/focuslock/icons/ unconditionally beats aborting halfway
 # through on a machine that hasn't been pre-sudoers'd.
 deploy_local() {
@@ -112,19 +112,21 @@ deploy_local() {
             elif command -v apt-get &>/dev/null; then sudo apt-get install -y gir1.2-appindicator3-0.1 >/dev/null 2>&1 || true
             fi
         else
-            warn "  AppIndicator3 typelib missing — tray crown won't render until you install it"
+            warn "  AppIndicator3 typelib missing — tray bunny won't render until you install it"
         fi
     fi
 
-    # Crown tray icons + collar lockscreen icons → ~/.config/focuslock/icons/
-    # This is the FIX for "tray crown doesn't show up": the icons need to be
-    # present at $ICON_LOCKED / $ICON_UNLOCKED in focuslock-tray.py; missing
-    # icons → AppIndicator silently has nothing to render.
+    # Bunny tray icons + collar lockscreen icons → ~/.config/focuslock/icons/
+    # This is the FIX for "tray bunny doesn't show up": the icons need to be
+    # present at $ICON_CONNECTED / $ICON_DISCONNECTED in focuslock-tray.py;
+    # missing icons → AppIndicator silently has nothing to render.
+    # Plain cp, not sudo install: these live in the user's config dir, which is
+    # why the /opt sudoers grant does not gate the tray art.
     if [ "$DRY_RUN" != 1 ]; then
         mkdir -p ~/.config/focuslock/icons ~/.local/share/focuslock
     fi
     local icon_copied=0
-    for icon in "$SERVER_ICON" collar-icon-gold.png crown-gold.png crown-gray.png; do
+    for icon in "$SERVER_ICON" collar-icon-gold.png bunny-purple.png bunny-gray.png; do
         src="$ICONS/$icon"
         if [ ! -f "$src" ]; then
             warn "  icons/$icon missing in source ($ICONS) — skipped"
@@ -139,7 +141,7 @@ deploy_local() {
         fi
     done
     if [ "$DRY_RUN" != 1 ] && [ "$icon_copied" = 0 ]; then
-        warn "  no icons copied — tray crown won't render. Check that $ICONS exists."
+        warn "  no icons copied — tray bunny won't render. Check that $ICONS exists."
     fi
 
     # Lion pubkey (signature verification for orders) → user copy
@@ -277,18 +279,18 @@ EOF
         warn "  collar: not restarted — no DISPLAY/WAYLAND_DISPLAY (restart from desktop session)"
     fi
 
-    # The crown gets its own branch. It used to be killed unconditionally above
+    # The bunny gets its own branch. It used to be killed unconditionally above
     # and then relaunched only in the direct-exec path, so on any machine where
     # the systemd restart succeeded the tray was killed and never came back.
     if unit=$(restart_collar_unit tray); then
-        log "  crown: restarted $unit"
+        log "  bunny: restarted $unit"
     elif [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
         pkill -f focuslock-tray.py 2>/dev/null || true
         sleep 1
         nohup python3 "$tray_py" >/dev/null 2>&1 &
-        log "  crown: started directly"
+        log "  bunny: started directly"
     else
-        warn "  crown: not restarted — no DISPLAY/WAYLAND_DISPLAY"
+        warn "  bunny: not restarted — no DISPLAY/WAYLAND_DISPLAY"
     fi
 
     # Verify mesh is responding within 5s

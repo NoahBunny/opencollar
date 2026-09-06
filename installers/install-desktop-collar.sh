@@ -56,10 +56,10 @@ echo "=== Installing dependencies ==="
 # every poll — it can never register or pair. It used to be omitted here, which
 # is exactly how a collar came up crippled.
 # libayatana-appindicator (+ typelib) is REQUIRED, not optional. focuslock-tray.py
-# (the crown icon) hard-fails without AppIndicator3/AyatanaAppIndicator3 — no
+# (the bunny icon) hard-fails without AppIndicator3/AyatanaAppIndicator3 — no
 # Gtk.StatusIcon fallback, since that API is deprecated and broken on Wayland.
 # Omitting this here is exactly how a tray crash-loops on every login with
-# "missing system packages" instead of ever showing the crown.
+# "missing system packages" instead of ever showing the bunny.
 if echo "$DISTRO $DISTRO_LIKE" | grep -qi "arch"; then
     sudo pacman -S --needed --noconfirm python-gobject python-cairo python-cryptography gtk4 webkitgtk-6.0 gtk3 libayatana-appindicator 2>/dev/null || true
 elif echo "$DISTRO $DISTRO_LIKE" | grep -qi "fedora"; then
@@ -90,7 +90,7 @@ fi
     exit 1
 }
 
-# Non-fatal: the crown (focuslock-tray.py) needs AppIndicator, but it's a status
+# Non-fatal: the bunny (focuslock-tray.py) needs AppIndicator, but it's a status
 # display, not enforcement — desktop.py keeps working without it. Warn instead
 # of aborting, since focuslock-tray.service will just crash-loop and log why.
 /usr/bin/python3 -c "
@@ -101,7 +101,7 @@ try:
 except (ValueError, ImportError):
     gi.require_version('AppIndicator3', '0.1')
     from gi.repository import AppIndicator3
-" 2>/dev/null || echo "WARNING: no AppIndicator binding found — the crown tray icon will not appear until this is installed."
+" 2>/dev/null || echo "WARNING: no AppIndicator binding found — the bunny tray icon will not appear until this is installed."
 
 # Verify loginctl
 command -v loginctl &>/dev/null || {
@@ -154,18 +154,18 @@ sudo cp "$PROJECT_DIR/icons/collar-icon-gold.png" /opt/focuslock/ 2>/dev/null ||
 
 # Crown tray icons (per-user) — required by focuslock-tray.py to render the
 # AppIndicator. Missing icons → silent no-icon tray, which is how most
-# "tray crown not showing" reports trace back to the install step.
+# "tray bunny not showing" reports trace back to the install step.
 mkdir -p ~/.config/focuslock/icons
 icon_copied=0
-for icon in crown-gold.png crown-gray.png; do
+for icon in bunny-purple.png bunny-gray.png; do
     src="$PROJECT_DIR/icons/$icon"
     if [ ! -f "$src" ]; then
-        echo "  WARN: $src missing in source — tray crown won't render until copied here"
+        echo "  WARN: $src missing in source — tray bunny won't render until copied here"
         continue
     fi
     cp "$src" ~/.config/focuslock/icons/ && icon_copied=$((icon_copied + 1))
 done
-[ "$icon_copied" = 0 ] && echo "  WARN: no crown icons copied — tray will be invisible"
+[ "$icon_copied" = 0 ] && echo "  WARN: no bunny icons copied — tray will be invisible"
 
 # Install Lion's Share public key (needed for signature verification).
 # Prefer `sudo install` over `sudo cp` for the system copy — the sudoers
@@ -360,6 +360,7 @@ $CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/install -D -m 0644 /*/focuslock_*.py
 $CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/install -D -m 0644 /*/lion_pubkey.pem /opt/focuslock/lion_pubkey.pem
 $CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/install -D -m 0644 /*/collar-icon*.png /opt/focuslock/collar-icon*.png
 $CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/install -D -m 0644 /*/crown-*.png /opt/focuslock/crown-*.png
+$CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/install -D -m 0644 /*/bunny-*.png /opt/focuslock/bunny-*.png
 $CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/install -D -m 0644 /*/web/index.html /opt/focuslock/web/index.html
 $CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart focuslock-desktop.service
 $CURRENT_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart focuslock-tray.service
