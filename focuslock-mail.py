@@ -8071,6 +8071,13 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         a = anodes.get(n.get("node_id", ""))
                         if a and a.get("display_name"):
                             n["display_name"] = a["display_name"]
+                        # ...and the account's bunny_pubkey, when the vault row
+                        # predates register-node-request carrying one. Never
+                        # overwrite a key already on the vault row: that row is
+                        # what the Lion approved, the account row is what an
+                        # invite-code holder self-asserted.
+                        if a and a.get("bunny_pubkey") and not n.get("bunny_pubkey"):
+                            n["bunny_pubkey"] = a["bunny_pubkey"]
                     # Per-mesh bunny E2EE pubkey (#6): the phone and the Collar
                     # register under different node_id schemes, so expose the
                     # bunny's key at the mesh level — there is one bunny E2EE key
@@ -8084,6 +8091,26 @@ class WebhookHandler(JSONResponseMixin, BaseHTTPRequestHandler):
                         resp["bunny_pubkey"] = best["bunny_pubkey"]
                         if best.get("display_name"):
                             resp["bunny_display_name"] = best["display_name"]
+                if authed and not resp.get("bunny_pubkey"):
+                    # Fall back to the vault node rows. A Collar that enrolled
+                    # through register-node-request carries its E2EE bunny_pubkey
+                    # on the vault row and never touches /api/mesh/join, so the
+                    # mesh account has no node to harvest — and this mesh-level
+                    # field stayed absent. Lion's Share reads exactly this field
+                    # whenever a slot has no node_id (the ordinary one-bunny
+                    # pairing), so the Inbox sat on "not encrypted" forever with
+                    # the key sitting one dict away. Most-recently-registered
+                    # wins, matching the account-side rule above.
+                    vbest = None
+                    for n in nodes:
+                        if n.get("bunny_pubkey"):
+                            if vbest is None or n.get("registered_at", 0) >= vbest.get("registered_at", 0):
+                                vbest = n
+                    if vbest:
+                        resp["bunny_pubkey"] = vbest["bunny_pubkey"]
+                        if vbest.get("display_name") and not resp.get("bunny_display_name"):
+                            resp["bunny_display_name"] = vbest["display_name"]
+                if acct and authed:
                     # Real auto-accept state (#5) so the Lion's toggle reflects
                     # truth instead of a hardcoded "(off)". Read through the same
                     # helper register-node-request enforces with, so an expired

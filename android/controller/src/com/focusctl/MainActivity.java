@@ -575,6 +575,29 @@ public class MainActivity extends Activity {
                 }
             }
             if (bp.isEmpty()) bp = root.optString("bunny_pubkey", "");
+            // Last resort: the relay may be older than the fix that surfaces a
+            // vault-registered Collar's key at the mesh level, in which case the
+            // only copy is on the node rows themselves. Adopt it ONLY when every
+            // row that carries a key carries the SAME key — with one bunny that is
+            // unambiguous, and with several it is exactly the guess that would
+            // encrypt the Lion's messages to the wrong reader, so we decline and
+            // leave the banner up rather than pick.
+            if (bp.isEmpty()) {
+                org.json.JSONArray arr = root.optJSONArray("nodes");
+                if (arr != null) {
+                    String only = "";
+                    boolean ambiguous = false;
+                    for (int i = 0; i < arr.length(); i++) {
+                        String k = arr.getJSONObject(i).optString("bunny_pubkey", "");
+                        if (k.isEmpty()) continue;
+                        if (only.isEmpty()) only = k;
+                        else if (!only.equals(k)) { ambiguous = true; break; }
+                    }
+                    if (!ambiguous) bp = only;
+                    else android.util.Log.w("FocusCtl",
+                        "Several bunny pubkeys on this mesh and no node_id on the slot — not guessing; re-pair to bind one");
+                }
+            }
         }
         catch (Exception e) { return; }
         if (bp == null || bp.isEmpty()) return;
