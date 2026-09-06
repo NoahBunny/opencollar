@@ -611,3 +611,60 @@ class TestSlaveCollarConformance:
         orders = {"active": "1"}
         out = self._run("verify-orders", "", lion_keypair["pub_pem"], stdin=json.dumps(orders)).strip()
         assert out == "fail"
+
+
+class TestInterestRateConformance:
+    """The compound-interest rate table, mirrored into Java by hand.
+
+    `refreshCostToWait()` in Bunny Tasker exists to tell a bunny what waiting
+    costs. It cannot import `shared/focuslock_penalties.py`, so the rates are
+    retyped as a ternary chain — and they drifted: bronze read 1.08 in Java from
+    the day the screen shipped while the relay's `check_compound_interest()`
+    charged 1.10. The one number the bunny was given to act on was low, on the
+    tier most likely to be carrying a balance.
+
+    A source-text check rather than a golden vector, because the defect is
+    literally a mistyped constant. No JDK needed, so unlike TestJavaConformance
+    this always runs.
+    """
+
+    COMPANION_MAIN = REPO_ROOT / "android" / "companion" / "src" / "com" / "bunnytasker" / "MainActivity.java"
+
+    def _java_rates(self):
+        """Parse the tier→rate ternary chain out of refreshCostToWait()."""
+        import re
+
+        source = self.COMPANION_MAIN.read_text()
+        match = re.search(r"double rate = ([^;]+);", source)
+        assert match, "refreshCostToWait() no longer declares `double rate = ...`"
+        expr = match.group(1)
+        rates = {tier: float(rate) for tier, rate in re.findall(r'"(\w+)"\.equals\(tier\)\s*\?\s*([\d.]+)', expr)}
+        trailing = re.search(r":\s*([\d.]+)\s*$", expr)
+        assert trailing, f"no default branch in: {expr}"
+        rates[""] = float(trailing.group(1))  # unsubscribed falls through to the default
+        return rates
+
+    def test_java_rates_match_the_python_table(self):
+        from focuslock_penalties import COMPOUND_INTEREST_RATE_BY_TIER
+
+        java = self._java_rates()
+        for tier, expected in COMPOUND_INTEREST_RATE_BY_TIER.items():
+            assert tier in java, f"Java has no branch for tier {tier!r}"
+            assert java[tier] == pytest.approx(expected), (
+                f"tier {tier!r}: Java quotes {java[tier]}, relay charges {expected}"
+            )
+
+    def test_java_defines_no_tier_the_relay_does_not_price(self):
+        """A tier in Java but not in the table is a rate nothing enforces."""
+        from focuslock_penalties import COMPOUND_INTEREST_RATE_BY_TIER
+
+        extra = set(self._java_rates()) - set(COMPOUND_INTEREST_RATE_BY_TIER)
+        assert not extra, f"Java prices tiers the relay does not: {sorted(extra)}"
+
+    def test_unknown_tier_is_not_quoted_a_discount(self):
+        """`compound_interest_rate()` defaults an unrecognised tier to bronze.
+        Java's trailing branch must be at least as expensive, or an unknown tier
+        is quoted cheaper than it will be charged."""
+        from focuslock_penalties import compound_interest_rate
+
+        assert self._java_rates()[""] >= compound_interest_rate("some-unknown-tier")

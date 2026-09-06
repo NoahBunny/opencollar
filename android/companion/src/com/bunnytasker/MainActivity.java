@@ -1242,14 +1242,22 @@ public class MainActivity extends Activity {
      *  what they owed now and nothing said what it becomes by tomorrow.
      *
      *  Silent when there is no balance, or when the tier earns no interest —
-     *  a line that always says "+$0" trains people to stop reading it. */
+     *  a line that always says "+$0" trains people to stop reading it.
+     *
+     *  RATES ARE NOT FREE-CHOSEN HERE. They mirror COMPOUND_INTEREST_RATE_BY_TIER
+     *  in shared/focuslock_penalties.py, which is what the relay's
+     *  check_compound_interest() actually charges. Bronze read 1.08 here from
+     *  the day this shipped while the relay charged 1.10, so the one screen
+     *  that exists to tell a bunny what waiting costs quoted them low — on the
+     *  tier most likely to be carrying a balance. tests/test_android_conformance.py
+     *  now fails if these drift apart again. */
     private void refreshCostToWait() {
         if (costToWait == null) return;
         double pw = parseD(gstr("focus_lock_paywall"));
         double orig = parseD(gstr("focus_lock_paywall_original"));
         long lockedAt = Settings.Global.getLong(getContentResolver(), "focus_lock_locked_at", 0L);
         String tier = gstr("focus_lock_sub_tier").toLowerCase();
-        double rate = "gold".equals(tier) ? 1.0 : "silver".equals(tier) ? 1.05 : "bronze".equals(tier) ? 1.08 : 1.10;
+        double rate = "gold".equals(tier) ? 1.00 : "silver".equals(tier) ? 1.05 : "bronze".equals(tier) ? 1.10 : 1.10;
         if (pw <= 0 || orig <= 0 || lockedAt <= 0 || rate <= 1.0) {
             costToWait.setVisibility(View.GONE);
             return;
