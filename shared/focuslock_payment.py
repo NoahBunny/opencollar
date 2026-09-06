@@ -262,6 +262,69 @@ def debit_balance(orders, amount_cents, clear=False):
     return new_paywall
 
 
+def parse_list_line(raw):
+    """Extract the mailbox name from one line of an IMAP LIST response.
+
+    A LIST line is `(flags) "delim" name`, and `name` is where this used to go
+    wrong: the old parser took `line.rsplit(" ", 1)[-1]`, which is only correct
+    while no mailbox contains a space. It does not survive contact with a real
+    mailbox — `"Interac e-Transfer"` came back as `e-Transfer` and
+    `"[Gmail]/All Mail"` as `Mail`, neither of which SELECTs, so the folder was
+    silently skipped and the e-Transfer notice filed there was never scanned.
+    Only single-word folders (INBOX, and little else) ever got read.
+
+    Handles the three shapes a server can answer with:
+      * quoted   — `(\\HasNoChildren) "/" "Interac e-Transfer"`, including
+                   `\\"` and `\\\\` escapes inside the quotes
+      * atom     — `(\\Noselect) NIL INBOX`
+      * literal  — imaplib hands back a `(b'... {17}', b'Interac e-Transfer')`
+                   tuple, which the old `str(raw)` turned into the repr of a
+                   Python tuple
+
+    The name is returned exactly as the server spelled it (modified UTF-7 and
+    all) because that is what `select` has to send back; imaplib quotes it for
+    us via `_astring`. Returns "" for a line with no usable name — a literal's
+    trailing `)`, say.
+    """
+    # Literal form: imaplib splits the line into (prefix-with-{N}, payload).
+    if isinstance(raw, (tuple, list)):
+        if len(raw) < 2:
+            return ""
+        payload = raw[1]
+        if isinstance(payload, bytes):
+            payload = payload.decode("utf-8", "replace")
+        return str(payload).strip()
+
+    line = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+    line = line.strip()
+    if not line:
+        return ""
+
+    if line.endswith('"'):
+        # Walk back to the opening quote, counting the backslashes that precede
+        # each quote so an escaped one doesn't end the string early.
+        i = len(line) - 2
+        while i >= 0:
+            if line[i] == '"':
+                bs = 0
+                j = i - 1
+                while j >= 0 and line[j] == "\\":
+                    bs += 1
+                    j -= 1
+                if bs % 2 == 0:
+                    break
+            i -= 1
+        if i < 0:
+            return ""
+        inner = line[i + 1 : -1]
+        return inner.replace('\\"', '"').replace("\\\\", "\\")
+
+    parts = line.rsplit(" ", 1)
+    if len(parts) < 2:
+        return ""
+    return parts[-1].strip()
+
+
 def walk_imap_folders(mail, since_date, skip_patterns=DEFAULT_SKIP_FOLDERS):
     """Walk INBOX + all subfolders, returning (folder, num, raw_bytes) tuples.
 
@@ -281,12 +344,9 @@ def walk_imap_folders(mail, since_date, skip_patterns=DEFAULT_SKIP_FOLDERS):
     for raw in folders_raw or []:
         if not raw:
             continue
-        line = raw.decode() if isinstance(raw, bytes) else str(raw)
-        # Format: (\HasNoChildren) "/" "INBOX/Archive/2026"
-        parts = line.rsplit(" ", 1)
-        if len(parts) < 2:
+        name = parse_list_line(raw)
+        if not name:
             continue
-        name = parts[-1].strip().strip('"')
         low = name.lower()
         if any(s in low for s in skip_patterns):
             continue

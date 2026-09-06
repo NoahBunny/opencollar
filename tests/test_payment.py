@@ -17,6 +17,7 @@ from focuslock_payment import (
     get_body,
     load_iso_codes,
     load_payment_providers,
+    parse_list_line,
     reduce_paywall,
     score_payment_email,
     unlock_phone,
@@ -831,6 +832,79 @@ class TestWalkImapFolders:
         results = walk_imap_folders(mail, since_date="01-Apr-2026")
         assert results == []
         mail.fetch.assert_not_called()
+
+    def test_folder_names_with_spaces_are_not_truncated(self):
+        """The e-Transfer regression. A LIST name was taken as the last
+        space-separated token, so every mailbox whose name contains a space
+        was truncated to its final word, failed to SELECT, and was silently
+        dropped by the per-folder except. `Interac e-Transfer` — where a bank
+        filter files exactly the notice this scanner exists to read — became
+        `e-Transfer`, and Gmail's `[Gmail]/All Mail` became `Mail`. Only
+        single-word folders were ever scanned."""
+        mail = self._spec_mail()
+        mail.list.return_value = (
+            "OK",
+            [
+                b'(\\HasNoChildren) "/" "INBOX"',
+                b'(\\HasNoChildren) "/" "Interac e-Transfer"',
+                b'(\\HasNoChildren) "/" "[Gmail]/All Mail"',
+                b'(\\HasNoChildren) "/" "Bank Alerts"',
+            ],
+        )
+        mail.select.return_value = ("OK", [b""])
+        mail.search.return_value = ("OK", [b"1"])
+        mail.fetch.return_value = ("OK", [(b"1 (RFC822)", b"raw")])
+
+        results = walk_imap_folders(mail, since_date="01-Apr-2026")
+
+        assert {r[0] for r in results} == {
+            "INBOX",
+            "Interac e-Transfer",
+            "[Gmail]/All Mail",
+            "Bank Alerts",
+        }
+        # Selected under the server's own spelling — imaplib quotes it for us
+        # via _astring, so no quoting belongs in the caller.
+        mail.select.assert_any_call("Interac e-Transfer", readonly=True)
+        mail.select.assert_any_call("[Gmail]/All Mail", readonly=True)
+
+    def test_literal_folder_name_tuple_is_parsed(self):
+        """Servers may answer LIST with a literal, which imaplib surfaces as a
+        (prefix, payload) tuple plus a trailing b')'. The old parser ran
+        str(tuple) over it and scanned a Python repr."""
+        mail = self._spec_mail()
+        mail.list.return_value = (
+            "OK",
+            [
+                (b'(\\HasNoChildren) "/" {18}', b"Interac e-Transfer"),
+                b")",
+                b'(\\HasNoChildren) "/" "INBOX"',
+            ],
+        )
+        mail.select.return_value = ("OK", [b""])
+        mail.search.return_value = ("OK", [b"1"])
+        mail.fetch.return_value = ("OK", [(b"1 (RFC822)", b"raw")])
+
+        results = walk_imap_folders(mail, since_date="01-Apr-2026")
+        assert {r[0] for r in results} == {"Interac e-Transfer", "INBOX"}
+
+    def test_multiword_skip_patterns_still_skip(self):
+        """Truncation used to hide skipped folders too: `Deleted Messages`
+        parsed as `Messages`, which matches no skip pattern, so a Trash-alike
+        got scanned. Now the full name is tested."""
+        mail = self._spec_mail()
+        mail.list.return_value = (
+            "OK",
+            [
+                b'(\\HasNoChildren) "/" "INBOX"',
+                b'(\\HasNoChildren) "/" "Deleted Messages"',
+            ],
+        )
+        mail.select.return_value = ("OK", [b""])
+        mail.search.return_value = ("OK", [b""])
+        walk_imap_folders(mail, since_date="01-Apr-2026", skip_patterns=("deleted",))
+        selected = {call.args[0] for call in mail.select.call_args_list}
+        assert selected == {"INBOX"}
 
     def test_default_skip_constant_is_exported(self):
         # If the default skip list is reduced (e.g. Trash accidentally dropped)
@@ -1676,3 +1750,33 @@ class TestApplyPaymentReversal:
         result = fm_mail._apply_payment_reversal(mesh_id, source)
         assert result["new_total_paid_cents"] == 0
         assert orders._store["total_paid_cents"] == 0
+
+
+class TestParseListLine:
+    """Unit coverage for the LIST-line name parser behind walk_imap_folders."""
+
+    def test_quoted_name_with_spaces(self):
+        assert parse_list_line(b'(\\HasNoChildren) "/" "Interac e-Transfer"') == "Interac e-Transfer"
+
+    def test_quoted_name_single_word(self):
+        assert parse_list_line(b'(\\HasNoChildren) "/" "INBOX"') == "INBOX"
+
+    def test_unquoted_atom_name(self):
+        assert parse_list_line(b"(\\Noselect) NIL INBOX") == "INBOX"
+
+    def test_literal_tuple(self):
+        assert parse_list_line((b'(\\HasNoChildren) "/" {18}', b"Interac e-Transfer")) == "Interac e-Transfer"
+
+    def test_escaped_quote_inside_name(self):
+        assert parse_list_line(b'(\\HasNoChildren) "/" "say \\"hi\\" now"') == 'say "hi" now'
+
+    def test_escaped_backslash_inside_name(self):
+        assert parse_list_line(b'(\\HasNoChildren) "/" "back\\\\slash"') == "back\\slash"
+
+    def test_str_input_accepted(self):
+        assert parse_list_line('(\\HasNoChildren) "." "Bank Alerts"') == "Bank Alerts"
+
+    def test_junk_lines_yield_empty(self):
+        assert parse_list_line(b")") == ""
+        assert parse_list_line(b"") == ""
+        assert parse_list_line(()) == ""
